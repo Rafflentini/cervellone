@@ -157,7 +157,8 @@ export async function POST(request: NextRequest) {
         max_tokens: 4000,
         system: fullSystemPrompt,
         messages: currentMessages,
-        tools,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        tools: tools as any,
         thinking: {
           type: 'enabled',
           budget_tokens: 5000,
