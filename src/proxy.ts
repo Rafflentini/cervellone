@@ -6,7 +6,7 @@ export default async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   const isLoginPage = pathname === '/login'
-  const isApiAuth = pathname.startsWith('/api/auth')
+  const isApiAuth = pathname.startsWith('/api/auth') || pathname.startsWith('/api/telegram')
 
   if (isApiAuth) return NextResponse.next()
 
