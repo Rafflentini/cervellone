@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { searchMemory, saveMessageWithEmbedding } from '@/lib/memory'
 import { CUSTOM_TOOLS, executeTool } from '@/lib/tools'
+import { supabase } from '@/lib/supabase'
 
 const client = new Anthropic()
 
@@ -93,17 +94,78 @@ async function sendTyping(chatId: number) {
 }
 
 // Webhook Telegram — riceve messaggi
+// Trascrivi audio con OpenAI Whisper
+async function transcribeAudio(fileId: string): Promise<string> {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return ''
+
+  // Ottieni il file path da Telegram
+  const fileRes = await fetch(`${TELEGRAM_API}${token}/getFile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId }),
+  })
+  const fileData = await fileRes.json()
+  const filePath = fileData.result?.file_path
+  if (!filePath) return ''
+
+  // Scarica il file audio
+  const audioRes = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
+  const audioBuffer = await audioRes.arrayBuffer()
+
+  // Manda a OpenAI Whisper per trascrizione
+  const formData = new FormData()
+  const audioBlob = new Blob([audioBuffer], { type: 'audio/ogg' })
+  formData.append('file', audioBlob, 'voice.ogg')
+  formData.append('model', 'whisper-1')
+  formData.append('language', 'it')
+
+  const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    body: formData,
+  })
+
+  if (!whisperRes.ok) {
+    console.error('WHISPER errore:', whisperRes.status, await whisperRes.text())
+    return ''
+  }
+
+  const whisperData = await whisperRes.json()
+  console.log('WHISPER trascrizione:', whisperData.text?.slice(0, 100))
+  return whisperData.text || ''
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const message = body.message
 
-    if (!message || !message.text) {
+    if (!message) {
       return NextResponse.json({ ok: true })
     }
 
     const chatId = message.chat.id
-    const userText = message.text
+
+    // Gestisci vocali
+    let userText = message.text || ''
+    if (!userText && (message.voice || message.audio)) {
+      const fileId = message.voice?.file_id || message.audio?.file_id
+      if (fileId) {
+        await sendTyping(chatId)
+        userText = await transcribeAudio(fileId)
+        if (!userText) {
+          await sendTelegramMessage(chatId, 'Non sono riuscito a trascrivere il vocale. Puo riprovare?')
+          return NextResponse.json({ ok: true })
+        }
+      }
+    }
+
+    if (!userText) {
+      return NextResponse.json({ ok: true })
+    }
 
     // Verifica autorizzazione
     if (!isAuthorized(chatId)) {
@@ -119,7 +181,15 @@ export async function POST(request: NextRequest) {
 
     // Comando /id — per scoprire il proprio chat ID
     if (userText === '/id') {
-      await sendTelegramMessage(chatId, `Il Suo chat ID è: \`${chatId}\``)
+      await sendTelegramMessage(chatId, `Il Suo chat ID è: ${chatId}`)
+      return NextResponse.json({ ok: true })
+    }
+
+    // Comando /nuova — reset conversazione
+    if (userText === '/nuova') {
+      const convId = `telegram_${chatId}`
+      await supabase.from('messages').delete().eq('conversation_id', convId)
+      await sendTelegramMessage(chatId, 'Conversazione azzerata. Come posso aiutarLa?')
       return NextResponse.json({ ok: true })
     }
 
@@ -130,11 +200,56 @@ export async function POST(request: NextRequest) {
     const memoryContext = await searchMemory(userText)
     const fullSystemPrompt = SYSTEM_PROMPT + memoryContext
 
-    // Conversazione Telegram — usa un ID fisso per chat Telegram
+    // Conversazione Telegram — trova o crea
     const conversationId = `telegram_${chatId}`
 
-    // Salva messaggio utente
+    // Crea conversazione se non esiste
+    const { data: existingConv } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('id', conversationId)
+      .single()
+
+    if (!existingConv) {
+      await supabase.from('conversations').insert({
+        id: conversationId,
+        title: 'Chat Telegram',
+      })
+    }
+
+    // Salva messaggio utente nella tabella messages
+    await supabase.from('messages').insert({
+      conversation_id: conversationId,
+      role: 'user',
+      content: userText,
+    })
+
+    // Salva embedding in background
     saveMessageWithEmbedding(conversationId, 'user', userText).catch(() => {})
+
+    // Carica ultimi 20 messaggi della conversazione per contesto
+    const { data: recentMessages } = await supabase
+      .from('messages')
+      .select('role, content')
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: true })
+      .limit(20)
+
+    // Costruisci la storia per Claude
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const history: any[] = (recentMessages || [])
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => ({ role: m.role, content: m.content }))
+
+    // Se la storia è vuota o non finisce con l'ultimo messaggio, aggiungi
+    if (history.length === 0 || history[history.length - 1].content !== userText) {
+      history.push({ role: 'user', content: userText })
+    }
+
+    // Assicura che inizi con user
+    if (history.length > 0 && history[0].role !== 'user') {
+      history.shift()
+    }
 
     // Chiama Claude
     const tools = [
@@ -147,7 +262,7 @@ export async function POST(request: NextRequest) {
     ]
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let currentMessages: any[] = [{ role: 'user', content: userText }]
+    let currentMessages: any[] = history
     let fullResponse = ''
     let maxIterations = 10
 
@@ -202,9 +317,14 @@ export async function POST(request: NextRequest) {
       ]
     }
 
-    // Salva risposta in memoria
+    // Salva risposta in memoria e nella tabella messages
     if (fullResponse) {
       saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+      await supabase.from('messages').insert({
+        conversation_id: conversationId,
+        role: 'assistant',
+        content: fullResponse,
+      })
     }
 
     // Manda risposta su Telegram
