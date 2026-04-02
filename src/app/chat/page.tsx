@@ -475,7 +475,7 @@ export default function ChatPage() {
     // DEBUG: log cosa viene mandato all'API
     for (const m of apiMessages) {
       if (Array.isArray(m.content)) {
-        const types = m.content.map((b: Record<string, unknown>) => {
+        const types = (m.content as Record<string, unknown>[]).map((b) => {
           if (b.type === 'document' || b.type === 'image') {
             const src = b.source as Record<string, unknown> | undefined
             return `${b.type}(data: ${src?.data ? String(src.data).length + ' chars' : 'VUOTO!'})`
