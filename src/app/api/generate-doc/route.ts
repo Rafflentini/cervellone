@@ -210,7 +210,7 @@ async function generateXlsx(content: string, fileName: string) {
 
   const buffer = await workbook.xlsx.writeBuffer()
 
-  return new Response(new Uint8Array(buffer as Buffer), {
+  return new Response(new Uint8Array(buffer as unknown as ArrayBuffer), {
     headers: {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': `attachment; filename="${fileName || 'documento'}.xlsx"`,
