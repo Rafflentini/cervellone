@@ -63,7 +63,7 @@ async function sendTelegramMessage(chatId: number, text: string) {
   }
 
   for (const chunk of chunks) {
-    await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
+    const res = await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -72,6 +72,18 @@ async function sendTelegramMessage(chatId: number, text: string) {
         parse_mode: 'Markdown',
       }),
     })
+    // Se Markdown fallisce, riprova senza parse_mode
+    if (!res.ok) {
+      console.error('TELEGRAM sendMessage fallito con Markdown, riprovo senza parse_mode')
+      await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: chunk,
+        }),
+      })
+    }
   }
 }
 
