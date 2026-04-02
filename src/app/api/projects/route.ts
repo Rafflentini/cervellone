@@ -1,4 +1,4 @@
-export const maxDuration = 600 // 10 minuti — molti file da digerire
+export const maxDuration = 300 // 5 minuti — limite piano Hobby Vercel
 
 import { NextRequest, NextResponse } from 'next/server'
 import JSZip from 'jszip'
