@@ -69,20 +69,13 @@ async function sendTelegramMessage(chatId: number, text: string) {
       body: JSON.stringify({
         chat_id: chatId,
         text: chunk,
-        parse_mode: 'Markdown',
       }),
     })
-    // Se Markdown fallisce, riprova senza parse_mode
     if (!res.ok) {
-      console.error('TELEGRAM sendMessage fallito con Markdown, riprovo senza parse_mode')
-      await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: chunk,
-        }),
-      })
+      const errBody = await res.text()
+      console.error('TELEGRAM sendMessage ERRORE:', res.status, errBody)
+    } else {
+      console.log('TELEGRAM sendMessage OK per chat', chatId)
     }
   }
 }
@@ -215,6 +208,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Manda risposta su Telegram
+    console.log('TELEGRAM risposta da inviare, lunghezza:', fullResponse.length, 'anteprima:', fullResponse.slice(0, 100))
     await sendTelegramMessage(chatId, fullResponse || 'Non sono riuscito a elaborare una risposta.')
 
     return NextResponse.json({ ok: true })
