@@ -133,7 +133,7 @@ async function generateDocx(content: string, fileName: string) {
 
   const buffer = await Packer.toBuffer(doc)
 
-  return new Response(buffer, {
+  return new Response(new Uint8Array(buffer), {
     headers: {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'Content-Disposition': `attachment; filename="${fileName || 'documento'}.docx"`,
@@ -210,7 +210,7 @@ async function generateXlsx(content: string, fileName: string) {
 
   const buffer = await workbook.xlsx.writeBuffer()
 
-  return new Response(buffer as Buffer, {
+  return new Response(new Uint8Array(buffer as Buffer), {
     headers: {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': `attachment; filename="${fileName || 'documento'}.xlsx"`,
