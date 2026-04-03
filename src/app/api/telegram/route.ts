@@ -371,7 +371,7 @@ export async function POST(request: NextRequest) {
     if (!existingConv) {
       const { error: convError } = await supabase.from('conversations').insert({
         id: conversationId,
-        title: 'Chat Telegram',
+        title: '💬 Telegram',
       })
       if (convError) console.error('TELEGRAM: errore creazione conversazione:', convError.message)
     }
@@ -537,7 +537,7 @@ export async function POST(request: NextRequest) {
             .insert({
               name: title,
               content: block.content,
-              conversation_id: null,
+              conversation_id: conversationId,
               type: 'html',
               metadata: { source: 'telegram', chatId, conversationId, savedAt: new Date().toISOString() },
             })
