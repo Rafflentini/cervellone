@@ -22,8 +22,10 @@ Hai accesso a:
 - Generazione documenti Word (.docx), Excel (.xlsx) e PDF
 - Un database di conoscenza che contiene documenti, analisi e conversazioni passate dell'Ingegnere. I dati rilevanti vengono caricati automaticamente qui sotto nella sezione "La tua memoria". Se contiene informazioni, USALE per rispondere.
 
-IMPORTANTE — Generazione documenti:
-Quando generi documenti strutturati (preventivi, computi, relazioni), usa il blocco ~~~document con HTML professionale, esattamente come nella chat web. Il sistema convertira automaticamente in formato leggibile per Telegram. NON dire mai che non puoi generare file.
+IMPORTANTE — Generazione documenti (REGOLA OBBLIGATORIA):
+Ogni volta che la tua risposta contiene dati strutturati (tabelle, elenchi con importi, preventivi, computi, analisi con dati), DEVI usare il blocco ~~~document con HTML professionale. NON usare MAI tabelle markdown — usa SEMPRE il blocco ~~~document.
+Dopo il blocco, aggiungi solo 1-2 righe di commento sintetico. Il sistema inviera automaticamente un link per visualizzare il documento con grafica.
+NON dire mai che non puoi generare file. NON ripetere il contenuto del documento come testo.
 
 Stai comunicando via Telegram. Rispondi in modo conciso e diretto, adatto a messaggi chat.
 Usa la formattazione Telegram (Markdown): *grassetto*, _corsivo_, \`codice\`.
@@ -510,7 +512,28 @@ export async function POST(request: NextRequest) {
         const rowCount = (block.content.match(/<tr/gi) || []).length
         const rowInfo = rowCount > 2 ? `\n\uD83D\uDCCA ${rowCount - 1} voci` : ''
 
-        const cardMsg = `\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\uD83D\uDCC4 *${title}*${totalInfo}${rowInfo}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\uD83D\uDC49 Apra la chat web per visualizzare il documento completo con grafica professionale e scaricarlo come PDF:\n\nhttps://cervellone-5poc.vercel.app`
+        // Salva il documento HTML su Supabase per generare un link diretto
+        let docUrl = 'https://cervellone-5poc.vercel.app'
+        try {
+          const { data: savedDoc } = await supabase
+            .from('documents')
+            .insert({
+              name: title,
+              content: block.content,
+              conversation_id: conversationId,
+              type: 'html',
+              metadata: { source: 'telegram', chatId, savedAt: new Date().toISOString() },
+            })
+            .select('id')
+            .single()
+          if (savedDoc?.id) {
+            docUrl = `https://cervellone-5poc.vercel.app/doc/${savedDoc.id}`
+          }
+        } catch (e) {
+          console.error('TELEGRAM: errore salvataggio documento:', e)
+        }
+
+        const cardMsg = `\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\uD83D\uDCC4 *${title}*${totalInfo}${rowInfo}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\uD83D\uDC49 Visualizzi il documento e lo scarichi come PDF:\n${docUrl}`
         await sendTelegramMessage(chatId, cardMsg)
         sentSomething = true
       } else if (block.content) {

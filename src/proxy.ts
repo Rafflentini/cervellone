@@ -6,9 +6,12 @@ export default async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   const isLoginPage = pathname === '/login'
-  const isApiAuth = pathname.startsWith('/api/auth') || pathname.startsWith('/api/telegram')
+  const isPublic = pathname.startsWith('/api/auth')
+    || pathname.startsWith('/api/telegram')
+    || pathname.startsWith('/api/doc/')
+    || pathname.startsWith('/doc/')
 
-  if (isApiAuth) return NextResponse.next()
+  if (isPublic) return NextResponse.next()
 
   if (!authCookie && !isLoginPage) {
     return NextResponse.redirect(new URL('/login', request.url))
