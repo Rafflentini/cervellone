@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import CervelloneLogo from '@/components/CervelloneLogo'
 import MarkdownRenderer from '@/components/MarkdownRenderer'
 import DocumentPreviewPanel from '@/components/DocumentPreviewPanel'
+import SplitPanel from '@/components/SplitPanel'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 
 type FileAttachment = {
@@ -874,8 +875,18 @@ export default function ChatPage() {
         <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={() => setShowSidebar(false)} />
       )}
 
+      {/* Split: chat + pannello anteprima (stile Claude AI artifacts) */}
+      <SplitPanel
+        panel={previewHtml ? (
+          <DocumentPreviewPanel
+            html={previewHtml}
+            onClose={() => setPreviewHtml(null)}
+          />
+        ) : null}
+        onClosePanel={() => setPreviewHtml(null)}
+      >
       {/* Area chat principale */}
-      <div className={`flex flex-col min-w-0 flex-1`} style={previewHtml ? { flex: '0 0 35%', minWidth: '320px' } : undefined}>
+      <div className="flex flex-col min-w-0 flex-1">
         {/* Header */}
         <header className="bg-gray-900 text-white px-4 py-3 flex items-center justify-between shadow-md flex-shrink-0">
           <div className="flex items-center gap-3">
@@ -1094,16 +1105,7 @@ export default function ChatPage() {
           <p className="text-center text-xs text-gray-400 mt-2">Invio per mandare • Shift+Invio per a capo • microfono per dettare • trascina file</p>
         </div>
       </div>
-
-      {/* Pannello anteprima documento — desktop */}
-      {previewHtml && (
-        <div className="hidden md:flex" style={{ flex: '1 1 65%', maxWidth: '70%' }}>
-          <DocumentPreviewPanel
-            html={previewHtml}
-            onClose={() => setPreviewHtml(null)}
-          />
-        </div>
-      )}
+      </SplitPanel>
 
       {/* Anteprima mobile — fullscreen */}
       {previewHtml && (
