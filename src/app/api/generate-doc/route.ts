@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle } from 'docx'
 import ExcelJS from 'exceljs'
+import { jsPDF } from 'jspdf'
 
 export async function POST(request: NextRequest) {
   const authCookie = request.cookies.get('cervellone_auth')
@@ -14,6 +15,8 @@ export async function POST(request: NextRequest) {
     return generateDocx(content, fileName)
   } else if (type === 'xlsx') {
     return generateXlsx(content, fileName)
+  } else if (type === 'pdf') {
+    return generatePdf(content, fileName)
   }
 
   return NextResponse.json({ error: 'Tipo non supportato' }, { status: 400 })
@@ -214,6 +217,120 @@ async function generateXlsx(content: string, fileName: string) {
     headers: {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': `attachment; filename="${fileName || 'documento'}.xlsx"`,
+    },
+  })
+}
+
+function generatePdf(content: string, fileName: string) {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const pageHeight = doc.internal.pageSize.getHeight()
+  const marginLeft = 20
+  const marginRight = 20
+  const marginTop = 25
+  const marginBottom = 20
+  const maxWidth = pageWidth - marginLeft - marginRight
+  let y = marginTop
+
+  const lines = content.split('\n')
+
+  for (const line of lines) {
+    // Heading 1
+    if (line.startsWith('# ')) {
+      doc.setFontSize(18)
+      doc.setFont('helvetica', 'bold')
+      y += 4
+      const wrapped = doc.splitTextToSize(line.slice(2), maxWidth)
+      for (const wLine of wrapped) {
+        if (y > pageHeight - marginBottom) { doc.addPage(); y = marginTop }
+        doc.text(wLine, marginLeft, y)
+        y += 8
+      }
+      y += 2
+    // Heading 2
+    } else if (line.startsWith('## ')) {
+      doc.setFontSize(14)
+      doc.setFont('helvetica', 'bold')
+      y += 3
+      const wrapped = doc.splitTextToSize(line.slice(3), maxWidth)
+      for (const wLine of wrapped) {
+        if (y > pageHeight - marginBottom) { doc.addPage(); y = marginTop }
+        doc.text(wLine, marginLeft, y)
+        y += 7
+      }
+      y += 1
+    // Heading 3
+    } else if (line.startsWith('### ')) {
+      doc.setFontSize(12)
+      doc.setFont('helvetica', 'bold')
+      y += 2
+      const wrapped = doc.splitTextToSize(line.slice(4), maxWidth)
+      for (const wLine of wrapped) {
+        if (y > pageHeight - marginBottom) { doc.addPage(); y = marginTop }
+        doc.text(wLine, marginLeft, y)
+        y += 6
+      }
+    // Separatore
+    } else if (line.startsWith('---')) {
+      if (y > pageHeight - marginBottom) { doc.addPage(); y = marginTop }
+      y += 2
+      doc.setDrawColor(180, 180, 180)
+      doc.line(marginLeft, y, pageWidth - marginRight, y)
+      y += 4
+    // Bullet point
+    } else if (line.match(/^\s*[-*]\s/)) {
+      doc.setFontSize(11)
+      doc.setFont('helvetica', 'normal')
+      const text = line.replace(/^\s*[-*]\s/, '')
+      // Rimuovi markdown bold/italic per il PDF
+      const clean = text.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1')
+      const wrapped = doc.splitTextToSize(clean, maxWidth - 6)
+      for (let i = 0; i < wrapped.length; i++) {
+        if (y > pageHeight - marginBottom) { doc.addPage(); y = marginTop }
+        if (i === 0) {
+          doc.text('•', marginLeft, y)
+          doc.text(wrapped[i], marginLeft + 6, y)
+        } else {
+          doc.text(wrapped[i], marginLeft + 6, y)
+        }
+        y += 5.5
+      }
+    // Riga vuota
+    } else if (line.trim() === '') {
+      y += 3
+    // Testo normale
+    } else {
+      doc.setFontSize(11)
+      doc.setFont('helvetica', 'normal')
+      const clean = line.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1')
+      const wrapped = doc.splitTextToSize(clean, maxWidth)
+      for (const wLine of wrapped) {
+        if (y > pageHeight - marginBottom) { doc.addPage(); y = marginTop }
+        doc.text(wLine, marginLeft, y)
+        y += 5.5
+      }
+    }
+  }
+
+  // Footer su ogni pagina
+  const totalPages = doc.getNumberOfPages()
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i)
+    doc.setFontSize(8)
+    doc.setFont('helvetica', 'normal')
+    doc.setTextColor(150, 150, 150)
+    doc.text(`Cervellone — Restruktura S.r.l.`, marginLeft, pageHeight - 10)
+    doc.text(`Pag. ${i}/${totalPages}`, pageWidth - marginRight - 20, pageHeight - 10)
+    doc.setTextColor(0, 0, 0)
+  }
+
+  const pdfBuffer = doc.output('arraybuffer')
+
+  return new Response(new Uint8Array(pdfBuffer), {
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${fileName || 'documento'}.pdf"`,
     },
   })
 }

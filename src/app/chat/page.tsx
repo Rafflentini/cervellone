@@ -741,7 +741,7 @@ export default function ChatPage() {
     return context
   }
 
-  async function downloadAsDoc(text: string, format: 'docx' | 'xlsx', msgIndex?: number) {
+  async function downloadAsDoc(text: string, format: 'docx' | 'xlsx' | 'pdf', msgIndex?: number) {
     const context = getContextName(msgIndex)
     const dateStr = new Date().toISOString().slice(0, 10)
     const fileName = `${context}_${dateStr}`
@@ -968,6 +968,10 @@ export default function ChatPage() {
                     <button onClick={() => downloadAsDoc(msg.text, 'xlsx', i)} className="text-xs bg-green-50 text-green-600 hover:bg-green-100 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1 font-medium">
                       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                       Excel
+                    </button>
+                    <button onClick={() => downloadAsDoc(msg.text, 'pdf', i)} className="text-xs bg-red-50 text-red-600 hover:bg-red-100 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1 font-medium">
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                      PDF
                     </button>
                     <button onClick={() => downloadAsFile(msg.text, 'txt', i)} className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded-lg transition-colors flex items-center gap-1">
                       TXT

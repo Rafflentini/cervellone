@@ -70,6 +70,64 @@ Richiesta: "${userQuery.slice(0, 300)}"`,
   return { model: 'claude-opus-4-6', thinking: 10000 }
 }
 
+// Auto-detect e importa skill/prompt strutturati in memoria
+async function detectAndImportSkills(text: string, conversationId: string): Promise<string | null> {
+  // Rileva pattern skill: "SKILL \d+" con separatori ════ o più sezioni strutturate
+  const hasSkillPattern = /SKILL\s+\d+/i.test(text)
+  const hasSeparators = (text.match(/[═]{4,}|[─]{4,}|[━]{4,}/g) || []).length >= 2
+  const hasSections = (text.match(/^#{1,3}\s+.+/gm) || []).length >= 3
+
+  if (!hasSkillPattern && !hasSeparators && !hasSections) return null
+  if (text.length < 500) return null // Troppo corto per essere un prompt strutturato
+
+  // Splitta per sezioni — prova prima con separatori ════, poi con ## heading
+  let sections: { title: string; content: string }[] = []
+
+  if (hasSeparators) {
+    // Split per blocchi tra separatori
+    const parts = text.split(/[═]{4,}|[─]{4,}|[━]{4,}/)
+    let currentTitle = ''
+    for (const part of parts) {
+      const trimmed = part.trim()
+      if (!trimmed) continue
+
+      // Se è solo un titolo (corto, tipo "SKILL 1 – WORKFLOW PREVENTIVO")
+      if (trimmed.length < 150 && /SKILL|REGOL|PRINCIPI|NOTE|FORMATO/i.test(trimmed)) {
+        currentTitle = trimmed
+      } else if (trimmed.length > 100) {
+        const title = currentTitle || trimmed.split('\n')[0].slice(0, 80)
+        sections.push({ title, content: currentTitle ? `${currentTitle}\n\n${trimmed}` : trimmed })
+        currentTitle = ''
+      }
+    }
+  }
+
+  // Fallback: split per ## heading
+  if (sections.length < 2 && hasSections) {
+    const headingParts = text.split(/^(?=#{1,3}\s+)/m)
+    sections = headingParts
+      .filter(p => p.trim().length > 100)
+      .map(p => {
+        const firstLine = p.split('\n')[0].replace(/^#+\s*/, '').trim()
+        return { title: firstLine.slice(0, 80), content: p.trim() }
+      })
+  }
+
+  if (sections.length < 2) return null
+
+  // Salva ogni sezione come knowledge separato
+  const saved: string[] = []
+  for (const section of sections) {
+    const label = `[SKILL importata] ${section.title}`
+    const fullContent = `${label}\n\n${section.content}`
+    await saveMessageWithEmbedding(conversationId, 'knowledge', fullContent)
+    saved.push(section.title)
+    console.log(`SKILL IMPORT: salvata "${section.title}" (${section.content.length} chars)`)
+  }
+
+  return `Ho importato ${saved.length} skill in memoria:\n${saved.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\nOra posso usarle in qualsiasi conversazione futura.`
+}
+
 export async function POST(request: NextRequest) {
   const authCookie = request.cookies.get('cervellone_auth')
   if (!authCookie) {
@@ -163,6 +221,12 @@ export async function POST(request: NextRequest) {
   const hasFiles = Array.isArray(lastUserMsg?.content) &&
     lastUserMsg.content.some((b: { type: string }) => b.type === 'image' || b.type === 'document')
 
+  // Auto-detect e importa skill strutturate in memoria
+  let skillImportMessage: string | null = null
+  if (conversationId && userQuery.length > 500) {
+    skillImportMessage = await detectAndImportSkills(userQuery, conversationId)
+  }
+
   // Router automatico: sceglie Sonnet o Opus in base alla complessità
   const { model: MODEL, thinking: THINKING_BUDGET } = await chooseModel(userQuery, hasFiles)
 
@@ -176,7 +240,11 @@ export async function POST(request: NextRequest) {
     saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
   }
 
-  const fullSystemPrompt = SYSTEM_PROMPT + memoryContext
+  // Se sono state importate skill, aggiungi istruzione per Claude di confermare
+  const skillNotice = skillImportMessage
+    ? `\n\n# IMPORTAZIONE SKILL COMPLETATA\nL'utente ha incollato un prompt strutturato con skill professionali. Sono state salvate ${skillImportMessage.split('\n').length - 2} sezioni in memoria permanente. Nella tua risposta, CONFERMA all'utente che hai importato le skill e elenca i nomi. Poi chiedi come vuole procedere.`
+    : ''
+  const fullSystemPrompt = SYSTEM_PROMPT + skillNotice + memoryContext
 
   // Tools: ricerca web built-in + tool custom
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
