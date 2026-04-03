@@ -43,20 +43,20 @@ export default function SplitPanel({ children, panel, onClosePanel }: Props) {
   return (
     <div ref={containerRef} className="flex flex-1 min-w-0 h-full overflow-hidden">
       {/* Chat */}
-      <div className="flex flex-col min-w-0 h-full" style={{ width: panel ? `${100 - panelWidth}%` : '100%' }}>
+      <div className="flex flex-col min-w-0 h-full shrink-0" style={{ width: panel ? `${100 - panelWidth}%` : '100%' }}>
         {children}
       </div>
 
-      {/* Drag handle + Panel — solo quando c'è qualcosa da mostrare */}
+      {/* Drag handle + Panel */}
       {panel && (
         <>
           <div
-            className="w-2 flex-shrink-0 cursor-col-resize flex items-center justify-center group hover:bg-gray-100 transition-colors"
+            className="shrink-0 w-2 cursor-col-resize flex items-center justify-center group hover:bg-gray-100 transition-colors"
             onMouseDown={handleMouseDown}
           >
             <div className="w-[3px] h-8 rounded-full bg-gray-300 group-hover:bg-blue-400 group-active:bg-blue-500 transition-colors" />
           </div>
-          <div className="flex flex-col min-w-0 h-full border-l border-gray-200 bg-white overflow-hidden" style={{ width: `${panelWidth}%` }}>
+          <div className="flex flex-col min-w-0 h-full shrink-0 border-l border-gray-200 bg-white overflow-hidden" style={{ width: `${panelWidth}%` }}>
             {panel}
           </div>
         </>
