@@ -112,10 +112,15 @@ async function extractText(buffer: Buffer, url: string): Promise<string> {
     return buffer.toString('utf-8')
   }
 
-  // Assume PDF
-  const pdfParse = (await import('pdf-parse')).default
-  const result = await pdfParse(buffer)
-  return result.text
+  // Assume PDF — pdf-parse v2 uses named export with { data: buffer }
+  const { PDFParse } = await import('pdf-parse')
+  const parser = new PDFParse({ data: buffer })
+  try {
+    const result = await parser.getText()
+    return result.text
+  } finally {
+    await parser.destroy()
+  }
 }
 
 async function salvaInBatch(
