@@ -1031,8 +1031,9 @@ export default function ChatPage() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input */}
-        <div className="bg-white border-t border-gray-200 px-4 py-3 flex-shrink-0">
+        {/* Input floating */}
+        <div className="px-4 py-4 flex-shrink-0">
+          {/* File pendenti */}
           {pendingFiles.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-2 max-w-3xl mx-auto">
               {pendingFiles.map((f, i) => (
@@ -1054,50 +1055,17 @@ export default function ChatPage() {
             </div>
           )}
 
-          <div className="flex items-end gap-2 max-w-3xl mx-auto">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*,.pdf,.docx,.doc,.zip"
-              multiple
-              className="hidden"
-              onChange={handleFileInput}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={loading}
-              className="text-gray-400 hover:text-blue-500 disabled:opacity-40 flex-shrink-0 pb-3 transition-colors"
-              title="Allega file (foto, PDF, Word, ZIP progetto)"
-            >
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-              </svg>
-            </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,.pdf,.docx,.doc,.zip"
+            multiple
+            className="hidden"
+            onChange={handleFileInput}
+          />
 
-            <div className="flex items-end gap-1 flex-shrink-0 pb-3">
-              <button
-                onClick={toggleVoice}
-                disabled={loading}
-                className={`transition-colors ${isRecording ? 'text-red-500' : 'text-gray-400 hover:text-blue-500 disabled:opacity-40'}`}
-                title={isRecording ? 'Ferma registrazione' : 'Dettatura vocale'}
-              >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                </svg>
-              </button>
-              {isRecording && (
-                <div className="flex items-end gap-[3px] h-6">
-                  {audioLevels.map((level, idx) => (
-                    <div
-                      key={idx}
-                      className="w-[3px] rounded-full bg-red-500 transition-all duration-75"
-                      style={{ height: `${Math.max(4, level * 24)}px` }}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-
+          {/* Box input floating */}
+          <div className="max-w-3xl mx-auto border border-gray-300 rounded-2xl shadow-sm bg-white px-4 py-3 focus-within:border-blue-400 focus-within:shadow-md transition-all">
             <textarea
               ref={textareaRef}
               value={input}
@@ -1105,19 +1073,54 @@ export default function ChatPage() {
               onKeyDown={handleKeyDown}
               placeholder={isRecording ? 'Sto ascoltando...' : 'Scrivi un messaggio...'}
               rows={1}
-              className={`flex-1 resize-none text-gray-900 placeholder-gray-500 rounded-2xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 max-h-40 ${isRecording ? 'bg-red-50 ring-2 ring-red-300' : 'bg-gray-100'}`}
+              className={`w-full resize-none text-gray-900 placeholder-gray-400 text-sm outline-none bg-transparent max-h-40 ${isRecording ? 'placeholder-red-400' : ''}`}
             />
-            <button
-              onClick={sendMessage}
-              disabled={loading || (!input.trim() && pendingFiles.length === 0)}
-              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-full w-10 h-10 flex items-center justify-center flex-shrink-0 transition-colors"
-            >
-              <svg className="w-5 h-5 rotate-90" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-              </svg>
-            </button>
+            <div className="flex items-center justify-between mt-2">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={loading}
+                  className="text-gray-400 hover:text-gray-600 disabled:opacity-40 transition-colors"
+                  title="Allega file"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                </button>
+                <button
+                  onClick={toggleVoice}
+                  disabled={loading}
+                  className={`transition-colors ${isRecording ? 'text-red-500' : 'text-gray-400 hover:text-gray-600 disabled:opacity-40'}`}
+                  title={isRecording ? 'Ferma registrazione' : 'Dettatura vocale'}
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                  </svg>
+                </button>
+                {isRecording && (
+                  <div className="flex items-end gap-[3px] h-5">
+                    {audioLevels.map((level, idx) => (
+                      <div
+                        key={idx}
+                        className="w-[3px] rounded-full bg-red-500 transition-all duration-75"
+                        style={{ height: `${Math.max(4, level * 20)}px` }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={sendMessage}
+                disabled={loading || (!input.trim() && pendingFiles.length === 0)}
+                className="bg-gray-800 hover:bg-gray-900 disabled:opacity-30 text-white rounded-full w-8 h-8 flex items-center justify-center transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <p className="text-center text-xs text-gray-400 mt-2">Invio per mandare • Shift+Invio per a capo • microfono per dettare • trascina file</p>
+          <p className="text-center text-xs text-gray-400 mt-2">Invio per mandare · Shift+Invio per a capo · trascina file nella chat</p>
         </div>
       </div>
       </SplitPanel>
