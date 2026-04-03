@@ -492,29 +492,26 @@ export async function POST(request: NextRequest) {
     let sentSomething = false
     for (const block of responseBlocks) {
       if (block.type === 'document') {
-        // Converti HTML in testo formattato per Telegram
-        const docText = block.content
-          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-          .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '\n*$1*\n')
-          .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '\n*$1*\n')
-          .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '\n_$1_\n')
-          .replace(/<th[^>]*>(.*?)<\/th>/gi, '*$1* | ')
-          .replace(/<td[^>]*>(.*?)<\/td>/gi, '$1 | ')
-          .replace(/<tr[^>]*>/gi, '\n')
-          .replace(/<\/tr>/gi, '')
-          .replace(/<br\s*\/?>/gi, '\n')
-          .replace(/<p[^>]*>(.*?)<\/p>/gi, '$1\n')
-          .replace(/<li[^>]*>(.*?)<\/li>/gi, '\u2022 $1\n')
-          .replace(/<[^>]+>/g, '')
-          .replace(/&nbsp;/g, ' ')
-          .replace(/&euro;/g, '\u20AC')
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/\n{3,}/g, '\n\n')
-          .trim()
-        await sendTelegramMessage(chatId, '\uD83D\uDCC4 *DOCUMENTO GENERATO*\n\n' + docText)
-        await sendTelegramMessage(chatId, '\uD83D\uDCA1 Per la versione completa con grafica, apra la chat web:\nhttps://cervellone-5poc.vercel.app')
+        // Estrai titolo e info chiave dall'HTML per un riepilogo sintetico
+        const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i)
+          || block.content.match(/class="doc-title[^"]*"[^>]*>(.*?)<\//i)
+          || block.content.match(/<title>(.*?)<\/title>/i)
+        const title = titleMatch
+          ? titleMatch[1].replace(/<[^>]+>/g, '').trim()
+          : 'Documento'
+
+        // Cerca un importo totale nel documento
+        const totalMatch = block.content.match(/total[^<]*<\/td>\s*<td[^>]*>([^<]+)/i)
+          || block.content.match(/totale[^<]*<\/[^>]+>\s*<[^>]+>([^<]*\u20AC[^<]*|[^<]*EUR[^<]*|[^<]*€[^<]*)/i)
+          || block.content.match(/([\d.,]+\s*(?:\u20AC|EUR|€))/i)
+        const totalInfo = totalMatch ? `\n\uD83D\uDCB0 ${totalMatch[1].replace(/<[^>]+>/g, '').trim()}` : ''
+
+        // Conta le righe di tabella per dare un'idea della dimensione
+        const rowCount = (block.content.match(/<tr/gi) || []).length
+        const rowInfo = rowCount > 2 ? `\n\uD83D\uDCCA ${rowCount - 1} voci` : ''
+
+        const cardMsg = `\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\uD83D\uDCC4 *${title}*${totalInfo}${rowInfo}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\uD83D\uDC49 Apra la chat web per visualizzare il documento completo con grafica professionale e scaricarlo come PDF:\n\nhttps://cervellone-5poc.vercel.app`
+        await sendTelegramMessage(chatId, cardMsg)
         sentSomething = true
       } else if (block.content) {
         await sendTelegramMessage(chatId, block.content)
