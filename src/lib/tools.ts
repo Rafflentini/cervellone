@@ -173,15 +173,16 @@ export async function executeTool(name: string, input: Record<string, unknown>):
     case 'verifica_prezziario': {
       const regione = input.regione as string
       const anno = input.anno as number | undefined
-      const count = await countPrezziario(regione, anno)
-      if (count > 0) {
-        return `Prezziario disponibile per ${regione}${anno ? ` (${anno})` : ''}: ${count} voci in memoria.`
+      const result = await countPrezziario(regione, anno)
+      if (result.count > 0) {
+        return `Prezziario ${result.regione} ${result.anno} disponibile: ${result.count} voci in memoria.`
       }
       const regioni = await listRegioniDisponibili()
       if (regioni.length > 0) {
-        return `Nessun prezziario per ${regione}. Regioni disponibili: ${regioni.join(', ')}.`
+        const list = regioni.map(r => `${r.regione} ${r.anno} (${r.count} voci)`).join(', ')
+        return `Prezziario ${regione} NON disponibile. Prezziari in memoria: ${list}. Cerca il prezziario ${regione} online con web_search.`
       }
-      return `Nessun prezziario disponibile in memoria. Usa scarica_prezziario per scaricarne uno.`
+      return `Nessun prezziario in memoria. Devi cercarne uno online con web_search e scaricarlo con scarica_prezziario.`
     }
     case 'scarica_prezziario': {
       const result = await executeScaricaPrezziario(input as { regione: string; anno?: number; url: string })
