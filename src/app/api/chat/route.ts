@@ -272,7 +272,20 @@ export async function POST(request: NextRequest) {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         console.error('CHAT errore completo:', err)
-        controller.enqueue(encoder.encode(`\n\n⚠️ Errore: ${errMsg}`))
+        // Messaggi leggibili con suggerimenti operativi
+        let userMsg = errMsg
+        if (errMsg.includes('Could not process image') || errMsg.includes('invalid_image')) {
+          userMsg = 'Uno dei file immagine non è leggibile.\n\n💡 Cosa fare:\n• Converti l\'immagine in PNG o JPG prima di caricarla\n• Se è uno screenshot, rifallo a risoluzione più bassa\n• Prova a caricare un file alla volta per capire quale dà problemi'
+        } else if (errMsg.includes('document') && errMsg.includes('too large')) {
+          userMsg = 'Il documento è troppo pesante per essere analizzato.\n\n💡 Cosa fare:\n• Comprimi il PDF (es. con iLovePDF o Smallpdf)\n• Carica il file come progetto ZIP — viene elaborato in background senza limiti di pagine\n• Dividi il PDF in parti più piccole'
+        } else if (errMsg.includes('rate_limit') || errMsg.includes('overloaded')) {
+          userMsg = 'Claude è momentaneamente sovraccarico.\n\n💡 Cosa fare:\n• Aspetta 10-15 secondi e riprova\n• Se hai allegato file, prova senza e caricali dopo'
+        } else if (errMsg.includes('timeout') || errMsg.includes('TIMEOUT')) {
+          userMsg = 'La richiesta ha impiegato troppo tempo.\n\n💡 Cosa fare:\n• Carica i file uno alla volta — ogni analisi viene salvata in memoria\n• Per documenti lunghi, usa la funzione "Carica progetto ZIP"\n• Prova a fare una domanda più specifica sul documento'
+        } else if (errMsg.includes('invalid_request') || errMsg.includes('too many images')) {
+          userMsg = 'Troppi file in una sola richiesta.\n\n💡 Cosa fare:\n• Carica 1-2 file alla volta — li ricorderò tutti grazie alla memoria\n• Per tanti file insieme, mettili in uno ZIP e usa "Carica progetto"'
+        }
+        controller.enqueue(encoder.encode(`\n\n⚠️ ${userMsg}`))
       } finally {
         controller.close()
         if (conversationId && fullResponse) {

@@ -93,7 +93,68 @@ async function sendTyping(chatId: number) {
   })
 }
 
-// Webhook Telegram — riceve messaggi
+// Scarica un file da Telegram e restituisce { buffer, fileName, mimeType }
+async function downloadTelegramFile(fileId: string): Promise<{ buffer: ArrayBuffer; fileName: string; mimeType: string } | null> {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return null
+
+  const fileRes = await fetch(`${TELEGRAM_API}${token}/getFile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId }),
+  })
+  const fileData = await fileRes.json()
+  const filePath = fileData.result?.file_path
+  if (!filePath) return null
+
+  const fileName = filePath.split('/').pop() || 'file'
+  const ext = fileName.split('.').pop()?.toLowerCase() || ''
+
+  // Mappa estensione → MIME type
+  const mimeMap: Record<string, string> = {
+    pdf: 'application/pdf',
+    jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  }
+  const mimeType = mimeMap[ext] || 'application/octet-stream'
+
+  const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
+  if (!res.ok) return null
+  const buffer = await res.arrayBuffer()
+
+  return { buffer, fileName, mimeType }
+}
+
+// Costruisce i content blocks per Claude a partire dai file Telegram
+async function buildFileBlocks(fileData: { buffer: ArrayBuffer; fileName: string; mimeType: string }): Promise<{ blocks: object[]; description: string }> {
+  const { buffer, fileName, mimeType } = fileData
+  const base64 = Buffer.from(buffer).toString('base64')
+  const blocks: object[] = []
+
+  if (mimeType === 'application/pdf') {
+    blocks.push({ type: 'document', source: { type: 'base64', media_type: mimeType, data: base64 } })
+  } else if (mimeType.startsWith('image/')) {
+    blocks.push({ type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } })
+  } else if (mimeType.includes('word') || mimeType === 'application/msword') {
+    // Word: estrai testo con mammoth
+    try {
+      const mammoth = await import('mammoth')
+      const result = await mammoth.extractRawText({ arrayBuffer: buffer })
+      if (result.value && result.value.length > 50) {
+        blocks.push({ type: 'text', text: `[File Word: ${fileName}]\n\n${result.value}` })
+      } else {
+        return { blocks: [], description: `${fileName} (Word vuoto o non leggibile)` }
+      }
+    } catch {
+      return { blocks: [], description: `${fileName} (errore lettura Word)` }
+    }
+  }
+
+  return { blocks, description: fileName }
+}
+
 // Trascrivi audio con OpenAI Whisper
 async function transcribeAudio(fileId: string): Promise<string> {
   const token = process.env.TELEGRAM_BOT_TOKEN
@@ -150,7 +211,11 @@ export async function POST(request: NextRequest) {
     const chatId = message.chat.id
 
     // Gestisci vocali
-    let userText = message.text || ''
+    let userText = message.text || message.caption || ''
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let fileBlocks: object[] = []
+    let fileDescription = ''
+
     if (!userText && (message.voice || message.audio)) {
       const fileId = message.voice?.file_id || message.audio?.file_id
       if (fileId) {
@@ -163,8 +228,58 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    if (!userText) {
+    // Gestisci file: documenti (PDF, Word) e foto
+    if (message.document) {
+      await sendTyping(chatId)
+      const fileSize = message.document.file_size || 0
+      if (fileSize > 20 * 1024 * 1024) {
+        await sendTelegramMessage(chatId, '⚠️ Il file è troppo pesante per Telegram (max 20 MB).\n\n💡 Lo carichi dalla chat web: https://cervellone-5poc.vercel.app')
+        return NextResponse.json({ ok: true })
+      }
+
+      const ext = (message.document.file_name || '').split('.').pop()?.toLowerCase() || ''
+      const supported = ['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'doc', 'docx']
+      if (!supported.includes(ext)) {
+        await sendTelegramMessage(chatId, `⚠️ Il formato .${ext} non è supportato.\n\n💡 Formati accettati: PDF, immagini (JPG/PNG), Word (DOC/DOCX)`)
+        return NextResponse.json({ ok: true })
+      }
+
+      const fileData = await downloadTelegramFile(message.document.file_id)
+      if (!fileData) {
+        await sendTelegramMessage(chatId, '⚠️ Non sono riuscito a scaricare il file. Puo riprovare?')
+        return NextResponse.json({ ok: true })
+      }
+
+      const result = await buildFileBlocks(fileData)
+      fileBlocks = result.blocks
+      fileDescription = result.description
+
+      if (fileBlocks.length === 0 && fileDescription.includes('errore')) {
+        await sendTelegramMessage(chatId, `⚠️ Non sono riuscito a leggere ${fileDescription}.\n\n💡 Provi a convertirlo in PDF e rimandarlo.`)
+        return NextResponse.json({ ok: true })
+      }
+    }
+
+    // Foto — Telegram manda un array di risoluzioni, prendiamo la più grande
+    if (message.photo && message.photo.length > 0) {
+      await sendTyping(chatId)
+      const largestPhoto = message.photo[message.photo.length - 1]
+      const fileData = await downloadTelegramFile(largestPhoto.file_id)
+      if (fileData) {
+        const result = await buildFileBlocks(fileData)
+        fileBlocks = result.blocks
+        fileDescription = result.description
+      }
+    }
+
+    // Se non c'è né testo né file, ignora
+    if (!userText && fileBlocks.length === 0) {
       return NextResponse.json({ ok: true })
+    }
+
+    // Default text se c'è solo un file senza caption
+    if (!userText && fileBlocks.length > 0) {
+      userText = `Analizza questo file: ${fileDescription}`
     }
 
     // Verifica autorizzazione
@@ -242,9 +357,17 @@ export async function POST(request: NextRequest) {
       .map(m => ({ role: m.role, content: m.content }))
 
     // Se la storia è vuota o non finisce con l'ultimo messaggio, aggiungi
-    if (history.length === 0 || history[history.length - 1].content !== userText) {
+    if (fileBlocks.length > 0) {
+      // Messaggio con file: content è un array di blocks
+      const contentBlocks = [...fileBlocks, { type: 'text', text: userText }]
+      if (history.length === 0 || history[history.length - 1].content !== userText) {
+        history.push({ role: 'user', content: contentBlocks })
+      }
+    } else if (history.length === 0 || history[history.length - 1].content !== userText) {
       history.push({ role: 'user', content: userText })
     }
+
+    const hasFiles = fileBlocks.length > 0
 
     // Assicura che inizi con user
     if (history.length > 0 && history[0].role !== 'user') {
@@ -272,18 +395,20 @@ export async function POST(request: NextRequest) {
       // Rinnova typing ogni iterazione
       await sendTyping(chatId)
 
-      const response = await client.messages.create({
-        model: 'claude-sonnet-4-6',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const callParams: any = {
+        model: hasFiles ? 'claude-opus-4-6' : 'claude-sonnet-4-6',
         max_tokens: 16000,
         system: fullSystemPrompt,
         messages: currentMessages,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        tools: tools as any,
-        thinking: {
-          type: 'enabled',
-          budget_tokens: 5000,
-        },
-      })
+        tools,
+      }
+      // Thinking incompatibile con file allegati (stessa logica della chat web)
+      if (!hasFiles) {
+        callParams.thinking = { type: 'enabled', budget_tokens: 5000 }
+      }
+
+      const response = await client.messages.create(callParams)
 
       // Estrai testo dalla risposta
       for (const block of response.content) {
@@ -325,6 +450,13 @@ export async function POST(request: NextRequest) {
         role: 'assistant',
         content: fullResponse,
       })
+
+      // Se c'erano file, salva anche l'analisi come conoscenza persistente
+      if (hasFiles && fullResponse.length > 200) {
+        const knowledgeContent = `[Analisi file "${fileDescription}" da Telegram]\n\nDomanda: ${userText}\n\nAnalisi:\n${fullResponse.slice(0, 10000)}`
+        saveMessageWithEmbedding(conversationId, 'knowledge', knowledgeContent).catch(() => {})
+        console.log('TELEGRAM MEMORY: salvata analisi file in memoria persistente')
+      }
     }
 
     // Manda risposta su Telegram

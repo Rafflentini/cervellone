@@ -489,14 +489,30 @@ export default function ChatPage() {
     }
 
     try {
+      const jsonBody = JSON.stringify({ messages: apiMessages, conversationId: convId })
+      const bodySizeMB = (new Blob([jsonBody]).size / (1024 * 1024)).toFixed(1)
+      console.log(`CHAT body size: ${bodySizeMB} MB`)
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: apiMessages, conversationId: convId }),
+        body: jsonBody,
       })
       if (!res.ok) {
         if (res.status === 401) { router.push('/login'); return }
-        throw new Error()
+        if (res.status === 413) {
+          const fileCount = pendingFiles.length
+          throw new Error(
+            `I file sono troppo pesanti (${bodySizeMB} MB in totale, limite ~35 MB).\n\n` +
+            `💡 Cosa fare:\n` +
+            (fileCount > 1
+              ? `• Carica i file uno alla volta — ogni analisi viene salvata in memoria\n`
+              : `• Riduci la dimensione del file (comprimi il PDF o abbassa la risoluzione)\n`) +
+            `• Per i PDF pesanti, usa la funzione "Carica progetto ZIP" che li elabora in background`
+          )
+        }
+        const errorText = await res.text().catch(() => '')
+        throw new Error(errorText || `Errore server (${res.status})`)
       }
       const reader = res.body!.getReader()
       const decoder = new TextDecoder()
@@ -523,8 +539,20 @@ export default function ChatPage() {
         }).catch(() => {})
       }
       await loadConversations()
-    } catch {
-      setMessages([...newMessages, { role: 'assistant', text: '⚠️ Errore di connessione. Riprova.' }])
+    } catch (err) {
+      console.error('CHAT errore:', err)
+      const fileCount = userMsg.files?.length || 0
+      let errorMessage: string
+      if (err instanceof Error && err.message) {
+        errorMessage = `⚠️ ${err.message}`
+      } else if (err instanceof TypeError && err.message?.includes('fetch')) {
+        errorMessage = '⚠️ Connessione persa.\n\n💡 Cosa fare:\n• Controlla la connessione internet\n• Se stavi caricando file pesanti, prova uno alla volta'
+      } else {
+        errorMessage = fileCount > 0
+          ? `⚠️ Errore durante l'analisi dei file.\n\n💡 Cosa fare:\n• Carica i file uno alla volta — ogni analisi viene salvata in memoria\n• Per i PDF, prova la funzione "Carica progetto ZIP"\n• Se il file è molto grande, prova a comprimerlo prima`
+          : '⚠️ Errore di connessione. Riprova.'
+      }
+      setMessages([...newMessages, { role: 'assistant', text: errorMessage }])
     } finally {
       setLoading(false)
     }
