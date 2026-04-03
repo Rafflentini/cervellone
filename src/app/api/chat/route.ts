@@ -171,22 +171,6 @@ export async function POST(request: NextRequest) {
   const body = await request.json()
   const { messages: rawMessages, conversationId } = body
 
-  // DEBUG: log cosa arriva dal frontend
-  console.log('CHAT ricevuto:', rawMessages?.length, 'messaggi')
-  for (const m of (rawMessages || [])) {
-    if (Array.isArray(m?.content)) {
-      const types = m.content.map((b: { type: string; source?: { data?: string } }) => {
-        if (b.type === 'document' || b.type === 'image') {
-          return `${b.type}(data: ${b.source?.data ? b.source.data.length + ' chars' : 'VUOTO'})`
-        }
-        return b.type
-      })
-      console.log(`  → ${m.role}: [${types.join(', ')}]`)
-    } else {
-      console.log(`  → ${m.role}: "${String(m?.content).slice(0, 80)}"`)
-    }
-  }
-
   // Filtra messaggi vuoti o malformati
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const messages = (rawMessages as any[]).filter((m: any) => {
