@@ -214,6 +214,28 @@ export async function POST(request: NextRequest) {
 
     const chatId = message.chat.id
 
+    // Deduplicazione: Telegram rimanda il webhook se la risposta è lenta.
+    // Usiamo message_id come chiave per evitare elaborazioni duplicate.
+    const msgId = message.message_id
+    if (msgId) {
+      const { data: existing } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('conversation_id', `telegram_${chatId}`)
+        .eq('content', `__dedup_${msgId}__`)
+        .limit(1)
+      if (existing && existing.length > 0) {
+        console.log(`TELEGRAM: messaggio ${msgId} già in elaborazione, skip duplicato`)
+        return NextResponse.json({ ok: true })
+      }
+      // Segna come "in elaborazione" SUBITO, prima di qualsiasi lavoro
+      await supabase.from('messages').insert({
+        conversation_id: `telegram_${chatId}`,
+        role: 'system',
+        content: `__dedup_${msgId}__`,
+      })
+    }
+
     // Gestisci vocali
     let userText = message.text || message.caption || ''
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
