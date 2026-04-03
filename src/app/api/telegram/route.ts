@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { searchMemory, saveMessageWithEmbedding } from '@/lib/memory'
 import { CUSTOM_TOOLS, executeTool } from '@/lib/tools'
 import { supabase } from '@/lib/supabase'
+import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 
 const client = new Anthropic()
 
@@ -22,7 +23,7 @@ Hai accesso a:
 - Un database di conoscenza che contiene documenti, analisi e conversazioni passate dell'Ingegnere. I dati rilevanti vengono caricati automaticamente qui sotto nella sezione "La tua memoria". Se contiene informazioni, USALE per rispondere.
 
 IMPORTANTE — Generazione documenti:
-Puoi generare QUALSIASI documento. Scrivi il contenuto formattato e l'Ingegnere potrà scaricarlo dalla chat web. NON dire mai che non puoi generare file.
+Quando generi documenti strutturati (preventivi, computi, relazioni), usa il blocco ~~~document con HTML professionale, esattamente come nella chat web. Il sistema convertira automaticamente in formato leggibile per Telegram. NON dire mai che non puoi generare file.
 
 Stai comunicando via Telegram. Rispondi in modo conciso e diretto, adatto a messaggi chat.
 Usa la formattazione Telegram (Markdown): *grassetto*, _corsivo_, \`codice\`.
@@ -464,7 +465,43 @@ export async function POST(request: NextRequest) {
 
     // Manda risposta su Telegram
     console.log('TELEGRAM risposta da inviare, lunghezza:', fullResponse.length, 'anteprima:', fullResponse.slice(0, 100))
-    await sendTelegramMessage(chatId, fullResponse || 'Non sono riuscito a elaborare una risposta.')
+
+    const responseBlocks = parseDocumentBlocks(fullResponse)
+    let sentSomething = false
+    for (const block of responseBlocks) {
+      if (block.type === 'document') {
+        // Converti HTML in testo formattato per Telegram
+        const docText = block.content
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+          .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '\n*$1*\n')
+          .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '\n*$1*\n')
+          .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '\n_$1_\n')
+          .replace(/<th[^>]*>(.*?)<\/th>/gi, '*$1* | ')
+          .replace(/<td[^>]*>(.*?)<\/td>/gi, '$1 | ')
+          .replace(/<tr[^>]*>/gi, '\n')
+          .replace(/<\/tr>/gi, '')
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<p[^>]*>(.*?)<\/p>/gi, '$1\n')
+          .replace(/<li[^>]*>(.*?)<\/li>/gi, '\u2022 $1\n')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&euro;/g, '\u20AC')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim()
+        await sendTelegramMessage(chatId, '\uD83D\uDCC4 *DOCUMENTO GENERATO*\n\n' + docText)
+        await sendTelegramMessage(chatId, '\uD83D\uDCA1 Per la versione completa con grafica, apra la chat web:\nhttps://cervellone-5poc.vercel.app')
+        sentSomething = true
+      } else if (block.content) {
+        await sendTelegramMessage(chatId, block.content)
+        sentSomething = true
+      }
+    }
+    if (!sentSomething) {
+      await sendTelegramMessage(chatId, fullResponse || 'Non sono riuscito a elaborare una risposta.')
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {
