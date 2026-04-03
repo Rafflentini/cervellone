@@ -875,7 +875,7 @@ export default function ChatPage() {
       )}
 
       {/* Area chat principale */}
-      <div className={`flex flex-col min-w-0 ${previewHtml ? 'flex-1' : 'flex-1'}`} style={previewHtml ? { flex: '1 1 50%' } : undefined}>
+      <div className={`flex flex-col min-w-0 flex-1`} style={previewHtml ? { flex: '0 0 35%', minWidth: '320px' } : undefined}>
         {/* Header */}
         <header className="bg-gray-900 text-white px-4 py-3 flex items-center justify-between shadow-md flex-shrink-0">
           <div className="flex items-center gap-3">
@@ -1097,7 +1097,7 @@ export default function ChatPage() {
 
       {/* Pannello anteprima documento — desktop */}
       {previewHtml && (
-        <div className="hidden md:flex" style={{ flex: '1 1 50%', maxWidth: '55%' }}>
+        <div className="hidden md:flex" style={{ flex: '1 1 65%', maxWidth: '70%' }}>
           <DocumentPreviewPanel
             html={previewHtml}
             onClose={() => setPreviewHtml(null)}

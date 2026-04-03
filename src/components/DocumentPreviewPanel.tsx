@@ -11,10 +11,15 @@ export default function DocumentPreviewPanel({ html, onClose }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   const handlePrint = useCallback(() => {
-    const iframe = iframeRef.current
-    if (!iframe?.contentWindow) return
-    iframe.contentWindow.print()
-  }, [])
+    // Apri il documento in una nuova finestra per la stampa (il sandbox dell'iframe blocca window.print)
+    const printWindow = window.open('', '_blank')
+    if (!printWindow) return
+    printWindow.document.write(html)
+    printWindow.document.close()
+    printWindow.onload = () => {
+      printWindow.print()
+    }
+  }, [html])
 
   const handleDownloadHtml = useCallback(() => {
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
