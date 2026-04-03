@@ -488,6 +488,7 @@ export default function ChatPage() {
         if (res.status === 401) { router.push('/login'); return }
         if (res.status === 413) {
           const fileCount = pendingFiles.length
+          const bodySizeMB = (new Blob([jsonBody]).size / (1024 * 1024)).toFixed(1)
           throw new Error(
             `I file sono troppo pesanti (${bodySizeMB} MB in totale, limite ~35 MB).\n\n` +
             `💡 Cosa fare:\n` +
