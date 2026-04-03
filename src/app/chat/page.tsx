@@ -886,7 +886,7 @@ export default function ChatPage() {
         onClosePanel={() => setPreviewHtml(null)}
       >
       {/* Area chat principale */}
-      <div className="flex flex-col min-w-0 flex-1">
+      <div className="flex flex-col min-w-0 h-full">
         {/* Header */}
         <header className="bg-gray-900 text-white px-4 py-3 flex items-center justify-between shadow-md flex-shrink-0">
           <div className="flex items-center gap-3">
