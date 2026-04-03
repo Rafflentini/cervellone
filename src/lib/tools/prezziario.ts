@@ -68,3 +68,58 @@ export async function salvaPrezziario(entry: {
     fonte: entry.fonte || `Prezziario ${entry.regione} ${entry.anno}`,
   })
 }
+
+/**
+ * Check how many prezziario entries exist for a region/year.
+ * Tries current year, then year-1, then year-2.
+ * Returns the first year that has data, or count=0 if none found.
+ */
+export async function countPrezziario(
+  regione: string,
+  anno?: number,
+): Promise<{ count: number; regione: string; anno: number }> {
+  const baseAnno = anno || new Date().getFullYear()
+
+  for (const y of [baseAnno, baseAnno - 1, baseAnno - 2]) {
+    const { count, error } = await supabase
+      .from('prezziario')
+      .select('*', { count: 'exact', head: true })
+      .eq('regione', regione.toLowerCase())
+      .eq('anno', y)
+
+    if (!error && count !== null && count > 0) {
+      return { count, regione: regione.toLowerCase(), anno: y }
+    }
+  }
+
+  return { count: 0, regione: regione.toLowerCase(), anno: baseAnno }
+}
+
+/**
+ * List all regions with prezziario data, grouped by regione+anno with row count.
+ */
+export async function listRegioniDisponibili(): Promise<
+  Array<{ regione: string; anno: number; count: number }>
+> {
+  const { data, error } = await supabase
+    .from('prezziario')
+    .select('regione, anno')
+
+  if (error || !data) return []
+
+  // Group client-side by regione+anno and count rows
+  const map = new Map<string, { regione: string; anno: number; count: number }>()
+  for (const row of data) {
+    const key = `${row.regione}__${row.anno}`
+    const existing = map.get(key)
+    if (existing) {
+      existing.count++
+    } else {
+      map.set(key, { regione: row.regione, anno: row.anno, count: 1 })
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) =>
+    a.regione === b.regione ? b.anno - a.anno : a.regione.localeCompare(b.regione),
+  )
+}
