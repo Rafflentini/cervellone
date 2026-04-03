@@ -823,30 +823,33 @@ export default function ChatPage() {
   return (
     <div className="flex h-full bg-gray-50">
       {/* Sidebar conversazioni */}
-      <div className={`fixed inset-y-0 left-0 z-40 w-72 bg-gray-900 text-white transform transition-transform duration-200 ${showSidebar ? 'translate-x-0' : '-translate-x-full'} md:relative md:translate-x-0 md:flex md:flex-col`}>
-        <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <h2 className="font-bold text-sm">Conversazioni</h2>
-          <button onClick={newChat} className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1.5 rounded-lg transition-colors">
+      <div className={`fixed inset-y-0 left-0 z-40 w-72 bg-white border-r border-gray-200 text-gray-800 transform transition-transform duration-200 ${showSidebar ? 'translate-x-0' : '-translate-x-full'} md:relative md:translate-x-0 md:flex md:flex-col`}>
+        <div className="flex items-center justify-between p-4 border-b border-gray-100">
+          <div className="flex items-center gap-2">
+            <CervelloneLogo size={28} />
+            <span className="font-bold text-sm text-gray-800">Cervellone</span>
+          </div>
+          <button onClick={newChat} className="border border-gray-300 hover:bg-gray-100 text-gray-700 text-xs px-3 py-1.5 rounded-lg transition-colors">
             + Nuova
           </button>
         </div>
         <div className="flex-1 overflow-y-auto">
           {conversations.length === 0 && (
-            <p className="text-gray-500 text-xs text-center mt-8 px-4">Nessuna conversazione.<br />Inizia a scrivere!</p>
+            <p className="text-gray-400 text-xs text-center mt-8 px-4">Nessuna conversazione.<br />Inizia a scrivere!</p>
           )}
           {conversations.map(conv => (
             <div
               key={conv.id}
               onClick={() => openConversation(conv)}
-              className={`group w-full text-left px-4 py-3 border-b border-gray-800 hover:bg-gray-800 transition-colors cursor-pointer flex items-center ${currentConvId === conv.id ? 'bg-gray-800' : ''}`}
+              className={`group w-full text-left px-3 py-3 border-b border-gray-100 hover:bg-gray-100 transition-colors cursor-pointer flex items-center rounded-lg mx-1 ${currentConvId === conv.id ? 'bg-blue-50 border-l-2 border-l-blue-500' : ''}`}
             >
               <div className="flex-1 min-w-0">
-                <p className="text-sm truncate">{conv.title}</p>
-                <p className="text-xs text-gray-500 mt-0.5">{formatDate(conv.updated_at)}</p>
+                <p className="text-sm truncate text-gray-800">{conv.title}</p>
+                <p className="text-xs text-gray-400 mt-0.5">{formatDate(conv.updated_at)}</p>
               </div>
               <button
                 onClick={(e) => renameConversation(conv.id, conv.title, e)}
-                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-blue-400 p-1 flex-shrink-0 transition-opacity"
+                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-blue-500 p-1 flex-shrink-0 transition-opacity"
                 title="Rinomina"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -855,7 +858,7 @@ export default function ChatPage() {
               </button>
               <button
                 onClick={(e) => deleteConversation(conv.id, e)}
-                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 p-1 flex-shrink-0 transition-opacity"
+                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-500 p-1 flex-shrink-0 transition-opacity"
                 title="Cancella"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -865,8 +868,8 @@ export default function ChatPage() {
             </div>
           ))}
         </div>
-        <div className="p-4 border-t border-gray-700">
-          <button onClick={logout} className="text-gray-400 hover:text-white text-sm transition-colors w-full text-left">Esci</button>
+        <div className="p-4 border-t border-gray-100">
+          <button onClick={logout} className="text-gray-500 hover:text-gray-700 text-sm transition-colors w-full text-left">Esci</button>
         </div>
       </div>
 
