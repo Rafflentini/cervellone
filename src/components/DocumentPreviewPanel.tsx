@@ -11,14 +11,28 @@ export default function DocumentPreviewPanel({ html, onClose }: Props) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   const handlePrint = useCallback(() => {
-    // Apri il documento in una nuova finestra per la stampa (il sandbox dell'iframe blocca window.print)
+    // Apri il documento in una nuova finestra per la stampa
     const printWindow = window.open('', '_blank')
-    if (!printWindow) return
+    if (!printWindow) {
+      // Popup bloccato — fallback: scarica HTML
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `documento_${new Date().toISOString().slice(0, 10)}.html`
+      a.click()
+      URL.revokeObjectURL(url)
+      return
+    }
     printWindow.document.write(html)
     printWindow.document.close()
     printWindow.onload = () => {
       printWindow.print()
     }
+    // Fallback per browser mobile dove onload non scatta
+    setTimeout(() => {
+      try { printWindow.print() } catch { /* already printed or closed */ }
+    }, 1000)
   }, [html])
 
   const handleDownloadHtml = useCallback(() => {

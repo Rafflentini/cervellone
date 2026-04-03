@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import crypto from 'crypto'
 import { searchMemory, saveMessageWithEmbedding } from '@/lib/memory'
 import { CUSTOM_TOOLS, executeTool } from '@/lib/tools'
 import { supabase } from '@/lib/supabase'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 
 const client = new Anthropic()
+
+// Genera un UUID deterministico da un chat ID Telegram
+// Stessa chat → stesso UUID, sempre
+function chatIdToUuid(chatId: number): string {
+  const hash = crypto.createHash('md5').update(`telegram_${chatId}`).digest('hex')
+  // Formatta come UUID v4-like: 8-4-4-4-12
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`
+}
 
 const TELEGRAM_API = 'https://api.telegram.org/bot'
 
@@ -335,7 +344,7 @@ export async function POST(request: NextRequest) {
 
     // Comando /nuova — reset conversazione
     if (userText === '/nuova') {
-      const convId = `telegram_${chatId}`
+      const convId = chatIdToUuid(chatId)
       await supabase.from('messages').delete().eq('conversation_id', convId)
       await sendTelegramMessage(chatId, 'Conversazione azzerata. Come posso aiutarLa?')
       return NextResponse.json({ ok: true })
@@ -348,8 +357,8 @@ export async function POST(request: NextRequest) {
     const memoryContext = await searchMemory(userText)
     const fullSystemPrompt = SYSTEM_PROMPT + memoryContext
 
-    // Conversazione Telegram — trova o crea
-    const conversationId = `telegram_${chatId}`
+    // Conversazione Telegram — trova o crea (UUID deterministico da chat ID)
+    const conversationId = chatIdToUuid(chatId)
 
     // Crea conversazione se non esiste
     const { data: existingConv } = await supabase
@@ -359,18 +368,20 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (!existingConv) {
-      await supabase.from('conversations').insert({
+      const { error: convError } = await supabase.from('conversations').insert({
         id: conversationId,
         title: 'Chat Telegram',
       })
+      if (convError) console.error('TELEGRAM: errore creazione conversazione:', convError.message)
     }
 
     // Salva messaggio utente nella tabella messages
-    await supabase.from('messages').insert({
+    const { error: msgError } = await supabase.from('messages').insert({
       conversation_id: conversationId,
       role: 'user',
       content: userText,
     })
+    if (msgError) console.error('TELEGRAM: errore salvataggio messaggio utente:', msgError.message)
 
     // Salva embedding in background
     saveMessageWithEmbedding(conversationId, 'user', userText).catch(() => {})

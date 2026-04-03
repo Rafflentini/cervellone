@@ -21,8 +21,25 @@ export default function DocViewerPage() {
   }, [id])
 
   const handlePrint = useCallback(() => {
-    iframeRef.current?.contentWindow?.print()
-  }, [])
+    if (!html) return
+    // Apri una nuova finestra con l'HTML — funziona su mobile e desktop
+    const printWindow = window.open('', '_blank')
+    if (!printWindow) {
+      // Fallback: prova iframe print (desktop)
+      iframeRef.current?.contentWindow?.print()
+      return
+    }
+    printWindow.document.write(html)
+    printWindow.document.close()
+    // Aspetta che le risorse siano caricate prima di stampare
+    printWindow.onload = () => {
+      printWindow.print()
+    }
+    // Fallback se onload non scatta (alcuni browser mobile)
+    setTimeout(() => {
+      try { printWindow.print() } catch { /* already printed */ }
+    }, 1000)
+  }, [html])
 
   if (error) {
     return (
