@@ -476,26 +476,8 @@ export default function ChatPage() {
       content: buildApiContent(m, idx === lastIdx && m.role === 'user'),
     }))
 
-    // DEBUG: log cosa viene mandato all'API
-    for (const m of apiMessages) {
-      if (Array.isArray(m.content)) {
-        const types = (m.content as Record<string, unknown>[]).map((b) => {
-          if (b.type === 'document' || b.type === 'image') {
-            const src = b.source as Record<string, unknown> | undefined
-            return `${b.type}(data: ${src?.data ? String(src.data).length + ' chars' : 'VUOTO!'})`
-          }
-          return b.type
-        })
-        console.log(`SEND → ${m.role}: [${types.join(', ')}]`)
-      } else {
-        console.log(`SEND → ${m.role}: "${String(m.content).slice(0, 80)}"`)
-      }
-    }
-
     try {
       const jsonBody = JSON.stringify({ messages: apiMessages, conversationId: convId })
-      const bodySizeMB = (new Blob([jsonBody]).size / (1024 * 1024)).toFixed(1)
-      console.log(`CHAT body size: ${bodySizeMB} MB`)
 
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -917,15 +899,15 @@ export default function ChatPage() {
           )}
 
           {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-center gap-4 py-16">
+            <div className="flex flex-col items-center justify-center h-full text-center gap-4 py-16 max-w-3xl mx-auto">
               <CervelloneLogo size={80} />
               <div>
-                <p className="font-semibold text-gray-600 text-lg">Ciao Raffaele!</p>
+                <p className="font-semibold text-gray-700 text-xl">Ciao Raffaele!</p>
                 <p className="text-sm text-gray-400 mt-1">Come posso aiutarti oggi?</p>
-                <div className="mt-4 grid grid-cols-2 gap-2 text-xs max-w-xs mx-auto">
+                <div className="mt-6 grid grid-cols-2 gap-3 max-w-md mx-auto">
                   {['Genera un POS cantiere', 'Aiutami con un computo metrico', 'Scrivi un post per i social', 'Calcola un preventivo ponteggi'].map(s => (
                     <button key={s} onClick={() => setInput(s)}
-                      className="bg-white border border-gray-200 rounded-xl px-3 py-2 hover:bg-blue-50 hover:border-blue-200 transition-colors text-gray-600 text-left">
+                      className="bg-white border border-gray-200 rounded-xl px-4 py-3 hover:border-blue-300 hover:bg-blue-50 transition-colors text-gray-600 text-left text-sm">
                       {s}
                     </button>
                   ))}
