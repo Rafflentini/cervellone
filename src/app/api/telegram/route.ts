@@ -514,7 +514,7 @@ export async function POST(request: NextRequest) {
         // Salva il documento HTML su Supabase per generare un link diretto
         let docUrl = 'https://cervellone-5poc.vercel.app'
         try {
-          const { data: savedDoc } = await supabase
+          const { data: savedDoc, error: docError } = await supabase
             .from('documents')
             .insert({
               name: title,
@@ -525,8 +525,11 @@ export async function POST(request: NextRequest) {
             })
             .select('id')
             .single()
-          if (savedDoc?.id) {
+          if (docError) {
+            console.error('TELEGRAM: errore Supabase salvataggio documento:', docError.message, docError.details)
+          } else if (savedDoc?.id) {
             docUrl = `https://cervellone-5poc.vercel.app/doc/${savedDoc.id}`
+            console.log('TELEGRAM: documento salvato con id:', savedDoc.id)
           }
         } catch (e) {
           console.error('TELEGRAM: errore salvataggio documento:', e)
