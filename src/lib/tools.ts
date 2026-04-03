@@ -1,6 +1,8 @@
 // Tool custom per il Cervellone
 
 import { executeCalcolaPreventivo, PreventivoInput } from './tools/preventivo'
+import { executeScaricaPrezziario } from './tools/scarica-prezziario'
+import { countPrezziario, listRegioniDisponibili } from './tools/prezziario'
 
 export const CUSTOM_TOOLS = [
   {
@@ -78,6 +80,46 @@ export const CUSTOM_TOOLS = [
       required: ['committente', 'cantiere', 'voci'],
     },
   },
+  {
+    name: 'verifica_prezziario',
+    description: 'Verifica se hai il prezziario regionale in memoria per una data regione. Usa SEMPRE questo tool PRIMA di fare un preventivo per controllare se hai i prezzi reali. Se il risultato è 0 voci, devi prima scaricare il prezziario con scarica_prezziario.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        regione: {
+          type: 'string',
+          description: 'Nome della regione da verificare',
+        },
+        anno: {
+          type: 'number',
+          description: 'Anno del prezziario (opzionale)',
+        },
+      },
+      required: ['regione'],
+    },
+  },
+  {
+    name: 'scarica_prezziario',
+    description: 'Scarica e memorizza un prezziario regionale da un URL (PDF o CSV). Prima cerca il prezziario online con web_search, trova il link diretto al file, poi usa questo tool per scaricarlo e salvarlo in memoria permanente.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        regione: {
+          type: 'string',
+          description: 'Nome della regione',
+        },
+        anno: {
+          type: 'number',
+          description: 'Anno del prezziario (opzionale)',
+        },
+        url: {
+          type: 'string',
+          description: 'URL diretto al file PDF o CSV del prezziario',
+        },
+      },
+      required: ['regione', 'url'],
+    },
+  },
 ]
 
 // Leggi contenuto di una pagina web
@@ -128,6 +170,23 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       return executeReadWebpage(input.url as string)
     case 'calcola_preventivo':
       return executeCalcolaPreventivo(input as unknown as PreventivoInput)
+    case 'verifica_prezziario': {
+      const regione = input.regione as string
+      const anno = input.anno as number | undefined
+      const count = await countPrezziario(regione, anno)
+      if (count > 0) {
+        return `Prezziario disponibile per ${regione}${anno ? ` (${anno})` : ''}: ${count} voci in memoria.`
+      }
+      const regioni = await listRegioniDisponibili()
+      if (regioni.length > 0) {
+        return `Nessun prezziario per ${regione}. Regioni disponibili: ${regioni.join(', ')}.`
+      }
+      return `Nessun prezziario disponibile in memoria. Usa scarica_prezziario per scaricarne uno.`
+    }
+    case 'scarica_prezziario': {
+      const result = await executeScaricaPrezziario(input as { regione: string; anno?: number; url: string })
+      return JSON.stringify(result)
+    }
     default:
       return `Tool "${name}" non riconosciuto.`
   }
