@@ -901,7 +901,7 @@ export default function ChatPage() {
 
         {/* Messages + drag area */}
         <div
-          className={`relative flex-1 overflow-y-auto px-4 py-4 space-y-4 transition-colors ${isDragOver ? 'bg-blue-50' : ''}`}
+          className={`relative flex-1 overflow-y-auto px-4 py-6 space-y-6 transition-colors ${isDragOver ? 'bg-blue-50' : ''}`}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
@@ -936,76 +936,95 @@ export default function ChatPage() {
           )}
 
           {messages.map((msg, i) => (
-            <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`rounded-2xl text-sm leading-relaxed ${
-                msg.role === 'user'
-                  ? 'max-w-[80%] bg-blue-600 text-white rounded-br-sm px-4 py-3'
-                  : 'max-w-[92%] bg-white text-gray-800 shadow-sm border border-gray-100 rounded-bl-sm px-5 py-4'
-              }`}>
-                {msg.files && msg.files.length > 0 && (
-                  <div className="mb-2 flex flex-wrap gap-2">
-                    {msg.files.map((f, fi) =>
-                      f.isImage ? (
-                        <img key={fi} src={f.preview} alt={f.name} className="max-h-40 max-w-full rounded-lg object-cover" />
-                      ) : (
-                        <div key={fi} className="flex items-center gap-1 bg-white/20 rounded-lg px-2 py-1 text-xs">
-                          <span>{f.isPdf ? '📄' : '📝'}</span>
-                          <span className="truncate max-w-[120px]">{f.name}</span>
-                        </div>
-                      )
-                    )}
+            <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} max-w-3xl mx-auto`}>
+              {/* Avatar assistente */}
+              {msg.role === 'assistant' && (
+                <div className="flex-shrink-0 mr-3 mt-1">
+                  <div className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center">
+                    <CervelloneLogo size={18} />
                   </div>
+                </div>
+              )}
+              <div className={`${
+                msg.role === 'user'
+                  ? 'max-w-[75%]'
+                  : 'max-w-[85%] flex-1 min-w-0'
+              }`}>
+                {/* Label "Tu" per messaggi utente */}
+                {msg.role === 'user' && (
+                  <p className="text-xs text-gray-500 font-medium mb-1 text-right">Tu</p>
                 )}
-                {msg.role === 'assistant' ? (
-                  <>
-                    {parseDocumentBlocks(msg.text).map((block, bi) =>
-                      block.type === 'document' ? (
-                        <button
-                          key={bi}
-                          onClick={() => setPreviewHtml(block.content)}
-                          className="my-2 w-full text-left bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-4 hover:from-blue-100 hover:to-indigo-100 transition-colors group"
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center flex-shrink-0">
-                              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                <div className={`rounded-2xl text-sm leading-relaxed ${
+                  msg.role === 'user'
+                    ? 'bg-gray-100 text-gray-800 rounded-br-sm px-4 py-3'
+                    : 'text-gray-800 px-1 py-1'
+                }`}>
+                  {msg.files && msg.files.length > 0 && (
+                    <div className={`mb-2 flex flex-wrap gap-2 ${msg.role === 'user' ? '' : 'px-3'}`}>
+                      {msg.files.map((f, fi) =>
+                        f.isImage ? (
+                          <img key={fi} src={f.preview} alt={f.name} className="max-h-40 max-w-full rounded-lg object-cover" />
+                        ) : (
+                          <div key={fi} className={`flex items-center gap-1 rounded-lg px-2 py-1 text-xs ${
+                            msg.role === 'user' ? 'bg-gray-200/60 text-gray-600' : 'bg-gray-100 text-gray-600'
+                          }`}>
+                            <span>{f.isPdf ? '📄' : '📝'}</span>
+                            <span className="truncate max-w-[120px]">{f.name}</span>
+                          </div>
+                        )
+                      )}
+                    </div>
+                  )}
+                  {msg.role === 'assistant' ? (
+                    <>
+                      {parseDocumentBlocks(msg.text).map((block, bi) =>
+                        block.type === 'document' ? (
+                          <button
+                            key={bi}
+                            onClick={() => setPreviewHtml(block.content)}
+                            className="my-2 w-full text-left bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-4 hover:from-blue-100 hover:to-indigo-100 transition-colors group"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center flex-shrink-0">
+                                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                              </div>
+                              <div>
+                                <p className="text-sm font-semibold text-blue-800">Documento generato</p>
+                                <p className="text-xs text-blue-500 group-hover:text-blue-600">Clicca per aprire anteprima</p>
+                              </div>
+                              <svg className="w-5 h-5 text-blue-400 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                               </svg>
                             </div>
-                            <div>
-                              <p className="text-sm font-semibold text-blue-800">Documento generato</p>
-                              <p className="text-xs text-blue-500 group-hover:text-blue-600">Clicca per aprire anteprima</p>
-                            </div>
-                            <svg className="w-5 h-5 text-blue-400 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                            </svg>
-                          </div>
-                        </button>
-                      ) : (
-                        <MarkdownRenderer key={bi} content={block.content} />
-                      )
-                    )}
-                  </>
-                ) : (
-                  <span className="whitespace-pre-wrap">{msg.text}</span>
-                )}
-                {msg.role === 'assistant' && loading && i === messages.length - 1 && msg.text === '' && (
-                  <span className="inline-flex gap-1">
-                    <span className="animate-bounce">•</span>
-                    <span className="animate-bounce [animation-delay:0.1s]">•</span>
-                    <span className="animate-bounce [animation-delay:0.2s]">•</span>
-                  </span>
-                )}
-                {/* Bottoni scarica testo — solo su risposte assistente completate e con testo sostanzioso */}
-                {msg.role === 'assistant' && msg.text.length > 200 && !(loading && i === messages.length - 1) && (
-                  <div className="flex flex-wrap gap-2 mt-3 pt-2 border-t border-gray-100">
-                    <button onClick={() => downloadAsFile(msg.text, 'txt', i)} className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded-lg transition-colors flex items-center gap-1">
-                      TXT
-                    </button>
-                    <button onClick={() => downloadAsFile(msg.text, 'md', i)} className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded-lg transition-colors flex items-center gap-1">
-                      MD
-                    </button>
-                  </div>
-                )}
+                          </button>
+                        ) : (
+                          <MarkdownRenderer key={bi} content={block.content} />
+                        )
+                      )}
+                    </>
+                  ) : (
+                    <span className="whitespace-pre-wrap">{msg.text}</span>
+                  )}
+                  {msg.role === 'assistant' && loading && i === messages.length - 1 && msg.text === '' && (
+                    <span className="inline-flex gap-1">
+                      <span className="animate-bounce">•</span>
+                      <span className="animate-bounce [animation-delay:0.1s]">•</span>
+                      <span className="animate-bounce [animation-delay:0.2s]">•</span>
+                    </span>
+                  )}
+                  {msg.role === 'assistant' && msg.text.length > 200 && !(loading && i === messages.length - 1) && (
+                    <div className="flex flex-wrap gap-2 mt-3 pt-2 border-t border-gray-100">
+                      <button onClick={() => downloadAsFile(msg.text, 'txt', i)} className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded-lg transition-colors flex items-center gap-1">
+                        TXT
+                      </button>
+                      <button onClick={() => downloadAsFile(msg.text, 'md', i)} className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded-lg transition-colors flex items-center gap-1">
+                        MD
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           ))}
