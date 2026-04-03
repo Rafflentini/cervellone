@@ -520,9 +520,9 @@ export async function POST(request: NextRequest) {
             .insert({
               name: title,
               content: block.content,
-              conversation_id: conversationId,
+              conversation_id: null,
               type: 'html',
-              metadata: { source: 'telegram', chatId, savedAt: new Date().toISOString() },
+              metadata: { source: 'telegram', chatId, conversationId, savedAt: new Date().toISOString() },
             })
             .select('id')
             .single()
