@@ -287,7 +287,8 @@ export async function POST(request: NextRequest) {
     // Assicura che inizi con user
     if (history.length > 0 && history[0].role !== 'user') history.shift()
 
-    const hasFiles = fileBlocks.some((b: { type: string }) => b.type === 'image' || b.type === 'document')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hasFiles = fileBlocks.some((b: any) => b.type === 'image' || b.type === 'document')
 
     // UNA chiamata a Claude, max 2 iterazioni tool use
     const tools = [{ type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 }]
