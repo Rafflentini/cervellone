@@ -1,33 +1,19 @@
-// Tool custom per il Cervellone
+// Tool custom per il Cervellone — SEMPLIFICATO
+// Claude fa quasi tutto da solo. Questi tool sono solo per operazioni
+// che richiedono calcoli precisi server-side.
 
 import { executeCalcolaPreventivo, PreventivoInput } from './tools/preventivo'
-import { executeScaricaPrezziario, executeImportaPrezziario } from './tools/scarica-prezziario'
-import { countPrezziario, listRegioniDisponibili } from './tools/prezziario'
 
 export const CUSTOM_TOOLS = [
   {
-    name: 'read_webpage',
-    description: 'Leggi il contenuto di una pagina web specifica. Usa questo strumento quando hai un URL e vuoi leggerne il contenuto completo.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        url: {
-          type: 'string',
-          description: 'URL completo della pagina da leggere',
-        },
-      },
-      required: ['url'],
-    },
-  },
-  {
     name: 'calcola_preventivo',
-    description: 'Genera un preventivo estimativo professionale con calcoli precisi, confronto prezziario regionale e output HTML. Usa SEMPRE questo tool quando devi generare un preventivo — non calcolare a mente. Il tool restituisce HTML completo da mettere in un blocco ~~~document.',
+    description: 'Genera un preventivo estimativo professionale con calcoli precisi e output HTML. Usa questo tool quando devi generare un preventivo formale con voci, quantità e prezzi.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        titolo: { type: 'string', description: 'Titolo del documento (default: Preventivo Estimativo)' },
-        numero: { type: 'string', description: 'Numero preventivo (default: auto-generato)' },
-        data: { type: 'string', description: 'Data in formato YYYY-MM-DD (default: oggi)' },
+        titolo: { type: 'string', description: 'Titolo del documento' },
+        numero: { type: 'string', description: 'Numero preventivo (auto-generato se omesso)' },
+        data: { type: 'string', description: 'Data YYYY-MM-DD (oggi se omesso)' },
         committente: {
           type: 'object',
           properties: {
@@ -54,10 +40,10 @@ export const CUSTOM_TOOLS = [
             type: 'object',
             properties: {
               descrizione: { type: 'string' },
-              um: { type: 'string', description: 'Unita di misura: mq, mc, kg, ml, cad, a corpo' },
+              um: { type: 'string' },
               quantita: { type: 'number' },
-              prezzo_unitario: { type: 'number', description: 'Prezzo unitario in euro' },
-              categoria: { type: 'string', description: 'Categoria per raggruppamento (es. Demolizioni, Strutture)' },
+              prezzo_unitario: { type: 'number' },
+              categoria: { type: 'string' },
             },
             required: ['descrizione', 'um', 'quantita', 'prezzo_unitario'],
           },
@@ -65,13 +51,13 @@ export const CUSTOM_TOOLS = [
         coefficienti: {
           type: 'object',
           properties: {
-            spese_generali: { type: 'number', description: 'Default 0.15 (15%)' },
-            utile_impresa: { type: 'number', description: 'Default 0.10 (10%)' },
-            oneri_sicurezza: { type: 'number', description: 'Default 0.025 (2.5%)' },
-            iva: { type: 'number', description: 'Default 0.10 (10%)' },
+            spese_generali: { type: 'number' },
+            utile_impresa: { type: 'number' },
+            oneri_sicurezza: { type: 'number' },
+            iva: { type: 'number' },
           },
         },
-        regione: { type: 'string', description: 'Regione per prezziario (default: basilicata)' },
+        regione: { type: 'string' },
         note: { type: 'array', items: { type: 'string' } },
         esclusioni: { type: 'array', items: { type: 'string' } },
         condizioni_pagamento: { type: 'string' },
@@ -80,140 +66,12 @@ export const CUSTOM_TOOLS = [
       required: ['committente', 'cantiere', 'voci'],
     },
   },
-  {
-    name: 'verifica_prezziario',
-    description: 'Verifica se hai il prezziario regionale in memoria per una data regione. Usa SEMPRE questo tool PRIMA di fare un preventivo per controllare se hai i prezzi reali. Se il risultato è 0 voci, devi prima scaricare il prezziario con scarica_prezziario.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        regione: {
-          type: 'string',
-          description: 'Nome della regione da verificare',
-        },
-        anno: {
-          type: 'number',
-          description: 'Anno del prezziario (opzionale)',
-        },
-      },
-      required: ['regione'],
-    },
-  },
-  {
-    name: 'scarica_prezziario',
-    description: 'Scarica e memorizza un prezziario regionale da un URL (PDF o CSV). Prima cerca il prezziario online con web_search, trova il link diretto al file, poi usa questo tool per scaricarlo e salvarlo in memoria permanente.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        regione: {
-          type: 'string',
-          description: 'Nome della regione',
-        },
-        anno: {
-          type: 'number',
-          description: 'Anno del prezziario (opzionale)',
-        },
-        url: {
-          type: 'string',
-          description: 'URL diretto al file PDF o CSV del prezziario',
-        },
-      },
-      required: ['regione', 'url'],
-    },
-  },
-  {
-    name: 'importa_prezziario',
-    description: 'Importa un prezziario regionale dal TESTO di un file PDF/CSV che l\'utente ha caricato in chat. Usa quando l\'utente carica un file PDF di prezziario: copia il testo che leggi dal PDF (le righe con codice, descrizione, unità di misura e prezzo) e passalo a questo tool. Il tool parsa le voci e le salva nel database.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        regione: {
-          type: 'string',
-          description: 'Nome della regione',
-        },
-        anno: {
-          type: 'number',
-          description: 'Anno del prezziario (opzionale)',
-        },
-        testo: {
-          type: 'string',
-          description: 'Testo estratto dal PDF del prezziario — le righe con codice voce, descrizione, unità di misura e prezzo. Copia TUTTE le righe che riesci a leggere.',
-        },
-      },
-      required: ['regione', 'testo'],
-    },
-  },
 ]
 
-// Leggi contenuto di una pagina web
-async function executeReadWebpage(url: string): Promise<string> {
-  try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8',
-      },
-      signal: AbortSignal.timeout(20000),
-    })
-
-    if (!res.ok) return `Errore: ${res.status} ${res.statusText}`
-
-    const html = await res.text()
-
-    const text = html
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
-      .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
-      .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '')
-      .replace(/<aside[^>]*>[\s\S]*?<\/aside>/gi, '')
-      .replace(/<!--[\s\S]*?-->/g, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/\s+/g, ' ')
-      .trim()
-
-    const trimmed = text.length > 25000 ? text.slice(0, 25000) + '\n\n[...contenuto troncato]' : text
-    return `Contenuto di ${url}:\n\n${trimmed}`
-  } catch (err) {
-    return `Errore lettura pagina: ${err}`
-  }
-}
-
-// Esegui un tool custom
 export async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
   switch (name) {
-    case 'read_webpage':
-      return executeReadWebpage(input.url as string)
     case 'calcola_preventivo':
       return executeCalcolaPreventivo(input as unknown as PreventivoInput)
-    case 'verifica_prezziario': {
-      const regione = input.regione as string
-      const anno = input.anno as number | undefined
-      const result = await countPrezziario(regione, anno)
-      if (result.count > 0) {
-        return `Prezziario ${result.regione} ${result.anno} disponibile: ${result.count} voci in memoria.`
-      }
-      const regioni = await listRegioniDisponibili()
-      if (regioni.length > 0) {
-        const list = regioni.map(r => `${r.regione} ${r.anno} (${r.count} voci)`).join(', ')
-        return `Prezziario ${regione} NON disponibile. Prezziari in memoria: ${list}. Cerca il prezziario ${regione} online con web_search.`
-      }
-      return `Nessun prezziario in memoria. Devi cercarne uno online con web_search e scaricarlo con scarica_prezziario.`
-    }
-    case 'scarica_prezziario': {
-      const result = await executeScaricaPrezziario(input as { regione: string; anno?: number; url: string })
-      return JSON.stringify(result)
-    }
-    case 'importa_prezziario': {
-      const result = await executeImportaPrezziario(input as { regione: string; anno?: number; testo: string })
-      return JSON.stringify(result)
-    }
     default:
       return `Tool "${name}" non riconosciuto.`
   }

@@ -1,82 +1,51 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import crypto from 'crypto'
-import { searchMemory, saveMessageWithEmbedding } from '@/lib/memory'
-import { CUSTOM_TOOLS, executeTool } from '@/lib/tools'
+import { saveMessageWithEmbedding } from '@/lib/memory'
 import { supabase } from '@/lib/supabase'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 
 const client = new Anthropic()
 
-// Genera un UUID deterministico da un chat ID Telegram
-// Stessa chat → stesso UUID, sempre
+// UUID deterministico da chat ID Telegram
 function chatIdToUuid(chatId: number): string {
   const hash = crypto.createHash('md5').update(`telegram_${chatId}`).digest('hex')
-  // Formatta come UUID v4-like: 8-4-4-4-12
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`
 }
 
 const TELEGRAM_API = 'https://api.telegram.org/bot'
 
-const SYSTEM_PROMPT = `Sei il Cervellone — l'assistente AI personale dell'Ing. Raffaele, titolare di Restruktura SRL.
+// System prompt CORTO — lascia Claude essere Claude
+const SYSTEM_PROMPT = `Sei il Cervellone, assistente AI dell'Ing. Raffaele Lentini — Restruktura SRL, Villa d'Agri (PZ).
+Restruktura: ingegneria strutturale, impresa edile, PonteggioSicuro.it (noleggio ponteggi).
 
-Chi è Restruktura:
-- Società di ingegneria: progettazione strutturale, direzione lavori, collaudi
-- Impresa edile: ristrutturazioni, manutenzioni, cantieri
-- PonteggioSicuro.it: noleggio ponteggi con servizio completo
-- Sede operativa in Basilicata
+Quando generi documenti strutturati (preventivi, computi, relazioni, tabelle), usa il blocco ~~~document con HTML professionale completo.
+Intestazione: RESTRUKTURA S.r.l. — P.IVA 02087420762. Design di alta qualità, pronto per la stampa.
+Quando fai un preventivo, genera SEMPRE anche un computo metrico con prezziario ufficiale di confronto.
 
-Hai accesso a:
-- Ricerca web in tempo reale
-- Generazione documenti Word (.docx), Excel (.xlsx) e PDF
-- Un database di conoscenza che contiene documenti, analisi e conversazioni passate dell'Ingegnere. I dati rilevanti vengono caricati automaticamente qui sotto nella sezione "La tua memoria". Se contiene informazioni, USALE per rispondere.
-- Un prezziario regionale dei lavori pubblici. PRIMA di generare un preventivo:
-  1. Determina la regione dal comune del cantiere
-  2. Usa il tool verifica_prezziario per controllare se hai il prezziario di quella regione
-  3. Se NON hai il prezziario: cercalo online con web_search (es. "prezziario regionale lavori pubblici basilicata 2025 PDF"), trova il link al file PDF o CSV, e scaricalo con scarica_prezziario
-  4. Se non riesci a trovarlo online: proponi all'Ingegnere di (a) caricare il PDF del prezziario in chat, (b) usare un prezziario di una regione vicina, o (c) procedere con i prezzi da te stimati specificando che NON sono da prezziario ufficiale
-  5. Solo dopo aver verificato il prezziario, usa il tool calcola_preventivo con i prezzi reali
-  6. REGOLA OBBLIGATORIA: Quando generi un preventivo, genera SEMPRE anche un secondo documento separato — un Computo Metrico Estimativo con le voci del prezziario regionale ufficiale di riferimento, per confronto. Quindi ogni preventivo = 2 blocchi ~~~document: (1) preventivo, (2) computo con prezziario ufficiale
+Stai comunicando via Telegram. Rispondi conciso, usa *grassetto* e _corsivo_.
+Dai del Lei all'Ingegnere. Rispondi in italiano. Non menzionare mai il tuo funzionamento interno.`
 
-IMPORTANTE — Generazione documenti (REGOLA OBBLIGATORIA):
-Ogni volta che la tua risposta contiene dati strutturati (tabelle, elenchi con importi, preventivi, computi, analisi con dati), DEVI usare il blocco ~~~document con HTML professionale. NON usare MAI tabelle markdown — usa SEMPRE il blocco ~~~document.
-Dopo il blocco, aggiungi solo 1-2 righe di commento sintetico. Il sistema inviera automaticamente un link per visualizzare il documento con grafica.
-NON dire mai che non puoi generare file. NON ripetere il contenuto del documento come testo.
-
-Stai comunicando via Telegram. Rispondi in modo conciso e diretto, adatto a messaggi chat.
-Usa la formattazione Telegram (Markdown): *grassetto*, _corsivo_, \`codice\`.
-
-Se l'Ingegnere chiede informazioni che non trovi né nella sezione memoria né nella chat corrente, rispondi: "Non ho trovato queste informazioni. Potrebbe caricarle o darmi più contesto?"
-
-Non menzionare MAI concetti come "MasterPrompt", "prompt di sistema", "sessione", "contesto tecnico del funzionamento". Non spiegare come funzioni internamente. Rispondi nel merito.
-
-Dai del Lei all'Ingegnere. Rispondi in italiano.`
-
-// ID Telegram autorizzati (solo Raffaele)
+// Telegram autorizzati
 function isAuthorized(chatId: number): boolean {
   const allowedIds = (process.env.TELEGRAM_ALLOWED_IDS || '').split(',').map(Number)
   return allowedIds.includes(chatId)
 }
 
-// Manda messaggio su Telegram
+// Manda messaggio Telegram (con split per messaggi lunghi)
 async function sendTelegramMessage(chatId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) return
 
-  // Telegram ha un limite di 4096 caratteri per messaggio
   const MAX_LEN = 4000
   const chunks: string[] = []
 
   if (text.length <= MAX_LEN) {
     chunks.push(text)
   } else {
-    // Spezza per paragrafi
     let remaining = text
     while (remaining.length > 0) {
-      if (remaining.length <= MAX_LEN) {
-        chunks.push(remaining)
-        break
-      }
+      if (remaining.length <= MAX_LEN) { chunks.push(remaining); break }
       let cutAt = remaining.lastIndexOf('\n\n', MAX_LEN)
       if (cutAt < 500) cutAt = remaining.lastIndexOf('\n', MAX_LEN)
       if (cutAt < 500) cutAt = MAX_LEN
@@ -86,28 +55,17 @@ async function sendTelegramMessage(chatId: number, text: string) {
   }
 
   for (const chunk of chunks) {
-    const res = await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
+    await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: chunk,
-      }),
+      body: JSON.stringify({ chat_id: chatId, text: chunk }),
     })
-    if (!res.ok) {
-      const errBody = await res.text()
-      console.error('TELEGRAM sendMessage ERRORE:', res.status, errBody)
-    } else {
-      console.log('TELEGRAM sendMessage OK per chat', chatId)
-    }
   }
 }
 
-// Manda indicatore "sta scrivendo..."
 async function sendTyping(chatId: number) {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) return
-
   await fetch(`${TELEGRAM_API}${token}/sendChatAction`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -115,7 +73,7 @@ async function sendTyping(chatId: number) {
   })
 }
 
-// Scarica un file da Telegram e restituisce { buffer, fileName, mimeType }
+// Scarica file da Telegram
 async function downloadTelegramFile(fileId: string): Promise<{ buffer: ArrayBuffer; fileName: string; mimeType: string } | null> {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) return null
@@ -131,8 +89,6 @@ async function downloadTelegramFile(fileId: string): Promise<{ buffer: ArrayBuff
 
   const fileName = filePath.split('/').pop() || 'file'
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
-
-  // Mappa estensione → MIME type
   const mimeMap: Record<string, string> = {
     pdf: 'application/pdf',
     jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -140,49 +96,16 @@ async function downloadTelegramFile(fileId: string): Promise<{ buffer: ArrayBuff
     doc: 'application/msword',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   }
-  const mimeType = mimeMap[ext] || 'application/octet-stream'
 
   const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
   if (!res.ok) return null
-  const buffer = await res.arrayBuffer()
-
-  return { buffer, fileName, mimeType }
+  return { buffer: await res.arrayBuffer(), fileName, mimeType: mimeMap[ext] || 'application/octet-stream' }
 }
 
-// Costruisce i content blocks per Claude a partire dai file Telegram
-async function buildFileBlocks(fileData: { buffer: ArrayBuffer; fileName: string; mimeType: string }): Promise<{ blocks: object[]; description: string }> {
-  const { buffer, fileName, mimeType } = fileData
-  const base64 = Buffer.from(buffer).toString('base64')
-  const blocks: object[] = []
-
-  if (mimeType === 'application/pdf') {
-    blocks.push({ type: 'document', source: { type: 'base64', media_type: mimeType, data: base64 } })
-  } else if (mimeType.startsWith('image/')) {
-    blocks.push({ type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } })
-  } else if (mimeType.includes('word') || mimeType === 'application/msword') {
-    // Word: estrai testo con mammoth
-    try {
-      const mammoth = await import('mammoth')
-      const result = await mammoth.extractRawText({ arrayBuffer: buffer })
-      if (result.value && result.value.length > 50) {
-        blocks.push({ type: 'text', text: `[File Word: ${fileName}]\n\n${result.value}` })
-      } else {
-        return { blocks: [], description: `${fileName} (Word vuoto o non leggibile)` }
-      }
-    } catch {
-      return { blocks: [], description: `${fileName} (errore lettura Word)` }
-    }
-  }
-
-  return { blocks, description: fileName }
-}
-
-// Trascrivi audio con OpenAI Whisper
+// Trascrivi audio con Whisper
 async function transcribeAudio(fileId: string): Promise<string> {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) return ''
-
-  // Ottieni il file path da Telegram
   const fileRes = await fetch(`${TELEGRAM_API}${token}/getFile`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -191,366 +114,222 @@ async function transcribeAudio(fileId: string): Promise<string> {
   const fileData = await fileRes.json()
   const filePath = fileData.result?.file_path
   if (!filePath) return ''
-
-  // Scarica il file audio
   const audioRes = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
   const audioBuffer = await audioRes.arrayBuffer()
-
-  // Manda a OpenAI Whisper per trascrizione
   const formData = new FormData()
-  const audioBlob = new Blob([audioBuffer], { type: 'audio/ogg' })
-  formData.append('file', audioBlob, 'voice.ogg')
+  formData.append('file', new Blob([audioBuffer], { type: 'audio/ogg' }), 'voice.ogg')
   formData.append('model', 'whisper-1')
   formData.append('language', 'it')
-
   const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
+    headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
     body: formData,
   })
+  if (!whisperRes.ok) return ''
+  const data = await whisperRes.json()
+  return data.text || ''
+}
 
-  if (!whisperRes.ok) {
-    console.error('WHISPER errore:', whisperRes.status, await whisperRes.text())
-    return ''
+// Costruisce content blocks per Claude — PDF come document, foto come image, Word come testo
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: string; mimeType: string }): Promise<any[]> {
+  const { buffer, fileName, mimeType } = fileData
+  const base64 = Buffer.from(buffer).toString('base64')
+
+  if (mimeType === 'application/pdf') {
+    // PDF → manda direttamente a Claude come document block (come fa claude.ai)
+    return [{ type: 'document', source: { type: 'base64', media_type: mimeType, data: base64 } }]
   }
-
-  const whisperData = await whisperRes.json()
-  console.log('WHISPER trascrizione:', whisperData.text?.slice(0, 100))
-  return whisperData.text || ''
+  if (mimeType.startsWith('image/')) {
+    return [{ type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } }]
+  }
+  if (mimeType.includes('word') || mimeType === 'application/msword') {
+    try {
+      const mammoth = await import('mammoth')
+      const result = await mammoth.extractRawText({ arrayBuffer: buffer })
+      if (result.value && result.value.length > 50) {
+        return [{ type: 'text', text: `[File Word: ${fileName}]\n\n${result.value}` }]
+      }
+    } catch { /* ignore */ }
+    return []
+  }
+  return []
 }
 
 export async function POST(request: NextRequest) {
-  let telegramChatId: number | null = null
+  let chatId: number | null = null
   try {
     const body = await request.json()
     const message = body.message
+    if (!message) return NextResponse.json({ ok: true })
 
-    if (!message) {
-      return NextResponse.json({ ok: true })
-    }
+    chatId = message.chat.id
 
-    const chatId = message.chat.id
-    telegramChatId = chatId
-
-    // Deduplicazione: Telegram rimanda il webhook se la risposta è lenta (>30s).
-    // Tabella dedicata telegram_dedup con chiave (chat_id, message_id).
+    // Dedup
     const msgId = message.message_id
     if (msgId) {
       const { data: existing } = await supabase
-        .from('telegram_dedup')
-        .select('message_id')
-        .eq('chat_id', chatId)
-        .eq('message_id', msgId)
-        .limit(1)
-      if (existing && existing.length > 0) {
-        console.log(`TELEGRAM: messaggio ${msgId} già in elaborazione, skip duplicato`)
-        return NextResponse.json({ ok: true })
-      }
-      // Segna come "in elaborazione" SUBITO, prima di qualsiasi lavoro
-      await supabase.from('telegram_dedup').insert({
-        chat_id: chatId,
-        message_id: msgId,
-      })
+        .from('telegram_dedup').select('message_id')
+        .eq('chat_id', chatId).eq('message_id', msgId).limit(1)
+      if (existing && existing.length > 0) return NextResponse.json({ ok: true })
+      await supabase.from('telegram_dedup').insert({ chat_id: chatId, message_id: msgId })
     }
 
-    // Gestisci vocali
+    // Testo e file
     let userText = message.text || message.caption || ''
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let fileBlocks: object[] = []
+    let fileBlocks: any[] = []
     let fileDescription = ''
 
+    // Vocali
     if (!userText && (message.voice || message.audio)) {
       const fileId = message.voice?.file_id || message.audio?.file_id
       if (fileId) {
         await sendTyping(chatId)
         userText = await transcribeAudio(fileId)
         if (!userText) {
-          await sendTelegramMessage(chatId, 'Non sono riuscito a trascrivere il vocale. Puo riprovare?')
+          await sendTelegramMessage(chatId, 'Non sono riuscito a trascrivere il vocale. Riprovi.')
           return NextResponse.json({ ok: true })
         }
       }
     }
 
-    // Gestisci file: documenti (PDF, Word) e foto
+    // Documenti (PDF, Word)
     if (message.document) {
       await sendTyping(chatId)
       const fileSize = message.document.file_size || 0
       if (fileSize > 20 * 1024 * 1024) {
-        await sendTelegramMessage(chatId, '⚠️ Il file è troppo pesante per Telegram (max 20 MB).\n\n💡 Lo carichi dalla chat web: https://cervellone-5poc.vercel.app')
+        await sendTelegramMessage(chatId, '⚠️ File troppo pesante (max 20 MB). Lo carichi dalla chat web.')
         return NextResponse.json({ ok: true })
       }
-
       const ext = (message.document.file_name || '').split('.').pop()?.toLowerCase() || ''
-      const supported = ['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'doc', 'docx']
-      if (!supported.includes(ext)) {
-        await sendTelegramMessage(chatId, `⚠️ Il formato .${ext} non è supportato.\n\n💡 Formati accettati: PDF, immagini (JPG/PNG), Word (DOC/DOCX)`)
+      if (!['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'doc', 'docx'].includes(ext)) {
+        await sendTelegramMessage(chatId, `⚠️ Formato .${ext} non supportato. Accettati: PDF, immagini, Word.`)
         return NextResponse.json({ ok: true })
       }
-
       const fileData = await downloadTelegramFile(message.document.file_id)
       if (!fileData) {
-        await sendTelegramMessage(chatId, '⚠️ Non sono riuscito a scaricare il file. Puo riprovare?')
+        await sendTelegramMessage(chatId, '⚠️ Non riesco a scaricare il file. Riprovi.')
         return NextResponse.json({ ok: true })
       }
-
-      const fileName = message.document.file_name || ''
-      const caption = (message.caption || '').toLowerCase()
-
-      // TUTTI i PDF: estrai testo server-side con pdf-parse
-      // Non mandare MAI base64 di PDF a Claude via Telegram — causa timeout
-      if (ext === 'pdf') {
-        await sendTelegramMessage(chatId, '📄 PDF ricevuto, lo sto leggendo...')
-        try {
-          const { PDFParse } = await import('pdf-parse')
-          const parser = new PDFParse({ data: Buffer.from(fileData.buffer) })
-          const textResult = await parser.getText()
-          await parser.destroy()
-
-          const pdfText = textResult.text || ''
-          console.log(`TELEGRAM PDF: estratti ${pdfText.length} caratteri da ${fileName}`)
-
-          if (pdfText.length < 50) {
-            await sendTelegramMessage(chatId, '⚠️ Il PDF sembra essere scansionato (immagini, non testo). Provi a mandare le pagine come foto — le leggo con OCR.')
-            return NextResponse.json({ ok: true })
-          }
-
-          // Check se è un prezziario (nome file, caption, o contenuto)
-          const isPrezziario = /prezz[ia]ario/i.test(fileName) || /prezz[ia]ario/i.test(caption)
-            || caption.includes('salvalo') || caption.includes('importa')
-            || /prezz[ia]ario/i.test(pdfText.slice(0, 2000))
-
-          if (isPrezziario) {
-            const { executeImportaPrezziario } = await import('@/lib/tools/scarica-prezziario')
-            const regioneMatch = (caption + ' ' + pdfText.slice(0, 3000)).match(/basilicata|calabria|campania|puglia|sicilia|sardegna|lazio|toscana|lombardia|piemonte|veneto|emilia|liguria|marche|umbria|abruzzo|molise|friuli|trentino|valle/i)
-            const regione = regioneMatch ? regioneMatch[0].toLowerCase() : 'basilicata'
-            const annoMatch = (caption + ' ' + fileName + ' ' + pdfText.slice(0, 1000)).match(/20\d{2}/)
-            const anno = annoMatch ? parseInt(annoMatch[0]) : new Date().getFullYear()
-
-            const importResult = await executeImportaPrezziario({ regione, anno, testo: pdfText })
-
-            if (importResult.success) {
-              await sendTelegramMessage(chatId, `✅ Prezziario ${importResult.regione.toUpperCase()} ${importResult.anno} importato!\n\n📊 *${importResult.voci_salvate} voci* salvate nel database.\n\nOra posso generare preventivi con i prezzi ufficiali.`)
-            } else {
-              await sendTelegramMessage(chatId, `⚠️ Riconosciuto come prezziario ma non ho trovato voci in formato standard.\n\n${importResult.errore || ''}`)
-            }
-            return NextResponse.json({ ok: true })
-          }
-
-          // PDF normale: manda il TESTO estratto a Claude (non il base64!)
-          // Tronca a 50k caratteri per evitare timeout
-          const truncatedText = pdfText.length > 50000
-            ? pdfText.slice(0, 50000) + `\n\n[...documento troncato, ${pdfText.length} caratteri totali]`
-            : pdfText
-
-          fileBlocks = [{ type: 'text', text: `[Contenuto PDF: ${fileName}]\n\n${truncatedText}` }]
-          fileDescription = fileName
-
-        } catch (pdfErr) {
-          console.error('TELEGRAM PDF parse error:', pdfErr)
-          await sendTelegramMessage(chatId, `⚠️ Non riesco a leggere il PDF "${fileName}". Potrebbe essere protetto o corrotto.\n\n💡 Provi a mandare le pagine come foto.`)
-          return NextResponse.json({ ok: true })
-        }
-      } else {
-        // Non-PDF (immagini, Word): usa il flusso normale con base64
-        const result = await buildFileBlocks(fileData)
-        fileBlocks = result.blocks
-        fileDescription = result.description
-
-        if (fileBlocks.length === 0 && fileDescription.includes('errore')) {
-          await sendTelegramMessage(chatId, `⚠️ Non sono riuscito a leggere ${fileDescription}.\n\n💡 Provi a convertirlo in PDF e rimandarlo.`)
-          return NextResponse.json({ ok: true })
-        }
-      }
+      fileBlocks = await buildContentBlocks(fileData)
+      fileDescription = message.document.file_name || fileData.fileName
     }
 
-    // Foto — Telegram manda un array di risoluzioni, prendiamo la più grande
+    // Foto
     if (message.photo && message.photo.length > 0) {
       await sendTyping(chatId)
-      const largestPhoto = message.photo[message.photo.length - 1]
-      const fileData = await downloadTelegramFile(largestPhoto.file_id)
+      const largest = message.photo[message.photo.length - 1]
+      const fileData = await downloadTelegramFile(largest.file_id)
       if (fileData) {
-        const result = await buildFileBlocks(fileData)
-        fileBlocks = result.blocks
-        fileDescription = result.description
+        fileBlocks = await buildContentBlocks(fileData)
+        fileDescription = fileData.fileName
       }
     }
 
-    // Se non c'è né testo né file, ignora
-    if (!userText && fileBlocks.length === 0) {
-      return NextResponse.json({ ok: true })
-    }
+    // Niente testo né file → ignora
+    if (!userText && fileBlocks.length === 0) return NextResponse.json({ ok: true })
+    if (!userText && fileBlocks.length > 0) userText = `Analizza questo file: ${fileDescription}`
 
-    // Default text se c'è solo un file senza caption
-    if (!userText && fileBlocks.length > 0) {
-      userText = `Analizza questo file: ${fileDescription}`
-    }
-
-    // Verifica autorizzazione
+    // Auth
     if (!isAuthorized(chatId)) {
-      await sendTelegramMessage(chatId, '⛔ Non sei autorizzato ad usare questo bot.')
+      await sendTelegramMessage(chatId, '⛔ Non autorizzato.')
       return NextResponse.json({ ok: true })
     }
 
-    // Comando /start
+    // Comandi
     if (userText === '/start') {
-      await sendTelegramMessage(chatId, '🧠 *Cervellone attivo.*\nSono il Suo assistente AI personale. Come posso aiutarLa?')
+      await sendTelegramMessage(chatId, '🧠 *Cervellone attivo.* Come posso aiutarLa?')
       return NextResponse.json({ ok: true })
     }
-
-    // Comando /id — per scoprire il proprio chat ID
     if (userText === '/id') {
-      await sendTelegramMessage(chatId, `Il Suo chat ID è: ${chatId}`)
+      await sendTelegramMessage(chatId, `Chat ID: ${chatId}`)
       return NextResponse.json({ ok: true })
     }
-
-    // Comando /nuova — reset conversazione
     if (userText === '/nuova') {
-      const convId = chatIdToUuid(chatId)
-      await supabase.from('messages').delete().eq('conversation_id', convId)
-      await sendTelegramMessage(chatId, 'Conversazione azzerata. Come posso aiutarLa?')
+      await supabase.from('messages').delete().eq('conversation_id', chatIdToUuid(chatId))
+      await sendTelegramMessage(chatId, 'Conversazione azzerata.')
       return NextResponse.json({ ok: true })
     }
 
-    // Manda "sta scrivendo..."
     await sendTyping(chatId)
 
-    // Cerca nella memoria
-    const memoryContext = await searchMemory(userText)
-    const fullSystemPrompt = SYSTEM_PROMPT + memoryContext
-
-    // Conversazione Telegram — trova o crea (UUID deterministico da chat ID)
+    // Conversazione
     const conversationId = chatIdToUuid(chatId)
-
-    // Crea conversazione se non esiste
-    const { data: existingConv } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('id', conversationId)
-      .single()
-
+    const { data: existingConv } = await supabase.from('conversations').select('id').eq('id', conversationId).single()
     if (!existingConv) {
-      const { error: convError } = await supabase.from('conversations').insert({
-        id: conversationId,
-        title: '💬 Telegram',
-      })
-      if (convError) console.error('TELEGRAM: errore creazione conversazione:', convError.message)
+      await supabase.from('conversations').insert({ id: conversationId, title: '💬 Telegram' })
     }
 
-    // Carica ultimi 20 messaggi della conversazione per contesto PRIMA di salvare il nuovo
+    // Carica storia PRIMA di salvare il messaggio corrente
     const { data: recentMessages } = await supabase
-      .from('messages')
-      .select('role, content')
+      .from('messages').select('role, content')
       .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: true })
-      .limit(20)
+      .order('created_at', { ascending: true }).limit(20)
 
-    // Costruisci la storia per Claude
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const history: any[] = (recentMessages || [])
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role, content: m.content }))
 
-    // Aggiungi il messaggio corrente CON i file blocks (se presenti)
+    // Aggiungi messaggio corrente CON file
     if (fileBlocks.length > 0) {
       history.push({ role: 'user', content: [...fileBlocks, { type: 'text', text: userText }] })
     } else {
       history.push({ role: 'user', content: userText })
     }
 
-    // Salva messaggio utente nella tabella messages (DOPO aver costruito la storia)
-    const { error: msgError } = await supabase.from('messages').insert({
-      conversation_id: conversationId,
-      role: 'user',
-      content: userText,
-    })
-    if (msgError) console.error('TELEGRAM: errore salvataggio messaggio utente:', msgError.message)
-
-    // Salva embedding in background
+    // Salva messaggio utente in DB
+    await supabase.from('messages').insert({ conversation_id: conversationId, role: 'user', content: userText })
+    // Embedding in background (non blocca)
     saveMessageWithEmbedding(conversationId, 'user', userText).catch(() => {})
 
-    // hasFiles = true solo se ci sono blocchi image/document (non text estratto da PDF)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const hasFiles = fileBlocks.some((b: any) => b.type === 'image' || b.type === 'document')
-
     // Assicura che inizi con user
-    if (history.length > 0 && history[0].role !== 'user') {
-      history.shift()
-    }
+    if (history.length > 0 && history[0].role !== 'user') history.shift()
 
-    // Chiama Claude
-    const tools = [
-      {
-        type: 'web_search_20250305' as const,
-        name: 'web_search',
-        max_uses: 5,
-      },
-      ...CUSTOM_TOOLS,
-    ]
+    const hasFiles = fileBlocks.some((b: { type: string }) => b.type === 'image' || b.type === 'document')
+
+    // UNA chiamata a Claude, max 2 iterazioni tool use
+    const tools = [{ type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 }]
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let currentMessages: any[] = history
     let fullResponse = ''
-    let maxIterations = 6  // Ridotto da 10 — ogni iterazione è ~30-60s
+    let iterations = 0
+    const MAX_ITERATIONS = 2
 
-    while (maxIterations > 0) {
-      maxIterations--
-
-      // Rinnova typing ogni iterazione
+    while (iterations < MAX_ITERATIONS) {
+      iterations++
       await sendTyping(chatId)
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const callParams: any = {
+      const params: any = {
         model: hasFiles ? 'claude-opus-4-6' : 'claude-sonnet-4-6',
-        max_tokens: 12000,  // Ridotto da 16000 per velocizzare
-        system: fullSystemPrompt,
+        max_tokens: 16000,
+        system: SYSTEM_PROMPT,
         messages: currentMessages,
         tools,
       }
-      // Thinking incompatibile con file allegati (stessa logica della chat web)
-      if (!hasFiles) {
-        callParams.thinking = { type: 'enabled', budget_tokens: 3000 }
-      }
 
-      const response = await client.messages.create(callParams)
+      const response = await client.messages.create(params)
 
-      // Estrai testo dalla risposta
-      let iterationText = ''
       for (const block of response.content) {
-        if (block.type === 'text') {
-          iterationText += block.text
-        }
+        if (block.type === 'text') fullResponse += block.text
       }
-      fullResponse += iterationText
 
-      // Gestisci tool use
-      let hasCustomToolUse = false
-      const toolResults: { type: 'tool_result'; tool_use_id: string; content: string }[] = []
+      // Se non c'è tool use o è end_turn → fine
+      const hasToolUse = response.content.some(b => b.type === 'tool_use')
+      if (!hasToolUse || response.stop_reason === 'end_turn') break
 
+      // Tool use → aggiungi risultati e richiama (max 1 volta in più)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const toolResults: any[] = []
       for (const block of response.content) {
         if (block.type === 'tool_use') {
-          hasCustomToolUse = true
-          // Manda notifica di quale tool sta usando
-          const toolNames: Record<string, string> = {
-            verifica_prezziario: '🔍 Verifico prezziario...',
-            scarica_prezziario: '📥 Scarico prezziario...',
-            calcola_preventivo: '🧮 Calcolo preventivo...',
-          }
-          if (toolNames[block.name]) {
-            await sendTelegramMessage(chatId, toolNames[block.name])
-          }
-          const result = await executeTool(block.name, block.input as Record<string, string>)
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: result,
-          })
+          // web_search è gestito automaticamente da Anthropic, non serve executeTool
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: 'OK' })
         }
       }
-
-      if (!hasCustomToolUse || response.stop_reason === 'end_turn') break
-
       currentMessages = [
         ...currentMessages,
         { role: 'assistant', content: response.content },
@@ -558,80 +337,46 @@ export async function POST(request: NextRequest) {
       ]
     }
 
-    // Salva risposta in memoria e nella tabella messages
+    // Salva risposta
     if (fullResponse) {
+      await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullResponse })
       saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
-      await supabase.from('messages').insert({
-        conversation_id: conversationId,
-        role: 'assistant',
-        content: fullResponse,
-      })
 
-      // Se c'erano file, salva anche l'analisi come conoscenza persistente
       if (hasFiles && fullResponse.length > 200) {
-        const knowledgeContent = `[Analisi file "${fileDescription}" da Telegram]\n\nDomanda: ${userText}\n\nAnalisi:\n${fullResponse.slice(0, 10000)}`
-        saveMessageWithEmbedding(conversationId, 'knowledge', knowledgeContent).catch(() => {})
-        console.log('TELEGRAM MEMORY: salvata analisi file in memoria persistente')
+        const knowledge = `[Analisi file "${fileDescription}" da Telegram]\n\nDomanda: ${userText}\n\nAnalisi:\n${fullResponse.slice(0, 10000)}`
+        saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
       }
     }
 
     // Manda risposta su Telegram
-    console.log('TELEGRAM risposta da inviare, lunghezza:', fullResponse.length, 'anteprima:', fullResponse.slice(0, 100))
-
     const responseBlocks = parseDocumentBlocks(fullResponse)
     let sentSomething = false
+
     for (const block of responseBlocks) {
       if (block.type === 'document') {
-        // Estrai titolo e info chiave dall'HTML per un riepilogo sintetico
         const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i)
-          || block.content.match(/class="doc-title[^"]*"[^>]*>(.*?)<\//i)
           || block.content.match(/<title>(.*?)<\/title>/i)
-        const title = titleMatch
-          ? titleMatch[1].replace(/<[^>]+>/g, '').trim()
-          : 'Documento'
-
-        // Cerca un importo totale nel documento
-        const totalMatch = block.content.match(/total[^<]*<\/td>\s*<td[^>]*>([^<]+)/i)
-          || block.content.match(/totale[^<]*<\/[^>]+>\s*<[^>]+>([^<]*\u20AC[^<]*|[^<]*EUR[^<]*|[^<]*€[^<]*)/i)
-          || block.content.match(/([\d.,]+\s*(?:\u20AC|EUR|€))/i)
-        const totalInfo = totalMatch ? `\n\uD83D\uDCB0 ${totalMatch[1].replace(/<[^>]+>/g, '').trim()}` : ''
-
-        // Conta le righe di tabella per dare un'idea della dimensione
+        const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
+        const totalMatch = block.content.match(/([\d.,]+\s*(?:\u20AC|EUR|€))/i)
+        const totalInfo = totalMatch ? `\n💰 ${totalMatch[1].trim()}` : ''
         const rowCount = (block.content.match(/<tr/gi) || []).length
-        const rowInfo = rowCount > 2 ? `\n\uD83D\uDCCA ${rowCount - 1} voci` : ''
+        const rowInfo = rowCount > 2 ? `\n📊 ${rowCount - 1} voci` : ''
 
-        // Salva il documento HTML su Supabase per generare un link diretto
         let docUrl = 'https://cervellone-5poc.vercel.app'
-        try {
-          const { data: savedDoc, error: docError } = await supabase
-            .from('documents')
-            .insert({
-              name: title,
-              content: block.content,
-              conversation_id: conversationId,
-              type: 'html',
-              metadata: { source: 'telegram', chatId, conversationId, savedAt: new Date().toISOString() },
-            })
-            .select('id')
-            .single()
-          if (docError) {
-            console.error('TELEGRAM: errore Supabase salvataggio documento:', docError.message, docError.details)
-          } else if (savedDoc?.id) {
-            docUrl = `https://cervellone-5poc.vercel.app/doc/${savedDoc.id}`
-            console.log('TELEGRAM: documento salvato con id:', savedDoc.id)
-          }
-        } catch (e) {
-          console.error('TELEGRAM: errore salvataggio documento:', e)
-        }
+        const { data: savedDoc } = await supabase
+          .from('documents')
+          .insert({ name: title, content: block.content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
+          .select('id').single()
+        if (savedDoc?.id) docUrl = `https://cervellone-5poc.vercel.app/doc/${savedDoc.id}`
 
-        const cardMsg = `\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\uD83D\uDCC4 *${title}*${totalInfo}${rowInfo}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\uD83D\uDC49 Visualizzi il documento e lo scarichi come PDF:\n${docUrl}`
-        await sendTelegramMessage(chatId, cardMsg)
+        await sendTelegramMessage(chatId, `────────────────────\n📄 *${title}*${totalInfo}${rowInfo}\n────────────────────\n\n👉 ${docUrl}`)
         sentSomething = true
-      } else if (block.content) {
+      } else if (block.content.trim()) {
         await sendTelegramMessage(chatId, block.content)
         sentSomething = true
       }
     }
+
     if (!sentSomething) {
       await sendTelegramMessage(chatId, fullResponse || 'Non sono riuscito a elaborare una risposta.')
     }
@@ -639,22 +384,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('TELEGRAM errore:', err)
-    // Manda un messaggio di errore all'utente invece di morire in silenzio
     try {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      let userMessage = '⚠️ Errore temporaneo. Riprova tra un momento.'
-      if (errMsg.includes('credit') || errMsg.includes('billing') || errMsg.includes('rate') || errMsg.includes('429')) {
-        userMessage = '⚠️ Crediti API esauriti o limite raggiunto. Controllare il piano Anthropic.'
-      } else if (errMsg.includes('timeout') || errMsg.includes('TIMEOUT')) {
-        userMessage = '⚠️ La richiesta ha impiegato troppo tempo. Provi con una domanda più semplice.'
+      const msg = err instanceof Error ? err.message : String(err)
+      let userMsg = '⚠️ Errore temporaneo. Riprovi tra un momento.'
+      if (msg.includes('credit') || msg.includes('billing') || msg.includes('429')) {
+        userMsg = '⚠️ Crediti API esauriti o limite raggiunto.'
+      } else if (msg.includes('too large') || msg.includes('payload')) {
+        userMsg = '⚠️ File troppo pesante per essere analizzato. Provi con un file più piccolo o come foto.'
       }
-      if (telegramChatId) await sendTelegramMessage(telegramChatId, userMessage)
-    } catch { /* ignore — non peggiorare la situazione */ }
+      if (chatId) await sendTelegramMessage(chatId, userMsg)
+    } catch { /* ignore */ }
     return NextResponse.json({ ok: true })
   }
 }
 
-// GET — per verifica webhook
 export async function GET() {
   return NextResponse.json({ status: 'Cervellone Telegram webhook attivo' })
 }
