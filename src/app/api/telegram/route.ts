@@ -414,18 +414,7 @@ export async function POST(request: NextRequest) {
       if (convError) console.error('TELEGRAM: errore creazione conversazione:', convError.message)
     }
 
-    // Salva messaggio utente nella tabella messages
-    const { error: msgError } = await supabase.from('messages').insert({
-      conversation_id: conversationId,
-      role: 'user',
-      content: userText,
-    })
-    if (msgError) console.error('TELEGRAM: errore salvataggio messaggio utente:', msgError.message)
-
-    // Salva embedding in background
-    saveMessageWithEmbedding(conversationId, 'user', userText).catch(() => {})
-
-    // Carica ultimi 20 messaggi della conversazione per contesto
+    // Carica ultimi 20 messaggi della conversazione per contesto PRIMA di salvare il nuovo
     const { data: recentMessages } = await supabase
       .from('messages')
       .select('role, content')
@@ -439,16 +428,23 @@ export async function POST(request: NextRequest) {
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role, content: m.content }))
 
-    // Se la storia è vuota o non finisce con l'ultimo messaggio, aggiungi
+    // Aggiungi il messaggio corrente CON i file blocks (se presenti)
     if (fileBlocks.length > 0) {
-      // Messaggio con file: content è un array di blocks
-      const contentBlocks = [...fileBlocks, { type: 'text', text: userText }]
-      if (history.length === 0 || history[history.length - 1].content !== userText) {
-        history.push({ role: 'user', content: contentBlocks })
-      }
-    } else if (history.length === 0 || history[history.length - 1].content !== userText) {
+      history.push({ role: 'user', content: [...fileBlocks, { type: 'text', text: userText }] })
+    } else {
       history.push({ role: 'user', content: userText })
     }
+
+    // Salva messaggio utente nella tabella messages (DOPO aver costruito la storia)
+    const { error: msgError } = await supabase.from('messages').insert({
+      conversation_id: conversationId,
+      role: 'user',
+      content: userText,
+    })
+    if (msgError) console.error('TELEGRAM: errore salvataggio messaggio utente:', msgError.message)
+
+    // Salva embedding in background
+    saveMessageWithEmbedding(conversationId, 'user', userText).catch(() => {})
 
     const hasFiles = fileBlocks.length > 0
 
@@ -501,17 +497,6 @@ export async function POST(request: NextRequest) {
         }
       }
       fullResponse += iterationText
-
-      // Manda testo parziale SUBITO se c'è (non aspettare fine loop)
-      // Questo evita che il bot sembri morto durante tool use lunghi
-      if (iterationText.trim() && iterationText.length > 20) {
-        const partialBlocks = parseDocumentBlocks(iterationText)
-        for (const block of partialBlocks) {
-          if (block.type === 'text' && block.content.trim()) {
-            await sendTelegramMessage(chatId, block.content)
-          }
-        }
-      }
 
       // Gestisci tool use
       let hasCustomToolUse = false
