@@ -222,6 +222,7 @@ async function transcribeAudio(fileId: string): Promise<string> {
 }
 
 export async function POST(request: NextRequest) {
+  let telegramChatId: number | null = null
   try {
     const body = await request.json()
     const message = body.message
@@ -231,6 +232,7 @@ export async function POST(request: NextRequest) {
     }
 
     const chatId = message.chat.id
+    telegramChatId = chatId
 
     // Deduplicazione: Telegram rimanda il webhook se la risposta è lenta (>30s).
     // Tabella dedicata telegram_dedup con chiave (chat_id, message_id).
@@ -432,7 +434,7 @@ export async function POST(request: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let currentMessages: any[] = history
     let fullResponse = ''
-    let maxIterations = 10
+    let maxIterations = 6  // Ridotto da 10 — ogni iterazione è ~30-60s
 
     while (maxIterations > 0) {
       maxIterations--
@@ -443,22 +445,35 @@ export async function POST(request: NextRequest) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const callParams: any = {
         model: hasFiles ? 'claude-opus-4-6' : 'claude-sonnet-4-6',
-        max_tokens: 16000,
+        max_tokens: 12000,  // Ridotto da 16000 per velocizzare
         system: fullSystemPrompt,
         messages: currentMessages,
         tools,
       }
       // Thinking incompatibile con file allegati (stessa logica della chat web)
       if (!hasFiles) {
-        callParams.thinking = { type: 'enabled', budget_tokens: 5000 }
+        callParams.thinking = { type: 'enabled', budget_tokens: 3000 }
       }
 
       const response = await client.messages.create(callParams)
 
       // Estrai testo dalla risposta
+      let iterationText = ''
       for (const block of response.content) {
         if (block.type === 'text') {
-          fullResponse += block.text
+          iterationText += block.text
+        }
+      }
+      fullResponse += iterationText
+
+      // Manda testo parziale SUBITO se c'è (non aspettare fine loop)
+      // Questo evita che il bot sembri morto durante tool use lunghi
+      if (iterationText.trim() && iterationText.length > 20) {
+        const partialBlocks = parseDocumentBlocks(iterationText)
+        for (const block of partialBlocks) {
+          if (block.type === 'text' && block.content.trim()) {
+            await sendTelegramMessage(chatId, block.content)
+          }
         }
       }
 
@@ -469,6 +484,15 @@ export async function POST(request: NextRequest) {
       for (const block of response.content) {
         if (block.type === 'tool_use') {
           hasCustomToolUse = true
+          // Manda notifica di quale tool sta usando
+          const toolNames: Record<string, string> = {
+            verifica_prezziario: '🔍 Verifico prezziario...',
+            scarica_prezziario: '📥 Scarico prezziario...',
+            calcola_preventivo: '🧮 Calcolo preventivo...',
+          }
+          if (toolNames[block.name]) {
+            await sendTelegramMessage(chatId, toolNames[block.name])
+          }
           const result = await executeTool(block.name, block.input as Record<string, string>)
           toolResults.push({
             type: 'tool_result',
@@ -568,6 +592,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('TELEGRAM errore:', err)
+    // Manda un messaggio di errore all'utente invece di morire in silenzio
+    try {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      let userMessage = '⚠️ Errore temporaneo. Riprova tra un momento.'
+      if (errMsg.includes('credit') || errMsg.includes('billing') || errMsg.includes('rate') || errMsg.includes('429')) {
+        userMessage = '⚠️ Crediti API esauriti o limite raggiunto. Controllare il piano Anthropic.'
+      } else if (errMsg.includes('timeout') || errMsg.includes('TIMEOUT')) {
+        userMessage = '⚠️ La richiesta ha impiegato troppo tempo. Provi con una domanda più semplice.'
+      }
+      if (telegramChatId) await sendTelegramMessage(telegramChatId, userMessage)
+    } catch { /* ignore — non peggiorare la situazione */ }
     return NextResponse.json({ ok: true })
   }
 }
