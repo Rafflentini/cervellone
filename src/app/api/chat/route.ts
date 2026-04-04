@@ -252,6 +252,41 @@ export async function POST(request: NextRequest) {
     skillImportMessage = await detectAndImportSkills(userQuery, conversationId)
   }
 
+  // Auto-detect prezziario PDF — estrai e importa server-side
+  let prezziarioImportMessage: string | null = null
+  if (hasFiles && /prezz[ia]ario|salva(lo)?.*prezz|import.*prezz/i.test(userQuery)) {
+    try {
+      // Trova il blocco document (PDF) nell'ultimo messaggio
+      const pdfBlock = Array.isArray(lastUserMsg?.content)
+        ? lastUserMsg.content.find((b: { type: string; source?: { media_type?: string } }) =>
+            b.type === 'document' && b.source?.media_type === 'application/pdf')
+        : null
+      if (pdfBlock?.source?.data) {
+        const pdfBuffer = Buffer.from(pdfBlock.source.data, 'base64')
+        const { PDFParse } = await import('pdf-parse')
+        const parser = new PDFParse({ data: pdfBuffer })
+        const textResult = await parser.getText()
+        await parser.destroy()
+
+        const { executeImportaPrezziario } = await import('@/lib/tools/scarica-prezziario')
+        const regioneMatch = userQuery.match(/basilicata|calabria|campania|puglia|sicilia|sardegna|lazio|toscana|lombardia|piemonte|veneto|emilia|liguria|marche|umbria|abruzzo|molise|friuli|trentino|valle/i)
+        const regione = regioneMatch ? regioneMatch[0].toLowerCase() : 'basilicata'
+        const annoMatch = userQuery.match(/20\d{2}/)
+        const anno = annoMatch ? parseInt(annoMatch[0]) : new Date().getFullYear()
+
+        const importResult = await executeImportaPrezziario({ regione, anno, testo: textResult.text })
+        if (importResult.success) {
+          prezziarioImportMessage = `✅ Prezziario ${importResult.regione.toUpperCase()} ${importResult.anno} importato automaticamente! ${importResult.voci_salvate} voci salvate nel database. Ora posso generare preventivi con i prezzi ufficiali.`
+        } else {
+          prezziarioImportMessage = `⚠️ Ho estratto il testo dal PDF ma non ho trovato voci di prezziario in formato standard. ${importResult.errore || ''}`
+        }
+        console.log('CHAT prezziario import:', prezziarioImportMessage)
+      }
+    } catch (err) {
+      console.error('CHAT prezziario import error:', err)
+    }
+  }
+
   // Router automatico: sceglie Sonnet o Opus in base alla complessità
   const { model: MODEL, thinking: THINKING_BUDGET } = await chooseModel(userQuery, hasFiles)
 
@@ -269,7 +304,10 @@ export async function POST(request: NextRequest) {
   const skillNotice = skillImportMessage
     ? `\n\n# IMPORTAZIONE SKILL COMPLETATA\nL'utente ha incollato un prompt strutturato con skill professionali. Sono state salvate ${skillImportMessage.split('\n').length - 2} sezioni in memoria permanente. Nella tua risposta, CONFERMA all'utente che hai importato le skill e elenca i nomi. Poi chiedi come vuole procedere.`
     : ''
-  const fullSystemPrompt = SYSTEM_PROMPT + skillNotice + memoryContext
+  const prezziarioNotice = prezziarioImportMessage
+    ? `\n\n# IMPORTAZIONE PREZZIARIO COMPLETATA\n${prezziarioImportMessage}\nConferma all'utente il risultato dell'importazione.`
+    : ''
+  const fullSystemPrompt = SYSTEM_PROMPT + skillNotice + prezziarioNotice + memoryContext
 
   // Tools: ricerca web built-in + tool custom
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
