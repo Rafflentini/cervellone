@@ -255,6 +255,10 @@ export async function POST(request: NextRequest) {
 
     await sendTyping(chatId)
 
+    // Cerca nella memoria RAG (conoscenza persistente)
+    const { searchMemory } = await import('@/lib/memory')
+    const memoryContext = await searchMemory(userText)
+
     // Conversazione
     const conversationId = chatIdToUuid(chatId)
     const { data: existingConv } = await supabase.from('conversations').select('id').eq('id', conversationId).single()
@@ -308,7 +312,7 @@ export async function POST(request: NextRequest) {
       const params: any = {
         model: hasFiles ? 'claude-opus-4-6' : 'claude-sonnet-4-6',
         max_tokens: 16000,
-        system: SYSTEM_PROMPT,
+        system: SYSTEM_PROMPT + memoryContext,
         messages: currentMessages,
         tools,
       }
