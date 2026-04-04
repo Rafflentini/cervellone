@@ -312,7 +312,7 @@ export async function POST(request: NextRequest) {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const params: any = {
-        model: hasFiles ? 'claude-opus-4-6' : 'claude-sonnet-4-6',
+        model: 'claude-opus-4-6',
         max_tokens: 16000,
         system: SYSTEM_PROMPT + memoryContext,
         messages: currentMessages,
