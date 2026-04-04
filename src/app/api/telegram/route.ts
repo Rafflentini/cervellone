@@ -471,7 +471,8 @@ export async function POST(request: NextRequest) {
     saveMessageWithEmbedding(conversationId, 'user', userText).catch(() => {})
 
     // hasFiles = true solo se ci sono blocchi image/document (non text estratto da PDF)
-    const hasFiles = fileBlocks.some((b: { type: string }) => b.type === 'image' || b.type === 'document')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hasFiles = fileBlocks.some((b: any) => b.type === 'image' || b.type === 'document')
 
     // Assicura che inizi con user
     if (history.length > 0 && history[0].role !== 'user') {
