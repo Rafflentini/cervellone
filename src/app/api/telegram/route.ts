@@ -295,49 +295,73 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true })
       }
 
-      // Riconoscimento automatico prezziario PDF — importa direttamente nel DB
       const fileName = message.document.file_name || ''
       const caption = (message.caption || '').toLowerCase()
-      const isPrezziario = /prezz[ia]ario/i.test(fileName) || /prezz[ia]ario/i.test(caption)
-        || caption.includes('salvalo') || caption.includes('importa')
 
-      if (isPrezziario && ext === 'pdf') {
-        await sendTelegramMessage(chatId, '📥 Riconosciuto come prezziario! Estraggo le voci...')
+      // TUTTI i PDF: estrai testo server-side con pdf-parse
+      // Non mandare MAI base64 di PDF a Claude via Telegram — causa timeout
+      if (ext === 'pdf') {
+        await sendTelegramMessage(chatId, '📄 PDF ricevuto, lo sto leggendo...')
         try {
           const { PDFParse } = await import('pdf-parse')
           const parser = new PDFParse({ data: Buffer.from(fileData.buffer) })
           const textResult = await parser.getText()
           await parser.destroy()
 
-          const { executeImportaPrezziario } = await import('@/lib/tools/scarica-prezziario')
-          // Estrai regione dalla caption o dal nome file
-          const regioneMatch = caption.match(/basilicata|calabria|campania|puglia|sicilia|sardegna|lazio|toscana|lombardia|piemonte|veneto|emilia|liguria|marche|umbria|abruzzo|molise|friuli|trentino|valle/i)
-          const regione = regioneMatch ? regioneMatch[0].toLowerCase() : 'basilicata'
-          const annoMatch = caption.match(/20\d{2}/) || fileName.match(/20\d{2}/)
-          const anno = annoMatch ? parseInt(annoMatch[0]) : new Date().getFullYear()
+          const pdfText = textResult.text || ''
+          console.log(`TELEGRAM PDF: estratti ${pdfText.length} caratteri da ${fileName}`)
 
-          const importResult = await executeImportaPrezziario({ regione, anno, testo: textResult.text })
-
-          if (importResult.success) {
-            await sendTelegramMessage(chatId, `✅ Prezziario ${importResult.regione.toUpperCase()} ${importResult.anno} importato!\n\n📊 *${importResult.voci_salvate} voci* salvate nel database.\n\nOra posso generare preventivi con i prezzi ufficiali.`)
-          } else {
-            await sendTelegramMessage(chatId, `⚠️ Ho estratto il testo dal PDF ma non sono riuscito a trovare voci di prezziario.\n\n${importResult.errore}\n\n💡 Il PDF potrebbe essere scansionato (immagini). Provi a mandarmelo come foto e lo leggo con OCR.`)
+          if (pdfText.length < 50) {
+            await sendTelegramMessage(chatId, '⚠️ Il PDF sembra essere scansionato (immagini, non testo). Provi a mandare le pagine come foto — le leggo con OCR.')
+            return NextResponse.json({ ok: true })
           }
-          return NextResponse.json({ ok: true })
+
+          // Check se è un prezziario (nome file, caption, o contenuto)
+          const isPrezziario = /prezz[ia]ario/i.test(fileName) || /prezz[ia]ario/i.test(caption)
+            || caption.includes('salvalo') || caption.includes('importa')
+            || /prezz[ia]ario/i.test(pdfText.slice(0, 2000))
+
+          if (isPrezziario) {
+            const { executeImportaPrezziario } = await import('@/lib/tools/scarica-prezziario')
+            const regioneMatch = (caption + ' ' + pdfText.slice(0, 3000)).match(/basilicata|calabria|campania|puglia|sicilia|sardegna|lazio|toscana|lombardia|piemonte|veneto|emilia|liguria|marche|umbria|abruzzo|molise|friuli|trentino|valle/i)
+            const regione = regioneMatch ? regioneMatch[0].toLowerCase() : 'basilicata'
+            const annoMatch = (caption + ' ' + fileName + ' ' + pdfText.slice(0, 1000)).match(/20\d{2}/)
+            const anno = annoMatch ? parseInt(annoMatch[0]) : new Date().getFullYear()
+
+            const importResult = await executeImportaPrezziario({ regione, anno, testo: pdfText })
+
+            if (importResult.success) {
+              await sendTelegramMessage(chatId, `✅ Prezziario ${importResult.regione.toUpperCase()} ${importResult.anno} importato!\n\n📊 *${importResult.voci_salvate} voci* salvate nel database.\n\nOra posso generare preventivi con i prezzi ufficiali.`)
+            } else {
+              await sendTelegramMessage(chatId, `⚠️ Riconosciuto come prezziario ma non ho trovato voci in formato standard.\n\n${importResult.errore || ''}`)
+            }
+            return NextResponse.json({ ok: true })
+          }
+
+          // PDF normale: manda il TESTO estratto a Claude (non il base64!)
+          // Tronca a 50k caratteri per evitare timeout
+          const truncatedText = pdfText.length > 50000
+            ? pdfText.slice(0, 50000) + `\n\n[...documento troncato, ${pdfText.length} caratteri totali]`
+            : pdfText
+
+          fileBlocks = [{ type: 'text', text: `[Contenuto PDF: ${fileName}]\n\n${truncatedText}` }]
+          fileDescription = fileName
+
         } catch (pdfErr) {
-          console.error('TELEGRAM prezziario import error:', pdfErr)
-          await sendTelegramMessage(chatId, '⚠️ Errore nell\'elaborazione del PDF. Provo ad analizzarlo con Claude...')
-          // Fallback: manda a Claude normalmente
+          console.error('TELEGRAM PDF parse error:', pdfErr)
+          await sendTelegramMessage(chatId, `⚠️ Non riesco a leggere il PDF "${fileName}". Potrebbe essere protetto o corrotto.\n\n💡 Provi a mandare le pagine come foto.`)
+          return NextResponse.json({ ok: true })
         }
-      }
+      } else {
+        // Non-PDF (immagini, Word): usa il flusso normale con base64
+        const result = await buildFileBlocks(fileData)
+        fileBlocks = result.blocks
+        fileDescription = result.description
 
-      const result = await buildFileBlocks(fileData)
-      fileBlocks = result.blocks
-      fileDescription = result.description
-
-      if (fileBlocks.length === 0 && fileDescription.includes('errore')) {
-        await sendTelegramMessage(chatId, `⚠️ Non sono riuscito a leggere ${fileDescription}.\n\n💡 Provi a convertirlo in PDF e rimandarlo.`)
-        return NextResponse.json({ ok: true })
+        if (fileBlocks.length === 0 && fileDescription.includes('errore')) {
+          await sendTelegramMessage(chatId, `⚠️ Non sono riuscito a leggere ${fileDescription}.\n\n💡 Provi a convertirlo in PDF e rimandarlo.`)
+          return NextResponse.json({ ok: true })
+        }
       }
     }
 
@@ -446,7 +470,8 @@ export async function POST(request: NextRequest) {
     // Salva embedding in background
     saveMessageWithEmbedding(conversationId, 'user', userText).catch(() => {})
 
-    const hasFiles = fileBlocks.length > 0
+    // hasFiles = true solo se ci sono blocchi image/document (non text estratto da PDF)
+    const hasFiles = fileBlocks.some((b: { type: string }) => b.type === 'image' || b.type === 'document')
 
     // Assicura che inizi con user
     if (history.length > 0 && history[0].role !== 'user') {
