@@ -1,7 +1,7 @@
 // Tool custom per il Cervellone
 
 import { executeCalcolaPreventivo, PreventivoInput } from './tools/preventivo'
-import { executeScaricaPrezziario } from './tools/scarica-prezziario'
+import { executeScaricaPrezziario, executeImportaPrezziario } from './tools/scarica-prezziario'
 import { countPrezziario, listRegioniDisponibili } from './tools/prezziario'
 
 export const CUSTOM_TOOLS = [
@@ -120,6 +120,28 @@ export const CUSTOM_TOOLS = [
       required: ['regione', 'url'],
     },
   },
+  {
+    name: 'importa_prezziario',
+    description: 'Importa un prezziario regionale dal TESTO di un file PDF/CSV che l\'utente ha caricato in chat. Usa quando l\'utente carica un file PDF di prezziario: copia il testo che leggi dal PDF (le righe con codice, descrizione, unità di misura e prezzo) e passalo a questo tool. Il tool parsa le voci e le salva nel database.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        regione: {
+          type: 'string',
+          description: 'Nome della regione',
+        },
+        anno: {
+          type: 'number',
+          description: 'Anno del prezziario (opzionale)',
+        },
+        testo: {
+          type: 'string',
+          description: 'Testo estratto dal PDF del prezziario — le righe con codice voce, descrizione, unità di misura e prezzo. Copia TUTTE le righe che riesci a leggere.',
+        },
+      },
+      required: ['regione', 'testo'],
+    },
+  },
 ]
 
 // Leggi contenuto di una pagina web
@@ -186,6 +208,10 @@ export async function executeTool(name: string, input: Record<string, unknown>):
     }
     case 'scarica_prezziario': {
       const result = await executeScaricaPrezziario(input as { regione: string; anno?: number; url: string })
+      return JSON.stringify(result)
+    }
+    case 'importa_prezziario': {
+      const result = await executeImportaPrezziario(input as { regione: string; anno?: number; testo: string })
       return JSON.stringify(result)
     }
     default:

@@ -295,6 +295,42 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true })
       }
 
+      // Riconoscimento automatico prezziario PDF — importa direttamente nel DB
+      const fileName = message.document.file_name || ''
+      const caption = (message.caption || '').toLowerCase()
+      const isPrezziario = /prezz[ia]ario/i.test(fileName) || /prezz[ia]ario/i.test(caption)
+        || caption.includes('salvalo') || caption.includes('importa')
+
+      if (isPrezziario && ext === 'pdf') {
+        await sendTelegramMessage(chatId, '📥 Riconosciuto come prezziario! Estraggo le voci...')
+        try {
+          const { PDFParse } = await import('pdf-parse')
+          const parser = new PDFParse({ data: Buffer.from(fileData.buffer) })
+          const textResult = await parser.getText()
+          await parser.destroy()
+
+          const { executeImportaPrezziario } = await import('@/lib/tools/scarica-prezziario')
+          // Estrai regione dalla caption o dal nome file
+          const regioneMatch = caption.match(/basilicata|calabria|campania|puglia|sicilia|sardegna|lazio|toscana|lombardia|piemonte|veneto|emilia|liguria|marche|umbria|abruzzo|molise|friuli|trentino|valle/i)
+          const regione = regioneMatch ? regioneMatch[0].toLowerCase() : 'basilicata'
+          const annoMatch = caption.match(/20\d{2}/) || fileName.match(/20\d{2}/)
+          const anno = annoMatch ? parseInt(annoMatch[0]) : new Date().getFullYear()
+
+          const importResult = await executeImportaPrezziario({ regione, anno, testo: textResult.text })
+
+          if (importResult.success) {
+            await sendTelegramMessage(chatId, `✅ Prezziario ${importResult.regione.toUpperCase()} ${importResult.anno} importato!\n\n📊 *${importResult.voci_salvate} voci* salvate nel database.\n\nOra posso generare preventivi con i prezzi ufficiali.`)
+          } else {
+            await sendTelegramMessage(chatId, `⚠️ Ho estratto il testo dal PDF ma non sono riuscito a trovare voci di prezziario.\n\n${importResult.errore}\n\n💡 Il PDF potrebbe essere scansionato (immagini). Provi a mandarmelo come foto e lo leggo con OCR.`)
+          }
+          return NextResponse.json({ ok: true })
+        } catch (pdfErr) {
+          console.error('TELEGRAM prezziario import error:', pdfErr)
+          await sendTelegramMessage(chatId, '⚠️ Errore nell\'elaborazione del PDF. Provo ad analizzarlo con Claude...')
+          // Fallback: manda a Claude normalmente
+        }
+      }
+
       const result = await buildFileBlocks(fileData)
       fileBlocks = result.blocks
       fileDescription = result.description

@@ -165,6 +165,34 @@ async function salvaInBatch(
   return salvate
 }
 
+// Tool per importare prezziario da testo (quando l'utente carica un PDF in chat)
+export async function executeImportaPrezziario(
+  input: { regione: string; anno?: number; testo: string },
+): Promise<ScaricaPrezziarioResult> {
+  const regione = input.regione.trim().toLowerCase()
+  const anno = input.anno || new Date().getFullYear()
+  const fonte = `Prezziario ${input.regione} ${anno} (caricato manualmente)`
+
+  try {
+    console.log(`PREZZIARIO IMPORT: parsing testo — ${input.testo.length} caratteri`)
+    const voci = extractVoci(input.testo)
+    console.log(`PREZZIARIO IMPORT: trovate ${voci.length} voci`)
+
+    if (voci.length === 0) {
+      return {
+        success: false, regione, anno, voci_salvate: 0, fonte,
+        errore: 'Nessuna voce trovata nel testo. Il formato potrebbe non essere supportato. Prova a copiare le righe della tabella con codice, descrizione, unità e prezzo.',
+      }
+    }
+
+    const salvate = await salvaInBatch(voci, regione, anno, fonte)
+    return { success: true, regione, anno, voci_salvate: salvate, fonte }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, regione, anno, voci_salvate: 0, fonte, errore: msg }
+  }
+}
+
 export async function executeScaricaPrezziario(
   input: ScaricaPrezziarioInput,
 ): Promise<ScaricaPrezziarioResult> {
