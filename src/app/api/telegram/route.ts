@@ -24,6 +24,7 @@ HAI MEMORIA PERSISTENTE. I dati dei progetti, documenti e conversazioni passate 
 Quando generi documenti strutturati (preventivi, computi, relazioni, tabelle), usa il blocco ~~~document con HTML professionale completo.
 Intestazione: RESTRUKTURA S.r.l. — P.IVA 02087420762. Design di alta qualità, pronto per la stampa.
 Quando fai un preventivo, genera SEMPRE anche un computo metrico con prezziario ufficiale di confronto.
+Per i prezziari regionali: USA web_search per trovare i prezzi reali. NON inventare MAI codici o prezzi. Se non trovi i dati, dillo chiaramente.
 
 Stai comunicando via Telegram. Rispondi conciso, usa *grassetto* e _corsivo_.
 Dai del Lei all'Ingegnere. Rispondi in italiano. Non menzionare mai il tuo funzionamento interno.`
@@ -304,7 +305,7 @@ export async function POST(request: NextRequest) {
     let currentMessages: any[] = history
     let fullResponse = ''
     let iterations = 0
-    const MAX_ITERATIONS = 2
+    const MAX_ITERATIONS = 4
 
     while (iterations < MAX_ITERATIONS) {
       iterations++
