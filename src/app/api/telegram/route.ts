@@ -157,13 +157,14 @@ async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: str
 }
 
 export async function POST(request: NextRequest) {
-  let chatId: number | null = null
+  let errorChatId: number | null = null
   try {
     const body = await request.json()
     const message = body.message
     if (!message) return NextResponse.json({ ok: true })
 
-    chatId = message.chat.id
+    const chatId: number = message.chat.id
+    errorChatId = chatId
 
     // Dedup
     const msgId = message.message_id
@@ -394,7 +395,7 @@ export async function POST(request: NextRequest) {
       } else if (msg.includes('too large') || msg.includes('payload')) {
         userMsg = '⚠️ File troppo pesante per essere analizzato. Provi con un file più piccolo o come foto.'
       }
-      if (chatId) await sendTelegramMessage(chatId, userMsg)
+      if (errorChatId) await sendTelegramMessage(errorChatId, userMsg)
     } catch { /* ignore */ }
     return NextResponse.json({ ok: true })
   }
