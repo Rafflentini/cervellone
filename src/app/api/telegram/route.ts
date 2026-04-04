@@ -319,7 +319,8 @@ export async function POST(request: NextRequest) {
       }
 
       // Se non c'è tool use o è end_turn → fine
-      const hasToolUse = response.content.some(b => b.type === 'tool_use')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const hasToolUse = response.content.some((b: any) => b.type === 'tool_use')
       if (!hasToolUse || response.stop_reason === 'end_turn') break
 
       // Tool use → aggiungi risultati e richiama (max 1 volta in più)

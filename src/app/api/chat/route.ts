@@ -126,7 +126,10 @@ export async function POST(request: NextRequest) {
             system: fullSystemPrompt,
             messages: currentMessages,
             tools,
-            thinking: { type: 'enabled', budget_tokens: 10000 },
+          }
+          // Thinking solo se non ci sono file (incompatibilità API con document blocks)
+          if (!hasFiles) {
+            streamParams.thinking = { type: 'enabled', budget_tokens: 10000 }
           }
 
           const stream = client.messages.stream(streamParams)
@@ -147,7 +150,8 @@ export async function POST(request: NextRequest) {
           const finalMessage = await stream.finalMessage()
 
           // Se non c'è tool use custom → fine
-          const hasToolUse = finalMessage.content.some(b => b.type === 'tool_use')
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const hasToolUse = finalMessage.content.some((b: any) => b.type === 'tool_use')
           if (!hasToolUse || finalMessage.stop_reason === 'end_turn') break
 
           // Tool use loop (web_search è server-side, gestito da Anthropic)
