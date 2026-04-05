@@ -159,7 +159,9 @@ export async function POST(request: NextRequest) {
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const streamParams: any = {
-            model: 'claude-sonnet-4-6',
+            // Routing: Sonnet default, Opus per ragionamento complesso
+            model: /relazione tecnica|calcolo strutturale|analisi normativa|perizia|ragionamento complesso/i.test(userQuery) && !hasFiles
+              ? 'claude-opus-4-6' : 'claude-sonnet-4-6',
             max_tokens: 16000,
             system: fullSystemPrompt,
             messages: currentMessages,

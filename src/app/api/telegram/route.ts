@@ -319,9 +319,12 @@ export async function POST(request: NextRequest) {
       while (iterations < MAX_ITERATIONS) {
         iterations++
 
+        // Routing intelligente: Sonnet per default, Opus per task complessi
+        const needsOpus = /relazione tecnica|calcolo strutturale|analisi normativa|confronto complesso|ragionamento|perizia/i.test(userText)
+          && !hasFiles // File grandi + Opus = troppo costoso/lento, Sonnet basta
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const params: any = {
-          model: 'claude-sonnet-4-6',
+          model: needsOpus ? 'claude-opus-4-6' : 'claude-sonnet-4-6',
           max_tokens: 16000,
           system: SYSTEM_PROMPT + memoryContext,
           messages: currentMessages,
