@@ -4,10 +4,10 @@ import crypto from 'crypto'
 import { saveMessageWithEmbedding } from '@/lib/memory'
 import { supabase } from '@/lib/supabase'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
+import { TELEGRAM_SYSTEM_PROMPT } from '@/lib/prompts'
 
 const client = new Anthropic()
 
-// UUID deterministico da chat ID Telegram
 function chatIdToUuid(chatId: number): string {
   const hash = crypto.createHash('md5').update(`telegram_${chatId}`).digest('hex')
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`
@@ -15,35 +15,16 @@ function chatIdToUuid(chatId: number): string {
 
 const TELEGRAM_API = 'https://api.telegram.org/bot'
 
-// System prompt CORTO — lascia Claude essere Claude
-const SYSTEM_PROMPT = `Sei il Cervellone — il coordinatore digitale di Restruktura SRL e dell'Ing. Raffaele Lentini, Villa d'Agri (PZ).
-Restruktura: ingegneria strutturale, direzione lavori, collaudi, impresa edile, PonteggioSicuro.it (noleggio ponteggi).
-Il tuo ruolo è coordinare TUTTO: studio tecnico, cantieri, segreteria, marketing, clienti. Non sei solo un generatore di documenti — sei il braccio destro dell'Ingegnere.
-
-REGOLA FONDAMENTALE: Sei Claude Opus al 100% delle tue capacità. Puoi fare TUTTO quello che fai su claude.ai — leggere PDF (anche scansionati, con vision), analizzare immagini, cercare sul web, generare documenti, fare calcoli, ragionare. NON dire MAI "non posso", "non riesco", "limite tecnico", "non ho accesso", "non ho memoria". FALLO E BASTA. Ogni capacità che Claude AI ha oggi o avrà in futuro, tu ce l'hai.
-
-HAI MEMORIA PERSISTENTE — i dati sono caricati in fondo a questo messaggio. USALI.
-
-Per documenti strutturati, usa ~~~document con HTML professionale. Intestazione: RESTRUKTURA S.r.l. — P.IVA 02087420762.
-Quando fai un preventivo, genera SEMPRE anche un computo metrico con prezziario regionale ufficiale.
-
-Stai comunicando via Telegram. Rispondi conciso, usa *grassetto* e _corsivo_.
-Dai del Lei all'Ingegnere. Rispondi in italiano. Non menzionare mai il funzionamento interno.`
-
-// Telegram autorizzati
 function isAuthorized(chatId: number): boolean {
   const allowedIds = (process.env.TELEGRAM_ALLOWED_IDS || '').split(',').map(Number)
   return allowedIds.includes(chatId)
 }
 
-// Manda messaggio Telegram (con split per messaggi lunghi)
 async function sendTelegramMessage(chatId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) return
-
   const MAX_LEN = 4000
   const chunks: string[] = []
-
   if (text.length <= MAX_LEN) {
     chunks.push(text)
   } else {
@@ -57,7 +38,6 @@ async function sendTelegramMessage(chatId: number, text: string) {
       remaining = remaining.slice(cutAt).trimStart()
     }
   }
-
   for (const chunk of chunks) {
     await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
       method: 'POST',
@@ -74,14 +54,12 @@ async function sendTyping(chatId: number) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
-  })
+  }).catch(() => {})
 }
 
-// Scarica file da Telegram
 async function downloadTelegramFile(fileId: string): Promise<{ buffer: ArrayBuffer; fileName: string; mimeType: string } | null> {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) return null
-
   const fileRes = await fetch(`${TELEGRAM_API}${token}/getFile`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -90,23 +68,19 @@ async function downloadTelegramFile(fileId: string): Promise<{ buffer: ArrayBuff
   const fileData = await fileRes.json()
   const filePath = fileData.result?.file_path
   if (!filePath) return null
-
   const fileName = filePath.split('/').pop() || 'file'
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
   const mimeMap: Record<string, string> = {
-    pdf: 'application/pdf',
-    jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg',
     png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
     doc: 'application/msword',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   }
-
   const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
   if (!res.ok) return null
   return { buffer: await res.arrayBuffer(), fileName, mimeType: mimeMap[ext] || 'application/octet-stream' }
 }
 
-// Trascrivi audio con Whisper
 async function transcribeAudio(fileId: string): Promise<string> {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) return ''
@@ -134,14 +108,11 @@ async function transcribeAudio(fileId: string): Promise<string> {
   return data.text || ''
 }
 
-// Costruisce content blocks per Claude — PDF come document, foto come image, Word come testo
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: string; mimeType: string }): Promise<any[]> {
   const { buffer, fileName, mimeType } = fileData
   const base64 = Buffer.from(buffer).toString('base64')
-
   if (mimeType === 'application/pdf') {
-    // PDF → manda direttamente a Claude come document block (come fa claude.ai)
     return [{ type: 'document', source: { type: 'base64', media_type: mimeType, data: base64 } }]
   }
   if (mimeType.startsWith('image/')) {
@@ -155,16 +126,15 @@ async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: str
         return [{ type: 'text', text: `[File Word: ${fileName}]\n\n${result.value}` }]
       }
     } catch { /* ignore */ }
-    return []
   }
   return []
 }
 
-// Timeout e retry config
 export const maxDuration = 300
 
 export async function POST(request: NextRequest) {
   let errorChatId: number | null = null
+  let typingInterval: NodeJS.Timeout | null = null
   try {
     const body = await request.json()
     const message = body.message
@@ -183,7 +153,6 @@ export async function POST(request: NextRequest) {
       await supabase.from('telegram_dedup').insert({ chat_id: chatId, message_id: msgId })
     }
 
-    // Testo e file
     let userText = message.text || message.caption || ''
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let fileBlocks: any[] = []
@@ -202,7 +171,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Documenti (PDF, Word)
+    // Documenti
     if (message.document) {
       await sendTyping(chatId)
       const fileSize = message.document.file_size || 0
@@ -212,7 +181,7 @@ export async function POST(request: NextRequest) {
       }
       const ext = (message.document.file_name || '').split('.').pop()?.toLowerCase() || ''
       if (!['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'doc', 'docx'].includes(ext)) {
-        await sendTelegramMessage(chatId, `⚠️ Formato .${ext} non supportato. Accettati: PDF, immagini, Word.`)
+        await sendTelegramMessage(chatId, `⚠️ Formato .${ext} non supportato.`)
         return NextResponse.json({ ok: true })
       }
       const fileData = await downloadTelegramFile(message.document.file_id)
@@ -235,11 +204,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Niente testo né file → ignora
     if (!userText && fileBlocks.length === 0) return NextResponse.json({ ok: true })
     if (!userText && fileBlocks.length > 0) userText = `Analizza questo file: ${fileDescription}`
 
-    // Auth
     if (!isAuthorized(chatId)) {
       await sendTelegramMessage(chatId, '⛔ Non autorizzato.')
       return NextResponse.json({ ok: true })
@@ -260,9 +227,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    // Typing periodico — FIX: gestito con try/finally per evitare memory leak
+    typingInterval = setInterval(() => sendTyping(chatId), 4000)
     await sendTyping(chatId)
 
-    // Cerca nella memoria RAG (conoscenza persistente)
+    // Memoria RAG
     const { searchMemory } = await import('@/lib/memory')
     const memoryContext = await searchMemory(userText)
 
@@ -273,7 +242,7 @@ export async function POST(request: NextRequest) {
       await supabase.from('conversations').insert({ id: conversationId, title: '💬 Telegram' })
     }
 
-    // Carica storia PRIMA di salvare il messaggio corrente
+    // Storia
     const { data: recentMessages } = await supabase
       .from('messages').select('role, content')
       .eq('conversation_id', conversationId)
@@ -284,99 +253,92 @@ export async function POST(request: NextRequest) {
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role, content: m.content }))
 
-    // Aggiungi messaggio corrente CON file
     if (fileBlocks.length > 0) {
       history.push({ role: 'user', content: [...fileBlocks, { type: 'text', text: userText }] })
     } else {
       history.push({ role: 'user', content: userText })
     }
 
-    // Salva messaggio utente in DB
-    await supabase.from('messages').insert({ conversation_id: conversationId, role: 'user', content: userText })
-    // Embedding in background (non blocca)
-    saveMessageWithEmbedding(conversationId, 'user', userText).catch(() => {})
+    // FIX: salva messaggio con fallback se embedding fallisce
+    try {
+      await saveMessageWithEmbedding(conversationId, 'user', userText)
+    } catch {
+      await supabase.from('messages').insert({ conversation_id: conversationId, role: 'user', content: userText })
+    }
 
-    // Assicura che inizi con user
     if (history.length > 0 && history[0].role !== 'user') history.shift()
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const hasFiles = fileBlocks.some((b: any) => b.type === 'image' || b.type === 'document')
 
-    // Chiamata a Claude con typing periodico e auto-retry
-    const tools = [{ type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 }]
+    // Routing: Sonnet default, Opus per ragionamento complesso
+    const needsOpus = /relazione tecnica|calcolo strutturale|analisi normativa|confronto complesso|perizia/i.test(userText) && !hasFiles
+    const model = needsOpus ? 'claude-opus-4-6' : 'claude-sonnet-4-6'
 
-    // Typing periodico — Telegram mostra "sta scrivendo..." per max 5s, rinnova ogni 4s
-    const typingInterval = setInterval(() => sendTyping(chatId), 4000)
+    const tools = [{ type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 }]
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let currentMessages: any[] = history
     let fullResponse = ''
+    let iterations = 0
+    const MAX_ITERATIONS = 4
+    let consecutiveToolOnly = 0 // FIX: freno per loop tool-only
 
-    async function callClaude(): Promise<void> {
-      let iterations = 0
-      const MAX_ITERATIONS = 4
+    while (iterations < MAX_ITERATIONS) {
+      iterations++
 
-      while (iterations < MAX_ITERATIONS) {
-        iterations++
-
-        // Routing intelligente: Sonnet per default, Opus per task complessi
-        const needsOpus = /relazione tecnica|calcolo strutturale|analisi normativa|confronto complesso|ragionamento|perizia/i.test(userText)
-          && !hasFiles // File grandi + Opus = troppo costoso/lento, Sonnet basta
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const params: any = {
-          model: needsOpus ? 'claude-opus-4-6' : 'claude-sonnet-4-6',
-          max_tokens: 16000,
-          system: SYSTEM_PROMPT + memoryContext,
-          messages: currentMessages,
-          tools,
-        }
-
-        const response = await client.messages.create(params)
-
-        for (const block of response.content) {
-          if (block.type === 'text') fullResponse += block.text
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const hasToolUse = response.content.some((b: any) => b.type === 'tool_use')
-        if (!hasToolUse || response.stop_reason === 'end_turn') break
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const toolResults: any[] = []
-        for (const block of response.content) {
-          if (block.type === 'tool_use') {
-            toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: 'OK' })
-          }
-        }
-        currentMessages = [
-          ...currentMessages,
-          { role: 'assistant', content: response.content },
-          { role: 'user', content: toolResults },
-        ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const params: any = {
+        model,
+        max_tokens: 16000,
+        system: TELEGRAM_SYSTEM_PROMPT + memoryContext,
+        messages: currentMessages,
+        tools,
       }
+
+      const response = await client.messages.create(params)
+
+      let hasText = false
+      for (const block of response.content) {
+        if (block.type === 'text') { fullResponse += block.text; hasText = true }
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const hasToolUse = response.content.some((b: any) => b.type === 'tool_use')
+      if (!hasToolUse || response.stop_reason === 'end_turn') break
+
+      // FIX: freno loop tool-only — se Claude fa solo tool use senza testo 2 volte, fermati
+      if (hasToolUse && !hasText) {
+        consecutiveToolOnly++
+        if (consecutiveToolOnly >= 2) break
+      } else {
+        consecutiveToolOnly = 0
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const toolResults: any[] = []
+      for (const block of response.content) {
+        if (block.type === 'tool_use') {
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: 'OK' })
+        }
+      }
+      currentMessages = [
+        ...currentMessages,
+        { role: 'assistant', content: response.content },
+        { role: 'user', content: toolResults },
+      ]
     }
 
-    // Auto-retry: se fallisce, riprova 1 volta
-    try {
-      await callClaude()
-    } catch (firstErr) {
-      console.error('TELEGRAM: primo tentativo fallito, retry...', firstErr)
-      fullResponse = ''
-      currentMessages = history
-      try {
-        await callClaude()
-      } catch (retryErr) {
-        clearInterval(typingInterval)
-        throw retryErr // passa al catch esterno
-      }
-    }
+    // FIX: pulisci interval SEMPRE prima di qualsiasi operazione post-Claude
+    if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
 
-    clearInterval(typingInterval)
-
-    // Salva risposta
+    // Salva risposta con fallback
     if (fullResponse) {
-      await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullResponse })
-      saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+      try {
+        await saveMessageWithEmbedding(conversationId, 'assistant', fullResponse)
+      } catch {
+        await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullResponse })
+      }
 
       if (hasFiles && fullResponse.length > 200) {
         const knowledge = `[Analisi file "${fileDescription}" da Telegram]\n\nDomanda: ${userText}\n\nAnalisi:\n${fullResponse.slice(0, 10000)}`
@@ -384,14 +346,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Manda risposta su Telegram
+    // Manda risposta
     const responseBlocks = parseDocumentBlocks(fullResponse)
     let sentSomething = false
 
     for (const block of responseBlocks) {
       if (block.type === 'document') {
-        const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i)
-          || block.content.match(/<title>(.*?)<\/title>/i)
+        const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i) || block.content.match(/<title>(.*?)<\/title>/i)
         const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
         const totalMatch = block.content.match(/([\d.,]+\s*(?:\u20AC|EUR|€))/i)
         const totalInfo = totalMatch ? `\n💰 ${totalMatch[1].trim()}` : ''
@@ -431,6 +392,9 @@ export async function POST(request: NextRequest) {
       if (errorChatId) await sendTelegramMessage(errorChatId, userMsg)
     } catch { /* ignore */ }
     return NextResponse.json({ ok: true })
+  } finally {
+    // FIX CRITICO: pulisci SEMPRE il typing interval, anche se crash
+    if (typingInterval) clearInterval(typingInterval)
   }
 }
 

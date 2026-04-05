@@ -28,10 +28,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  // Genera URL firmato (valido 1 ora)
+  // Genera URL firmato (valido 24 ore)
   const { data: urlData } = await supabase.storage
     .from('uploads')
-    .createSignedUrl(fileName, 3600)
+    .createSignedUrl(fileName, 86400)
 
   return NextResponse.json({
     fileName: file.name,

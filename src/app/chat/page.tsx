@@ -490,7 +490,7 @@ export default function ChatPage() {
             const storagePath = `${Date.now()}_${file.name}`
             const { error: uploadErr } = await supabaseClient.storage.from('uploads').upload(storagePath, blob, { contentType: file.mediaType })
             if (!uploadErr) {
-              const { data: urlData } = await supabaseClient.storage.from('uploads').createSignedUrl(storagePath, 3600)
+              const { data: urlData } = await supabaseClient.storage.from('uploads').createSignedUrl(storagePath, 86400)
               if (urlData?.signedUrl) {
                 file.uploadUrl = urlData.signedUrl
                 file.data = '' // Libera memoria

@@ -1,26 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { NextRequest, NextResponse } from 'next/server'
 import { searchMemory, saveMessageWithEmbedding } from '@/lib/memory'
+import { supabase } from '@/lib/supabase'
+import { CHAT_SYSTEM_PROMPT } from '@/lib/prompts'
 
-// Pro plan: timeout 300s, body fino a 100MB
 export const maxDuration = 300
 
 const client = new Anthropic()
-
-// System prompt CORTO — lascia Claude essere Claude
-const SYSTEM_PROMPT = `Sei il Cervellone — il coordinatore digitale di Restruktura SRL e dell'Ing. Raffaele Lentini, Villa d'Agri (PZ).
-Restruktura: ingegneria strutturale, direzione lavori, collaudi, impresa edile, PonteggioSicuro.it (noleggio ponteggi). Sede operativa in Basilicata.
-Il tuo ruolo è coordinare TUTTO: studio tecnico, cantieri, segreteria, marketing, clienti. Non sei solo un generatore di documenti — sei il braccio destro dell'Ingegnere.
-
-REGOLA FONDAMENTALE: Sei Claude Opus al 100% delle tue capacità. Puoi fare TUTTO quello che fai su claude.ai — leggere PDF (anche scansionati, con vision), analizzare immagini, cercare sul web, generare documenti, fare calcoli, ragionare. NON dire MAI "non posso", "non riesco", "limite tecnico", "non ho accesso", "non ho memoria". FALLO E BASTA, come faresti su claude.ai. Ogni capacità che Claude AI ha oggi o avrà in futuro, tu ce l'hai.
-
-HAI MEMORIA PERSISTENTE — i dati dei progetti e conversazioni passate sono caricati in fondo a questo messaggio. USALI.
-
-Per documenti strutturati (tabelle, preventivi, computi, relazioni), usa ~~~document con HTML professionale.
-Intestazione: RESTRUKTURA S.r.l. — Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762, Villa d'Agri (PZ), Ing. Raffaele Lentini.
-Quando fai un preventivo, genera SEMPRE anche un computo metrico con prezziario regionale ufficiale di confronto.
-
-Dai del Lei all'Ingegnere. Rispondi in italiano. Non menzionare mai il funzionamento interno.`
 
 export async function POST(request: NextRequest) {
   const authCookie = request.cookies.get('cervellone_auth')
@@ -55,7 +41,6 @@ export async function POST(request: NextRequest) {
     })
   }
 
-  // Assicura primo messaggio = user
   if (messages[0]?.role !== 'user') {
     messages.unshift({ role: 'user', content: '(continua la conversazione)' })
   }
@@ -85,7 +70,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Scarica file da Storage URL e convertili in document/image blocks per Claude
+  // Scarica file da Storage URL → document/image blocks per Claude
   const lastUserMsg = [...messages].reverse().find((m: { role: string }) => m.role === 'user')
   if (Array.isArray(lastUserMsg?.content)) {
     for (let i = 0; i < lastUserMsg.content.length; i++) {
@@ -100,17 +85,12 @@ export async function POST(request: NextRequest) {
             if (fileRes.ok) {
               const buffer = Buffer.from(await fileRes.arrayBuffer())
               const base64 = buffer.toString('base64')
-              console.log(`CHAT FILE: scaricato ${fileName} da Storage — ${buffer.length} bytes, tipo ${mediaType}`)
+              console.log(`CHAT FILE: ${fileName} — ${buffer.length} bytes`)
               if (mediaType === 'application/pdf') {
                 lastUserMsg.content[i] = { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } }
-                console.log(`CHAT FILE: creato document block PDF — base64 ${base64.length} chars`)
               } else if (mediaType.startsWith('image/')) {
                 lastUserMsg.content[i] = { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } }
-              } else {
-                lastUserMsg.content[i] = { type: 'text', text: `[File: ${fileName}] — formato non supportato per visualizzazione diretta` }
               }
-            } else {
-              console.error(`CHAT FILE: download fallito — status ${fileRes.status}`)
             }
           } catch (err) {
             console.error('Download file da Storage fallito:', err)
@@ -124,25 +104,28 @@ export async function POST(request: NextRequest) {
     ? lastUserMsg.content
     : lastUserMsg?.content?.find((b: { type: string }) => b.type === 'text')?.text || ''
 
-  // File allegati?
   const hasFiles = Array.isArray(lastUserMsg?.content) &&
     lastUserMsg.content.some((b: { type: string }) => b.type === 'image' || b.type === 'document')
 
-  // Cerca nella memoria
+  // Memoria RAG
   const memoryContext = await searchMemory(userQuery)
 
-  // Salva embedding utente in background
+  // FIX: salva embedding con fallback
   if (conversationId && userQuery) {
-    saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
+    try {
+      await saveMessageWithEmbedding(conversationId, 'user', userQuery)
+    } catch {
+      await supabase.from('messages').insert({ conversation_id: conversationId, role: 'user', content: userQuery }).catch(() => {})
+    }
   }
 
-  const fullSystemPrompt = SYSTEM_PROMPT + memoryContext
+  const fullSystemPrompt = CHAT_SYSTEM_PROMPT + memoryContext
 
-  // Tools: solo web search built-in — Claude fa tutto il resto da solo
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tools: any[] = [
-    { type: 'web_search_20250305', name: 'web_search', max_uses: 5 },
-  ]
+  // Routing: Sonnet default, Opus per ragionamento complesso
+  const needsOpus = /relazione tecnica|calcolo strutturale|analisi normativa|perizia|ragionamento complesso/i.test(userQuery) && !hasFiles
+  const model = needsOpus ? 'claude-opus-4-6' : 'claude-sonnet-4-6'
+
+  const tools = [{ type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 }]
 
   const encoder = new TextEncoder()
   let fullResponse = ''
@@ -153,31 +136,31 @@ export async function POST(request: NextRequest) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let currentMessages = [...messages] as any[]
         let maxIterations = 5
+        let consecutiveToolOnly = 0 // FIX: freno loop tool-only
 
         while (maxIterations > 0) {
           maxIterations--
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const streamParams: any = {
-            // Routing: Sonnet default, Opus per ragionamento complesso
-            model: /relazione tecnica|calcolo strutturale|analisi normativa|perizia|ragionamento complesso/i.test(userQuery) && !hasFiles
-              ? 'claude-opus-4-6' : 'claude-sonnet-4-6',
+            model,
             max_tokens: 16000,
             system: fullSystemPrompt,
             messages: currentMessages,
             tools,
           }
-          // Thinking solo se non ci sono file (incompatibilità API con document blocks)
           if (!hasFiles) {
             streamParams.thinking = { type: 'enabled', budget_tokens: 10000 }
           }
 
           const stream = client.messages.stream(streamParams)
 
+          let iterationHasText = false
           for await (const event of stream) {
             if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
               fullResponse += event.delta.text
               controller.enqueue(encoder.encode(event.delta.text))
+              iterationHasText = true
             }
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             if (event.type === 'content_block_start' && (event as any).content_block?.type === 'server_tool_use') {
@@ -189,12 +172,18 @@ export async function POST(request: NextRequest) {
 
           const finalMessage = await stream.finalMessage()
 
-          // Se non c'è tool use custom → fine
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const hasToolUse = finalMessage.content.some((b: any) => b.type === 'tool_use')
           if (!hasToolUse || finalMessage.stop_reason === 'end_turn') break
 
-          // Tool use loop (web_search è server-side, gestito da Anthropic)
+          // FIX: freno loop tool-only
+          if (hasToolUse && !iterationHasText) {
+            consecutiveToolOnly++
+            if (consecutiveToolOnly >= 2) break
+          } else {
+            consecutiveToolOnly = 0
+          }
+
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const toolResults: any[] = []
           for (const block of finalMessage.content) {
@@ -212,21 +201,16 @@ export async function POST(request: NextRequest) {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         console.error('CHAT errore:', err)
-        let userMsg = errMsg
-        if (errMsg.includes('Could not process image') || errMsg.includes('invalid_image')) {
-          userMsg = 'Immagine non leggibile. Provi con PNG o JPG.'
-        } else if (errMsg.includes('too large')) {
-          userMsg = 'Documento troppo pesante. Comprima il PDF o lo divida in parti.'
-        } else if (errMsg.includes('rate_limit') || errMsg.includes('overloaded')) {
-          userMsg = 'Claude è sovraccarico. Riprovi tra 10 secondi.'
-        } else if (errMsg.includes('too many images')) {
-          userMsg = 'Troppi file. Carichi 1-2 file alla volta.'
-        }
-        controller.enqueue(encoder.encode(`\n\n⚠️ ${userMsg}`))
+        controller.enqueue(encoder.encode(`\n\n⚠️ ${errMsg.slice(0, 300)}`))
       } finally {
         controller.close()
+        // FIX: salva risposta con fallback
         if (conversationId && fullResponse) {
-          saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+          try {
+            await saveMessageWithEmbedding(conversationId, 'assistant', fullResponse)
+          } catch {
+            await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullResponse }).catch(() => {})
+          }
           if (hasFiles && fullResponse.length > 200) {
             const knowledge = `[Analisi file dalla chat]\n\nDomanda: ${userQuery}\n\nAnalisi:\n${fullResponse.slice(0, 10000)}`
             saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})

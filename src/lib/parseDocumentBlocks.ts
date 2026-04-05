@@ -9,7 +9,7 @@ export interface DocumentBlock {
  */
 export function parseDocumentBlocks(text: string): DocumentBlock[] {
   const blocks: DocumentBlock[] = []
-  const regex = /~~~document\s*\n([\s\S]*?)~~~(?:\s*$|\s*\n)/gm
+  const regex = /~~~document\s*\n([\s\S]*?)~~~(?:\s*$|\s*\n|\s)/gm
   let lastIndex = 0
 
   let match
