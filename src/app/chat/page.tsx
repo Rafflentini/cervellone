@@ -2,7 +2,13 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
+import { createClient } from '@supabase/supabase-js'
 import CervelloneLogo from '@/components/CervelloneLogo'
+
+// Client Supabase per upload diretto dal browser (bypassa il limite 4.5MB di Vercel)
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const supabaseClient = createClient(supabaseUrl, supabaseAnonKey)
 import MarkdownRenderer from '@/components/MarkdownRenderer'
 import DocumentPreviewPanel from '@/components/DocumentPreviewPanel'
 import SplitPanel from '@/components/SplitPanel'
@@ -472,19 +478,23 @@ export default function ChatPage() {
     // Salva messaggio utente
     await saveMessage(convId, 'user', text, userMsg.files)
 
-    // Per file grandi (>3MB): carica su Supabase Storage prima
+    // Per file grandi (>3MB base64 = ~2MB reali): carica su Supabase Storage direttamente dal browser
     if (userMsg.files) {
       for (const file of userMsg.files) {
         if (file.data && file.data.length > 3 * 1024 * 1024 && (file.isPdf || file.isImage)) {
           try {
-            const blob = await fetch(`data:${file.mediaType};base64,${file.data}`).then(r => r.blob())
-            const formData = new FormData()
-            formData.append('file', blob, file.name)
-            const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData })
-            if (uploadRes.ok) {
-              const uploadData = await uploadRes.json()
-              file.uploadUrl = uploadData.url
-              file.data = '' // Libera memoria — il file è su Storage
+            const binary = atob(file.data)
+            const bytes = new Uint8Array(binary.length)
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+            const blob = new Blob([bytes], { type: file.mediaType })
+            const storagePath = `${Date.now()}_${file.name}`
+            const { error: uploadErr } = await supabaseClient.storage.from('uploads').upload(storagePath, blob, { contentType: file.mediaType })
+            if (!uploadErr) {
+              const { data: urlData } = await supabaseClient.storage.from('uploads').createSignedUrl(storagePath, 3600)
+              if (urlData?.signedUrl) {
+                file.uploadUrl = urlData.signedUrl
+                file.data = '' // Libera memoria
+              }
             }
           } catch { /* fallback: manda base64 */ }
         }
