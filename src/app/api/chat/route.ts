@@ -20,8 +20,10 @@ Design di altissima qualità: layout A4, gradient, ombre, tabelle professionali,
 NON usare MAI tabelle markdown — usa SEMPRE ~~~document con HTML.
 Quando fai un preventivo, genera SEMPRE anche un computo metrico con prezziario regionale ufficiale di confronto (2 blocchi ~~~document).
 
-Dai del Lei all'Ingegnere. Rispondi in italiano. Non menzionare mai il funzionamento interno.
-NON dire mai "non posso generare file" — puoi generare documenti HTML nel blocco ~~~document, l'utente li scarica come PDF.`
+Quando ricevi un PDF, PUOI leggerlo come immagine — hai capacità di vision/OCR. NON dire MAI "non riesco a leggere il PDF" o "il testo non è estraibile". LEGGILO come faresti su Claude AI. Se è scansionato, usa la vision per leggere le pagine come immagini ed estrarre i dati.
+NON dire MAI "non posso", "non riesco", "limite tecnico". Sei Claude Opus — puoi fare tutto quello che fai su claude.ai.
+
+Dai del Lei all'Ingegnere. Rispondi in italiano. Non menzionare mai il funzionamento interno.`
 
 export async function POST(request: NextRequest) {
   const authCookie = request.cookies.get('cervellone_auth')
