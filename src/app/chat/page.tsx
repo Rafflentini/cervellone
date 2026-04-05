@@ -18,6 +18,7 @@ type FileAttachment = {
   isZip: boolean
   preview: string
   extractedText?: string
+  uploadUrl?: string // Per file grandi caricati su Supabase Storage
 }
 
 type DisplayMessage = {
@@ -57,7 +58,10 @@ function buildApiContent(msg: DisplayMessage, includeFiles: boolean = true) {
   // Per il messaggio corrente: manda i file veri
   const blocks: object[] = []
   for (const file of msg.files) {
-    if (file.isImage && file.data) {
+    if (file.uploadUrl) {
+      // File grande caricato su Storage — manda URL per download server-side
+      blocks.push({ type: 'text', text: `[FILE_URL:${file.uploadUrl}:${file.name}:${file.mediaType}]` })
+    } else if (file.isImage && file.data) {
       blocks.push({ type: 'image', source: { type: 'base64', media_type: file.mediaType, data: file.data } })
     } else if (file.isPdf && file.data && file.mediaType) {
       blocks.push({ type: 'document', source: { type: 'base64', media_type: file.mediaType, data: file.data } })
@@ -468,8 +472,26 @@ export default function ChatPage() {
     // Salva messaggio utente
     await saveMessage(convId, 'user', text, userMsg.files)
 
+    // Per file grandi (>3MB): carica su Supabase Storage prima
+    if (userMsg.files) {
+      for (const file of userMsg.files) {
+        if (file.data && file.data.length > 3 * 1024 * 1024 && (file.isPdf || file.isImage)) {
+          try {
+            const blob = await fetch(`data:${file.mediaType};base64,${file.data}`).then(r => r.blob())
+            const formData = new FormData()
+            formData.append('file', blob, file.name)
+            const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData })
+            if (uploadRes.ok) {
+              const uploadData = await uploadRes.json()
+              file.uploadUrl = uploadData.url
+              file.data = '' // Libera memoria — il file è su Storage
+            }
+          } catch { /* fallback: manda base64 */ }
+        }
+      }
+    }
+
     // Solo l'ultimo messaggio utente manda i file reali — i precedenti mandano solo testo
-    // Questo evita di ri-mandare milioni di caratteri base64 dei file vecchi
     const lastIdx = newMessages.length - 1
     const apiMessages = newMessages.map((m, idx) => ({
       role: m.role,

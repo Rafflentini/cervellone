@@ -86,8 +86,37 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Ultimo messaggio utente
+  // Scarica file da Storage URL e convertili in document/image blocks per Claude
   const lastUserMsg = [...messages].reverse().find((m: { role: string }) => m.role === 'user')
+  if (Array.isArray(lastUserMsg?.content)) {
+    for (let i = 0; i < lastUserMsg.content.length; i++) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const block = lastUserMsg.content[i] as any
+      if (block.type === 'text' && block.text?.startsWith('[FILE_URL:')) {
+        const match = block.text.match(/\[FILE_URL:(.*?):(.*?):(.*?)\]/)
+        if (match) {
+          const [, url, fileName, mediaType] = match
+          try {
+            const fileRes = await fetch(url)
+            if (fileRes.ok) {
+              const buffer = Buffer.from(await fileRes.arrayBuffer())
+              const base64 = buffer.toString('base64')
+              if (mediaType === 'application/pdf') {
+                lastUserMsg.content[i] = { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } }
+              } else if (mediaType.startsWith('image/')) {
+                lastUserMsg.content[i] = { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } }
+              } else {
+                lastUserMsg.content[i] = { type: 'text', text: `[File: ${fileName}] — formato non supportato per visualizzazione diretta` }
+              }
+            }
+          } catch (err) {
+            console.error('Download file da Storage fallito:', err)
+          }
+        }
+      }
+    }
+  }
+
   const userQuery = typeof lastUserMsg?.content === 'string'
     ? lastUserMsg.content
     : lastUserMsg?.content?.find((b: { type: string }) => b.type === 'text')?.text || ''
