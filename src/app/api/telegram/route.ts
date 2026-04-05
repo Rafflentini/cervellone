@@ -160,6 +160,9 @@ async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: str
   return []
 }
 
+// Timeout e retry config
+export const maxDuration = 300
+
 export async function POST(request: NextRequest) {
   let errorChatId: number | null = null
   try {
@@ -299,54 +302,73 @@ export async function POST(request: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const hasFiles = fileBlocks.some((b: any) => b.type === 'image' || b.type === 'document')
 
-    // UNA chiamata a Claude, max 2 iterazioni tool use
+    // Chiamata a Claude con typing periodico e auto-retry
     const tools = [{ type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 }]
+
+    // Typing periodico — Telegram mostra "sta scrivendo..." per max 5s, rinnova ogni 4s
+    const typingInterval = setInterval(() => sendTyping(chatId), 4000)
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let currentMessages: any[] = history
     let fullResponse = ''
-    let iterations = 0
-    const MAX_ITERATIONS = 4
 
-    while (iterations < MAX_ITERATIONS) {
-      iterations++
-      await sendTyping(chatId)
+    async function callClaude(): Promise<void> {
+      let iterations = 0
+      const MAX_ITERATIONS = 4
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const params: any = {
-        model: 'claude-opus-4-6',
-        max_tokens: 16000,
-        system: SYSTEM_PROMPT + memoryContext,
-        messages: currentMessages,
-        tools,
-      }
+      while (iterations < MAX_ITERATIONS) {
+        iterations++
 
-      const response = await client.messages.create(params)
-
-      for (const block of response.content) {
-        if (block.type === 'text') fullResponse += block.text
-      }
-
-      // Se non c'è tool use o è end_turn → fine
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const hasToolUse = response.content.some((b: any) => b.type === 'tool_use')
-      if (!hasToolUse || response.stop_reason === 'end_turn') break
-
-      // Tool use → aggiungi risultati e richiama (max 1 volta in più)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const toolResults: any[] = []
-      for (const block of response.content) {
-        if (block.type === 'tool_use') {
-          // web_search è gestito automaticamente da Anthropic, non serve executeTool
-          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: 'OK' })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const params: any = {
+          model: 'claude-opus-4-6',
+          max_tokens: 16000,
+          system: SYSTEM_PROMPT + memoryContext,
+          messages: currentMessages,
+          tools,
         }
+
+        const response = await client.messages.create(params)
+
+        for (const block of response.content) {
+          if (block.type === 'text') fullResponse += block.text
+        }
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const hasToolUse = response.content.some((b: any) => b.type === 'tool_use')
+        if (!hasToolUse || response.stop_reason === 'end_turn') break
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const toolResults: any[] = []
+        for (const block of response.content) {
+          if (block.type === 'tool_use') {
+            toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: 'OK' })
+          }
+        }
+        currentMessages = [
+          ...currentMessages,
+          { role: 'assistant', content: response.content },
+          { role: 'user', content: toolResults },
+        ]
       }
-      currentMessages = [
-        ...currentMessages,
-        { role: 'assistant', content: response.content },
-        { role: 'user', content: toolResults },
-      ]
     }
+
+    // Auto-retry: se fallisce, riprova 1 volta
+    try {
+      await callClaude()
+    } catch (firstErr) {
+      console.error('TELEGRAM: primo tentativo fallito, retry...', firstErr)
+      fullResponse = ''
+      currentMessages = history
+      try {
+        await callClaude()
+      } catch (retryErr) {
+        clearInterval(typingInterval)
+        throw retryErr // passa al catch esterno
+      }
+    }
+
+    clearInterval(typingInterval)
 
     // Salva risposta
     if (fullResponse) {
