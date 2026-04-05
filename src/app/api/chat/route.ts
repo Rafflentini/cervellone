@@ -2,6 +2,12 @@ import Anthropic from '@anthropic-ai/sdk'
 import { NextRequest, NextResponse } from 'next/server'
 import { searchMemory, saveMessageWithEmbedding } from '@/lib/memory'
 
+// Aumenta il limite body a 50MB e il timeout a 300s
+export const maxDuration = 300
+export const config = {
+  api: { bodyParser: { sizeLimit: '50mb' } },
+}
+
 const client = new Anthropic()
 
 // System prompt CORTO — lascia Claude essere Claude
