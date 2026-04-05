@@ -159,7 +159,7 @@ export async function POST(request: NextRequest) {
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const streamParams: any = {
-            model: 'claude-opus-4-6',
+            model: 'claude-sonnet-4-6',
             max_tokens: 16000,
             system: fullSystemPrompt,
             messages: currentMessages,

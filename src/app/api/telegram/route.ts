@@ -321,7 +321,7 @@ export async function POST(request: NextRequest) {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const params: any = {
-          model: 'claude-opus-4-6',
+          model: 'claude-sonnet-4-6',
           max_tokens: 16000,
           system: SYSTEM_PROMPT + memoryContext,
           messages: currentMessages,
@@ -419,11 +419,11 @@ export async function POST(request: NextRequest) {
     console.error('TELEGRAM errore:', err)
     try {
       const msg = err instanceof Error ? err.message : String(err)
-      let userMsg = '⚠️ Errore temporaneo. Riprovi tra un momento.'
-      if (msg.includes('credit') || msg.includes('billing') || msg.includes('429')) {
-        userMsg = '⚠️ Crediti API esauriti o limite raggiunto.'
+      let userMsg = `⚠️ ${msg.slice(0, 300)}`
+      if (msg.includes('credit') || msg.includes('billing') || msg.includes('usage limit')) {
+        userMsg = '⚠️ Crediti API esauriti o limite raggiunto. Controllare console.anthropic.com'
       } else if (msg.includes('too large') || msg.includes('payload')) {
-        userMsg = '⚠️ File troppo pesante per essere analizzato. Provi con un file più piccolo o come foto.'
+        userMsg = '⚠️ File troppo pesante per essere analizzato.'
       }
       if (errorChatId) await sendTelegramMessage(errorChatId, userMsg)
     } catch { /* ignore */ }
