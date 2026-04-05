@@ -487,15 +487,15 @@ export default function ChatPage() {
       if (!res.ok) {
         if (res.status === 401) { router.push('/login'); return }
         if (res.status === 413) {
-          const fileCount = pendingFiles.length
           const bodySizeMB = (new Blob([jsonBody]).size / (1024 * 1024)).toFixed(1)
           throw new Error(
-            `I file sono troppo pesanti (${bodySizeMB} MB in totale, limite ~35 MB).\n\n` +
+            `I file sono troppo pesanti (${bodySizeMB} MB).\n\n` +
+            `⚠️ Vercel è probabilmente sul piano Hobby (limite 4.5 MB per richiesta).\n` +
+            `Con il piano Pro il limite sale a 100 MB.\n\n` +
             `💡 Cosa fare:\n` +
-            (fileCount > 1
-              ? `• Carica i file uno alla volta — ogni analisi viene salvata in memoria\n`
-              : `• Riduci la dimensione del file (comprimi il PDF o abbassa la risoluzione)\n`) +
-            `• Per i PDF pesanti, usa la funzione "Carica progetto ZIP" che li elabora in background`
+            `• Verifica il piano Vercel su vercel.com/dashboard\n` +
+            `• Oppure carica il file da Telegram (nessun limite di body)\n` +
+            `• Oppure comprimi il PDF e riprova`
           )
         }
         const errorText = await res.text().catch(() => '')
