@@ -163,11 +163,11 @@ async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: str
       if (xml) {
         // Estrai testo dalle celle
         const rows: string[] = []
-        const rowRe = /<table:table-row[^>]*>(.*?)<\/table:table-row>/gs
+        const rowRe = /<table:table-row[^>]*>([\s\S]*?)<\/table:table-row>/g
         let rm
         while ((rm = rowRe.exec(xml)) !== null) {
           const cells: string[] = []
-          const cellRe = /<table:table-cell([^>]*)>(.*?)<\/table:table-cell>/gs
+          const cellRe = /<table:table-cell([^>]*)>([\s\S]*?)<\/table:table-cell>/g
           let cm
           while ((cm = cellRe.exec(rm[1])) !== null) {
             const txt = (cm[2] || '').replace(/<[^>]+>/g, '').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&apos;/g,"'").trim()
@@ -197,7 +197,7 @@ async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: str
       const shared = await zip.file('xl/sharedStrings.xml')?.async('string')
       if (shared) {
         const texts: string[] = []
-        const re = /<t[^>]*>(.*?)<\/t>/gs
+        const re = /<t[^>]*>([\s\S]*?)<\/t>/g
         let m
         while ((m = re.exec(shared)) !== null) texts.push(m[1].trim())
         if (texts.length > 0) {
