@@ -115,7 +115,7 @@ export async function POST(request: NextRequest) {
     try {
       await saveMessageWithEmbedding(conversationId, 'user', userQuery)
     } catch {
-      await supabase.from('messages').insert({ conversation_id: conversationId, role: 'user', content: userQuery }).catch(() => {})
+      await supabase.from('messages').insert({ conversation_id: conversationId, role: 'user', content: userQuery })
     }
   }
 
@@ -209,7 +209,7 @@ export async function POST(request: NextRequest) {
           try {
             await saveMessageWithEmbedding(conversationId, 'assistant', fullResponse)
           } catch {
-            await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullResponse }).catch(() => {})
+            await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullResponse })
           }
           if (hasFiles && fullResponse.length > 200) {
             const knowledge = `[Analisi file dalla chat]\n\nDomanda: ${userQuery}\n\nAnalisi:\n${fullResponse.slice(0, 10000)}`
