@@ -373,15 +373,12 @@ export default function ChatPage() {
         return
       }
 
-      // Accetta anche spreadsheet e testo come "Word" (verranno estratti come testo)
-      const isSpreadsheetOrText = /\.(xlsx|xls|ods|csv|txt|dwg|dxf)$/i.test(nameLower)
-      if (!isImage && !isPdf && !isWord && !isSpreadsheetOrText) {
-        alert(`Formato non supportato: ${file.name}\nSupportati: foto, PDF, Word, Excel, ODS, CSV, TXT, ZIP`)
-        continue
-      }
+      // Accetta spreadsheet, testo, e qualsiasi altro formato
+      const isSpreadsheetOrText = /\.(xlsx|xls|ods|csv|txt|dwg|dxf|json|xml|html|htm|md|rtf|odt|ppt|pptx|odp|svg|tiff|tif|heic)$/i.test(nameLower)
+      const isGenericFile = !isImage && !isPdf && !isWord && !isSpreadsheetOrText && !isZip
 
-      if (isSpreadsheetOrText) {
-        // Spreadsheet/CSV/TXT — leggi come testo e manda come Word (testo estratto)
+      if (isSpreadsheetOrText || isGenericFile) {
+        // Qualsiasi file non-immagine/non-PDF: prova a leggerlo come testo
         try {
           const text = await file.text()
           if (text && text.length > 50) {
@@ -389,6 +386,14 @@ export default function ChatPage() {
               name: file.name, mediaType: file.type || 'text/plain', data: '',
               isImage: false, isPdf: false, isWord: true, isZip: false,
               preview: '', extractedText: `[File: ${file.name}]\n\n${text.slice(0, 200000)}`,
+            })
+          } else {
+            // File binario — manda come base64
+            const data = await fileToBase64(file)
+            newAttachments.push({
+              name: file.name, mediaType: file.type || 'application/octet-stream', data,
+              isImage: false, isPdf: false, isWord: true, isZip: false,
+              preview: '', extractedText: `[File binario: ${file.name}, ${(file.size / 1024).toFixed(0)} KB]`,
             })
           }
         } catch {
@@ -1089,7 +1094,7 @@ export default function ChatPage() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*,.pdf,.docx,.doc,.zip,.xlsx,.xls,.ods,.csv,.txt,.dwg,.dxf"
+            accept="*/*"
             multiple
             className="hidden"
             onChange={handleFileInput}

@@ -71,15 +71,37 @@ async function downloadTelegramFile(fileId: string): Promise<{ buffer: ArrayBuff
   const fileName = filePath.split('/').pop() || 'file'
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
   const mimeMap: Record<string, string> = {
-    pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-    png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+    // Documenti
+    pdf: 'application/pdf',
     doc: 'application/msword',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    odt: 'application/vnd.oasis.opendocument.text',
+    rtf: 'application/rtf',
+    // Spreadsheet
     xls: 'application/vnd.ms-excel',
     xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     ods: 'application/vnd.oasis.opendocument.spreadsheet',
     csv: 'text/csv',
-    txt: 'text/plain',
+    // Presentazioni
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    odp: 'application/vnd.oasis.opendocument.presentation',
+    // Immagini
+    jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    png: 'image/png', gif: 'image/gif', webp: 'image/webp',
+    bmp: 'image/bmp', svg: 'image/svg+xml',
+    tiff: 'image/tiff', tif: 'image/tiff',
+    heic: 'image/heic', heif: 'image/heif',
+    ico: 'image/x-icon',
+    // CAD / Tecnici
+    dwg: 'application/acad', dxf: 'application/dxf',
+    // Testo / Dati
+    txt: 'text/plain', md: 'text/markdown',
+    json: 'application/json', xml: 'application/xml',
+    html: 'text/html', htm: 'text/html',
+    // Archivi
+    zip: 'application/zip', rar: 'application/x-rar-compressed',
+    '7z': 'application/x-7z-compressed',
   }
   const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
   if (!res.ok) return null
@@ -184,7 +206,17 @@ async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: str
       }
     } catch { /* ignore */ }
   }
-  return []
+  // Fallback: qualsiasi altro file — prova a leggerlo come testo
+  try {
+    const text = Buffer.from(buffer).toString('utf-8')
+    // Se contiene caratteri leggibili, mandalo come testo
+    const printable = text.replace(/[^\x20-\x7E\r\n\t\xC0-\xFF]/g, '')
+    if (printable.length > text.length * 0.5 && text.length > 50) {
+      return [{ type: 'text', text: `[File: ${fileName}]\n\n${text.slice(0, 100000)}` }]
+    }
+  } catch { /* ignore */ }
+  // File binario non leggibile ��� informa Claude
+  return [{ type: 'text', text: `[File binario: ${fileName}, ${(buffer.byteLength / 1024).toFixed(0)} KB, tipo: ${mimeType}] — File non leggibile come testo. Comunicare all'utente che il formato richiede strumenti specifici.` }]
 }
 
 export const maxDuration = 300
@@ -237,8 +269,10 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true })
       }
       const ext = (message.document.file_name || '').split('.').pop()?.toLowerCase() || ''
-      if (!['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'doc', 'docx', 'xls', 'xlsx', 'ods', 'csv', 'txt'].includes(ext)) {
-        await sendTelegramMessage(chatId, `⚠️ Formato .${ext} non supportato.`)
+      // Accetta QUALSIASI formato — Claude decide cosa farne
+      // Solo file senza estensione vengono rifiutati
+      if (!ext) {
+        await sendTelegramMessage(chatId, '⚠️ File senza estensione. Rinomini il file e riprovi.')
         return NextResponse.json({ ok: true })
       }
       const fileData = await downloadTelegramFile(message.document.file_id)
