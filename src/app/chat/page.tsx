@@ -373,12 +373,28 @@ export default function ChatPage() {
         return
       }
 
-      if (!isImage && !isPdf && !isWord) {
-        alert(`Formato non supportato: ${file.name}\nSupportati: foto, PDF, Word, ZIP`)
+      // Accetta anche spreadsheet e testo come "Word" (verranno estratti come testo)
+      const isSpreadsheetOrText = /\.(xlsx|xls|ods|csv|txt|dwg|dxf)$/i.test(nameLower)
+      if (!isImage && !isPdf && !isWord && !isSpreadsheetOrText) {
+        alert(`Formato non supportato: ${file.name}\nSupportati: foto, PDF, Word, Excel, ODS, CSV, TXT, ZIP`)
         continue
       }
 
-      if (isWord) {
+      if (isSpreadsheetOrText) {
+        // Spreadsheet/CSV/TXT — leggi come testo e manda come Word (testo estratto)
+        try {
+          const text = await file.text()
+          if (text && text.length > 50) {
+            newAttachments.push({
+              name: file.name, mediaType: file.type || 'text/plain', data: '',
+              isImage: false, isPdf: false, isWord: true, isZip: false,
+              preview: '', extractedText: `[File: ${file.name}]\n\n${text.slice(0, 200000)}`,
+            })
+          }
+        } catch {
+          alert(`Errore lettura file: ${file.name}`)
+        }
+      } else if (isWord) {
         try {
           const mammoth = await import('mammoth')
           const arrayBuffer = await file.arrayBuffer()
@@ -1073,7 +1089,7 @@ export default function ChatPage() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*,.pdf,.docx,.doc,.zip"
+            accept="image/*,.pdf,.docx,.doc,.zip,.xlsx,.xls,.ods,.csv,.txt,.dwg,.dxf"
             multiple
             className="hidden"
             onChange={handleFileInput}

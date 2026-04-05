@@ -75,6 +75,11 @@ async function downloadTelegramFile(fileId: string): Promise<{ buffer: ArrayBuff
     png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
     doc: 'application/msword',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ods: 'application/vnd.oasis.opendocument.spreadsheet',
+    csv: 'text/csv',
+    txt: 'text/plain',
   }
   const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
   if (!res.ok) return null
@@ -124,6 +129,58 @@ async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: str
       const result = await mammoth.extractRawText({ arrayBuffer: buffer })
       if (result.value && result.value.length > 50) {
         return [{ type: 'text', text: `[File Word: ${fileName}]\n\n${result.value}` }]
+      }
+    } catch { /* ignore */ }
+  }
+  // ODS (spreadsheet OpenDocument) — estrai testo dal XML interno
+  if (fileName.endsWith('.ods')) {
+    try {
+      const JSZip = (await import('jszip')).default
+      const zip = await JSZip.loadAsync(Buffer.from(buffer))
+      const xml = await zip.file('content.xml')?.async('string')
+      if (xml) {
+        // Estrai testo dalle celle
+        const rows: string[] = []
+        const rowRe = /<table:table-row[^>]*>(.*?)<\/table:table-row>/gs
+        let rm
+        while ((rm = rowRe.exec(xml)) !== null) {
+          const cells: string[] = []
+          const cellRe = /<table:table-cell([^>]*)>(.*?)<\/table:table-cell>/gs
+          let cm
+          while ((cm = cellRe.exec(rm[1])) !== null) {
+            const txt = (cm[2] || '').replace(/<[^>]+>/g, '').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&apos;/g,"'").trim()
+            if (txt) cells.push(txt)
+          }
+          if (cells.length >= 2) rows.push(cells.join(' | '))
+        }
+        const text = rows.slice(0, 5000).join('\n') // Max 5000 righe
+        if (text.length > 50) {
+          return [{ type: 'text', text: `[File ODS: ${fileName}]\n\n${text.slice(0, 100000)}` }]
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  // CSV/TXT — manda come testo
+  if (fileName.endsWith('.csv') || fileName.endsWith('.txt')) {
+    const text = Buffer.from(buffer).toString('utf-8')
+    if (text.length > 50) {
+      return [{ type: 'text', text: `[File ${fileName}]\n\n${text.slice(0, 100000)}` }]
+    }
+  }
+  // Excel — prova con testo grezzo (limitato)
+  if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
+    try {
+      const JSZip = (await import('jszip')).default
+      const zip = await JSZip.loadAsync(Buffer.from(buffer))
+      const shared = await zip.file('xl/sharedStrings.xml')?.async('string')
+      if (shared) {
+        const texts: string[] = []
+        const re = /<t[^>]*>(.*?)<\/t>/gs
+        let m
+        while ((m = re.exec(shared)) !== null) texts.push(m[1].trim())
+        if (texts.length > 0) {
+          return [{ type: 'text', text: `[File Excel: ${fileName}]\n\n${texts.join(' | ').slice(0, 100000)}` }]
+        }
       }
     } catch { /* ignore */ }
   }
@@ -180,7 +237,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true })
       }
       const ext = (message.document.file_name || '').split('.').pop()?.toLowerCase() || ''
-      if (!['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'doc', 'docx'].includes(ext)) {
+      if (!['pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'doc', 'docx', 'xls', 'xlsx', 'ods', 'csv', 'txt'].includes(ext)) {
         await sendTelegramMessage(chatId, `⚠️ Formato .${ext} non supportato.`)
         return NextResponse.json({ ok: true })
       }
