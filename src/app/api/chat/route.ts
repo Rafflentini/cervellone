@@ -100,13 +100,17 @@ export async function POST(request: NextRequest) {
             if (fileRes.ok) {
               const buffer = Buffer.from(await fileRes.arrayBuffer())
               const base64 = buffer.toString('base64')
+              console.log(`CHAT FILE: scaricato ${fileName} da Storage — ${buffer.length} bytes, tipo ${mediaType}`)
               if (mediaType === 'application/pdf') {
                 lastUserMsg.content[i] = { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } }
+                console.log(`CHAT FILE: creato document block PDF — base64 ${base64.length} chars`)
               } else if (mediaType.startsWith('image/')) {
                 lastUserMsg.content[i] = { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } }
               } else {
                 lastUserMsg.content[i] = { type: 'text', text: `[File: ${fileName}] — formato non supportato per visualizzazione diretta` }
               }
+            } else {
+              console.error(`CHAT FILE: download fallito — status ${fileRes.status}`)
             }
           } catch (err) {
             console.error('Download file da Storage fallito:', err)
