@@ -15,11 +15,58 @@ import { supabase } from './supabase'
 
 const client = new Anthropic()
 
+// ── Routing intelligente basato sulla complessità ──
+
+interface ModelConfig {
+  model: string
+  thinkingBudget: number
+  maxTokens: number
+}
+
+function selectModel(userQuery: string, hasFiles: boolean): ModelConfig {
+  const len = userQuery.length
+
+  // Messaggi brevi/conversazionali: Sonnet veloce, thinking minimo
+  if (len < 100 && !hasFiles) {
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 1024, maxTokens: 4096 }
+  }
+
+  // ── SEGNALI DI COMPLESSITÀ (indipendenti dal dominio) ──
+  const complexitySignals = [
+    /(?:approfond|dettagliat|(?:analisi|indagine|studio)\s+complet|esaustiv|accurata|minuziosa)/i.test(userQuery),
+    /(?:opus|massima\s*potenza|ragionamento\s*profondo|analisi\s*complessa)/i.test(userQuery),
+    (userQuery.match(/(?:analizza|confronta|verifica|valuta|esamina|studia|indaga|investiga|redigi|prepara|elabora)/gi) || []).length >= 2,
+    /(?:redigi|scrivi|prepara|elabora)\s+(?:un[ao']?\s+)?(?:relazione|perizia|parere|report|analisi|studio|indagine|piano|strategia|documento)/i.test(userQuery),
+    /(?:norma|legge|decreto|regolament|codice|testo unico|direttiva|circolare|D\.?M\.?|D\.?Lgs|NTC|GDPR|CCNL)/i.test(userQuery),
+    len > 500,
+    hasFiles && /(?:analizza|verifica|confronta|controlla|esamina|valuta)/i.test(userQuery),
+    /(?:calcol[oa]|verifica|dimension[ai]|stima|quantific)/i.test(userQuery) && len > 150,
+    /(?:confronta|compara|paragona|differenz[ae]|vs\.?|rispetto a)/i.test(userQuery) && len > 100,
+    /(?:strategia|piano\s+(?:di|per)|business\s*plan|marketing|posizionament|analisi\s+(?:di\s+)?mercato|target|competitor)/i.test(userQuery),
+  ].filter(Boolean).length
+
+  // Opus Extended (100K thinking): task davvero complessi (4+ segnali)
+  if (complexitySignals >= 4) {
+    return { model: 'claude-opus-4-6', thinkingBudget: 100_000, maxTokens: 16000 }
+  }
+  // Opus (32K thinking): task complessi (2-3 segnali)
+  if (complexitySignals >= 2) {
+    return { model: 'claude-opus-4-6', thinkingBudget: 32_000, maxTokens: 16000 }
+  }
+  // Sonnet con thinking alto: task medio (1 segnale, file, msg lungo)
+  if (complexitySignals >= 1 || len > 300 || hasFiles) {
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 10000, maxTokens: 16000 }
+  }
+  // Sonnet standard: tutto il resto
+  return { model: 'claude-sonnet-4-6', thinkingBudget: 4000, maxTokens: 8000 }
+}
+
 export interface ClaudeRequest {
   messages: Anthropic.MessageParam[]
   systemPrompt: string
   userQuery: string
   conversationId?: string
+  hasFiles?: boolean
 }
 
 export interface ClaudeStreamCallbacks {
@@ -48,16 +95,19 @@ export async function callClaudeStream(
   let fullResponse = ''
   const MAX_ITERATIONS = 10 // PER-004 fix
 
+  const modelConfig = selectModel(userQuery, request.hasFiles || false)
+  logInfo(`MODEL: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     // REL-003: retry su errori transitori
     const stream = await withRetry(() =>
       Promise.resolve(client.messages.stream({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 16000,
+        model: modelConfig.model,
+        max_tokens: modelConfig.maxTokens,
         system: fullSystemPrompt,
         messages: currentMessages,
         tools,
-        thinking: { type: 'enabled', budget_tokens: 10000 },
+        thinking: { type: 'enabled', budget_tokens: modelConfig.thinkingBudget },
       }))
     )
 
@@ -114,15 +164,18 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
   let fullResponse = ''
   const MAX_ITERATIONS = 10
 
+  const modelConfig = selectModel(userQuery, request.hasFiles || false)
+  logInfo(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const response = await withRetry(() =>
       client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 16000,
+        model: modelConfig.model,
+        max_tokens: modelConfig.maxTokens,
         system: fullSystemPrompt,
         messages: currentMessages,
         tools,
-        thinking: { type: 'enabled', budget_tokens: 10000 },
+        thinking: { type: 'enabled', budget_tokens: modelConfig.thinkingBudget },
       })
     )
 
