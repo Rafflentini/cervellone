@@ -162,3 +162,12 @@ export async function saveFileKnowledge(
     await saveMessageWithEmbedding(conversationId, 'knowledge', `${label}\n\n${cleanChunk}`)
   }
 }
+
+// Alias per compatibilità con projects/route.ts
+export async function saveProjectKnowledge(
+  projectId: string,
+  content: string,
+  fileName: string,
+) {
+  await saveFileKnowledge(projectId, content, fileName)
+}
