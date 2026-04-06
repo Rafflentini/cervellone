@@ -122,8 +122,8 @@ export async function POST(request: NextRequest) {
 
   const fullSystemPrompt = CHAT_SYSTEM_PROMPT + memoryContext
 
-  // Routing: Sonnet default, Opus per ragionamento complesso
-  const needsOpus = /relazione tecnica|calcolo strutturale|analisi normativa|perizia|ragionamento complesso/i.test(userQuery) && !hasFiles
+  // Routing: Sonnet default, Opus per task complessi (come fa claude.ai)
+  const needsOpus = /relazione|calcolo|struttur|normativ|perizia|analisi.*complessa|confronto|verifica|progett|valutazione|consulenza|parere/i.test(userQuery)
   const model = needsOpus ? 'claude-opus-4-6' : 'claude-sonnet-4-6'
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -151,9 +151,8 @@ export async function POST(request: NextRequest) {
             messages: currentMessages,
             tools,
           }
-          if (!hasFiles) {
-            streamParams.thinking = { type: 'enabled', budget_tokens: 10000 }
-          }
+          // Thinking SEMPRE abilitato — come claude.ai. Budget alto per Opus.
+          streamParams.thinking = { type: 'enabled', budget_tokens: needsOpus ? 16000 : 10000 }
 
           const stream = client.messages.stream(streamParams)
 

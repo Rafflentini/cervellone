@@ -413,8 +413,8 @@ export async function POST(request: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const hasFiles = fileBlocks.some((b: any) => b.type === 'image' || b.type === 'document')
 
-    // Routing: Sonnet default, Opus per ragionamento complesso
-    const needsOpus = /relazione tecnica|calcolo strutturale|analisi normativa|confronto complesso|perizia/i.test(userText) && !hasFiles
+    // Routing: Sonnet default, Opus per task complessi (come fa claude.ai)
+    const needsOpus = /relazione|calcolo|struttur|normativ|perizia|analisi.*complessa|confronto|verifica|progett|valutazione|consulenza|parere/i.test(userText)
     const model = needsOpus ? 'claude-opus-4-6' : 'claude-sonnet-4-6'
 
     const { CUSTOM_TOOLS, executeTool } = await import('@/lib/tools')
@@ -437,8 +437,8 @@ export async function POST(request: NextRequest) {
         system: TELEGRAM_SYSTEM_PROMPT + memoryContext,
         messages: currentMessages,
         tools,
-        // Thinking ABILITATO — come claude.ai. Senza thinking Claude dà risposte superficiali.
-        thinking: { type: 'enabled', budget_tokens: 8000 },
+        // Thinking SEMPRE abilitato — come claude.ai. Budget alto per Opus.
+        thinking: { type: 'enabled', budget_tokens: needsOpus ? 16000 : 8000 },
       }
 
       const response = await client.messages.create(params)
