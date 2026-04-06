@@ -3,7 +3,9 @@ import crypto from 'crypto'
 
 function getAuthToken(): string {
   const password = process.env.APP_PASSWORD || ''
-  return crypto.createHmac('sha256', 'cervellone').update(password).digest('hex')
+  // V2: usa AUTH_SECRET per generare il token — compatibile con validateAuth
+  const secret = process.env.AUTH_SECRET || 'cervellone'
+  return crypto.createHmac('sha256', secret).update('cervellone_v2').digest('hex')
 }
 
 export async function POST(request: NextRequest) {
