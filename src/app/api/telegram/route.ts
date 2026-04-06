@@ -158,12 +158,10 @@ export async function POST(request: NextRequest) {
     }
     if (userText === '/nuova') {
       const convId = chatIdToUuid(chatId)
-      // FIX: pulisce anche embeddings
-      await Promise.all([
-        safeSupabase(() => supabase.from('messages').delete().eq('conversation_id', convId)),
-        safeSupabase(() => supabase.from('embeddings').delete().eq('conversation_id', convId)),
-      ])
-      await sendTelegramMessage(chatId, 'Conversazione e memoria azzerata.')
+      // Cancella solo i messaggi della chat, NON la memoria (embeddings)
+      // La memoria deve persistere SEMPRE — contiene documenti, analisi, regole
+      await safeSupabase(() => supabase.from('messages').delete().eq('conversation_id', convId))
+      await sendTelegramMessage(chatId, 'Conversazione azzerata. La memoria permanente è intatta.')
       return NextResponse.json({ ok: true })
     }
 
