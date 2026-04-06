@@ -154,14 +154,13 @@ async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: str
       }
     } catch { /* ignore */ }
   }
-  // ODS (spreadsheet OpenDocument) — estrai testo dal XML interno
+  // ODS (spreadsheet OpenDocument) — estrai testo e auto-importa prezziario
   if (fileName.endsWith('.ods')) {
     try {
       const JSZip = (await import('jszip')).default
       const zip = await JSZip.loadAsync(Buffer.from(buffer))
       const xml = await zip.file('content.xml')?.async('string')
       if (xml) {
-        // Estrai testo dalle celle
         const rows: string[] = []
         const rowRe = /<table:table-row[^>]*>([\s\S]*?)<\/table:table-row>/g
         let rm
@@ -175,12 +174,61 @@ async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: str
           }
           if (cells.length >= 2) rows.push(cells.join(' | '))
         }
-        const text = rows.slice(0, 5000).join('\n') // Max 5000 righe
+
+        // Auto-detect prezziario: se contiene codici tipo BAS25_ o simili
+        const allText = rows.slice(0, 100).join('\n')
+        const isPrezziario = /prezz/i.test(fileName) || /BAS\d{2}_|CAM\d{2}_|PUG\d{2}_|CAL\d{2}_|SIC\d{2}_|LAZ\d{2}_|LOM\d{2}_/i.test(allText)
+          || (rows.length > 1000 && /\d+[.,]\d{2}/.test(allText))
+
+        if (isPrezziario && rows.length > 100) {
+          // Importa TUTTE le voci nel database prezziario
+          const regioneMatch = (fileName + ' ' + allText).match(/basilicata|calabria|campania|puglia|sicilia|sardegna|lazio|toscana|lombardia|piemonte|veneto|emilia|liguria|marche|umbria|abruzzo|molise|friuli|trentino|valle/i)
+          const regione = regioneMatch ? regioneMatch[0].toLowerCase() : 'basilicata'
+          const annoMatch = (fileName + ' ' + allText).match(/20\d{2}/)
+          const anno = annoMatch ? parseInt(annoMatch[0]) : new Date().getFullYear()
+
+          // Parsa voci
+          const voci: { codice_voce: string; descrizione: string; unita_misura: string; prezzo: number }[] = []
+          for (const row of rows) {
+            const cells = row.split(' | ')
+            if (cells.length < 3) continue
+            const codice = cells[0]
+            if (!/^[A-Z]{2,5}\d{2}_/.test(codice)) continue
+            const descrizione = cells[1]
+            if (!descrizione || descrizione.length < 5) continue
+            let prezzo = 0
+            let um = ''
+            for (let i = cells.length - 1; i >= 2; i--) {
+              const num = parseFloat(cells[i].replace(',', '.'))
+              if (!isNaN(num) && num > 0 && num < 100000) { prezzo = num; break }
+            }
+            if (cells.length > 2) um = cells[2].toLowerCase().slice(0, 20)
+            if (prezzo > 0) voci.push({ codice_voce: codice, descrizione: descrizione.slice(0, 500), unita_misura: um, prezzo: Math.round(prezzo * 100) / 100 })
+          }
+
+          if (voci.length > 100) {
+            // Elimina vecchie voci e importa
+            await supabase.from('prezziario').delete().eq('regione', regione).eq('anno', anno)
+            let salvate = 0
+            for (let i = 0; i < voci.length; i += 500) {
+              const batch = voci.slice(i, i + 500).map(v => ({ regione, anno, ...v, fonte: `Prezziario ${regione} ${anno} (ODS)` }))
+              const { error } = await supabase.from('prezziario').insert(batch)
+              if (!error) salvate += batch.length
+            }
+            // Ritorna conferma come testo a Claude
+            return [{ type: 'text', text: `[PREZZIARIO IMPORTATO] ✅ ${regione.toUpperCase()} ${anno}: ${salvate} voci salvate nel database permanente da file ${fileName}. Il Cervellone può ora consultare qualsiasi voce per codice o descrizione.` }]
+          }
+        }
+
+        // Non è prezziario — manda le prime righe come contesto
+        const text = rows.slice(0, 2000).join('\n')
         if (text.length > 50) {
-          return [{ type: 'text', text: `[File ODS: ${fileName}]\n\n${text.slice(0, 100000)}` }]
+          return [{ type: 'text', text: `[File ODS: ${fileName} — ${rows.length} righe]\n\n${text.slice(0, 80000)}` }]
         }
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error('ODS parse error:', err)
+    }
   }
   // CSV/TXT — manda come testo
   if (fileName.endsWith('.csv') || fileName.endsWith('.txt')) {
