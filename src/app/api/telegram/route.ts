@@ -294,6 +294,7 @@ export async function POST(request: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let fileBlocks: any[] = []
     let fileDescription = ''
+    let fileRawContent = '' // Contenuto testuale completo del file — salvato in memoria permanente
 
     // Vocali
     if (!userText && (message.voice || message.audio)) {
@@ -480,8 +481,27 @@ export async function POST(request: NextRequest) {
       }
 
       if (hasFiles && fullResponse.length > 200) {
+        // Salva l'analisi di Claude
         const knowledge = `[Analisi file "${fileDescription}" da Telegram]\n\nDomanda: ${userText}\n\nAnalisi:\n${fullResponse.slice(0, 10000)}`
         saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
+      }
+
+      // SALVA CONTENUTO COMPLETO del file in memoria permanente (a blocchi per embedding)
+      if (fileBlocks.length > 0) {
+        for (const block of fileBlocks) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const b = block as any
+          if (b.type === 'text' && b.text && b.text.length > 100) {
+            // Salva a blocchi da 30000 caratteri per embedding efficiente
+            const text = b.text as string
+            const chunkSize = 30000
+            for (let i = 0; i < text.length; i += chunkSize) {
+              const chunk = text.slice(i, i + chunkSize)
+              const label = `[File: ${fileDescription}${text.length > chunkSize ? ` — parte ${Math.floor(i / chunkSize) + 1}` : ''}]`
+              saveMessageWithEmbedding(conversationId, 'knowledge', `${label}\n\n${chunk}`).catch(() => {})
+            }
+          }
+        }
       }
     }
 

@@ -215,6 +215,22 @@ export async function POST(request: NextRequest) {
             const knowledge = `[Analisi file dalla chat]\n\nDomanda: ${userQuery}\n\nAnalisi:\n${fullResponse.slice(0, 10000)}`
             saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
           }
+
+          // SALVA CONTENUTO COMPLETO di ogni file in memoria permanente
+          if (Array.isArray(lastUserMsg?.content)) {
+            for (const block of lastUserMsg.content) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const b = block as any
+              if (b.type === 'text' && b.text && b.text.length > 100 && b.text.startsWith('[File')) {
+                const text = b.text as string
+                const chunkSize = 30000
+                for (let ci = 0; ci < text.length; ci += chunkSize) {
+                  const chunk = text.slice(ci, ci + chunkSize)
+                  saveMessageWithEmbedding(conversationId, 'knowledge', chunk).catch(() => {})
+                }
+              }
+            }
+          }
         }
       }
     },
