@@ -52,13 +52,19 @@ export async function POST(request: NextRequest) {
 
   const lastUserMsg = [...trimmedMessages].reverse().find(m => m.role === 'user')
   const userQuery = extractText(lastUserMsg)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const hasFiles = trimmedMessages.some(m =>
+    Array.isArray(m.content) && (m.content as any[]).some((b: any) =>
+      b.type === 'image' || b.type === 'document'
+    )
+  )
 
   const encoder = new TextEncoder()
   const readable = new ReadableStream({
     async start(controller) {
       try {
         await callClaudeStream(
-          { messages: trimmedMessages, systemPrompt: CHAT_SYSTEM_PROMPT, userQuery, conversationId },
+          { messages: trimmedMessages, systemPrompt: CHAT_SYSTEM_PROMPT, userQuery, conversationId, hasFiles },
           {
             onText: (text) => controller.enqueue(encoder.encode(text)),
             onToolStart: () => controller.enqueue(encoder.encode('\n\n🔍 *Cerco informazioni...*\n\n')),

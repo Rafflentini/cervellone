@@ -170,10 +170,17 @@ export async function POST(request: NextRequest) {
     typingInterval = setInterval(() => sendTyping(chatId), 4000)
     await sendTyping(chatId)
 
-    // UX-002: Messaggio dopo 12 secondi di attesa
+    // UX-002: Timeout adattivo — più tempo per messaggi complessi
+    const isLikelyComplex = userText.length > 300 ||
+      (userText.match(/(?:analizza|confronta|verifica|valuta|redigi|prepara|elabora)/gi) || []).length >= 2 ||
+      fileBlocks.length > 0
+    const thinkingDelay = isLikelyComplex ? 25_000 : 12_000
     const thinkingTimeout = setTimeout(async () => {
-      await sendTelegramMessage(chatId, '🧠 Sto elaborando una risposta dettagliata...')
-    }, 12_000)
+      const msg = isLikelyComplex
+        ? '🧠🔥 Sto ragionando a fondo... ci vuole un attimo in più.'
+        : '🧠 Sto elaborando una risposta dettagliata...'
+      await sendTelegramMessage(chatId, msg)
+    }, thinkingDelay)
 
     // ── Conversazione ──
     const conversationId = chatIdToUuid(chatId)
@@ -211,6 +218,7 @@ export async function POST(request: NextRequest) {
           systemPrompt: TELEGRAM_SYSTEM_PROMPT,
           userQuery: userText,
           conversationId,
+          hasFiles: fileBlocks.length > 0,
         })
 
         clearTimeout(thinkingTimeout)
@@ -273,6 +281,7 @@ export async function POST(request: NextRequest) {
     // Rispondi SUBITO al webhook — niente più timeout
     return NextResponse.json({ ok: true })
   } catch (err) {
+    if (typingInterval) clearInterval(typingInterval)
     console.error('TELEGRAM error:', err)
     if (errorChatId) {
       const msg = err instanceof Error ? err.message : String(err)

@@ -96,7 +96,7 @@ export async function callClaudeStream(
   const MAX_ITERATIONS = 10 // PER-004 fix
 
   const modelConfig = selectModel(userQuery, request.hasFiles || false)
-  logInfo(`MODEL: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+  console.log(`MODEL: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     // REL-003: retry su errori transitori
@@ -165,7 +165,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
   const MAX_ITERATIONS = 10
 
   const modelConfig = selectModel(userQuery, request.hasFiles || false)
-  logInfo(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+  console.log(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const response = await withRetry(() =>
