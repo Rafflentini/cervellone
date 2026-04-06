@@ -42,7 +42,8 @@ export async function callClaudeStream(
     saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
   }
 
-  const tools = getToolDefinitions()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: any[] = getToolDefinitions()
   let currentMessages = [...request.messages]
   let fullResponse = ''
   const MAX_ITERATIONS = 10 // PER-004 fix
@@ -107,7 +108,8 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
     saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
   }
 
-  const tools = getToolDefinitions()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: any[] = getToolDefinitions()
   let currentMessages = [...request.messages]
   let fullResponse = ''
   const MAX_ITERATIONS = 10

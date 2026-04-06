@@ -9,7 +9,7 @@ import { logWarn } from './sanitize'
 // ── REL-001: Safe Supabase wrapper ──
 
 export async function safeSupabase<T>(
-  operation: () => Promise<{ data: T | null; error: any }>,
+  operation: () => PromiseLike<{ data: T | null; error: any }>,
   fallback: T | null = null
 ): Promise<T | null> {
   try {
