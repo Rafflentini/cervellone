@@ -202,69 +202,82 @@ export async function POST(request: NextRequest) {
     }
     if (history.length > 0 && history[0].role !== 'user') history.shift()
 
-    // ── Claude ──
-    const fullResponse = await callClaude({
-      messages: history,
-      systemPrompt: TELEGRAM_SYSTEM_PROMPT,
-      userQuery: userText,
-      conversationId,
-    })
+    // ── Claude (ASINCRONO) — risponde subito, elabora in background ──
+    const bgProcess = async () => {
+      try {
+        const fullResponse = await callClaude({
+          messages: history,
+          systemPrompt: TELEGRAM_SYSTEM_PROMPT,
+          userQuery: userText,
+          conversationId,
+        })
 
-    // ── Cleanup ──
-    clearTimeout(thinkingTimeout)
-    if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
+        clearTimeout(thinkingTimeout)
+        if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
 
-    // ── Salva file in memoria ──
-    if (fileBlocks.length > 0 && fullResponse.length > 200) {
-      const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
-      saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
-    }
+        // Salva in memoria
+        if (fileBlocks.length > 0 && fullResponse.length > 200) {
+          const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
+          saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
+        }
 
-    // ── UX-001: Detect tabelle e salva come documento ──
-    const hasTable = /\|[\s-]+\|/.test(fullResponse) && fullResponse.length > 3500
+        // Detect tabelle
+        const hasTable = /\|[\s-]+\|/.test(fullResponse) && fullResponse.length > 3500
 
-    // ── Manda risposta ──
-    const responseBlocks = parseDocumentBlocks(fullResponse)
-    let sentSomething = false
+        // Manda risposta
+        const responseBlocks = parseDocumentBlocks(fullResponse)
+        let sentSomething = false
 
-    for (const block of responseBlocks) {
-      if (block.type === 'document' || (hasTable && block.content.length > 3500)) {
-        const content = block.type === 'document' ? block.content : `<pre>${block.content}</pre>`
-        const titleMatch = content.match(/<h1[^>]*>(.*?)<\/h1>/i)
-        const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
+        for (const block of responseBlocks) {
+          if (block.type === 'document' || (hasTable && block.content.length > 3500)) {
+            const content = block.type === 'document' ? block.content : `<pre>${block.content}</pre>`
+            const titleMatch = content.match(/<h1[^>]*>(.*?)<\/h1>/i)
+            const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
 
-        const savedDoc = await safeSupabase(
-          () => supabase.from('documents')
-            .insert({ name: title, content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
-            .select('id').single()
-        )
-        const docUrl = (savedDoc as any)?.id
-          ? `https://cervellone-5poc.vercel.app/doc/${(savedDoc as any).id}`
-          : 'https://cervellone-5poc.vercel.app'
+            const savedDoc = await safeSupabase(
+              () => supabase.from('documents')
+                .insert({ name: title, content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
+                .select('id').single()
+            )
+            const docUrl = (savedDoc as any)?.id
+              ? `https://cervellone-5poc.vercel.app/doc/${(savedDoc as any).id}`
+              : 'https://cervellone-5poc.vercel.app'
 
-        await sendTelegramMessage(chatId, `📄 *${title}*\n\n👉 ${docUrl}`)
-        sentSomething = true
-      } else if (block.content.trim()) {
-        await sendTelegramMessage(chatId, block.content)
-        sentSomething = true
+            await sendTelegramMessage(chatId, `📄 *${title}*\n\n👉 ${docUrl}`)
+            sentSomething = true
+          } else if (block.content.trim()) {
+            await sendTelegramMessage(chatId, block.content)
+            sentSomething = true
+          }
+        }
+
+        if (!sentSomething) {
+          await sendTelegramMessage(chatId, fullResponse || 'Non sono riuscito a elaborare una risposta.')
+        }
+      } catch (err) {
+        console.error('TELEGRAM BG error:', err)
+        const msg = err instanceof Error ? err.message : String(err)
+        let userMsg = `⚠️ ${msg.slice(0, 300)}`
+        if (msg.includes('credit') || msg.includes('billing')) userMsg = '⚠️ Crediti API esauriti.'
+        if (msg.includes('too large') || msg.includes('payload')) userMsg = '⚠️ File troppo pesante.'
+        await sendTelegramMessage(chatId, userMsg).catch(() => {})
+      } finally {
+        if (typingInterval) clearInterval(typingInterval)
       }
     }
 
-    if (!sentSomething) {
-      await sendTelegramMessage(chatId, fullResponse || 'Non sono riuscito a elaborare una risposta.')
-    }
+    // Lancia in background — NON aspettare
+    bgProcess().catch(err => console.error('BG process failed:', err))
 
+    // Rispondi SUBITO al webhook — niente più timeout
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('TELEGRAM error:', err)
-    const msg = err instanceof Error ? err.message : String(err)
-    let userMsg = `⚠️ ${msg.slice(0, 300)}`
-    if (msg.includes('credit') || msg.includes('billing')) userMsg = '⚠️ Crediti API esauriti.'
-    if (msg.includes('too large') || msg.includes('payload')) userMsg = '⚠️ File troppo pesante.'
-    if (errorChatId) await sendTelegramMessage(errorChatId, userMsg).catch(() => {})
+    if (errorChatId) {
+      const msg = err instanceof Error ? err.message : String(err)
+      await sendTelegramMessage(errorChatId, `⚠️ ${msg.slice(0, 300)}`).catch(() => {})
+    }
     return NextResponse.json({ ok: true })
-  } finally {
-    if (typingInterval) clearInterval(typingInterval)
   }
 }
 
