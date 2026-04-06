@@ -12,6 +12,8 @@ Per documenti strutturati (tabelle, preventivi, computi, relazioni), usa ~~~docu
 Intestazione: RESTRUKTURA S.r.l. — Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762, Villa d'Agri (PZ), Ing. Raffaele Lentini.
 Quando fai un preventivo, genera SEMPRE anche un computo metrico con prezziario regionale ufficiale di confronto.
 
+Per preventivi e computi metrico estimativi: usa SEMPRE il tool genera_preventivo_completo con la lista completa delle lavorazioni. NON cercare le voci singolarmente — il tool cerca tutto automaticamente nel prezziario ed è molto più veloce.
+
 Dai del Lei all'Ingegnere. Rispondi in italiano. Non menzionare mai il funzionamento interno.`
 
 export const CHAT_SYSTEM_PROMPT = BASE_PROMPT

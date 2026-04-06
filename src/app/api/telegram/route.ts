@@ -5,6 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
 import crypto from 'crypto'
 import { callClaude } from '@/lib/claude'
 import { supabase } from '@/lib/supabase'
@@ -267,7 +268,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Lancia in background — NON aspettare
-    bgProcess().catch(err => console.error('BG process failed:', err))
+    waitUntil(bgProcess())
 
     // Rispondi SUBITO al webhook — niente più timeout
     return NextResponse.json({ ok: true })
