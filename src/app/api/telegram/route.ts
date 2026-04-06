@@ -1,279 +1,41 @@
+/**
+ * app/api/telegram/route.ts — All fixes integrated
+ * SEC-002: webhook secret, SEC-003: rate limit, FUN-002: video,
+ * FUN-003: sticker/location, /nuova: clears embeddings, UX-002: thinking msg
+ */
+
 import { NextRequest, NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
 import crypto from 'crypto'
-import { saveMessageWithEmbedding } from '@/lib/memory'
+import { callClaude } from '@/lib/claude'
 import { supabase } from '@/lib/supabase'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { TELEGRAM_SYSTEM_PROMPT } from '@/lib/prompts'
+import { saveMessageWithEmbedding, saveFileKnowledge } from '@/lib/memory'
+import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
+import { validateWebhookSecret } from '@/lib/auth'
+import { rateLimit } from '@/lib/rate-limiter'
+import { safeSupabase } from '@/lib/resilience'
 
-const client = new Anthropic()
+export const maxDuration = 300
 
 function chatIdToUuid(chatId: number): string {
   const hash = crypto.createHash('md5').update(`telegram_${chatId}`).digest('hex')
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`
 }
 
-const TELEGRAM_API = 'https://api.telegram.org/bot'
-
 function isAuthorized(chatId: number): boolean {
-  const allowedIds = (process.env.TELEGRAM_ALLOWED_IDS || '').split(',').map(Number)
-  return allowedIds.includes(chatId)
+  return (process.env.TELEGRAM_ALLOWED_IDS || '').split(',').map(Number).includes(chatId)
 }
-
-async function sendTelegramMessage(chatId: number, text: string) {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) return
-  const MAX_LEN = 4000
-  const chunks: string[] = []
-  if (text.length <= MAX_LEN) {
-    chunks.push(text)
-  } else {
-    let remaining = text
-    while (remaining.length > 0) {
-      if (remaining.length <= MAX_LEN) { chunks.push(remaining); break }
-      let cutAt = remaining.lastIndexOf('\n\n', MAX_LEN)
-      if (cutAt < 500) cutAt = remaining.lastIndexOf('\n', MAX_LEN)
-      if (cutAt < 500) cutAt = MAX_LEN
-      chunks.push(remaining.slice(0, cutAt))
-      remaining = remaining.slice(cutAt).trimStart()
-    }
-  }
-  for (const chunk of chunks) {
-    await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: chunk }),
-    })
-  }
-}
-
-async function sendTyping(chatId: number) {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) return
-  await fetch(`${TELEGRAM_API}${token}/sendChatAction`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
-  }).catch(() => {})
-}
-
-async function downloadTelegramFile(fileId: string): Promise<{ buffer: ArrayBuffer; fileName: string; mimeType: string } | null> {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) return null
-  const fileRes = await fetch(`${TELEGRAM_API}${token}/getFile`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ file_id: fileId }),
-  })
-  const fileData = await fileRes.json()
-  const filePath = fileData.result?.file_path
-  if (!filePath) return null
-  const fileName = filePath.split('/').pop() || 'file'
-  const ext = fileName.split('.').pop()?.toLowerCase() || ''
-  const mimeMap: Record<string, string> = {
-    // Documenti
-    pdf: 'application/pdf',
-    doc: 'application/msword',
-    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    odt: 'application/vnd.oasis.opendocument.text',
-    rtf: 'application/rtf',
-    // Spreadsheet
-    xls: 'application/vnd.ms-excel',
-    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    ods: 'application/vnd.oasis.opendocument.spreadsheet',
-    csv: 'text/csv',
-    // Presentazioni
-    ppt: 'application/vnd.ms-powerpoint',
-    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    odp: 'application/vnd.oasis.opendocument.presentation',
-    // Immagini
-    jpg: 'image/jpeg', jpeg: 'image/jpeg',
-    png: 'image/png', gif: 'image/gif', webp: 'image/webp',
-    bmp: 'image/bmp', svg: 'image/svg+xml',
-    tiff: 'image/tiff', tif: 'image/tiff',
-    heic: 'image/heic', heif: 'image/heif',
-    ico: 'image/x-icon',
-    // CAD / Tecnici
-    dwg: 'application/acad', dxf: 'application/dxf',
-    // Testo / Dati
-    txt: 'text/plain', md: 'text/markdown',
-    json: 'application/json', xml: 'application/xml',
-    html: 'text/html', htm: 'text/html',
-    // Archivi
-    zip: 'application/zip', rar: 'application/x-rar-compressed',
-    '7z': 'application/x-7z-compressed',
-  }
-  const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
-  if (!res.ok) return null
-  return { buffer: await res.arrayBuffer(), fileName, mimeType: mimeMap[ext] || 'application/octet-stream' }
-}
-
-async function transcribeAudio(fileId: string): Promise<string> {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) return ''
-  const fileRes = await fetch(`${TELEGRAM_API}${token}/getFile`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ file_id: fileId }),
-  })
-  const fileData = await fileRes.json()
-  const filePath = fileData.result?.file_path
-  if (!filePath) return ''
-  const audioRes = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
-  const audioBuffer = await audioRes.arrayBuffer()
-  const formData = new FormData()
-  formData.append('file', new Blob([audioBuffer], { type: 'audio/ogg' }), 'voice.ogg')
-  formData.append('model', 'whisper-1')
-  formData.append('language', 'it')
-  const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
-    body: formData,
-  })
-  if (!whisperRes.ok) return ''
-  const data = await whisperRes.json()
-  return data.text || ''
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: string; mimeType: string }): Promise<any[]> {
-  const { buffer, fileName, mimeType } = fileData
-  const base64 = Buffer.from(buffer).toString('base64')
-  if (mimeType === 'application/pdf') {
-    return [{ type: 'document', source: { type: 'base64', media_type: mimeType, data: base64 } }]
-  }
-  if (mimeType.startsWith('image/')) {
-    return [{ type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } }]
-  }
-  if (mimeType.includes('word') || mimeType === 'application/msword') {
-    try {
-      const mammoth = await import('mammoth')
-      const result = await mammoth.extractRawText({ arrayBuffer: buffer })
-      if (result.value && result.value.length > 50) {
-        return [{ type: 'text', text: `[File Word: ${fileName}]\n\n${result.value}` }]
-      }
-    } catch { /* ignore */ }
-  }
-  // ODS (spreadsheet OpenDocument) — estrai testo e auto-importa prezziario
-  if (fileName.endsWith('.ods')) {
-    try {
-      const JSZip = (await import('jszip')).default
-      const zip = await JSZip.loadAsync(Buffer.from(buffer))
-      const xml = await zip.file('content.xml')?.async('string')
-      if (xml) {
-        const rows: string[] = []
-        const rowRe = /<table:table-row[^>]*>([\s\S]*?)<\/table:table-row>/g
-        let rm
-        while ((rm = rowRe.exec(xml)) !== null) {
-          const cells: string[] = []
-          const cellRe = /<table:table-cell([^>]*)>([\s\S]*?)<\/table:table-cell>/g
-          let cm
-          while ((cm = cellRe.exec(rm[1])) !== null) {
-            const txt = (cm[2] || '').replace(/<[^>]+>/g, '').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&apos;/g,"'").trim()
-            if (txt) cells.push(txt)
-          }
-          if (cells.length >= 2) rows.push(cells.join(' | '))
-        }
-
-        // Auto-detect prezziario: se contiene codici tipo BAS25_ o simili
-        const allText = rows.slice(0, 100).join('\n')
-        const isPrezziario = /prezz/i.test(fileName) || /BAS\d{2}_|CAM\d{2}_|PUG\d{2}_|CAL\d{2}_|SIC\d{2}_|LAZ\d{2}_|LOM\d{2}_/i.test(allText)
-          || (rows.length > 1000 && /\d+[.,]\d{2}/.test(allText))
-
-        if (isPrezziario && rows.length > 100) {
-          // Importa TUTTE le voci nel database prezziario
-          const regioneMatch = (fileName + ' ' + allText).match(/basilicata|calabria|campania|puglia|sicilia|sardegna|lazio|toscana|lombardia|piemonte|veneto|emilia|liguria|marche|umbria|abruzzo|molise|friuli|trentino|valle/i)
-          const regione = regioneMatch ? regioneMatch[0].toLowerCase() : 'basilicata'
-          const annoMatch = (fileName + ' ' + allText).match(/20\d{2}/)
-          const anno = annoMatch ? parseInt(annoMatch[0]) : new Date().getFullYear()
-
-          // Parsa voci
-          const voci: { codice_voce: string; descrizione: string; unita_misura: string; prezzo: number }[] = []
-          for (const row of rows) {
-            const cells = row.split(' | ')
-            if (cells.length < 3) continue
-            const codice = cells[0]
-            if (!/^[A-Z]{2,5}\d{2}_/.test(codice)) continue
-            const descrizione = cells[1]
-            if (!descrizione || descrizione.length < 5) continue
-            let prezzo = 0
-            let um = ''
-            for (let i = cells.length - 1; i >= 2; i--) {
-              const val = cells[i]
-              if (val.includes('%')) continue // Skip percentuali (colonna "Sicurezza inclusa")
-              const num = parseFloat(val.replace(',', '.'))
-              if (!isNaN(num) && num > 0 && num < 999999) { prezzo = num; break }
-            }
-            if (cells.length > 2) um = cells[2].toLowerCase().slice(0, 20)
-            if (prezzo > 0) voci.push({ codice_voce: codice, descrizione: descrizione.slice(0, 500), unita_misura: um, prezzo: Math.round(prezzo * 100) / 100 })
-          }
-
-          if (voci.length > 100) {
-            // Elimina vecchie voci e importa
-            await supabase.from('prezziario').delete().eq('regione', regione).eq('anno', anno)
-            let salvate = 0
-            for (let i = 0; i < voci.length; i += 500) {
-              const batch = voci.slice(i, i + 500).map(v => ({ regione, anno, ...v, fonte: `Prezziario ${regione} ${anno} (ODS)` }))
-              const { error } = await supabase.from('prezziario').insert(batch)
-              if (!error) salvate += batch.length
-            }
-            // Ritorna conferma come testo a Claude
-            return [{ type: 'text', text: `[PREZZIARIO IMPORTATO] ✅ ${regione.toUpperCase()} ${anno}: ${salvate} voci salvate nel database permanente da file ${fileName}. Il Cervellone può ora consultare qualsiasi voce per codice o descrizione.` }]
-          }
-        }
-
-        // Non è prezziario — manda le prime righe come contesto
-        const text = rows.slice(0, 2000).join('\n')
-        if (text.length > 50) {
-          return [{ type: 'text', text: `[File ODS: ${fileName} — ${rows.length} righe]\n\n${text.slice(0, 80000)}` }]
-        }
-      }
-    } catch (err) {
-      console.error('ODS parse error:', err)
-    }
-  }
-  // CSV/TXT — manda come testo
-  if (fileName.endsWith('.csv') || fileName.endsWith('.txt')) {
-    const text = Buffer.from(buffer).toString('utf-8')
-    if (text.length > 50) {
-      return [{ type: 'text', text: `[File ${fileName}]\n\n${text.slice(0, 100000)}` }]
-    }
-  }
-  // Excel — prova con testo grezzo (limitato)
-  if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
-    try {
-      const JSZip = (await import('jszip')).default
-      const zip = await JSZip.loadAsync(Buffer.from(buffer))
-      const shared = await zip.file('xl/sharedStrings.xml')?.async('string')
-      if (shared) {
-        const texts: string[] = []
-        const re = /<t[^>]*>([\s\S]*?)<\/t>/g
-        let m
-        while ((m = re.exec(shared)) !== null) texts.push(m[1].trim())
-        if (texts.length > 0) {
-          return [{ type: 'text', text: `[File Excel: ${fileName}]\n\n${texts.join(' | ').slice(0, 100000)}` }]
-        }
-      }
-    } catch { /* ignore */ }
-  }
-  // Fallback: qualsiasi altro file — prova a leggerlo come testo
-  try {
-    const text = Buffer.from(buffer).toString('utf-8')
-    // Se contiene caratteri leggibili, mandalo come testo
-    const printable = text.replace(/[^\x20-\x7E\r\n\t\xC0-\xFF]/g, '')
-    if (printable.length > text.length * 0.5 && text.length > 50) {
-      return [{ type: 'text', text: `[File: ${fileName}]\n\n${text.slice(0, 100000)}` }]
-    }
-  } catch { /* ignore */ }
-  // File binario non leggibile ��� informa Claude
-  return [{ type: 'text', text: `[File binario: ${fileName}, ${(buffer.byteLength / 1024).toFixed(0)} KB, tipo: ${mimeType}] — File non leggibile come testo. Comunicare all'utente che il formato richiede strumenti specifici.` }]
-}
-
-export const maxDuration = 300
 
 export async function POST(request: NextRequest) {
+  // SEC-002: Validate webhook secret
+  if (!validateWebhookSecret(request.headers.get('x-telegram-bot-api-secret-token'))) {
+    return new Response('Unauthorized', { status: 401 })
+  }
+
   let errorChatId: number | null = null
   let typingInterval: NodeJS.Timeout | null = null
+
   try {
     const body = await request.json()
     const message = body.message
@@ -282,61 +44,64 @@ export async function POST(request: NextRequest) {
     const chatId: number = message.chat.id
     errorChatId = chatId
 
-    // Dedup
+    // SEC-003: Rate limiting
+    if (!rateLimit(`tg_${chatId}`, 60_000, 5)) {
+      await sendTelegramMessage(chatId, '⚠️ Troppi messaggi. Attenda un momento.')
+      return NextResponse.json({ ok: true })
+    }
+
+    // REL-001: Dedup con fallback se Supabase è down
     const msgId = message.message_id
     if (msgId) {
-      const { data: existing } = await supabase
-        .from('telegram_dedup').select('message_id')
-        .eq('chat_id', chatId).eq('message_id', msgId).limit(1)
-      if (existing && existing.length > 0) return NextResponse.json({ ok: true })
-      await supabase.from('telegram_dedup').insert({ chat_id: chatId, message_id: msgId })
+      const existing = await safeSupabase(
+        () => supabase.from('telegram_dedup').select('message_id')
+          .eq('chat_id', chatId).eq('message_id', msgId).limit(1),
+        []
+      )
+      if (existing && (existing as any[]).length > 0) return NextResponse.json({ ok: true })
+      await safeSupabase(() => supabase.from('telegram_dedup').insert({ chat_id: chatId, message_id: msgId }))
     }
 
     let userText = message.text || message.caption || ''
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let fileBlocks: any[] = []
     let fileDescription = ''
-    let fileRawContent = '' // Contenuto testuale completo del file — salvato in memoria permanente
 
-    // Vocali
+    // ── Voice ──
     if (!userText && (message.voice || message.audio)) {
       const fileId = message.voice?.file_id || message.audio?.file_id
       if (fileId) {
         await sendTyping(chatId)
         userText = await transcribeAudio(fileId)
         if (!userText) {
-          await sendTelegramMessage(chatId, 'Non sono riuscito a trascrivere il vocale. Riprovi.')
+          await sendTelegramMessage(chatId, 'Non sono riuscito a trascrivere il vocale.')
           return NextResponse.json({ ok: true })
         }
       }
     }
 
-    // Documenti
+    // ── Document ──
     if (message.document) {
       await sendTyping(chatId)
-      const fileSize = message.document.file_size || 0
-      if (fileSize > 20 * 1024 * 1024) {
-        await sendTelegramMessage(chatId, '⚠️ File troppo pesante (max 20 MB). Lo carichi dalla chat web.')
+      if ((message.document.file_size || 0) > 20 * 1024 * 1024) {
+        await sendTelegramMessage(chatId, '⚠️ File troppo pesante (max 20 MB).')
         return NextResponse.json({ ok: true })
       }
-      const ext = (message.document.file_name || '').split('.').pop()?.toLowerCase() || ''
-      // Accetta QUALSIASI formato — Claude decide cosa farne
-      // Solo file senza estensione vengono rifiutati
+      const ext = (message.document.file_name || '').split('.').pop()?.toLowerCase()
       if (!ext) {
-        await sendTelegramMessage(chatId, '⚠️ File senza estensione. Rinomini il file e riprovi.')
+        await sendTelegramMessage(chatId, '⚠️ File senza estensione.')
         return NextResponse.json({ ok: true })
       }
       const fileData = await downloadTelegramFile(message.document.file_id)
       if (!fileData) {
-        await sendTelegramMessage(chatId, '⚠️ Non riesco a scaricare il file. Riprovi.')
+        await sendTelegramMessage(chatId, '⚠️ Non riesco a scaricare il file.')
         return NextResponse.json({ ok: true })
       }
       fileBlocks = await buildContentBlocks(fileData)
       fileDescription = message.document.file_name || fileData.fileName
     }
 
-    // Foto
-    if (message.photo && message.photo.length > 0) {
+    // ── Photo ──
+    if (message.photo?.length > 0) {
       await sendTyping(chatId)
       const largest = message.photo[message.photo.length - 1]
       const fileData = await downloadTelegramFile(largest.file_id)
@@ -346,7 +111,35 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    if (!userText && fileBlocks.length === 0) return NextResponse.json({ ok: true })
+    // ── FUN-002: Video (extract thumbnail) ──
+    if (message.video && fileBlocks.length === 0) {
+      await sendTyping(chatId)
+      const thumb = message.video.thumb || message.video.thumbnail
+      if (thumb) {
+        const fileData = await downloadTelegramFile(thumb.file_id)
+        if (fileData) {
+          fileBlocks = await buildContentBlocks({ ...fileData, mimeType: 'image/jpeg', fileName: 'video_frame.jpg' })
+          fileDescription = 'frame dal video'
+        }
+      }
+      if (!userText && fileBlocks.length === 0) {
+        userText = 'Ho ricevuto un video ma non riesco a estrarre il frame. Può rimandarlo come foto?'
+      }
+    }
+
+    // ── FUN-003: Sticker, Location, Contact ──
+    if (!userText && fileBlocks.length === 0) {
+      if (message.sticker || message.animation) {
+        userText = "(L'utente ha inviato uno sticker/GIF)"
+      } else if (message.location) {
+        userText = `L'utente ha condiviso una posizione GPS: lat ${message.location.latitude}, lon ${message.location.longitude}`
+      } else if (message.contact) {
+        userText = `L'utente ha condiviso un contatto: ${message.contact.first_name} ${message.contact.phone_number || ''}`
+      } else {
+        return NextResponse.json({ ok: true })
+      }
+    }
+
     if (!userText && fileBlocks.length > 0) userText = `Analizza questo file: ${fileDescription}`
 
     if (!isAuthorized(chatId)) {
@@ -354,7 +147,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    // Comandi
+    // ── Comandi ──
     if (userText === '/start') {
       await sendTelegramMessage(chatId, '🧠 *Cervellone attivo.* Come posso aiutarLa?')
       return NextResponse.json({ ok: true })
@@ -364,34 +157,43 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
     if (userText === '/nuova') {
-      await supabase.from('messages').delete().eq('conversation_id', chatIdToUuid(chatId))
-      await sendTelegramMessage(chatId, 'Conversazione azzerata.')
+      const convId = chatIdToUuid(chatId)
+      // FIX: pulisce anche embeddings
+      await Promise.all([
+        safeSupabase(() => supabase.from('messages').delete().eq('conversation_id', convId)),
+        safeSupabase(() => supabase.from('embeddings').delete().eq('conversation_id', convId)),
+      ])
+      await sendTelegramMessage(chatId, 'Conversazione e memoria azzerata.')
       return NextResponse.json({ ok: true })
     }
 
-    // Typing periodico — FIX: gestito con try/finally per evitare memory leak
+    // ── Typing + thinking timeout ──
     typingInterval = setInterval(() => sendTyping(chatId), 4000)
     await sendTyping(chatId)
 
-    // Memoria RAG
-    const { searchMemory } = await import('@/lib/memory')
-    const memoryContext = await searchMemory(userText)
+    // UX-002: Messaggio dopo 12 secondi di attesa
+    const thinkingTimeout = setTimeout(async () => {
+      await sendTelegramMessage(chatId, '🧠 Sto elaborando una risposta dettagliata...')
+    }, 12_000)
 
-    // Conversazione
+    // ── Conversazione ──
     const conversationId = chatIdToUuid(chatId)
-    const { data: existingConv } = await supabase.from('conversations').select('id').eq('id', conversationId).single()
+    const existingConv = await safeSupabase(
+      () => supabase.from('conversations').select('id').eq('id', conversationId).single()
+    )
     if (!existingConv) {
-      await supabase.from('conversations').insert({ id: conversationId, title: '💬 Telegram' })
+      await safeSupabase(() => supabase.from('conversations').insert({ id: conversationId, title: '💬 Telegram' }))
     }
 
-    // Storia
-    const { data: recentMessages } = await supabase
-      .from('messages').select('role, content')
-      .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: true }).limit(20)
+    // ── Storia ──
+    const recentMessages = await safeSupabase(
+      () => supabase.from('messages').select('role, content')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: true }).limit(20),
+      []
+    )
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const history: any[] = (recentMessages || [])
+    const history: any[] = ((recentMessages as any[]) || [])
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role, content: m.content }))
 
@@ -400,147 +202,49 @@ export async function POST(request: NextRequest) {
     } else {
       history.push({ role: 'user', content: userText })
     }
-
-    // FIX: salva messaggio con fallback se embedding fallisce
-    try {
-      await saveMessageWithEmbedding(conversationId, 'user', userText)
-    } catch {
-      await supabase.from('messages').insert({ conversation_id: conversationId, role: 'user', content: userText })
-    }
-
     if (history.length > 0 && history[0].role !== 'user') history.shift()
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const hasFiles = fileBlocks.some((b: any) => b.type === 'image' || b.type === 'document')
+    // ── Claude ──
+    const fullResponse = await callClaude({
+      messages: history,
+      systemPrompt: TELEGRAM_SYSTEM_PROMPT,
+      userQuery: userText,
+      conversationId,
+    })
 
-    // Routing: Sonnet default, Opus per task complessi (come fa claude.ai)
-    const needsOpus = /relazione|calcolo|struttur|normativ|perizia|analisi.*complessa|confronto|verifica|progett|valutazione|consulenza|parere/i.test(userText)
-    const model = needsOpus ? 'claude-opus-4-6' : 'claude-sonnet-4-6'
-
-    const { CUSTOM_TOOLS, executeTool } = await import('@/lib/tools')
-    const tools = [{ type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 }, ...CUSTOM_TOOLS]
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let currentMessages: any[] = history
-    let fullResponse = ''
-    let iterations = 0
-    const MAX_ITERATIONS = 4
-    let consecutiveToolOnly = 0 // FIX: freno per loop tool-only
-
-    while (iterations < MAX_ITERATIONS) {
-      iterations++
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const params: any = {
-        model,
-        max_tokens: 16000,
-        system: TELEGRAM_SYSTEM_PROMPT + memoryContext,
-        messages: currentMessages,
-        tools,
-        // Thinking SEMPRE abilitato — come claude.ai. Budget alto per Opus.
-        thinking: { type: 'enabled', budget_tokens: needsOpus ? 16000 : 8000 },
-      }
-
-      const response = await client.messages.create(params)
-
-      let hasText = false
-      for (const block of response.content) {
-        if (block.type === 'text') { fullResponse += block.text; hasText = true }
-      }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const hasToolUse = response.content.some((b: any) => b.type === 'tool_use')
-      if (!hasToolUse || response.stop_reason === 'end_turn') break
-
-      // FIX: freno loop tool-only — se Claude fa solo tool use senza testo 2 volte, fermati
-      if (hasToolUse && !hasText) {
-        consecutiveToolOnly++
-        if (consecutiveToolOnly >= 2) break
-      } else {
-        consecutiveToolOnly = 0
-      }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const toolResults: any[] = []
-      for (const block of response.content) {
-        if (block.type === 'tool_use') {
-          // Esegui tool custom (cerca_prezziario, calcola_preventivo, ecc.)
-          // web_search è gestito da Anthropic server-side
-          let toolContent = 'OK'
-          if (block.name !== 'web_search') {
-            try {
-              toolContent = await executeTool(block.name, block.input as Record<string, unknown>)
-            } catch (err) {
-              toolContent = `Errore tool ${block.name}: ${err}`
-            }
-          }
-          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: toolContent })
-        }
-      }
-      currentMessages = [
-        ...currentMessages,
-        { role: 'assistant', content: response.content },
-        { role: 'user', content: toolResults },
-      ]
-    }
-
-    // FIX: pulisci interval SEMPRE prima di qualsiasi operazione post-Claude
+    // ── Cleanup ──
+    clearTimeout(thinkingTimeout)
     if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
 
-    // Salva risposta con fallback
-    if (fullResponse) {
-      try {
-        await saveMessageWithEmbedding(conversationId, 'assistant', fullResponse)
-      } catch {
-        await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullResponse })
-      }
-
-      if (hasFiles && fullResponse.length > 200) {
-        // Salva l'analisi di Claude
-        const knowledge = `[Analisi file "${fileDescription}" da Telegram]\n\nDomanda: ${userText}\n\nAnalisi:\n${fullResponse.slice(0, 10000)}`
-        saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
-      }
-
-      // SALVA CONTENUTO COMPLETO del file in memoria permanente (a blocchi per embedding)
-      if (fileBlocks.length > 0) {
-        for (const block of fileBlocks) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const b = block as any
-          if (b.type === 'text' && b.text && b.text.length > 100) {
-            // Salva a blocchi da 30000 caratteri per embedding efficiente
-            const text = b.text as string
-            const chunkSize = 30000
-            for (let i = 0; i < text.length; i += chunkSize) {
-              const chunk = text.slice(i, i + chunkSize)
-              const label = `[File: ${fileDescription}${text.length > chunkSize ? ` — parte ${Math.floor(i / chunkSize) + 1}` : ''}]`
-              saveMessageWithEmbedding(conversationId, 'knowledge', `${label}\n\n${chunk}`).catch(() => {})
-            }
-          }
-        }
-      }
+    // ── Salva file in memoria ──
+    if (fileBlocks.length > 0 && fullResponse.length > 200) {
+      const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
+      saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
     }
 
-    // Manda risposta
+    // ── UX-001: Detect tabelle e salva come documento ──
+    const hasTable = /\|[\s-]+\|/.test(fullResponse) && fullResponse.length > 3500
+
+    // ── Manda risposta ──
     const responseBlocks = parseDocumentBlocks(fullResponse)
     let sentSomething = false
 
     for (const block of responseBlocks) {
-      if (block.type === 'document') {
-        const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i) || block.content.match(/<title>(.*?)<\/title>/i)
+      if (block.type === 'document' || (hasTable && block.content.length > 3500)) {
+        const content = block.type === 'document' ? block.content : `<pre>${block.content}</pre>`
+        const titleMatch = content.match(/<h1[^>]*>(.*?)<\/h1>/i)
         const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
-        const totalMatch = block.content.match(/([\d.,]+\s*(?:\u20AC|EUR|€))/i)
-        const totalInfo = totalMatch ? `\n💰 ${totalMatch[1].trim()}` : ''
-        const rowCount = (block.content.match(/<tr/gi) || []).length
-        const rowInfo = rowCount > 2 ? `\n📊 ${rowCount - 1} voci` : ''
 
-        let docUrl = 'https://cervellone-5poc.vercel.app'
-        const { data: savedDoc } = await supabase
-          .from('documents')
-          .insert({ name: title, content: block.content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
-          .select('id').single()
-        if (savedDoc?.id) docUrl = `https://cervellone-5poc.vercel.app/doc/${savedDoc.id}`
+        const savedDoc = await safeSupabase(
+          () => supabase.from('documents')
+            .insert({ name: title, content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
+            .select('id').single()
+        )
+        const docUrl = (savedDoc as any)?.id
+          ? `https://cervellone-5poc.vercel.app/doc/${(savedDoc as any).id}`
+          : 'https://cervellone-5poc.vercel.app'
 
-        await sendTelegramMessage(chatId, `────────────────────\n📄 *${title}*${totalInfo}${rowInfo}\n────────────────────\n\n👉 ${docUrl}`)
+        await sendTelegramMessage(chatId, `📄 *${title}*\n\n👉 ${docUrl}`)
         sentSomething = true
       } else if (block.content.trim()) {
         await sendTelegramMessage(chatId, block.content)
@@ -554,20 +258,14 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    console.error('TELEGRAM errore:', err)
-    try {
-      const msg = err instanceof Error ? err.message : String(err)
-      let userMsg = `⚠️ ${msg.slice(0, 300)}`
-      if (msg.includes('credit') || msg.includes('billing') || msg.includes('usage limit')) {
-        userMsg = '⚠️ Crediti API esauriti o limite raggiunto. Controllare console.anthropic.com'
-      } else if (msg.includes('too large') || msg.includes('payload')) {
-        userMsg = '⚠️ File troppo pesante per essere analizzato.'
-      }
-      if (errorChatId) await sendTelegramMessage(errorChatId, userMsg)
-    } catch { /* ignore */ }
+    console.error('TELEGRAM error:', err)
+    const msg = err instanceof Error ? err.message : String(err)
+    let userMsg = `⚠️ ${msg.slice(0, 300)}`
+    if (msg.includes('credit') || msg.includes('billing')) userMsg = '⚠️ Crediti API esauriti.'
+    if (msg.includes('too large') || msg.includes('payload')) userMsg = '⚠️ File troppo pesante.'
+    if (errorChatId) await sendTelegramMessage(errorChatId, userMsg).catch(() => {})
     return NextResponse.json({ ok: true })
   } finally {
-    // FIX CRITICO: pulisci SEMPRE il typing interval, anche se crash
     if (typingInterval) clearInterval(typingInterval)
   }
 }
