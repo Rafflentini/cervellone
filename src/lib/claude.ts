@@ -26,13 +26,49 @@ interface ModelConfig {
 function selectModel(userQuery: string, hasFiles: boolean): ModelConfig {
   const len = userQuery.length
 
-  // Messaggi brevi/conversazionali: Sonnet veloce, thinking minimo
+  // ── TASK-DETECTION: prima di tutto, cerca indicatori di task strutturati ──
+  // Questi richiedono SEMPRE almeno thinking medio, indipendentemente dalla lunghezza
+  const isStructuredTask =
+    /(?:preventiv|computo|cme|cmE|c\.m\.e)/i.test(userQuery) ||
+    /(?:redigi|scrivi|prepara|elabora|genera)\b/i.test(userQuery) ||
+    /(?:relazione|perizia|parere|report|documento|lettera)\b/i.test(userQuery) ||
+    /(?:calcol[oa]|dimension[ai]|verifica\s+struttur)/i.test(userQuery)
+
+  // Se è un task strutturato, NON dare mai thinking=1024 — minimo 10K
+  if (isStructuredTask) {
+    const complexitySignals = countComplexitySignals(userQuery, hasFiles)
+    if (complexitySignals >= 4) {
+      return { model: 'claude-opus-4-6', thinkingBudget: 100_000, maxTokens: 16000 }
+    }
+    if (complexitySignals >= 2) {
+      return { model: 'claude-opus-4-6', thinkingBudget: 32_000, maxTokens: 16000 }
+    }
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 10_000, maxTokens: 16000 }
+  }
+
+  // ── MESSAGGI BREVI conversazionali (niente task strutturato) ──
   if (len < 100 && !hasFiles) {
     return { model: 'claude-sonnet-4-6', thinkingBudget: 1024, maxTokens: 4096 }
   }
 
-  // ── SEGNALI DI COMPLESSITÀ (indipendenti dal dominio) ──
-  const complexitySignals = [
+  // ── SEGNALI DI COMPLESSITÀ (per tutto il resto) ──
+  const complexitySignals = countComplexitySignals(userQuery, hasFiles)
+
+  if (complexitySignals >= 4) {
+    return { model: 'claude-opus-4-6', thinkingBudget: 100_000, maxTokens: 16000 }
+  }
+  if (complexitySignals >= 2) {
+    return { model: 'claude-opus-4-6', thinkingBudget: 32_000, maxTokens: 16000 }
+  }
+  if (complexitySignals >= 1 || len > 300 || hasFiles) {
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 10_000, maxTokens: 16000 }
+  }
+  return { model: 'claude-sonnet-4-6', thinkingBudget: 4000, maxTokens: 8000 }
+}
+
+function countComplexitySignals(userQuery: string, hasFiles: boolean): number {
+  const len = userQuery.length
+  return [
     /(?:approfond|dettagliat|(?:analisi|indagine|studio)\s+complet|esaustiv|accurata|minuziosa)/i.test(userQuery),
     /(?:opus|massima\s*potenza|ragionamento\s*profondo|analisi\s*complessa)/i.test(userQuery),
     (userQuery.match(/(?:analizza|confronta|verifica|valuta|esamina|studia|indaga|investiga|redigi|prepara|elabora)/gi) || []).length >= 2,
@@ -44,21 +80,6 @@ function selectModel(userQuery: string, hasFiles: boolean): ModelConfig {
     /(?:confronta|compara|paragona|differenz[ae]|vs\.?|rispetto a)/i.test(userQuery) && len > 100,
     /(?:strategia|piano\s+(?:di|per)|business\s*plan|marketing|posizionament|analisi\s+(?:di\s+)?mercato|target|competitor)/i.test(userQuery),
   ].filter(Boolean).length
-
-  // Opus Extended (100K thinking): task davvero complessi (4+ segnali)
-  if (complexitySignals >= 4) {
-    return { model: 'claude-opus-4-6', thinkingBudget: 100_000, maxTokens: 16000 }
-  }
-  // Opus (32K thinking): task complessi (2-3 segnali)
-  if (complexitySignals >= 2) {
-    return { model: 'claude-opus-4-6', thinkingBudget: 32_000, maxTokens: 16000 }
-  }
-  // Sonnet con thinking alto: task medio (1 segnale, file, msg lungo)
-  if (complexitySignals >= 1 || len > 300 || hasFiles) {
-    return { model: 'claude-sonnet-4-6', thinkingBudget: 10000, maxTokens: 16000 }
-  }
-  // Sonnet standard: tutto il resto
-  return { model: 'claude-sonnet-4-6', thinkingBudget: 4000, maxTokens: 8000 }
 }
 
 export interface ClaudeRequest {

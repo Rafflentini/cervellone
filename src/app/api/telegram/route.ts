@@ -170,8 +170,13 @@ export async function POST(request: NextRequest) {
     typingInterval = setInterval(() => sendTyping(chatId), 4000)
     await sendTyping(chatId)
 
-    // UX-002: Timeout adattivo — più tempo per messaggi complessi
-    const isLikelyComplex = userText.length > 300 ||
+    // UX-002: Timeout adattivo — più tempo per task strutturati e messaggi complessi
+    const isStructuredTask =
+      /(?:preventiv|computo|cme|cmE|c\.m\.e)/i.test(userText) ||
+      /(?:redigi|scrivi|prepara|elabora|genera)\b/i.test(userText) ||
+      /(?:relazione|perizia|parere|report|documento|lettera)\b/i.test(userText) ||
+      /(?:calcol[oa]|dimension[ai]|verifica\s+struttur)/i.test(userText)
+    const isLikelyComplex = isStructuredTask || userText.length > 300 ||
       (userText.match(/(?:analizza|confronta|verifica|valuta|redigi|prepara|elabora)/gi) || []).length >= 2 ||
       fileBlocks.length > 0
     const thinkingDelay = isLikelyComplex ? 25_000 : 12_000
