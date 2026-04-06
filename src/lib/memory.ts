@@ -29,14 +29,14 @@ export async function saveMessageWithEmbedding(
 }
 
 // Cerca nella memoria i contenuti più rilevanti per la domanda
-export async function searchMemory(query: string, limit: number = 30): Promise<string> {
+export async function searchMemory(query: string, limit: number = 15): Promise<string> {
   const embedding = await generateEmbedding(query)
 
   if (embedding.length === 0) return ''
 
   const { data, error } = await supabase.rpc('search_memory', {
     query_embedding: JSON.stringify(embedding),
-    match_threshold: 0.40,
+    match_threshold: 0.55,
     match_count: limit,
   })
 
