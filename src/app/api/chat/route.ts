@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { searchMemory, saveMessageWithEmbedding } from '@/lib/memory'
 import { supabase } from '@/lib/supabase'
 import { CHAT_SYSTEM_PROMPT } from '@/lib/prompts'
+import { CUSTOM_TOOLS, executeTool } from '@/lib/tools'
 
 export const maxDuration = 300
 
@@ -125,7 +126,8 @@ export async function POST(request: NextRequest) {
   const needsOpus = /relazione tecnica|calcolo strutturale|analisi normativa|perizia|ragionamento complesso/i.test(userQuery) && !hasFiles
   const model = needsOpus ? 'claude-opus-4-6' : 'claude-sonnet-4-6'
 
-  const tools = [{ type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 }]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: any[] = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }, ...CUSTOM_TOOLS]
 
   const encoder = new TextEncoder()
   let fullResponse = ''
@@ -188,7 +190,15 @@ export async function POST(request: NextRequest) {
           const toolResults: any[] = []
           for (const block of finalMessage.content) {
             if (block.type === 'tool_use') {
-              toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: 'OK' })
+              let toolContent = 'OK'
+              if (block.name !== 'web_search') {
+                try {
+                  toolContent = await executeTool(block.name, block.input as Record<string, unknown>)
+                } catch (err) {
+                  toolContent = `Errore tool ${block.name}: ${err}`
+                }
+              }
+              toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: toolContent })
             }
           }
 

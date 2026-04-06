@@ -415,7 +415,8 @@ export async function POST(request: NextRequest) {
     const needsOpus = /relazione tecnica|calcolo strutturale|analisi normativa|confronto complesso|perizia/i.test(userText) && !hasFiles
     const model = needsOpus ? 'claude-opus-4-6' : 'claude-sonnet-4-6'
 
-    const tools = [{ type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 }]
+    const { CUSTOM_TOOLS, executeTool } = await import('@/lib/tools')
+    const tools = [{ type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 }, ...CUSTOM_TOOLS]
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let currentMessages: any[] = history
@@ -459,7 +460,17 @@ export async function POST(request: NextRequest) {
       const toolResults: any[] = []
       for (const block of response.content) {
         if (block.type === 'tool_use') {
-          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: 'OK' })
+          // Esegui tool custom (cerca_prezziario, calcola_preventivo, ecc.)
+          // web_search è gestito da Anthropic server-side
+          let toolContent = 'OK'
+          if (block.name !== 'web_search') {
+            try {
+              toolContent = await executeTool(block.name, block.input as Record<string, unknown>)
+            } catch (err) {
+              toolContent = `Errore tool ${block.name}: ${err}`
+            }
+          }
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: toolContent })
         }
       }
       currentMessages = [
