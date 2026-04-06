@@ -282,7 +282,12 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       try {
         // Scarica il file
         const response = await fetch(url, {
-          headers: { 'User-Agent': 'Cervellone/2.0 (Restruktura SRL)' },
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept': 'application/octet-stream,application/vnd.oasis.opendocument.spreadsheet,text/csv,*/*',
+            'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8',
+          },
+          redirect: 'follow',
         })
         if (!response.ok) {
           return `Errore download: HTTP ${response.status}. Verificare che l'URL sia corretto e il file sia pubblicamente accessibile.`
