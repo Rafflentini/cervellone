@@ -254,15 +254,19 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
         return `Nessun prezziario caricato per ${regione}. Puoi importarlo con importa_prezziario_da_url.`
       }
 
-      // Tutte le regioni
+      // Tutte le regioni — usa query distinta per non scaricare tutte le righe
       const { data } = await supabase
         .from('prezziario')
-        .select('regione')
+        .select('regione', { count: 'exact' })
+        .limit(1)
       if (!data?.length) return 'Nessun prezziario caricato.'
 
+      // Conta per regione con query separate (più efficiente di scaricare tutto)
+      const regioni = [...new Set((await supabase.from('prezziario').select('regione')).data?.map(r => r.regione) || [])]
       const counts: Record<string, number> = {}
-      for (const row of data) {
-        counts[row.regione] = (counts[row.regione] || 0) + 1
+      for (const r of regioni) {
+        const { count } = await supabase.from('prezziario').select('*', { count: 'exact', head: true }).eq('regione', r)
+        if (count) counts[r] = count
       }
       const lines = Object.entries(counts)
         .sort((a, b) => b[1] - a[1])

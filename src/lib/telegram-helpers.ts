@@ -27,8 +27,15 @@ export async function sendTelegramMessage(chatId: number, text: string) {
     await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: chunk }),
-    }).catch(() => {})
+      body: JSON.stringify({ chat_id: chatId, text: chunk, parse_mode: 'Markdown' }),
+    }).catch(async () => {
+      // Fallback senza parse_mode se Markdown fallisce (caratteri speciali)
+      await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text: chunk }),
+      }).catch(() => {})
+    })
   }
 }
 
