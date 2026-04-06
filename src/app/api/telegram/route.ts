@@ -435,6 +435,8 @@ export async function POST(request: NextRequest) {
         system: TELEGRAM_SYSTEM_PROMPT + memoryContext,
         messages: currentMessages,
         tools,
+        // Thinking ABILITATO — come claude.ai. Senza thinking Claude dà risposte superficiali.
+        thinking: { type: 'enabled', budget_tokens: 8000 },
       }
 
       const response = await client.messages.create(params)
