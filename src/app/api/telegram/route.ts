@@ -199,8 +199,10 @@ async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: str
             let prezzo = 0
             let um = ''
             for (let i = cells.length - 1; i >= 2; i--) {
-              const num = parseFloat(cells[i].replace(',', '.'))
-              if (!isNaN(num) && num > 0 && num < 100000) { prezzo = num; break }
+              const val = cells[i]
+              if (val.includes('%')) continue // Skip percentuali (colonna "Sicurezza inclusa")
+              const num = parseFloat(val.replace(',', '.'))
+              if (!isNaN(num) && num > 0 && num < 999999) { prezzo = num; break }
             }
             if (cells.length > 2) um = cells[2].toLowerCase().slice(0, 20)
             if (prezzo > 0) voci.push({ codice_voce: codice, descrizione: descrizione.slice(0, 500), unita_misura: um, prezzo: Math.round(prezzo * 100) / 100 })
