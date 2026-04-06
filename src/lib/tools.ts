@@ -129,6 +129,18 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
       required: ['query'],
     },
   },
+  {
+    name: 'scarica_file_da_url',
+    description: 'Scarica qualsiasi file da un URL pubblico (PDF, Word, Excel, ODS, immagini, CSV, ecc.) e restituisce il contenuto come testo o lo salva in memoria. Usa questo per scaricare documenti dal web.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL diretto al file da scaricare' },
+        filename: { type: 'string', description: 'Nome descrittivo del file (es: "relazione_strutturale.pdf")' },
+      },
+      required: ['url'],
+    },
+  },
 ]
 
 // ── EXECUTORS ──
@@ -413,6 +425,65 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
         const url = `https://cervellone-5poc.vercel.app/doc/${d.id}`
         return `📄 ${d.name} — ${date} — ${url}`
       }).join('\n')
+    }
+
+    case 'scarica_file_da_url': {
+      const dlUrl = input.url as string
+      const filename = (input.filename as string) || dlUrl.split('/').pop() || 'file'
+
+      try {
+        const response = await fetch(dlUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+          },
+          redirect: 'follow',
+        })
+        if (!response.ok) return `Errore download: HTTP ${response.status}`
+
+        const buffer = Buffer.from(await response.arrayBuffer())
+        const sizeMB = (buffer.length / 1024 / 1024).toFixed(1)
+        if (buffer.length > 25 * 1024 * 1024) return `File troppo grande (${sizeMB}MB). Limite: 25MB.`
+
+        const ext = filename.split('.').pop()?.toLowerCase() || ''
+
+        // CSV/TXT/JSON/XML/HTML
+        if (['csv', 'txt', 'md', 'json', 'xml', 'html'].includes(ext)) {
+          const text = buffer.toString('utf-8')
+          return `[File ${filename}, ${sizeMB}MB]\n\n${text.slice(0, 100000)}`
+        }
+
+        // ODS
+        if (ext === 'ods') {
+          const rows = await parseOdsToRows(buffer)
+          if (rows.length > 0) {
+            return `[File ODS: ${filename}, ${rows.length} righe]\n\n${rows.slice(0, 2000).join('\n').slice(0, 100000)}`
+          }
+        }
+
+        // XLSX
+        if (ext === 'xlsx' || ext === 'xls') {
+          const rows = await parseXlsxToRows(buffer)
+          if (rows.length > 0) {
+            return `[File Excel: ${filename}, ${rows.length} righe]\n\n${rows.slice(0, 2000).join('\n').slice(0, 100000)}`
+          }
+        }
+
+        // Word
+        if (ext === 'docx' || ext === 'doc') {
+          try {
+            const mammoth = await import('mammoth')
+            const result = await mammoth.extractRawText({ buffer })
+            if (result.value && result.value.length > 50) {
+              return `[File Word: ${filename}, ${sizeMB}MB]\n\n${result.value.slice(0, 100000)}`
+            }
+          } catch { /* fallback */ }
+        }
+
+        return `[File scaricato: ${filename}, ${sizeMB}MB, formato ${ext}] — contenuto binario non leggibile come testo.`
+      } catch (err) {
+        return `Errore download: ${(err as Error).message}`
+      }
     }
 
     default:
