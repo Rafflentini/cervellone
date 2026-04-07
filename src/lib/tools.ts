@@ -102,7 +102,7 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'genera_preventivo_completo',
-    description: 'Genera PREVENTIVO + CME in una sola chiamata. Cerca automaticamente le voci nel prezziario regionale con scoring di rilevanza, calcola tutto, produce 2 documenti HTML separati. IMPORTANTE: ogni lavorazione deve corrispondere a una voce reale del prezziario — NON spezzare in sotto-voci (fornitura+posa separati) se esiste una voce unica. Usa descrizioni simili al linguaggio del prezziario.',
+    description: 'Genera PREVENTIVO + CME + QUADRO ECONOMICO in una sola chiamata. Cerca automaticamente le voci nel prezziario regionale con scoring di rilevanza, calcola tutto, produce 3 documenti HTML separati e li salva nel database. Se già generati per questa conversazione, restituisce i documenti salvati (IMMUTABILI). IMPORTANTE: ogni lavorazione deve corrispondere a una voce reale del prezziario — NON spezzare in sotto-voci (fornitura+posa separati) se esiste una voce unica.',
     input_schema: {
       type: 'object',
       properties: {
@@ -135,7 +135,7 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
 
 // ── EXECUTORS ──
 
-async function executeStudioTecnico(name: string, input: Record<string, unknown>): Promise<string | null> {
+async function executeStudioTecnico(name: string, input: Record<string, unknown>, conversationId?: string): Promise<string | null> {
   switch (name) {
     case 'cerca_prezziario': {
       const query = input.query as string
@@ -462,6 +462,36 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
     }
 
     case 'genera_preventivo_completo': {
+      // ══════════════════════════════════════════════════════════
+      // CACHE CHECK: se documenti già generati per questa conversazione, restituiscili
+      // ══════════════════════════════════════════════════════════
+      if (conversationId) {
+        const { data: cached } = await supabase
+          .from('documents')
+          .select('name, content, metadata')
+          .eq('conversation_id', conversationId)
+          .in('metadata->>doc_type', ['preventivo', 'cme', 'quadro_economico'])
+          .order('created_at', { ascending: true })
+
+        if (cached && cached.length >= 2) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const prevDoc = cached.find((d: any) => d.metadata?.doc_type === 'preventivo')
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const cmeDoc = cached.find((d: any) => d.metadata?.doc_type === 'cme')
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const qeDoc = cached.find((d: any) => d.metadata?.doc_type === 'quadro_economico')
+
+          if (prevDoc && cmeDoc) {
+            let result = `DOCUMENTI GIÀ GENERATI PER QUESTA CONVERSAZIONE (risultati invariati).\n\nPREVENTIVO:\n~~~document\n${prevDoc.content}\n~~~\n\nCME:\n~~~document\n${cmeDoc.content}\n~~~`
+            if (qeDoc) {
+              result += `\n\nQUADRO ECONOMICO:\n~~~document\n${qeDoc.content}\n~~~`
+            }
+            result += `\n\nI documenti sono identici a quelli generati in precedenza. Il CME è una misurazione ufficiale e non può cambiare.`
+            return result
+          }
+        }
+      }
+
       const committente = input.committente as string
       const indirizzo = (input.indirizzo_cantiere as string) || ''
       const comune = input.comune as string
@@ -652,6 +682,31 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       const ivaMercato = Math.round(impMercato * ivaPerc * 100) / 100
       const totMercato = Math.round((impMercato + ivaMercato) * 100) / 100
 
+      // Calcoli Quadro Economico (basati su prezziario, NON su mercato)
+      const oneriSic = Math.round(subtPrezziario * 0.03 * 100) / 100
+      const totLavori = Math.round((subtPrezziario + oneriSic) * 100) / 100
+      const speseTecniche = Math.round(subtPrezziario * 0.10 * 100) / 100
+      const imprevisti = Math.round(subtPrezziario * 0.05 * 100) / 100
+      const totSommeDisp = Math.round((speseTecniche + imprevisti) * 100) / 100
+      const ivaLavori = Math.round(totLavori * ivaPerc * 100) / 100
+      const ivaSomme = Math.round(totSommeDisp * ivaPerc * 100) / 100
+      const totQE = Math.round((totLavori + ivaLavori + totSommeDisp + ivaSomme) * 100) / 100
+
+      // ══════════════════════════════════════════════════════════
+      // CSS e header comuni
+      // ══════════════════════════════════════════════════════════
+      const cssCommon = `*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
+    .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
+    .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
+    h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
+    table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
+    th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
+    tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
+    .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
+    code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:10px}`
+
+      const headerHtml = `<div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>`
+
       // ══════════════════════════════════════════════════════════
       // PREVENTIVO HTML (documento commerciale — può avere spese generali ecc.)
       // ══════════════════════════════════════════════════════════
@@ -735,25 +790,8 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       </tbody>
     </table>` : ''
 
-      // Quadro Economico (in fondo — qui stanno spese generali, utile, IVA)
-      const oneriSic = Math.round(subtPrezziario * 0.03 * 100) / 100
-      const sgCME = Math.round(subtPrezziario * sgPerc * 100) / 100
-      const uiCME = Math.round(subtPrezziario * uiPerc * 100) / 100
-      const totLavori = subtPrezziario + oneriSic
-      const ivaCME = Math.round((subtPrezziario + sgCME + uiCME) * ivaPerc * 100) / 100
-
-      const cmeHtml = `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>
-    *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
-    .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
-    .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
-    h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
-    table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
-    th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
-    tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
-    .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
-    code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:10px}
-  </style></head><body>
-    <div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>
+      const cmeHtml = `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>${cssCommon}</style></head><body>
+    ${headerHtml}
     <h2>COMPUTO METRICO ESTIMATIVO</h2>
     <p><strong>Committente:</strong> ${committente} | <strong>Comune:</strong> ${comune} | <strong>Data:</strong> ${oggi}</p>
     <p style="margin:5px 0"><strong>Oggetto:</strong> ${descrizione}</p>
@@ -772,33 +810,76 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
 
     ${analisiNPHtml}
 
-    <h2 style="margin-top:30px">QUADRO ECONOMICO</h2>
-    <table>
-      <tbody>
-        <tr><td colspan="2"><strong>A) LAVORI</strong></td><td></td></tr>
-        <tr><td style="padding-left:20px" colspan="2">a.1) Lavori a base d'asta (da CME)</td><td class="right">€ ${fmt(subtPrezziario)}</td></tr>
-        <tr><td style="padding-left:20px" colspan="2">a.2) Oneri sicurezza (non ribassabili, 3%)</td><td class="right">€ ${fmt(oneriSic)}</td></tr>
-        <tr class="total-row"><td colspan="2">Totale lavori</td><td class="right">€ ${fmt(totLavori)}</td></tr>
-        <tr><td colspan="2"><strong>B) SOMME A DISPOSIZIONE</strong></td><td></td></tr>
-        <tr><td style="padding-left:20px" colspan="2">b.1) Spese generali (${(sgPerc*100).toFixed(0)}%)</td><td class="right">€ ${fmt(sgCME)}</td></tr>
-        <tr><td style="padding-left:20px" colspan="2">b.2) Utile impresa (${(uiPerc*100).toFixed(0)}%)</td><td class="right">€ ${fmt(uiCME)}</td></tr>
-        <tr><td style="padding-left:20px" colspan="2">b.3) IVA (${(ivaPerc*100).toFixed(0)}%)</td><td class="right">€ ${fmt(ivaCME)}</td></tr>
-        <tr class="total-row" style="font-size:13px"><td colspan="2">TOTALE COMPLESSIVO</td><td class="right">€ ${fmt(totLavori + sgCME + uiCME + ivaCME)}</td></tr>
-      </tbody>
-    </table>
-
     <div class="footer">
       Restruktura S.r.l. — Conforme a DPR 207/2010 Art. 32 e D.Lgs. 36/2023<br>
       I Nuovi Prezzi (N.P.) sono soggetti a verifica del R.U.P.
     </div>
   </body></html>`
 
+      // ══════════════════════════════════════════════════════════
+      // DOCUMENTO 3 — QUADRO ECONOMICO (Art. 16 DPR 207/2010)
+      // ══════════════════════════════════════════════════════════
+      const qeHtml = `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>${cssCommon}</style></head><body>
+    ${headerHtml}
+    <h2>QUADRO ECONOMICO</h2>
+    <p><strong>Committente:</strong> ${committente} | <strong>Comune:</strong> ${comune} | <strong>Data:</strong> ${oggi}</p>
+    <p style="margin:5px 0"><strong>Oggetto:</strong> ${descrizione}</p>
+    <p style="margin:5px 0;font-size:11px">Art. 16 DPR 207/2010 — Rif. CME allegato</p>
+
+    <table>
+      <tbody>
+        <tr><td colspan="2"><strong>A) LAVORI</strong></td><td></td></tr>
+        <tr><td style="padding-left:20px" colspan="2">a.1) Lavori a base d'asta (da CME)</td><td class="right">€ ${fmt(subtPrezziario)}</td></tr>
+        <tr><td style="padding-left:20px" colspan="2">a.2) Oneri della sicurezza (non soggetti a ribasso, 3%)</td><td class="right">€ ${fmt(oneriSic)}</td></tr>
+        <tr class="total-row"><td colspan="2">TOTALE A) LAVORI</td><td class="right">€ ${fmt(totLavori)}</td></tr>
+
+        <tr><td colspan="2"><strong>B) SOMME A DISPOSIZIONE DELL'AMMINISTRAZIONE</strong></td><td></td></tr>
+        <tr><td style="padding-left:20px" colspan="2">b.1) Spese tecniche (progettazione, DL, coordinamento sicurezza, 10%)</td><td class="right">€ ${fmt(speseTecniche)}</td></tr>
+        <tr><td style="padding-left:20px" colspan="2">b.2) Imprevisti (5%)</td><td class="right">€ ${fmt(imprevisti)}</td></tr>
+        <tr class="total-row"><td colspan="2">TOTALE B) SOMME A DISPOSIZIONE</td><td class="right">€ ${fmt(totSommeDisp)}</td></tr>
+
+        <tr><td colspan="2"><strong>C) IVA</strong></td><td></td></tr>
+        <tr><td style="padding-left:20px" colspan="2">c.1) IVA su lavori (${(ivaPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(ivaLavori)}</td></tr>
+        <tr><td style="padding-left:20px" colspan="2">c.2) IVA su somme a disposizione (${(ivaPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(ivaSomme)}</td></tr>
+
+        <tr class="total-row" style="font-size:14px"><td colspan="2">TOTALE GENERALE (A + B + C)</td><td class="right">€ ${fmt(totQE)}</td></tr>
+      </tbody>
+    </table>
+
+    <div class="footer">
+      Restruktura S.r.l. — Le percentuali sono indicative e soggette a verifica del R.U.P.<br>
+      Le somme a disposizione saranno adeguate in fase di progettazione esecutiva.
+    </div>
+  </body></html>`
+
+      // ══════════════════════════════════════════════════════════
+      // SALVATAGGIO CACHE SU SUPABASE (per evitare rigenerazione)
+      // ══════════════════════════════════════════════════════════
+      if (conversationId) {
+        const docsToSave = [
+          { name: `Preventivo - ${committente}`, content: prevHtml, doc_type: 'preventivo' },
+          { name: `CME - ${committente}`, content: cmeHtml, doc_type: 'cme' },
+          { name: `Quadro Economico - ${committente}`, content: qeHtml, doc_type: 'quadro_economico' },
+        ]
+        for (const doc of docsToSave) {
+          try {
+            await supabase.from('documents').insert({
+              name: doc.name,
+              content: doc.content,
+              conversation_id: conversationId,
+              type: 'html',
+              metadata: { source: 'genera_preventivo_completo', doc_type: doc.doc_type, committente, comune, numero },
+            })
+          } catch { /* non bloccare se fallisce il salvataggio */ }
+        }
+      }
+
       // ── Confronto ──
       const diff = subtMercato - subtPrezziario
       const diffPerc = subtPrezziario > 0 ? ((diff / subtPrezziario) * 100).toFixed(1) : '—'
       const vociPrezziarioCount = vociPrezziario.length
 
-      return `PREVENTIVO E CME GENERATI CON SUCCESSO.
+      return `PREVENTIVO, CME E QUADRO ECONOMICO GENERATI CON SUCCESSO.
 
 PREVENTIVO (prezzi di mercato):
 ~~~document
@@ -810,14 +891,20 @@ CME (prezziario ufficiale ${regione} 2025):
 ${cmeHtml}
 ~~~
 
+QUADRO ECONOMICO:
+~~~document
+${qeHtml}
+~~~
+
 RIEPILOGO:
 - Totale preventivo (mercato): € ${fmt(subtMercato)}
 - Totale CME (lavori a base d'asta): € ${fmt(subtPrezziario)}
-- Differenza: € ${fmt(diff)} (${diffPerc}%)
+- Differenza preventivo/CME: € ${fmt(diff)} (${diffPerc}%)
+- Totale Quadro Economico: € ${fmt(totQE)}
 - Voci trovate nel prezziario: ${vociPrezziarioCount}/${vociConPrezzi.length}
 - Nuovi Prezzi: ${vociNP.length} (${vociNP.map(v => v.codice_prezziario).join(', ') || 'nessuno'})
 
-Il CME contiene SOLO lavorazioni reali. Spese generali, utile e IVA sono nel Quadro Economico.`
+IMPORTANTE: questi documenti sono ora salvati e NON possono essere rigenerati. Se servono modifiche, specificare esattamente quali voci o quantità cambiare.`
     }
 
     default:
@@ -884,9 +971,9 @@ export function getToolDefinitions() {
   ]
 }
 
-export async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
+export async function executeTool(name: string, input: Record<string, unknown>, conversationId?: string): Promise<string> {
   for (const executor of EXECUTORS) {
-    const result = await executor(name, input)
+    const result = await executor(name, input, conversationId)
     if (result !== null) return result
   }
   return `Tool "${name}" non riconosciuto.`

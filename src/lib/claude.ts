@@ -151,7 +151,7 @@ export async function callClaudeStream(
     if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
     if (!iterationHasText && i > 0) break
 
-    const toolResults = await executeToolBlocks(toolBlocks)
+    const toolResults = await executeToolBlocks(toolBlocks, conversationId)
     if (toolResults.length === 0) break
 
     currentMessages = [
@@ -210,7 +210,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
     if (toolBlocks.length === 0 || response.stop_reason === 'end_turn') break
     if (!hasText && i > 0) break
 
-    const toolResults = await executeToolBlocks(toolBlocks)
+    const toolResults = await executeToolBlocks(toolBlocks, conversationId)
     if (toolResults.length === 0) break
 
     currentMessages = [
@@ -229,14 +229,14 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
 
 // ── Helpers ──
 
-async function executeToolBlocks(toolBlocks: any[]): Promise<any[]> {
+async function executeToolBlocks(toolBlocks: any[], conversationId?: string): Promise<any[]> {
   const results: any[] = []
   for (const block of toolBlocks) {
     if (block.type !== 'tool_use') continue
     if (block.name === 'web_search') continue // server-side
 
     try {
-      const result = await executeTool(block.name, block.input as Record<string, unknown>)
+      const result = await executeTool(block.name, block.input as Record<string, unknown>, conversationId)
       results.push({ type: 'tool_result', tool_use_id: block.id, content: result })
     } catch (err) {
       logError(`Tool ${block.name} error`, err)
