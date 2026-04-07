@@ -466,14 +466,18 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       // CACHE CHECK: se documenti già generati per questa conversazione, restituiscili
       // ══════════════════════════════════════════════════════════
       if (conversationId) {
-        const { data: cached } = await supabase
+        const { data: allDocs } = await supabase
           .from('documents')
           .select('name, content, metadata')
           .eq('conversation_id', conversationId)
-          .in('metadata->>doc_type', ['preventivo', 'cme', 'quadro_economico'])
           .order('created_at', { ascending: true })
 
-        if (cached && cached.length >= 2) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const cached = (allDocs || []).filter((d: any) =>
+          ['preventivo', 'cme', 'quadro_economico'].includes(d.metadata?.doc_type)
+        )
+
+        if (cached.length >= 2) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const prevDoc = cached.find((d: any) => d.metadata?.doc_type === 'preventivo')
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -862,15 +866,14 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
           { name: `Quadro Economico - ${committente}`, content: qeHtml, doc_type: 'quadro_economico' },
         ]
         for (const doc of docsToSave) {
-          try {
-            await supabase.from('documents').insert({
-              name: doc.name,
-              content: doc.content,
-              conversation_id: conversationId,
-              type: 'html',
-              metadata: { source: 'genera_preventivo_completo', doc_type: doc.doc_type, committente, comune, numero },
-            })
-          } catch { /* non bloccare se fallisce il salvataggio */ }
+          const { error } = await supabase.from('documents').insert({
+            name: doc.name,
+            content: doc.content,
+            conversation_id: conversationId,
+            type: 'html',
+            metadata: { source: 'genera_preventivo_completo', doc_type: doc.doc_type, committente, comune, numero },
+          })
+          if (error) console.error(`Cache save failed (${doc.doc_type}):`, error.message)
         }
       }
 
