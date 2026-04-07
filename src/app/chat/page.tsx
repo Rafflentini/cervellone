@@ -109,6 +109,7 @@ export default function ChatPage() {
   const animFrameRef = useRef<number>(0)
   const streamRef = useRef<MediaStream | null>(null)
 
+  const abortControllerRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -465,6 +466,12 @@ export default function ChatPage() {
     const text = input.trim()
     if ((!text && pendingFiles.length === 0) || loading) return
 
+    // Cancella richiesta precedente se ancora in corso
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    abortControllerRef.current = new AbortController()
+
     // Avviso se troppi file PDF/immagini — il context window ha un limite
     const heavyFiles = pendingFiles.filter(f => f.isPdf || f.isImage)
     if (heavyFiles.length > 3) {
@@ -489,7 +496,6 @@ export default function ChatPage() {
 
     const userMsg: DisplayMessage = { role: 'user', text, files: pendingFiles.length > 0 ? [...pendingFiles] : undefined }
     const newMessages = [...messages, userMsg]
-    setMessages(newMessages)
     setInput('')
     setPendingFiles([])
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
@@ -536,6 +542,7 @@ export default function ChatPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: jsonBody,
+        signal: abortControllerRef.current?.signal,
       })
       if (!res.ok) {
         if (res.status === 401) { router.push('/login'); return }
@@ -565,21 +572,10 @@ export default function ChatPage() {
       }
       // Salva risposta assistente
       await saveMessage(convId, 'assistant', fullText)
-      // Auto-salva come documento su Supabase se è una risposta sostanziosa
-      if (fullText.length > 300) {
-        const docTitle = text.slice(0, 80) || 'Documento'
-        fetch('/api/documents', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: docTitle,
-            content: fullText,
-            conversationId: convId,
-          }),
-        }).catch(() => {})
-      }
-      await loadConversations()
+      // Aggiorna lista conversazioni (senza ricaricare messaggi)
+      loadConversations().catch(() => {})
     } catch (err) {
+      if ((err as Error).name === 'AbortError') return
       console.error('CHAT errore:', err)
       const fileCount = userMsg.files?.length || 0
       let errorMessage: string

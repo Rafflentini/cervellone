@@ -7,6 +7,8 @@ import { callClaudeStream, trimMessages } from '@/lib/claude'
 import { CHAT_SYSTEM_PROMPT } from '@/lib/prompts'
 import { validateAuth } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
+import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
+import { supabase } from '@/lib/supabase'
 
 export const maxDuration = 300
 
@@ -63,13 +65,43 @@ export async function POST(request: NextRequest) {
   const readable = new ReadableStream({
     async start(controller) {
       try {
-        await callClaudeStream(
+        const fullResponse = await callClaudeStream(
           { messages: trimmedMessages, systemPrompt: CHAT_SYSTEM_PROMPT, userQuery, conversationId, hasFiles },
           {
             onText: (text) => controller.enqueue(encoder.encode(text)),
             onToolStart: () => controller.enqueue(encoder.encode('\n\n🔍 *Cerco informazioni...*\n\n')),
           },
         )
+
+        // Estrai document blocks e salva come documenti linkabili
+        const responseBlocks = parseDocumentBlocks(fullResponse)
+        const docLinks: string[] = []
+
+        for (const block of responseBlocks) {
+          if (block.type === 'document') {
+            const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i)
+            const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
+
+            const { data: savedDoc } = await supabase.from('documents')
+              .insert({
+                name: title,
+                content: block.content,
+                conversation_id: conversationId,
+                type: 'html',
+                metadata: { source: 'web_chat' }
+              })
+              .select('id')
+              .single()
+
+            if (savedDoc?.id) {
+              docLinks.push(`\n\n📄 **${title}**\n👉 [Apri documento](https://cervellone-5poc.vercel.app/doc/${savedDoc.id})`)
+            }
+          }
+        }
+
+        if (docLinks.length > 0) {
+          controller.enqueue(encoder.encode(docLinks.join('\n')))
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error('CHAT error:', msg)
