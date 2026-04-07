@@ -143,7 +143,7 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'genera_preventivo_completo',
-    description: 'Genera PREVENTIVO + CME in una sola chiamata. Cerca automaticamente le voci nel prezziario regionale, calcola tutto, produce 2 documenti HTML separati. Usa SEMPRE questo tool per preventivi — è molto più veloce di cercare le voci una per una.',
+    description: 'Genera PREVENTIVO + CME in una sola chiamata. Cerca automaticamente le voci nel prezziario regionale con scoring di rilevanza, calcola tutto, produce 2 documenti HTML separati. IMPORTANTE: ogni lavorazione deve corrispondere a una voce reale del prezziario — NON spezzare in sotto-voci (fornitura+posa separati) se esiste una voce unica. Usa descrizioni simili al linguaggio del prezziario.',
     input_schema: {
       type: 'object',
       properties: {
@@ -522,16 +522,24 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       const fmt = (n: number) => n.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
       // ══════════════════════════════════════════════════════════
-      // RICERCA PREZZIARIO — scansione semplice per parole chiave
-      // N.P. SOLO se non esiste davvero nulla di simile
+      // RICERCA PREZZIARIO CON SCORING — prende il match MIGLIORE, non il primo
       // ══════════════════════════════════════════════════════════
 
-      // Stopwords italiane da ignorare nella ricerca
       const STOP = new Set(['per','con','del','della','delle','dei','degli','nel','nella','nelle',
         'nei','negli','sul','sulla','sulle','sui','dal','dalla','dai','tra','fra','che','come',
         'una','uno','gli','alle','alla','allo','fino','dopo','prima','sopra','sotto','tipo',
         'vari','circa','ogni','tutto','tutti','ecc','incluso','compreso','nuovo','nuova',
-        'opere','lavori','fornitura','posa','opera'])
+        'opere','lavori','fornitura','posa','opera','mano'])
+
+      // Mappa U.M. compatibili
+      const UM_COMPAT: Record<string, string[]> = {
+        'mq': ['mq', 'mq/cm', 'a corpo'],
+        'ml': ['m', 'ml', 'a corpo'],
+        'mc': ['mc', 'a corpo'],
+        'kg': ['kg', 'kn', 'a corpo'],
+        'corpo': ['a corpo', 'corpo', 'mq', 'm', 'mc', 'kg'],
+        'cadauno': ['cadauno', 'cad', 'nr', 'a corpo'],
+      }
 
       function getKeywords(text: string): string[] {
         return text.toLowerCase()
@@ -540,34 +548,52 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
           .filter(w => w.length > 3 && !STOP.has(w))
       }
 
-      // Cerca nel prezziario: prende la parola, fa ILIKE, ritorna candidati
-      async function cercaPerParola(parola: string): Promise<{codice_voce:string; descrizione:string; prezzo:number}[]> {
-        const { data } = await supabase.from('prezziario')
-          .select('codice_voce, descrizione, prezzo')
-          .eq('regione', regione)
-          .ilike('descrizione', `%${parola}%`)
-          .gt('prezzo', 0)   // escludi voci-capitolo con prezzo 0
-          .limit(20)
-        return data || []
+      function isUmCompatible(umLav: string, umPrezziario: string): boolean {
+        const lavNorm = umLav.toLowerCase().trim()
+        const prezNorm = umPrezziario.toLowerCase().trim()
+        if (lavNorm === prezNorm) return true
+        const compat = UM_COMPAT[lavNorm]
+        if (compat) return compat.some(c => prezNorm.includes(c))
+        return true // se non mappata, accetta
       }
 
-      // Tra i candidati, scegli quello con più parole chiave in comune
-      function scegliMigliore(
-        candidati: {codice_voce:string; descrizione:string; prezzo:number}[],
-        keywords: string[]
-      ): {codice_voce:string; descrizione:string; prezzo:number} | null {
-        if (!candidati.length) return null
-        let best = candidati[0]
-        let bestScore = 0
-        for (const c of candidati) {
-          const dl = c.descrizione.toLowerCase()
-          let score = 0
-          for (const kw of keywords) {
-            if (dl.includes(kw)) score++
-          }
-          if (score > bestScore) { bestScore = score; best = c }
+      async function cercaPerParola(parola: string): Promise<{codice_voce:string; descrizione:string; prezzo:number; um?:string}[]> {
+        const { data } = await supabase.from('prezziario')
+          .select('codice_voce, descrizione, prezzo, unita_misura')
+          .eq('regione', regione)
+          .ilike('descrizione', `%${parola}%`)
+          .gt('prezzo', 0)
+          .limit(25)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (data || []).map((r: any) => ({ ...r, um: r.unita_misura }))
+      }
+
+      // Scoring: keyword match + U.M. compatibile + prezzo in range ragionevole
+      function scoreCandidato(
+        candidato: {codice_voce:string; descrizione:string; prezzo:number; um?:string},
+        keywords: string[],
+        umLav: string,
+        prezzoMercato: number
+      ): number {
+        const dl = candidato.descrizione.toLowerCase()
+        let score = 0
+        for (const kw of keywords) {
+          if (dl.includes(kw)) score += 2
         }
-        return best
+        if (candidato.um) {
+          if (isUmCompatible(umLav, candidato.um)) {
+            score += 3
+          } else {
+            score -= 5
+          }
+        }
+        if (prezzoMercato > 0 && candidato.prezzo > 0) {
+          const ratio = candidato.prezzo / prezzoMercato
+          if (ratio > 0.2 && ratio < 5) score += 2
+          if (ratio > 0.5 && ratio < 2) score += 1
+          if (ratio > 10 || ratio < 0.05) score -= 3
+        }
+        return score
       }
 
       let npCounter = 0
@@ -589,49 +615,55 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
         const keywords = getKeywords(desc)
         const importoMercato = Math.round(qty * prezzoMercato * 100) / 100
 
-        // ── SCANSIONE PREZZIARIO ──
-        // Raccogli candidati da TUTTE le parole chiave, poi scegli il migliore
-        const tuttICandidati: {codice_voce:string; descrizione:string; prezzo:number}[] = []
-        const codiciVisti = new Set<string>()
+        // ── RACCOLTA CANDIDATI da tutte le keyword ──
+        const candidatiMap = new Map<string, {codice_voce:string; descrizione:string; prezzo:number; um?:string}>()
 
         for (const kw of keywords) {
           const risultati = await cercaPerParola(kw)
           for (const r of risultati) {
-            if (!codiciVisti.has(r.codice_voce)) {
-              codiciVisti.add(r.codice_voce)
-              tuttICandidati.push(r)
+            if (!candidatiMap.has(r.codice_voce)) {
+              candidatiMap.set(r.codice_voce, r)
             }
           }
         }
 
-        // Se non ha trovato nulla con le parole intere, prova con le radici (troncamento)
-        // Es. "pavimentazione" → "paviment", "tinteggiatura" → "tintegg"
-        if (tuttICandidati.length === 0) {
+        // Se non trova con parole intere, prova radici troncate
+        if (candidatiMap.size === 0) {
           for (const kw of keywords) {
             if (kw.length > 5) {
               const radice = kw.slice(0, Math.max(5, Math.floor(kw.length * 0.65)))
               const risultati = await cercaPerParola(radice)
               for (const r of risultati) {
-                if (!codiciVisti.has(r.codice_voce)) {
-                  codiciVisti.add(r.codice_voce)
-                  tuttICandidati.push(r)
+                if (!candidatiMap.has(r.codice_voce)) {
+                  candidatiMap.set(r.codice_voce, r)
                 }
               }
             }
           }
         }
 
-        const prezziarioMatch = scegliMigliore(tuttICandidati, keywords)
+        // ── SCORING: scegli il candidato MIGLIORE ──
+        const candidati = Array.from(candidatiMap.values())
+        let bestMatch: {codice_voce:string; descrizione:string; prezzo:number; um?:string} | null = null
+        let bestScore = -Infinity
 
-        if (prezziarioMatch) {
-          // ── VOCE TROVATA ──
-          const prezzoPrezziario = Number(prezziarioMatch.prezzo)
+        for (const c of candidati) {
+          const s = scoreCandidato(c, keywords, um, prezzoMercato)
+          if (s > bestScore) {
+            bestScore = s
+            bestMatch = c
+          }
+        }
+
+        // Accetta solo se lo score è almeno 2 (= almeno 1 keyword matchata)
+        if (bestMatch && bestScore >= 2) {
+          const prezzoPrezziario = Number(bestMatch.prezzo)
           vociConPrezzi.push({
             descrizione: desc, quantita: qty, um,
             prezzo_mercato: prezzoMercato,
             prezzo_prezziario: prezzoPrezziario,
-            codice_prezziario: prezziarioMatch.codice_voce,
-            desc_prezziario: prezziarioMatch.descrizione.slice(0, 150),
+            codice_prezziario: bestMatch.codice_voce,
+            desc_prezziario: bestMatch.descrizione.slice(0, 150),
             importo_mercato: importoMercato,
             importo_prezziario: Math.round(qty * prezzoPrezziario * 100) / 100,
             is_nuovo_prezzo: false,

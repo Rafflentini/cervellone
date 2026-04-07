@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@supabase/supabase-js'
 import CervelloneLogo from '@/components/CervelloneLogo'
@@ -9,7 +9,9 @@ import CervelloneLogo from '@/components/CervelloneLogo'
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 const supabaseClient = createClient(supabaseUrl, supabaseAnonKey)
-import MarkdownRenderer from '@/components/MarkdownRenderer'
+import MarkdownRendererBase from '@/components/MarkdownRenderer'
+
+const MarkdownRenderer = React.memo(MarkdownRendererBase, (prev, next) => prev.content === next.content)
 import DocumentPreviewPanel from '@/components/DocumentPreviewPanel'
 import SplitPanel from '@/components/SplitPanel'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
@@ -113,6 +115,9 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const batchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const pendingTextRef = useRef('')
   const router = useRouter()
 
   // Carica lista conversazioni
@@ -222,7 +227,12 @@ export default function ChatPage() {
   }, [loadConversations])
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current)
+    scrollTimeoutRef.current = setTimeout(() => {
+      requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+      })
+    }, 100)
   }, [messages])
 
   function stopAudioAnalysis() {
@@ -564,12 +574,35 @@ export default function ChatPage() {
       const reader = res.body!.getReader()
       const decoder = new TextDecoder()
       let fullText = ''
+      pendingTextRef.current = ''
+
+      // Batch: accumula chunk e aggiorna stato ogni 50ms invece di ogni singolo chunk
+      const flushBatch = () => {
+        if (pendingTextRef.current) {
+          fullText += pendingTextRef.current
+          pendingTextRef.current = ''
+          const textSnapshot = fullText
+          setMessages([...newMessages, { role: 'assistant', text: textSnapshot }])
+        }
+      }
+
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        fullText += decoder.decode(value, { stream: true })
-        setMessages([...newMessages, { role: 'assistant', text: fullText }])
+        pendingTextRef.current += decoder.decode(value, { stream: true })
+        if (!batchTimeoutRef.current) {
+          batchTimeoutRef.current = setTimeout(() => {
+            batchTimeoutRef.current = null
+            flushBatch()
+          }, 50)
+        }
       }
+      // Flush finale — assicura che tutto il testo venga mostrato
+      if (batchTimeoutRef.current) {
+        clearTimeout(batchTimeoutRef.current)
+        batchTimeoutRef.current = null
+      }
+      flushBatch()
       // Salva risposta assistente
       await saveMessage(convId, 'assistant', fullText)
       // Aggiorna lista conversazioni (senza ricaricare messaggi)
