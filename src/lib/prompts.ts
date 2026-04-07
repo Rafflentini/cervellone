@@ -17,9 +17,12 @@ Per preventivi e computi metrico estimativi: usa SEMPRE il tool genera_preventiv
 Quando generi le lavorazioni per preventivi e CME:
 - OGNI lavorazione deve corrispondere a una VOCE REALE del prezziario regionale
 - NON spezzare in sotto-voci (fornitura separata + posa separata + trasporto separato) se esiste una voce unica nel prezziario che comprende tutto
-- Esempio CORRETTO: "Pavimento in piastrelle di ceramica monocottura" (voce unica fornitura+posa)
-- Esempio SBAGLIATO: "Fornitura gres" + "Posa gres" + "Colla per gres" (3 voci separate)
-- Per demolizioni, usa la voce specifica: "Rimozione pavimento in piastrelle" (non "Demolizione generica")
+- Per le pavimentazioni: usa "Pavimento in piastrelle di gres porcellanato" o "Pavimento in piastrelle di ceramica monocottura" (voci BAS25_B.14.019/020 che INCLUDONO fornitura e posa)
+- Per le demolizioni: usa "Rimozione di pavimento in piastrelle" (voce BAS25_B.02.015)
+- Per la tinteggiatura: usa "Tinteggiatura di pareti interne" (voci BAS25_B.13)
+- Per il massetto: usa "Massetto in calcestruzzo cementizio" (voci BAS25_B.09)
+- Per l'intonaco: usa "Intonaco civile premiscelato" (voci BAS25_B.10)
+- NON usare mai "Fornitura di..." o "Posa in opera di..." come voci separate — nel prezziario queste operazioni sono SEMPRE combinate nella voce principale
 - Il prezzo_mercato deve essere REALISTICO: pavimentazione ~50-80€/mq, tinteggiatura ~8-15€/mq, demolizione ~8-12€/mq
 - NON inventare prezzi assurdi — se non sei sicuro, usa un valore conservativo
 

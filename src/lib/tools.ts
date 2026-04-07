@@ -9,7 +9,6 @@
  * - NEW: cerca_documenti (preventivi/relazioni passate)
  */
 
-import { executeCalcolaPreventivo, PreventivoInput } from './tools/preventivo'
 import { supabase } from './supabase'
 
 // ── Interfaccia ──
@@ -23,46 +22,6 @@ interface ToolDefinition {
 // ── STUDIO TECNICO ──
 
 const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
-  {
-    name: 'calcola_preventivo',
-    description: 'Genera un preventivo estimativo professionale con calcoli e output HTML.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        titolo: { type: 'string' },
-        numero: { type: 'string' },
-        data: { type: 'string' },
-        committente: {
-          type: 'object',
-          properties: { nome: { type: 'string' }, indirizzo: { type: 'string' }, cf_piva: { type: 'string' }, telefono: { type: 'string' }, email: { type: 'string' } },
-          required: ['nome'],
-        },
-        cantiere: {
-          type: 'object',
-          properties: { indirizzo: { type: 'string' }, comune: { type: 'string' }, descrizione: { type: 'string' } },
-          required: ['indirizzo', 'comune', 'descrizione'],
-        },
-        voci: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: { descrizione: { type: 'string' }, um: { type: 'string' }, quantita: { type: 'number' }, prezzo_unitario: { type: 'number' }, categoria: { type: 'string' } },
-            required: ['descrizione', 'um', 'quantita', 'prezzo_unitario'],
-          },
-        },
-        coefficienti: {
-          type: 'object',
-          properties: { spese_generali: { type: 'number' }, utile_impresa: { type: 'number' }, oneri_sicurezza: { type: 'number' }, iva: { type: 'number' } },
-        },
-        regione: { type: 'string' },
-        note: { type: 'array', items: { type: 'string' } },
-        esclusioni: { type: 'array', items: { type: 'string' } },
-        condizioni_pagamento: { type: 'string' },
-        validita_offerta: { type: 'string' },
-      },
-      required: ['committente', 'cantiere', 'voci'],
-    },
-  },
   {
     name: 'cerca_prezziario',
     description: 'Cerca voci nel prezziario regionale. Restituisce MULTIPLI risultati (fino a 15). Cerca per descrizione O per codice voce (es. BAS25_E03.015). Regioni disponibili: verificare con conta_prezziario.',
@@ -178,9 +137,6 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
 
 async function executeStudioTecnico(name: string, input: Record<string, unknown>): Promise<string | null> {
   switch (name) {
-    case 'calcola_preventivo':
-      return executeCalcolaPreventivo(input as unknown as PreventivoInput)
-
     case 'cerca_prezziario': {
       const query = input.query as string
       const regione = (input.regione as string) || 'basilicata'
@@ -615,29 +571,21 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
         const keywords = getKeywords(desc)
         const importoMercato = Math.round(qty * prezzoMercato * 100) / 100
 
-        // ── RACCOLTA CANDIDATI da tutte le keyword ──
+        // ── RACCOLTA CANDIDATI da tutte le keyword (con stemming per-keyword) ──
         const candidatiMap = new Map<string, {codice_voce:string; descrizione:string; prezzo:number; um?:string}>()
 
         for (const kw of keywords) {
-          const risultati = await cercaPerParola(kw)
+          let risultati = await cercaPerParola(kw)
+
+          // Se questa keyword non trova nulla, prova la radice troncata
+          if (risultati.length === 0 && kw.length > 5) {
+            const radice = kw.slice(0, Math.max(5, Math.floor(kw.length * 0.65)))
+            risultati = await cercaPerParola(radice)
+          }
+
           for (const r of risultati) {
             if (!candidatiMap.has(r.codice_voce)) {
               candidatiMap.set(r.codice_voce, r)
-            }
-          }
-        }
-
-        // Se non trova con parole intere, prova radici troncate
-        if (candidatiMap.size === 0) {
-          for (const kw of keywords) {
-            if (kw.length > 5) {
-              const radice = kw.slice(0, Math.max(5, Math.floor(kw.length * 0.65)))
-              const risultati = await cercaPerParola(radice)
-              for (const r of risultati) {
-                if (!candidatiMap.has(r.codice_voce)) {
-                  candidatiMap.set(r.codice_voce, r)
-                }
-              }
             }
           }
         }
