@@ -168,7 +168,7 @@ export async function callClaudeStream(
   return fullResponse
 }
 
-// ── Non-streaming (Telegram) ──
+// ── Telegram (streaming internamente per evitare timeout 10min SDK) ──
 
 export async function callClaude(request: ClaudeRequest): Promise<string> {
   const { systemPrompt, userQuery, conversationId } = request
@@ -190,32 +190,37 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
   console.log(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
-    const response = await withRetry(() =>
-      client.messages.create({
+    // FIX V8: usa stream() invece di create() — evita "Streaming is required for >10min"
+    const stream = await withRetry(() =>
+      Promise.resolve(client.messages.stream({
         model: modelConfig.model,
         max_tokens: modelConfig.maxTokens,
         system: fullSystemPrompt,
         messages: currentMessages,
         tools,
         thinking: { type: 'enabled', budget_tokens: modelConfig.thinkingBudget },
-      })
+      }))
     )
 
-    let hasText = false
-    for (const block of response.content) {
-      if (block.type === 'text') { fullResponse += block.text; hasText = true }
+    // Consuma lo stream senza callback (Telegram non ha streaming UI)
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text
+      }
     }
 
-    const toolBlocks = response.content.filter(b => b.type === 'tool_use')
-    if (toolBlocks.length === 0 || response.stop_reason === 'end_turn') break
-    if (!hasText && i > 0) break
+    const final = await stream.finalMessage()
+    const toolBlocks = final.content.filter(b => b.type === 'tool_use')
+
+    if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
+    if (i > 0 && !final.content.some(b => b.type === 'text')) break
 
     const toolResults = await executeToolBlocks(toolBlocks, conversationId)
     if (toolResults.length === 0) break
 
     currentMessages = [
       ...currentMessages,
-      { role: 'assistant' as const, content: response.content },
+      { role: 'assistant' as const, content: final.content },
       { role: 'user' as const, content: toolResults },
     ]
   }

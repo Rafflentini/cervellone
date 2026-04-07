@@ -133,13 +133,44 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
 ]
 
+// ── LOOKUP PREZZIARI — URL diretti ODS/XLS/CSV per auto-import ──
+const PREZZIARI_LEENO: Record<string, { url: string; anno: number; formato: string }> = {
+  'emilia-romagna': { url: 'https://leeno.org/download/LeenO/public/listini/emilia_romagna/Emilia_Romagna_2026_LeenO.ods', anno: 2026, formato: 'ods' },
+  'lombardia': { url: 'https://leeno.org/download/LeenO/public/listini/lombardia/Prezzario_Lombardia_2025_2.ods', anno: 2025, formato: 'ods' },
+  'puglia': { url: 'https://leeno.org/download/LeenO/public/listini/Puglia/prezzario_regione_puglia_2025.ods', anno: 2025, formato: 'ods' },
+  'friuli-venezia-giulia': { url: 'https://leeno.org/download/LeenO/public/listini/Friuli-Venezia%20Giulia/20250701_Prezzario_FVG_2025.ods', anno: 2025, formato: 'ods' },
+  'calabria': { url: 'https://leeno.org/download/LeenO/public/listini/calabria/Elenco_prezzi_Ambito_Regionale_anno_2025.ods', anno: 2025, formato: 'ods' },
+  'marche': { url: 'https://leeno.org/download/LeenO/public/listini/Marche/MARCHE_2025_LeenO.ods', anno: 2025, formato: 'ods' },
+  'campania': { url: 'https://leeno.org/download/LeenO/public/listini/Campania/Elenco_prezzi_Ambito_Regionale_anno_2025.ods', anno: 2025, formato: 'ods' },
+  'umbria': { url: 'https://leeno.org/download/LeenO/public/listini/Umbria/UMBRIA_2024_LeenO.ods', anno: 2024, formato: 'ods' },
+  'basilicata': { url: 'https://leeno.org/download/LeenO/public/listini/Basilicata/Prezzario_Regione_Basilicata_2025.ods', anno: 2025, formato: 'ods' },
+  'piemonte': { url: 'https://leeno.org/download/LeenO/public/listini/Piemonte/Piemonte_Edizione_2025.ods', anno: 2025, formato: 'ods' },
+  'abruzzo': { url: 'https://leeno.org/download/LeenO/public/listini/abruzzo/2025/Listino_Edile_Regione_Abruzzo_2025.ods', anno: 2025, formato: 'ods' },
+  'veneto': { url: 'https://leeno.org/download/LeenO/public/listini/Veneto/Prezzario_VENETO_2024.ods', anno: 2024, formato: 'ods' },
+  'trento': { url: 'https://leeno.org/download/LeenO/public/listini/Trento/Provincia_Autonoma_di_Trento_Prezziario_2025.ods', anno: 2025, formato: 'ods' },
+  'sardegna': { url: 'https://cmsras.regione.sardegna.it/api/assets/redazionaleras/850d6b50-937e-4abf-ba84-a12088f3f14b/elenco-articoli-ed-analisi-2024-xls.zip', anno: 2024, formato: 'xlsx' },
+  'toscana': { url: 'https://dati.toscana.it/dataset/a8113242-e448-4ad9-863d-2ebdee3812b7/resource/bc3b4d14-d70a-4609-bb1f-ce2afa6a3215/download/2025-1-firenze-data.zip', anno: 2025, formato: 'csv' },
+  'sicilia': { url: 'https://www.regione.sicilia.it/sites/default/files/2024-01/Prezzario%202024.pdf', anno: 2024, formato: 'pdf' },
+  'lazio': { url: 'https://www.regione.lazio.it/sites/default/files/documentazione/2025/DD-G00988-27-01-2025-Allegato1-Tariffario-2025-aggiornato.pdf', anno: 2025, formato: 'pdf' },
+}
+
+const REGIONI_ALIAS: Record<string, string> = {
+  'friuli': 'friuli-venezia-giulia',
+  'fvg': 'friuli-venezia-giulia',
+  'trentino': 'trento',
+  'trentino-alto-adige': 'trento',
+  'emilia': 'emilia-romagna',
+  'romagna': 'emilia-romagna',
+}
+
 // ── EXECUTORS ──
 
 async function executeStudioTecnico(name: string, input: Record<string, unknown>, conversationId?: string): Promise<string | null> {
   switch (name) {
     case 'cerca_prezziario': {
       const query = input.query as string
-      const regione = (input.regione as string) || 'basilicata'
+      const regioneRaw2 = ((input.regione as string) || 'basilicata').toLowerCase().trim()
+      const regione = REGIONI_ALIAS[regioneRaw2] || regioneRaw2
       const limit = Math.min((input.limit as number) || 10, 20)
 
       // FIX FUN-004: Controlla se è un codice voce
@@ -216,7 +247,8 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
 
     case 'cerca_prezziario_batch': {
       const voci = input.voci as string[]
-      const regione = (input.regione as string) || 'basilicata'
+      const regioneRaw3 = ((input.regione as string) || 'basilicata').toLowerCase().trim()
+      const regione = REGIONI_ALIAS[regioneRaw3] || regioneRaw3
       const results: string[] = []
 
       for (const voce of voci.slice(0, 20)) {
@@ -493,6 +525,35 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
             result += `\n\nI documenti sono identici a quelli generati in precedenza. Il CME è una misurazione ufficiale e non può cambiare.`
             return result
           }
+        }
+      }
+
+      // ══════════════════════════════════════════════════════════
+      // AUTO-IMPORT: se il prezziario non è caricato, scaricalo automaticamente
+      // ══════════════════════════════════════════════════════════
+      const regioneRaw = ((input.regione as string) || 'basilicata').toLowerCase().trim()
+      const regioneNorm = REGIONI_ALIAS[regioneRaw] || regioneRaw
+      const { count: prezCount } = await supabase
+        .from('prezziario')
+        .select('*', { count: 'exact', head: true })
+        .eq('regione', regioneNorm)
+
+      if (!prezCount || prezCount < 50) {
+        const leeno = PREZZIARI_LEENO[regioneNorm]
+        if (leeno && leeno.formato !== 'pdf') {
+          console.log(`Auto-importing prezziario ${regioneNorm} (${leeno.formato}) from ${leeno.url.slice(0, 80)}...`)
+          try {
+            const importResult = await executeStudioTecnico('importa_prezziario_da_url', {
+              url: leeno.url,
+              regione: regioneNorm,
+              anno: leeno.anno,
+            })
+            console.log(`Auto-import ${regioneNorm}: ${importResult?.slice(0, 200)}`)
+          } catch (err) {
+            console.error(`Auto-import failed for ${regioneNorm}:`, (err as Error).message)
+          }
+        } else if (leeno && leeno.formato === 'pdf') {
+          console.log(`Prezziario ${regioneNorm} disponibile solo in PDF — non importabile automaticamente`)
         }
       }
 
