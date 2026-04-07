@@ -35,15 +35,16 @@ function selectModel(userQuery: string, hasFiles: boolean): ModelConfig {
     /(?:calcol[oa]|dimension[ai]|verifica\s+struttur)/i.test(userQuery)
 
   // Se è un task strutturato, NON dare mai thinking=1024 — minimo 10K
+  // maxTokens DEVE essere > thinkingBudget (include thinking + output)
   if (isStructuredTask) {
     const complexitySignals = countComplexitySignals(userQuery, hasFiles)
     if (complexitySignals >= 4) {
-      return { model: 'claude-opus-4-6', thinkingBudget: 100_000, maxTokens: 16000 }
+      return { model: 'claude-sonnet-4-6', thinkingBudget: 100_000, maxTokens: 128_000 }
     }
     if (complexitySignals >= 2) {
-      return { model: 'claude-opus-4-6', thinkingBudget: 32_000, maxTokens: 16000 }
+      return { model: 'claude-sonnet-4-6', thinkingBudget: 32_000, maxTokens: 48_000 }
     }
-    return { model: 'claude-sonnet-4-6', thinkingBudget: 10_000, maxTokens: 16000 }
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 10_000, maxTokens: 32_000 }
   }
 
   // ── MESSAGGI BREVI conversazionali (niente task strutturato) ──
@@ -55,15 +56,15 @@ function selectModel(userQuery: string, hasFiles: boolean): ModelConfig {
   const complexitySignals = countComplexitySignals(userQuery, hasFiles)
 
   if (complexitySignals >= 4) {
-    return { model: 'claude-opus-4-6', thinkingBudget: 100_000, maxTokens: 16000 }
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 100_000, maxTokens: 128_000 }
   }
   if (complexitySignals >= 2) {
-    return { model: 'claude-opus-4-6', thinkingBudget: 32_000, maxTokens: 16000 }
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 32_000, maxTokens: 48_000 }
   }
   if (complexitySignals >= 1 || len > 300 || hasFiles) {
-    return { model: 'claude-sonnet-4-6', thinkingBudget: 10_000, maxTokens: 16000 }
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 10_000, maxTokens: 32_000 }
   }
-  return { model: 'claude-sonnet-4-6', thinkingBudget: 4000, maxTokens: 8000 }
+  return { model: 'claude-sonnet-4-6', thinkingBudget: 4000, maxTokens: 16_000 }
 }
 
 function countComplexitySignals(userQuery: string, hasFiles: boolean): number {
