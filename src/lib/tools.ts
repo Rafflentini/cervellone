@@ -519,12 +519,66 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       const oggi = new Date().toISOString().slice(0, 10)
       const numero = `PREV-${new Date().getFullYear()}-${Math.floor(Math.random() * 9000) + 1000}`
 
-      // ── Cerca TUTTE le voci nel prezziario in batch (query dirette, no Claude) ──
+      const fmt = (n: number) => n.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+      // ══════════════════════════════════════════════════════════
+      // RICERCA PREZZIARIO — scansione semplice per parole chiave
+      // N.P. SOLO se non esiste davvero nulla di simile
+      // ══════════════════════════════════════════════════════════
+
+      // Stopwords italiane da ignorare nella ricerca
+      const STOP = new Set(['per','con','del','della','delle','dei','degli','nel','nella','nelle',
+        'nei','negli','sul','sulla','sulle','sui','dal','dalla','dai','tra','fra','che','come',
+        'una','uno','gli','alle','alla','allo','fino','dopo','prima','sopra','sotto','tipo',
+        'vari','circa','ogni','tutto','tutti','ecc','incluso','compreso','nuovo','nuova',
+        'opere','lavori','fornitura','posa','opera'])
+
+      function getKeywords(text: string): string[] {
+        return text.toLowerCase()
+          .replace(/[^a-zàèéìòù\s]/gi, ' ')
+          .split(/\s+/)
+          .filter(w => w.length > 3 && !STOP.has(w))
+      }
+
+      // Cerca nel prezziario: prende la parola, fa ILIKE, ritorna candidati
+      async function cercaPerParola(parola: string): Promise<{codice_voce:string; descrizione:string; prezzo:number}[]> {
+        const { data } = await supabase.from('prezziario')
+          .select('codice_voce, descrizione, prezzo')
+          .eq('regione', regione)
+          .ilike('descrizione', `%${parola}%`)
+          .gt('prezzo', 0)   // escludi voci-capitolo con prezzo 0
+          .limit(20)
+        return data || []
+      }
+
+      // Tra i candidati, scegli quello con più parole chiave in comune
+      function scegliMigliore(
+        candidati: {codice_voce:string; descrizione:string; prezzo:number}[],
+        keywords: string[]
+      ): {codice_voce:string; descrizione:string; prezzo:number} | null {
+        if (!candidati.length) return null
+        let best = candidati[0]
+        let bestScore = 0
+        for (const c of candidati) {
+          const dl = c.descrizione.toLowerCase()
+          let score = 0
+          for (const kw of keywords) {
+            if (dl.includes(kw)) score++
+          }
+          if (score > bestScore) { bestScore = score; best = c }
+        }
+        return best
+      }
+
+      let npCounter = 0
+
       const vociConPrezzi: Array<{
         descrizione: string; quantita: number; um: string;
-        prezzo_mercato: number; prezzo_prezziario: number | null;
-        codice_prezziario: string | null; desc_prezziario: string | null;
-        importo_mercato: number; importo_prezziario: number | null;
+        prezzo_mercato: number; prezzo_prezziario: number;
+        codice_prezziario: string; desc_prezziario: string;
+        importo_mercato: number; importo_prezziario: number;
+        is_nuovo_prezzo: boolean;
+        analisi_prezzo?: { materiali: number; manodopera: number; noli: number; totale: number };
       }> = []
 
       for (const lav of lavorazioni) {
@@ -532,139 +586,237 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
         const qty = lav.quantita as number
         const um = lav.um as string
         const prezzoMercato = (lav.prezzo_mercato as number) || 0
+        const keywords = getKeywords(desc)
+        const importoMercato = Math.round(qty * prezzoMercato * 100) / 100
 
-        // Cerca nel prezziario con ILIKE
-        let prezziarioMatch: { codice_voce: string; descrizione: string; prezzo: number } | null = null
-        const words = desc.split(/\s+/).filter((w: string) => w.length > 3)
+        // ── SCANSIONE PREZZIARIO ──
+        // Raccogli candidati da TUTTE le parole chiave, poi scegli il migliore
+        const tuttICandidati: {codice_voce:string; descrizione:string; prezzo:number}[] = []
+        const codiciVisti = new Set<string>()
 
-        // Prova prima con la descrizione completa
-        const { data: d1 } = await supabase.from('prezziario')
-          .select('codice_voce, descrizione, prezzo')
-          .eq('regione', regione)
-          .ilike('descrizione', `%${desc}%`)
-          .limit(1)
-        if (d1?.length) prezziarioMatch = d1[0]
-
-        // Se non trova, prova parole singole
-        if (!prezziarioMatch && words.length > 0) {
-          for (const word of words.slice(0, 3)) {
-            const { data: d2 } = await supabase.from('prezziario')
-              .select('codice_voce, descrizione, prezzo')
-              .eq('regione', regione)
-              .ilike('descrizione', `%${word}%`)
-              .limit(1)
-            if (d2?.length) { prezziarioMatch = d2[0]; break }
+        for (const kw of keywords) {
+          const risultati = await cercaPerParola(kw)
+          for (const r of risultati) {
+            if (!codiciVisti.has(r.codice_voce)) {
+              codiciVisti.add(r.codice_voce)
+              tuttICandidati.push(r)
+            }
           }
         }
 
-        const importoMercato = Math.round(qty * prezzoMercato * 100) / 100
-        const importoPrezziario = prezziarioMatch ? Math.round(qty * Number(prezziarioMatch.prezzo) * 100) / 100 : null
+        // Se non ha trovato nulla con le parole intere, prova con le radici (troncamento)
+        // Es. "pavimentazione" → "paviment", "tinteggiatura" → "tintegg"
+        if (tuttICandidati.length === 0) {
+          for (const kw of keywords) {
+            if (kw.length > 5) {
+              const radice = kw.slice(0, Math.max(5, Math.floor(kw.length * 0.65)))
+              const risultati = await cercaPerParola(radice)
+              for (const r of risultati) {
+                if (!codiciVisti.has(r.codice_voce)) {
+                  codiciVisti.add(r.codice_voce)
+                  tuttICandidati.push(r)
+                }
+              }
+            }
+          }
+        }
 
-        vociConPrezzi.push({
-          descrizione: desc, quantita: qty, um,
-          prezzo_mercato: prezzoMercato,
-          prezzo_prezziario: prezziarioMatch ? Number(prezziarioMatch.prezzo) : null,
-          codice_prezziario: prezziarioMatch?.codice_voce || null,
-          desc_prezziario: prezziarioMatch?.descrizione?.slice(0, 100) || null,
-          importo_mercato: importoMercato,
-          importo_prezziario: importoPrezziario,
-        })
+        const prezziarioMatch = scegliMigliore(tuttICandidati, keywords)
+
+        if (prezziarioMatch) {
+          // ── VOCE TROVATA ──
+          const prezzoPrezziario = Number(prezziarioMatch.prezzo)
+          vociConPrezzi.push({
+            descrizione: desc, quantita: qty, um,
+            prezzo_mercato: prezzoMercato,
+            prezzo_prezziario: prezzoPrezziario,
+            codice_prezziario: prezziarioMatch.codice_voce,
+            desc_prezziario: prezziarioMatch.descrizione.slice(0, 150),
+            importo_mercato: importoMercato,
+            importo_prezziario: Math.round(qty * prezzoPrezziario * 100) / 100,
+            is_nuovo_prezzo: false,
+          })
+        } else {
+          // ── NUOVO PREZZO — davvero non esiste nulla di simile ──
+          npCounter++
+          const codiceNP = `N.P.${npCounter}`
+
+          // Analisi prezzo semplificata dal prezzo di mercato
+          // 40% materiali, 40% manodopera, 15% noli, 5% spese (il 5% non si mette, è incluso)
+          const materiali = Math.round(prezzoMercato * 0.40 * 100) / 100
+          const manodopera = Math.round(prezzoMercato * 0.40 * 100) / 100
+          const noli = Math.round(prezzoMercato * 0.15 * 100) / 100
+          const totAnalisi = Math.round((materiali + manodopera + noli) * 100) / 100
+          const prezzoNP = totAnalisi > 0 ? totAnalisi : prezzoMercato
+
+          vociConPrezzi.push({
+            descrizione: desc, quantita: qty, um,
+            prezzo_mercato: prezzoMercato,
+            prezzo_prezziario: prezzoNP,
+            codice_prezziario: codiceNP,
+            desc_prezziario: desc,
+            importo_mercato: importoMercato,
+            importo_prezziario: Math.round(qty * prezzoNP * 100) / 100,
+            is_nuovo_prezzo: true,
+            analisi_prezzo: { materiali, manodopera, noli, totale: totAnalisi },
+          })
+        }
       }
 
       // ── Calcoli ──
       const subtMercato = vociConPrezzi.reduce((s, v) => s + v.importo_mercato, 0)
-      const subtPrezziario = vociConPrezzi.reduce((s, v) => s + (v.importo_prezziario || 0), 0)
+      const subtPrezziario = vociConPrezzi.reduce((s, v) => s + v.importo_prezziario, 0)
       const sgMercato = Math.round(subtMercato * sgPerc * 100) / 100
       const uiMercato = Math.round(subtMercato * uiPerc * 100) / 100
       const impMercato = subtMercato + sgMercato + uiMercato
       const ivaMercato = Math.round(impMercato * ivaPerc * 100) / 100
       const totMercato = Math.round((impMercato + ivaMercato) * 100) / 100
 
-      const fmt = (n: number) => n.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
-      // ── PREVENTIVO HTML ──
+      // ══════════════════════════════════════════════════════════
+      // PREVENTIVO HTML (documento commerciale — può avere spese generali ecc.)
+      // ══════════════════════════════════════════════════════════
       const prevVociHtml = vociConPrezzi.map((v, i) => `
-        <tr>
-          <td>${i + 1}</td>
-          <td>${v.descrizione}</td>
-          <td class="center">${v.um}</td>
-          <td class="right">${v.quantita}</td>
-          <td class="right">€ ${fmt(v.prezzo_mercato)}</td>
-          <td class="right"><strong>€ ${fmt(v.importo_mercato)}</strong></td>
-        </tr>`).join('')
+    <tr>
+      <td>${i + 1}</td>
+      <td>${v.descrizione}</td>
+      <td class="center">${v.um}</td>
+      <td class="right">${v.quantita}</td>
+      <td class="right">€ ${fmt(v.prezzo_mercato)}</td>
+      <td class="right"><strong>€ ${fmt(v.importo_mercato)}</strong></td>
+    </tr>`).join('')
 
       const prevHtml = `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>
-        *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
-        .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
-        .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
-        h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
-        table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
-        th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
-        tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
-        .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
-        .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
-        .info-box{background:#f8f9fa;padding:10px;border-radius:6px;border-left:3px solid #1e3a5f}
-        .info-box strong{display:block;font-size:10px;color:#666;margin-bottom:2px}
-      </style></head><body>
-        <div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>
-        <h2>PREVENTIVO ESTIMATIVO N. ${numero}</h2>
-        <div class="info-grid">
-          <div class="info-box"><strong>Committente</strong>${committente}</div>
-          <div class="info-box"><strong>Cantiere</strong>${indirizzo || comune}</div>
-          <div class="info-box"><strong>Comune</strong>${comune}</div>
-          <div class="info-box"><strong>Data</strong>${oggi}</div>
-        </div>
-        <p style="margin:10px 0"><strong>Oggetto:</strong> ${descrizione}</p>
-        <table><thead><tr><th>N.</th><th>Lavorazione</th><th>U.M.</th><th>Q.tà</th><th>P.U.</th><th>Importo</th></tr></thead>
-        <tbody>${prevVociHtml}
-          <tr class="total-row"><td colspan="5">Subtotale lavori</td><td class="right">€ ${fmt(subtMercato)}</td></tr>
-          <tr><td colspan="5">Spese generali (${(sgPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(sgMercato)}</td></tr>
-          <tr><td colspan="5">Utile impresa (${(uiPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(uiMercato)}</td></tr>
-          <tr class="total-row"><td colspan="5">Imponibile</td><td class="right">€ ${fmt(impMercato)}</td></tr>
-          <tr><td colspan="5">IVA (${(ivaPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(ivaMercato)}</td></tr>
-          <tr class="total-row" style="font-size:14px"><td colspan="5">TOTALE COMPLESSIVO</td><td class="right">€ ${fmt(totMercato)}</td></tr>
-        </tbody></table>
-        <div class="footer">Restruktura S.r.l. — Validità offerta: 60 giorni — Condizioni: 30% firma, 40% SAL, 30% collaudo</div>
-      </body></html>`
+    *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
+    .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
+    .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
+    h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
+    table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
+    th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
+    tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
+    .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
+    .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
+    .info-box{background:#f8f9fa;padding:10px;border-radius:6px;border-left:3px solid #1e3a5f}
+    .info-box strong{display:block;font-size:10px;color:#666;margin-bottom:2px}
+  </style></head><body>
+    <div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>
+    <h2>PREVENTIVO ESTIMATIVO N. ${numero}</h2>
+    <div class="info-grid">
+      <div class="info-box"><strong>Committente</strong>${committente}</div>
+      <div class="info-box"><strong>Cantiere</strong>${indirizzo || comune}</div>
+      <div class="info-box"><strong>Comune</strong>${comune}</div>
+      <div class="info-box"><strong>Data</strong>${oggi}</div>
+    </div>
+    <p style="margin:10px 0"><strong>Oggetto:</strong> ${descrizione}</p>
+    <table><thead><tr><th>N.</th><th>Lavorazione</th><th>U.M.</th><th>Q.tà</th><th>P.U.</th><th>Importo</th></tr></thead>
+    <tbody>${prevVociHtml}
+      <tr class="total-row"><td colspan="5">Subtotale lavori</td><td class="right">€ ${fmt(subtMercato)}</td></tr>
+      <tr><td colspan="5">Spese generali (${(sgPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(sgMercato)}</td></tr>
+      <tr><td colspan="5">Utile impresa (${(uiPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(uiMercato)}</td></tr>
+      <tr class="total-row"><td colspan="5">Imponibile</td><td class="right">€ ${fmt(impMercato)}</td></tr>
+      <tr><td colspan="5">IVA (${(ivaPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(ivaMercato)}</td></tr>
+      <tr class="total-row" style="font-size:14px"><td colspan="5">TOTALE COMPLESSIVO</td><td class="right">€ ${fmt(totMercato)}</td></tr>
+    </tbody></table>
+    <div class="footer">Restruktura S.r.l. — Validità offerta: 60 giorni — Condizioni: 30% firma, 40% SAL, 30% collaudo</div>
+  </body></html>`
 
-      // ── CME HTML ──
-      const cmeVociHtml = vociConPrezzi.map((v, i) => `
+      // ══════════════════════════════════════════════════════════
+      // CME HTML — SOLO LAVORAZIONI, ZERO PERCENTUALI
+      // Conforme a DPR 207/2010 Art. 32 e D.Lgs. 36/2023
+      // ══════════════════════════════════════════════════════════
+      const vociPrezziario = vociConPrezzi.filter(v => !v.is_nuovo_prezzo)
+      const vociNP = vociConPrezzi.filter(v => v.is_nuovo_prezzo)
+
+      const cmeRigheHtml = vociConPrezzi.map((v, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td><code${v.is_nuovo_prezzo ? ' style="color:#c45500;font-weight:bold"' : ''}>${v.codice_prezziario}</code></td>
+      <td>${v.desc_prezziario}${v.is_nuovo_prezzo ? ' <em style="color:#888;font-size:10px">(N.P.)</em>' : ''}</td>
+      <td class="center">${v.um}</td>
+      <td class="right">${v.quantita}</td>
+      <td class="right">€ ${fmt(v.prezzo_prezziario)}</td>
+      <td class="right"><strong>€ ${fmt(v.importo_prezziario)}</strong></td>
+    </tr>`).join('')
+
+      // Analisi Nuovi Prezzi (solo se ce ne sono)
+      const analisiNPHtml = vociNP.length > 0 ? `
+    <h2 style="margin-top:30px">ANALISI NUOVI PREZZI</h2>
+    <p style="margin:5px 0;font-size:11px;color:#555">Art. 32 DPR 207/2010 — Voci non presenti nel Prezziario Regionale</p>
+    <table>
+      <thead><tr><th>Codice</th><th>Descrizione</th><th>Materiali</th><th>Manodopera</th><th>Noli/Trasp.</th><th>P.U.</th></tr></thead>
+      <tbody>${vociNP.map(v => `
         <tr>
-          <td>${i + 1}</td>
-          <td>${v.codice_prezziario || '—'}</td>
-          <td>${v.desc_prezziario || v.descrizione}</td>
-          <td class="center">${v.um}</td>
-          <td class="right">${v.quantita}</td>
-          <td class="right">${v.prezzo_prezziario !== null ? '€ ' + fmt(v.prezzo_prezziario) : '—'}</td>
-          <td class="right">${v.importo_prezziario !== null ? '€ ' + fmt(v.importo_prezziario) : '—'}</td>
-        </tr>`).join('')
+          <td><code style="color:#c45500;font-weight:bold">${v.codice_prezziario}</code></td>
+          <td>${v.desc_prezziario}</td>
+          <td class="right">€ ${fmt(v.analisi_prezzo?.materiali || 0)}</td>
+          <td class="right">€ ${fmt(v.analisi_prezzo?.manodopera || 0)}</td>
+          <td class="right">€ ${fmt(v.analisi_prezzo?.noli || 0)}</td>
+          <td class="right"><strong>€ ${fmt(v.analisi_prezzo?.totale || v.prezzo_prezziario)}</strong></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : ''
+
+      // Quadro Economico (in fondo — qui stanno spese generali, utile, IVA)
+      const oneriSic = Math.round(subtPrezziario * 0.03 * 100) / 100
+      const sgCME = Math.round(subtPrezziario * sgPerc * 100) / 100
+      const uiCME = Math.round(subtPrezziario * uiPerc * 100) / 100
+      const totLavori = subtPrezziario + oneriSic
+      const ivaCME = Math.round((subtPrezziario + sgCME + uiCME) * ivaPerc * 100) / 100
 
       const cmeHtml = `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>
-        *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
-        .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
-        .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
-        h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
-        table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
-        th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
-        tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
-        .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
-        .alert{background:#fff3cd;border:1px solid #ffc107;padding:8px;border-radius:4px;margin:10px 0;font-size:11px}
-      </style></head><body>
-        <div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>
-        <h2>COMPUTO METRICO ESTIMATIVO — Prezziario ${regione.toUpperCase()} 2025</h2>
-        <p><strong>Committente:</strong> ${committente} | <strong>Comune:</strong> ${comune} | <strong>Data:</strong> ${oggi}</p>
-        <p style="margin:5px 0"><strong>Oggetto:</strong> ${descrizione}</p>
-        <table><thead><tr><th>N.</th><th>Codice</th><th>Descrizione (da prezziario)</th><th>U.M.</th><th>Q.tà</th><th>P.U. Prezziario</th><th>Importo</th></tr></thead>
-        <tbody>${cmeVociHtml}
-          <tr class="total-row"><td colspan="6">TOTALE CME (prezzi prezziario)</td><td class="right">€ ${fmt(subtPrezziario)}</td></tr>
-        </tbody></table>
-        <div class="alert">⚠️ Prezzi dal Prezziario Regionale ${regione.toUpperCase()} 2025 (DGR 208/2025). Le voci senza codice non sono state trovate nel prezziario.</div>
-        <div class="footer">Restruktura S.r.l. — Documento tecnico ad uso interno</div>
-      </body></html>`
+    *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
+    .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
+    .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
+    h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
+    table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
+    th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
+    tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
+    .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
+    code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:10px}
+  </style></head><body>
+    <div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>
+    <h2>COMPUTO METRICO ESTIMATIVO</h2>
+    <p><strong>Committente:</strong> ${committente} | <strong>Comune:</strong> ${comune} | <strong>Data:</strong> ${oggi}</p>
+    <p style="margin:5px 0"><strong>Oggetto:</strong> ${descrizione}</p>
+    <p style="margin:5px 0;font-size:11px"><strong>Prezziario:</strong> Regione ${regione.charAt(0).toUpperCase() + regione.slice(1)} 2025</p>
+
+    <table>
+      <thead><tr><th>N°</th><th>Codice</th><th>Descrizione</th><th>U.M.</th><th>Q.tà</th><th>P.U.</th><th>Importo</th></tr></thead>
+      <tbody>
+        ${cmeRigheHtml}
+        <tr class="total-row" style="font-size:13px">
+          <td colspan="6">TOTALE LAVORI A BASE D'ASTA</td>
+          <td class="right">€ ${fmt(subtPrezziario)}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    ${analisiNPHtml}
+
+    <h2 style="margin-top:30px">QUADRO ECONOMICO</h2>
+    <table>
+      <tbody>
+        <tr><td colspan="2"><strong>A) LAVORI</strong></td><td></td></tr>
+        <tr><td style="padding-left:20px" colspan="2">a.1) Lavori a base d'asta (da CME)</td><td class="right">€ ${fmt(subtPrezziario)}</td></tr>
+        <tr><td style="padding-left:20px" colspan="2">a.2) Oneri sicurezza (non ribassabili, 3%)</td><td class="right">€ ${fmt(oneriSic)}</td></tr>
+        <tr class="total-row"><td colspan="2">Totale lavori</td><td class="right">€ ${fmt(totLavori)}</td></tr>
+        <tr><td colspan="2"><strong>B) SOMME A DISPOSIZIONE</strong></td><td></td></tr>
+        <tr><td style="padding-left:20px" colspan="2">b.1) Spese generali (${(sgPerc*100).toFixed(0)}%)</td><td class="right">€ ${fmt(sgCME)}</td></tr>
+        <tr><td style="padding-left:20px" colspan="2">b.2) Utile impresa (${(uiPerc*100).toFixed(0)}%)</td><td class="right">€ ${fmt(uiCME)}</td></tr>
+        <tr><td style="padding-left:20px" colspan="2">b.3) IVA (${(ivaPerc*100).toFixed(0)}%)</td><td class="right">€ ${fmt(ivaCME)}</td></tr>
+        <tr class="total-row" style="font-size:13px"><td colspan="2">TOTALE COMPLESSIVO</td><td class="right">€ ${fmt(totLavori + sgCME + uiCME + ivaCME)}</td></tr>
+      </tbody>
+    </table>
+
+    <div class="footer">
+      Restruktura S.r.l. — Conforme a DPR 207/2010 Art. 32 e D.Lgs. 36/2023<br>
+      I Nuovi Prezzi (N.P.) sono soggetti a verifica del R.U.P.
+    </div>
+  </body></html>`
 
       // ── Confronto ──
       const diff = subtMercato - subtPrezziario
       const diffPerc = subtPrezziario > 0 ? ((diff / subtPrezziario) * 100).toFixed(1) : '—'
+      const vociPrezziarioCount = vociPrezziario.length
 
       return `PREVENTIVO E CME GENERATI CON SUCCESSO.
 
@@ -678,13 +830,14 @@ CME (prezziario ufficiale ${regione} 2025):
 ${cmeHtml}
 ~~~
 
-CONFRONTO:
+RIEPILOGO:
 - Totale preventivo (mercato): € ${fmt(subtMercato)}
-- Totale CME (prezziario): € ${fmt(subtPrezziario)}
+- Totale CME (lavori a base d'asta): € ${fmt(subtPrezziario)}
 - Differenza: € ${fmt(diff)} (${diffPerc}%)
-- Voci trovate nel prezziario: ${vociConPrezzi.filter(v => v.codice_prezziario).length}/${vociConPrezzi.length}
+- Voci trovate nel prezziario: ${vociPrezziarioCount}/${vociConPrezzi.length}
+- Nuovi Prezzi: ${vociNP.length} (${vociNP.map(v => v.codice_prezziario).join(', ') || 'nessuno'})
 
-Le voci senza codice prezziario non sono state trovate — verificare con termini diversi.`
+Il CME contiene SOLO lavorazioni reali. Spese generali, utile e IVA sono nel Quadro Economico.`
     }
 
     default:
