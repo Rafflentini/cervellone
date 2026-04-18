@@ -10,7 +10,7 @@ import crypto from 'crypto'
 import { callClaude } from '@/lib/claude'
 import { supabase } from '@/lib/supabase'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
-import { TELEGRAM_SYSTEM_PROMPT } from '@/lib/prompts'
+import { getTelegramSystemPrompt } from '@/lib/prompts'
 import { saveMessageWithEmbedding, saveFileKnowledge } from '@/lib/memory'
 import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
 import { validateWebhookSecret } from '@/lib/auth'
@@ -220,7 +220,7 @@ export async function POST(request: NextRequest) {
       try {
         const fullResponse = await callClaude({
           messages: history,
-          systemPrompt: TELEGRAM_SYSTEM_PROMPT,
+          systemPrompt: await getTelegramSystemPrompt(),
           userQuery: userText,
           conversationId,
           hasFiles: fileBlocks.length > 0,

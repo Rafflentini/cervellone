@@ -1023,10 +1023,263 @@ async function parseXlsxToRows(buffer: Buffer): Promise<string[]> {
   }
 }
 
+// ── SELF-AWARENESS — Il Cervellone conosce e modifica se stesso ──
+
+const SELF_TOOLS: ToolDefinition[] = [
+  {
+    name: 'cervellone_info',
+    description: 'Mostra la tua configurazione attuale: modello AI, versione, tool disponibili, parametri. Usa questo tool quando qualcuno ti chiede "che modello sei?", "come funzioni?", "che tool hai?", o qualsiasi domanda su te stesso.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'cervellone_check_aggiornamenti',
+    description: 'Controlla se sono disponibili modelli Claude più recenti e aggiorna automaticamente la configurazione. Interroga l\'API Anthropic per la lista modelli disponibili, confronta con quelli in uso, e si auto-aggiorna ai migliori. Usa questo tool periodicamente o quando senti parlare di nuovi modelli Claude.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        applica: {
+          type: 'boolean',
+          description: 'Se true, applica gli aggiornamenti trovati. Se false, mostra solo cosa cambierebbe (default: true)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'cervellone_modifica',
+    description: 'Modifica la tua configurazione: cambia modello AI, parametri di thinking, versione, o aggiungi istruzioni personalizzate. Usa questo per auto-migliorarti o quando l\'Ingegnere ti chiede di cambiare qualcosa di te stesso.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        chiave: {
+          type: 'string',
+          description: 'Chiave config da modificare: model_default, model_complex, model_digest, version, thinking_budget_default, thinking_budget_medium, thinking_budget_high, max_tokens_default, max_tokens_medium, max_tokens_high, prompt_extra, nome, descrizione',
+        },
+        valore: {
+          type: 'string',
+          description: 'Nuovo valore (stringa JSON). Es: "claude-opus-4-6" per modello, "200000" per thinking budget',
+        },
+        motivo: {
+          type: 'string',
+          description: 'Perché stai facendo questa modifica (viene salvato nel log)',
+        },
+      },
+      required: ['chiave', 'valore', 'motivo'],
+    },
+  },
+]
+
+async function executeSelfTools(name: string, input: Record<string, unknown>, _conversationId?: string): Promise<string | null> {
+  switch (name) {
+    case 'cervellone_info': {
+      const { data: config } = await supabase
+        .from('cervellone_config')
+        .select('key, value, updated_at, updated_by')
+        .order('key')
+
+      if (!config?.length) return 'Configurazione non disponibile.'
+
+      const configMap: Record<string, unknown> = {}
+      for (const row of config) {
+        configMap[row.key] = row.value
+      }
+
+      const toolNames = ALL_TOOLS.map(t => t.name)
+
+      return `🧠 CERVELLONE — CONFIGURAZIONE ATTUALE
+
+IDENTITÀ:
+- Nome: ${configMap.nome || 'Cervellone'}
+- Descrizione: ${configMap.descrizione || 'CEO digitale Restruktura'}
+- Versione: ${configMap.version || '1.0.0'}
+
+MODELLI AI:
+- Conversazione standard: ${configMap.model_default}
+- Task complessi (preventivi, relazioni, analisi): ${configMap.model_complex}
+- Digestione documenti: ${configMap.model_digest}
+
+PARAMETRI THINKING:
+- Standard: budget ${configMap.thinking_budget_default}, max tokens ${configMap.max_tokens_default}
+- Medio: budget ${configMap.thinking_budget_medium}, max tokens ${configMap.max_tokens_medium}
+- Alto: budget ${configMap.thinking_budget_high}, max tokens ${configMap.max_tokens_high}
+
+TOOL DISPONIBILI:
+${toolNames.map(t => `- ${t}`).join('\n')}
+- web_search (built-in Anthropic)
+
+ISTRUZIONI EXTRA: ${configMap.prompt_extra || '(nessuna)'}
+
+ULTIMA MODIFICA CONFIG:
+${config.map(r => `- ${r.key}: aggiornato ${new Date(r.updated_at).toLocaleString('it')} da ${r.updated_by}`).join('\n')}
+
+Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
+    }
+
+    case 'cervellone_check_aggiornamenti': {
+      const applica = input.applica !== false // default true
+
+      try {
+        // Interroga l'API Anthropic per i modelli disponibili
+        const response = await fetch('https://api.anthropic.com/v1/models', {
+          headers: {
+            'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+            'anthropic-version': '2023-06-01',
+          },
+        })
+
+        if (!response.ok) {
+          return `Errore API Anthropic: HTTP ${response.status}. Impossibile controllare modelli disponibili.`
+        }
+
+        const data = await response.json() as { data?: Array<{ id: string; display_name?: string; created_at?: string }> }
+        const models = data.data || []
+
+        if (!models.length) {
+          return 'Nessun modello trovato dall\'API Anthropic.'
+        }
+
+        // Filtra solo i modelli Claude rilevanti (no embedding, no legacy)
+        const claudeModels = models
+          .filter(m => m.id.startsWith('claude-') && !m.id.includes('embed'))
+          .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+
+        // Trova il miglior modello per famiglia
+        const findBest = (family: string) => {
+          const candidates = claudeModels.filter(m => m.id.includes(family))
+          // Ordina per versione (il più recente = id più alto alfabeticamente per modelli con stesso prefisso)
+          return candidates[0]?.id || null
+        }
+
+        const bestOpus = findBest('opus')
+        const bestSonnet = findBest('sonnet')
+        const bestHaiku = findBest('haiku')
+
+        // Leggi config attuale
+        const { data: config } = await supabase
+          .from('cervellone_config')
+          .select('key, value')
+
+        const configMap: Record<string, string> = {}
+        if (config) {
+          for (const row of config) {
+            configMap[row.key] = String(row.value).replace(/"/g, '')
+          }
+        }
+
+        const currentDefault = configMap.model_default || 'sconosciuto'
+        const currentComplex = configMap.model_complex || 'sconosciuto'
+        const currentDigest = configMap.model_digest || 'sconosciuto'
+
+        // Strategia: default=miglior Sonnet, complex=miglior Opus, digest=miglior Sonnet
+        const newDefault = bestSonnet || currentDefault
+        const newComplex = bestOpus || bestSonnet || currentComplex
+        const newDigest = bestSonnet || currentDigest
+
+        const changes: Array<{ key: string; from: string; to: string }> = []
+        if (newDefault !== currentDefault) changes.push({ key: 'model_default', from: currentDefault, to: newDefault })
+        if (newComplex !== currentComplex) changes.push({ key: 'model_complex', from: currentComplex, to: newComplex })
+        if (newDigest !== currentDigest) changes.push({ key: 'model_digest', from: currentDigest, to: newDigest })
+
+        let report = `🔍 MODELLI CLAUDE DISPONIBILI (da API Anthropic):\n\n`
+        report += `Opus: ${claudeModels.filter(m => m.id.includes('opus')).map(m => m.id).join(', ') || 'nessuno'}\n`
+        report += `Sonnet: ${claudeModels.filter(m => m.id.includes('sonnet')).map(m => m.id).join(', ') || 'nessuno'}\n`
+        report += `Haiku: ${claudeModels.filter(m => m.id.includes('haiku')).map(m => m.id).join(', ') || 'nessuno'}\n\n`
+
+        report += `CONFIGURAZIONE ATTUALE:\n`
+        report += `- model_default (conversazione): ${currentDefault}\n`
+        report += `- model_complex (task pesanti): ${currentComplex}\n`
+        report += `- model_digest (digestione file): ${currentDigest}\n\n`
+
+        if (changes.length === 0) {
+          report += `✅ SEI GIÀ AGGIORNATO — stai usando i modelli migliori disponibili.`
+          return report
+        }
+
+        report += `📦 AGGIORNAMENTI DISPONIBILI:\n`
+        for (const c of changes) {
+          report += `- ${c.key}: ${c.from} → ${c.to}\n`
+        }
+
+        if (applica) {
+          for (const c of changes) {
+            await supabase
+              .from('cervellone_config')
+              .update({
+                value: c.to,
+                updated_by: `auto-update: ${c.from} → ${c.to}`,
+              })
+              .eq('key', c.key)
+          }
+          report += `\n✅ AGGIORNAMENTO APPLICATO — i nuovi modelli sono attivi dalla prossima richiesta.`
+        } else {
+          report += `\n⏸️ Aggiornamento NON applicato (modalità anteprima). Richiama con applica=true per applicare.`
+        }
+
+        return report
+
+      } catch (err) {
+        return `Errore durante il check aggiornamenti: ${(err as Error).message}`
+      }
+    }
+
+    case 'cervellone_modifica': {
+      const chiave = input.chiave as string
+      const valore = input.valore as string
+      const motivo = input.motivo as string
+
+      const CHIAVI_VALIDE = [
+        'model_default', 'model_complex', 'model_digest', 'version',
+        'thinking_budget_default', 'thinking_budget_medium', 'thinking_budget_high',
+        'max_tokens_default', 'max_tokens_medium', 'max_tokens_high',
+        'prompt_extra', 'nome', 'descrizione',
+      ]
+
+      if (!CHIAVI_VALIDE.includes(chiave)) {
+        return `Chiave "${chiave}" non valida. Chiavi disponibili: ${CHIAVI_VALIDE.join(', ')}`
+      }
+
+      // Parsa il valore come JSON
+      let jsonValue: unknown
+      try {
+        jsonValue = JSON.parse(valore)
+      } catch {
+        // Se non è JSON valido, wrappa come stringa
+        jsonValue = valore
+      }
+
+      const { error } = await supabase
+        .from('cervellone_config')
+        .update({
+          value: jsonValue,
+          updated_by: `cervellone: ${motivo.slice(0, 100)}`,
+        })
+        .eq('key', chiave)
+
+      if (error) {
+        return `Errore modifica config: ${error.message}`
+      }
+
+      return `✅ CONFIGURAZIONE AGGIORNATA
+- Chiave: ${chiave}
+- Nuovo valore: ${JSON.stringify(jsonValue)}
+- Motivo: ${motivo}
+
+La modifica è attiva dalla prossima richiesta.`
+    }
+
+    default:
+      return null
+  }
+}
+
 // ── Registry ──
 
-const ALL_TOOLS: ToolDefinition[] = [...STUDIO_TECNICO_TOOLS]
-const EXECUTORS = [executeStudioTecnico]
+const ALL_TOOLS: ToolDefinition[] = [...STUDIO_TECNICO_TOOLS, ...SELF_TOOLS]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools]
 
 export function getToolDefinitions() {
   return [

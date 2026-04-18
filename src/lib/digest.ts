@@ -60,8 +60,12 @@ export type DigestResult = {
 
 // Digerisce un documento e produce un digest strutturato
 export async function digestDocument(content: string, fileName: string): Promise<DigestResult> {
+  const { getConfig } = await import('./claude')
+  const cfg = await getConfig()
+  const digestModel = cfg.model_digest || 'claude-sonnet-4-6'
+
   const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: digestModel,
     max_tokens: 12000,
     system: DIGEST_PROMPT,
     messages: [{
@@ -83,7 +87,7 @@ export async function digestDocument(content: string, fileName: string): Promise
   // Verifica di comprensione — solo se il documento è abbastanza lungo da giustificarla
   if (content.length > 3000 && !shouldPreserve) {
     const check = await client.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: digestModel,
       max_tokens: 4000,
       messages: [
         {

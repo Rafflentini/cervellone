@@ -4,7 +4,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { callClaudeStream, trimMessages } from '@/lib/claude'
-import { CHAT_SYSTEM_PROMPT } from '@/lib/prompts'
+import { getChatSystemPrompt } from '@/lib/prompts'
 import { validateAuth } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
     async start(controller) {
       try {
         const fullResponse = await callClaudeStream(
-          { messages: trimmedMessages, systemPrompt: CHAT_SYSTEM_PROMPT, userQuery, conversationId, hasFiles },
+          { messages: trimmedMessages, systemPrompt: await getChatSystemPrompt(), userQuery, conversationId, hasFiles },
           {
             onText: (text) => controller.enqueue(encoder.encode(text)),
             onToolStart: () => controller.enqueue(encoder.encode('\n\n🔍 *Cerco informazioni...*\n\n')),

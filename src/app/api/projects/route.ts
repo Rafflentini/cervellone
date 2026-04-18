@@ -6,6 +6,7 @@ import { PDFParse } from 'pdf-parse'
 import { supabase } from '@/lib/supabase'
 import { saveProjectKnowledge } from '@/lib/memory'
 import { digestDocument, chunkDigest } from '@/lib/digest'
+import { getConfig } from '@/lib/claude'
 
 type FileReport = {
   name: string
@@ -50,7 +51,7 @@ async function pdfMethod1_PdfParse(buf: Buffer, fileName: string): Promise<strin
 async function pdfMethod2_ClaudeDocument(buf: Buffer, fileName: string): Promise<string> {
   const base64Data = buf.toString('base64')
   const message = await anthropicClient.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: (await getConfig()).model_default as string,
     max_tokens: 16000,
     messages: [{
       role: 'user',
@@ -78,7 +79,7 @@ async function pdfMethod3_ClaudeRebuiltBuffer(buf: Buffer, fileName: string): Pr
   const cleanBuf = Buffer.from(new Uint8Array(buf))
   const base64Data = cleanBuf.toString('base64')
   const message = await anthropicClient.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: (await getConfig()).model_default as string,
     max_tokens: 16000,
     messages: [{
       role: 'user',
@@ -102,7 +103,7 @@ async function pdfMethod4_ClaudeVision(buf: Buffer, fileName: string): Promise<s
 
   // Prova a inviare come immagine (Claude può interpretare PDF come immagine in alcuni casi)
   const message = await anthropicClient.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: (await getConfig()).model_default as string,
     max_tokens: 16000,
     messages: [{
       role: 'user',
@@ -137,7 +138,7 @@ async function pdfMethod5_TempFile(buf: Buffer, fileName: string): Promise<strin
       // Riprova Claude con buffer fresco
       const base64Data = freshBuf.toString('base64')
       const message = await anthropicClient.messages.create({
-        model: 'claude-sonnet-4-6',
+        model: (await getConfig()).model_default as string,
         max_tokens: 16000,
         messages: [{
           role: 'user',
@@ -185,7 +186,7 @@ async function pdfMethod6_ArrayBuffer(entry: JSZip.JSZipObject, fileName: string
   // Prova Claude
   const base64Data = buf.toString('base64')
   const message = await anthropicClient.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: (await getConfig()).model_default as string,
     max_tokens: 16000,
     messages: [{
       role: 'user',
@@ -252,7 +253,7 @@ async function extractPdf(buf: Buffer, fileName: string, zipEntry?: JSZip.JSZipO
         })
 
         const message = await anthropicClient.messages.create({
-          model: 'claude-sonnet-4-6',
+          model: (await getConfig()).model_default as string,
           max_tokens: 16000,
           messages: [{ role: 'user', content: batchBlocks }],
         })
