@@ -70,7 +70,7 @@ async function getConfig(): Promise<CervelloneConfig> {
   if (data) {
     for (const row of data) {
       if (row.key in defaults) {
-        (defaults as Record<string, unknown>)[row.key] = row.value
+        (defaults as unknown as Record<string, unknown>)[row.key] = row.value
       }
     }
   }
