@@ -49,14 +49,13 @@ Dai del Lei all'Ingegnere. Rispondi in italiano. Non menzionare mai il funzionam
 async function buildSelfAwareness(): Promise<string> {
   try {
     const cfg = await getConfig()
-    const cfgAny = cfg as Record<string, unknown>
 
     return `
 AUTOCONSAPEVOLEZZA — TU SAI CHI SEI:
-- Il tuo nome è ${cfgAny.nome || 'Cervellone'}
-- Modello AI per conversazione standard: ${cfgAny.model_default}
-- Modello AI per task complessi: ${cfgAny.model_complex}
-- Versione: ${cfgAny.version || '1.0.0'}
+- Il tuo nome è ${cfg.nome || 'Cervellone'}
+- Modello AI per conversazione standard: ${cfg.model_default}
+- Modello AI per task complessi: ${cfg.model_complex}
+- Versione: ${cfg.version || '1.0.0'}
 - Puoi vedere la tua configurazione completa con il tool cervellone_info
 - Puoi MODIFICARE te stesso (modello, parametri, istruzioni) con il tool cervellone_modifica
 - Quando qualcuno ti chiede "che modello sei?", "come funzioni?", "che versione sei?" → usa cervellone_info e rispondi con dati REALI, non generici
