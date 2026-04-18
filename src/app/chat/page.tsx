@@ -539,11 +539,17 @@ export default function ChatPage() {
     }
 
     // Solo l'ultimo messaggio utente manda i file reali — i precedenti mandano solo testo
+    // I messaggi assistant vecchi: comprimi i blocchi ~~~document (HTML enorme) in un riferimento breve
     const lastIdx = newMessages.length - 1
-    const apiMessages = newMessages.map((m, idx) => ({
-      role: m.role,
-      content: buildApiContent(m, idx === lastIdx && m.role === 'user'),
-    }))
+    const apiMessages = newMessages.map((m, idx) => {
+      const isLast = idx === lastIdx
+      let content = buildApiContent(m, isLast && m.role === 'user')
+      // Comprimi blocchi ~~~document nei messaggi assistant NON ultimi
+      if (m.role === 'assistant' && !isLast && typeof content === 'string') {
+        content = content.replace(/~~~document\n[\s\S]*?~~~(?:\n|$)/g, '[Documento già generato — visibile nel pannello anteprima]\n')
+      }
+      return { role: m.role, content }
+    })
 
     try {
       const jsonBody = JSON.stringify({ messages: apiMessages, conversationId: convId })
