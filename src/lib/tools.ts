@@ -24,7 +24,7 @@ interface ToolDefinition {
 const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   {
     name: 'cerca_prezziario',
-    description: 'Cerca voci nel prezziario regionale. Restituisce MULTIPLI risultati (fino a 15). Cerca per descrizione O per codice voce (es. BAS25_E03.015). Regioni disponibili: verificare con conta_prezziario.',
+    description: 'Cerca voci nel prezziario regionale per descrizione o codice voce.',
     input_schema: {
       type: 'object',
       properties: {
@@ -37,7 +37,7 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'cerca_prezziario_batch',
-    description: 'Cerca MULTIPLE voci nel prezziario in una sola chiamata. Efficiente per preventivi con molte voci.',
+    description: 'Cerca multiple voci nel prezziario in una sola chiamata.',
     input_schema: {
       type: 'object',
       properties: {
@@ -64,7 +64,7 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'importa_prezziario_da_url',
-    description: 'Scarica e importa un prezziario regionale da un URL pubblico. Supporta file .ods, .csv, .xlsx. Usa questo tool quando serve un prezziario di una regione non ancora caricata. Cerca prima l\'URL con web_search, poi chiama questo tool.',
+    description: 'Scarica e importa un prezziario da URL (.ods, .csv, .xlsx).',
     input_schema: {
       type: 'object',
       properties: {
@@ -77,7 +77,7 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'cerca_documenti',
-    description: 'Cerca documenti generati in passato: preventivi, computi, relazioni, lettere. Cerca per titolo, tipo o data.',
+    description: 'Cerca documenti generati in passato per titolo o data.',
     input_schema: {
       type: 'object',
       properties: {
@@ -90,7 +90,7 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'scarica_file_da_url',
-    description: 'Scarica qualsiasi file da un URL pubblico (PDF, Word, Excel, ODS, immagini, CSV, ecc.) e restituisce il contenuto come testo o lo salva in memoria. Usa questo per scaricare documenti dal web.',
+    description: 'Scarica qualsiasi file da un URL pubblico.',
     input_schema: {
       type: 'object',
       properties: {
@@ -102,7 +102,7 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'genera_preventivo_completo',
-    description: 'Genera PREVENTIVO + CME + QUADRO ECONOMICO in una sola chiamata. Cerca automaticamente le voci nel prezziario regionale con scoring di rilevanza, calcola tutto, produce 3 documenti HTML separati e li salva nel database. Se già generati per questa conversazione, restituisce i documenti salvati (IMMUTABILI). IMPORTANTE: ogni lavorazione deve corrispondere a una voce reale del prezziario — NON spezzare in sotto-voci (fornitura+posa separati) se esiste una voce unica.',
+    description: 'Genera Preventivo + CME + Quadro Economico. Cerca nel prezziario, calcola, produce 3 documenti HTML.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1027,6 +1027,19 @@ async function parseXlsxToRows(buffer: Buffer): Promise<string[]> {
 
 const SELF_TOOLS: ToolDefinition[] = [
   {
+    name: 'modifica_skill',
+    description: 'Modifica le istruzioni di una skill/reparto. Salva la versione precedente per rollback.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        skill_id: { type: 'string', description: 'ID skill: studio_tecnico, segreteria, cantieri, marketing, clienti, self' },
+        nuove_istruzioni: { type: 'string', description: 'Le nuove istruzioni complete per la skill' },
+        motivo: { type: 'string', description: 'Perche stai modificando la skill' },
+      },
+      required: ['skill_id', 'nuove_istruzioni', 'motivo'],
+    },
+  },
+  {
     name: 'cervellone_info',
     description: 'Mostra la tua configurazione attuale: modello AI, versione, tool disponibili, parametri. Usa questo tool quando qualcuno ti chiede "che modello sei?", "come funzioni?", "che tool hai?", o qualsiasi domanda su te stesso.',
     input_schema: {
@@ -1269,6 +1282,37 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
 - Motivo: ${motivo}
 
 La modifica è attiva dalla prossima richiesta.`
+    }
+
+    case 'modifica_skill': {
+      const skillId = input.skill_id as string
+      const nuoveIstruzioni = input.nuove_istruzioni as string
+      const motivo = input.motivo as string
+
+      const { data: current } = await supabase
+        .from('cervellone_skills')
+        .select('istruzioni, versione')
+        .eq('id', skillId)
+        .single()
+
+      if (!current) return `Skill "${skillId}" non trovata.`
+
+      const { error } = await supabase
+        .from('cervellone_skills')
+        .update({
+          istruzioni: nuoveIstruzioni,
+          istruzioni_precedenti: current.istruzioni,
+          versione: (current.versione || 1) + 1,
+          updated_by: `cervellone: ${motivo.slice(0, 100)}`,
+        })
+        .eq('id', skillId)
+
+      if (error) return `Errore modifica skill: ${error.message}`
+
+      const { invalidateSkillCache } = await import('./skills')
+      invalidateSkillCache()
+
+      return `Skill "${skillId}" aggiornata (v${(current.versione || 1) + 1}). Motivo: ${motivo}`
     }
 
     default:
