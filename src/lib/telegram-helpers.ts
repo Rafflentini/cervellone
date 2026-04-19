@@ -166,6 +166,47 @@ export async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileNa
   return [{ type: 'text', text: `[File binario: ${fileName}, ${(buffer.byteLength / 1024).toFixed(0)} KB]` }]
 }
 
+export async function editTelegramMessage(chatId: number, messageId: number, text: string) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return
+  await fetch(`${TELEGRAM_API}${token}/editMessageText`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      text: text.slice(0, 4000) || '...',
+      parse_mode: 'Markdown',
+    }),
+  }).catch(async () => {
+    await fetch(`${TELEGRAM_API}${token}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: text.slice(0, 4000) || '...',
+      }),
+    }).catch(() => {})
+  })
+}
+
+export async function sendTelegramMessageWithId(chatId: number, text: string): Promise<number | null> {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return null
+  try {
+    const res = await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+    })
+    const data = await res.json()
+    return data?.result?.message_id || null
+  } catch {
+    return null
+  }
+}
+
 export async function transcribeAudio(fileId: string): Promise<string> {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) return ''

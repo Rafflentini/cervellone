@@ -214,6 +214,83 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
   return fullResponse
 }
 
+// ── Streaming Telegram (edit messaggio ogni 3 sec) ──
+
+export async function callClaudeStreamTelegram(
+  request: ClaudeRequest,
+  onChunk: (accumulated: string) => void,
+): Promise<string> {
+  const { systemPrompt, userQuery, conversationId } = request
+
+  const memoryContext = await searchMemory(userQuery).catch(() => '')
+  const fullSystemPrompt = systemPrompt + memoryContext
+
+  if (conversationId && userQuery) {
+    saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
+  }
+
+  const tools: any[] = getToolDefinitions()
+  let currentMessages = [...request.messages]
+  let fullResponse = ''
+  const MAX_ITERATIONS = 10
+
+  const cfg = await getConfig()
+  const isOpus = cfg.model.includes('opus')
+  const modelConfig: ModelConfig = {
+    model: cfg.model,
+    thinkingBudget: isOpus ? 100_000 : 10_000,
+    maxTokens: isOpus ? 128_000 : 32_000,
+  }
+
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    const stream = await withRetry(() =>
+      Promise.resolve(client.messages.stream({
+        model: modelConfig.model,
+        max_tokens: modelConfig.maxTokens,
+        system: fullSystemPrompt,
+        messages: currentMessages,
+        tools,
+        thinking: { type: 'enabled', budget_tokens: modelConfig.thinkingBudget },
+      }))
+    )
+
+    let lastChunkTime = 0
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text
+        const now = Date.now()
+        if (now - lastChunkTime > 3000) {
+          onChunk(fullResponse)
+          lastChunkTime = now
+        }
+      }
+    }
+
+    const final = await stream.finalMessage()
+    const toolBlocks = final.content.filter(b => b.type === 'tool_use')
+
+    if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
+    if (i > 0 && !final.content.some(b => b.type === 'text')) break
+
+    const toolResults = await executeToolBlocks(toolBlocks, conversationId)
+    if (toolResults.length === 0) break
+
+    currentMessages = [
+      ...currentMessages,
+      { role: 'assistant' as const, content: final.content },
+      { role: 'user' as const, content: toolResults },
+    ]
+  }
+
+  onChunk(fullResponse)
+
+  if (conversationId && fullResponse) {
+    saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+  }
+
+  return fullResponse
+}
+
 // ── Helpers ──
 
 async function executeToolBlocks(toolBlocks: any[], conversationId?: string): Promise<any[]> {

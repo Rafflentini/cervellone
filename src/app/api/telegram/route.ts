@@ -7,12 +7,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
 import crypto from 'crypto'
-import { callClaude } from '@/lib/claude'
+import { callClaudeStreamTelegram } from '@/lib/claude'
 import { supabase } from '@/lib/supabase'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { getTelegramSystemPrompt } from '@/lib/prompts'
 import { saveMessageWithEmbedding, saveFileKnowledge } from '@/lib/memory'
-import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
+import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping, editTelegramMessage, sendTelegramMessageWithId } from '@/lib/telegram-helpers'
 import { validateWebhookSecret } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { safeSupabase } from '@/lib/resilience'
@@ -170,23 +170,6 @@ export async function POST(request: NextRequest) {
     typingInterval = setInterval(() => sendTyping(chatId), 4000)
     await sendTyping(chatId)
 
-    // UX-002: Timeout adattivo — più tempo per task strutturati e messaggi complessi
-    const isStructuredTask =
-      /(?:preventiv|computo|cme|cmE|c\.m\.e)/i.test(userText) ||
-      /(?:redigi|scrivi|prepara|elabora|genera)\b/i.test(userText) ||
-      /(?:relazione|perizia|parere|report|documento|lettera)\b/i.test(userText) ||
-      /(?:calcol[oa]|dimension[ai]|verifica\s+struttur)/i.test(userText)
-    const isLikelyComplex = isStructuredTask || userText.length > 300 ||
-      (userText.match(/(?:analizza|confronta|verifica|valuta|redigi|prepara|elabora)/gi) || []).length >= 2 ||
-      fileBlocks.length > 0
-    const thinkingDelay = isLikelyComplex ? 25_000 : 12_000
-    const thinkingTimeout = setTimeout(async () => {
-      const msg = isLikelyComplex
-        ? '🧠🔥 Sto ragionando a fondo... ci vuole un attimo in più.'
-        : '🧠 Sto elaborando una risposta dettagliata...'
-      await sendTelegramMessage(chatId, msg)
-    }, thinkingDelay)
-
     // ── Conversazione ──
     const conversationId = chatIdToUuid(chatId)
     const existingConv = await safeSupabase(
@@ -228,55 +211,70 @@ export async function POST(request: NextRequest) {
     // ── Claude (ASINCRONO) — risponde subito, elabora in background ──
     const bgProcess = async () => {
       try {
-        const fullResponse = await callClaude({
-          messages: history,
-          systemPrompt: await getTelegramSystemPrompt(userText),
-          userQuery: userText,
-          conversationId,
-          hasFiles: fileBlocks.length > 0,
-        })
+        const placeholderMsgId = await sendTelegramMessageWithId(chatId, '🧠 Sto elaborando...')
+        let currentMsgId = placeholderMsgId
+        let lastEditText = ''
 
-        clearTimeout(thinkingTimeout)
+        const fullResponse = await callClaudeStreamTelegram(
+          {
+            messages: history,
+            systemPrompt: await getTelegramSystemPrompt(userText),
+            userQuery: userText,
+            conversationId,
+            hasFiles: fileBlocks.length > 0,
+          },
+          (accumulated) => {
+            if (!currentMsgId) return
+            const preview = accumulated.slice(0, 4000)
+            if (preview === lastEditText) return
+            lastEditText = preview
+            editTelegramMessage(chatId, currentMsgId, preview)
+          }
+        )
+
         if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
 
-        // Salva in memoria
-        if (fileBlocks.length > 0 && fullResponse.length > 200) {
-          const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
-          saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
-        }
-
-        // Detect tabelle
-        const hasTable = /\|[\s-]+\|/.test(fullResponse) && fullResponse.length > 3500
-
-        // Manda risposta
+        // Gestisci documenti e risposta finale
         const responseBlocks = parseDocumentBlocks(fullResponse)
-        let sentSomething = false
+        const textParts: string[] = []
 
         for (const block of responseBlocks) {
-          if (block.type === 'document' || (hasTable && block.content.length > 3500)) {
-            const content = block.type === 'document' ? block.content : `<pre>${block.content}</pre>`
-            const titleMatch = content.match(/<h1[^>]*>(.*?)<\/h1>/i)
+          if (block.type === 'document') {
+            const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i)
             const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
 
             const savedDoc = await safeSupabase(
               () => supabase.from('documents')
-                .insert({ name: title, content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
+                .insert({ name: title, content: block.content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
                 .select('id').single()
             )
             const docUrl = (savedDoc as any)?.id
               ? `https://cervellone-5poc.vercel.app/doc/${(savedDoc as any).id}`
               : 'https://cervellone-5poc.vercel.app'
 
-            await sendTelegramMessage(chatId, `📄 *${title}*\n\n👉 ${docUrl}`)
-            sentSomething = true
+            textParts.push(`📄 *${title}*\n👉 ${docUrl}`)
           } else if (block.content.trim()) {
-            await sendTelegramMessage(chatId, block.content)
-            sentSomething = true
+            textParts.push(block.content)
           }
         }
 
-        if (!sentSomething) {
-          await sendTelegramMessage(chatId, fullResponse || 'Non sono riuscito a elaborare una risposta.')
+        const finalText = textParts.join('\n\n') || fullResponse
+        if (placeholderMsgId) {
+          if (finalText.length <= 4000) {
+            await editTelegramMessage(chatId, placeholderMsgId, finalText)
+          } else {
+            await editTelegramMessage(chatId, placeholderMsgId, finalText.slice(0, 4000))
+            const remaining = finalText.slice(4000)
+            if (remaining.trim()) await sendTelegramMessage(chatId, remaining)
+          }
+        } else {
+          await sendTelegramMessage(chatId, finalText)
+        }
+
+        // Salva conoscenza file
+        if (fileBlocks.length > 0 && fullResponse.length > 200) {
+          const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
+          saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
         }
       } catch (err) {
         console.error('TELEGRAM BG error:', err)
