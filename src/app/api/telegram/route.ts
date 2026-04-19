@@ -165,6 +165,46 @@ export async function POST(request: NextRequest) {
       await sendTelegramMessage(chatId, 'Conversazione azzerata. La memoria permanente è intatta.')
       return NextResponse.json({ ok: true })
     }
+    if (userText === '/help') {
+      await sendTelegramMessage(chatId, '🧠 *Comandi Cervellone*\n\n/nuova — Azzera conversazione\n/opus — Modello piu potente\n/sonnet — Modello standard\n/modello — Mostra modello attivo\n/aggiorna — Controlla aggiornamenti\n/skill — Lista skill disponibili\n/help — Questa lista')
+      return NextResponse.json({ ok: true })
+    }
+    if (userText === '/opus') {
+      await supabase.from('cervellone_config').update({ value: 'claude-opus-4-6', updated_by: 'telegram /opus' }).eq('key', 'model_default')
+      const { invalidateConfigCache } = await import('@/lib/claude')
+      invalidateConfigCache()
+      await sendTelegramMessage(chatId, '🧠 Modello: *Opus* (massima potenza)')
+      return NextResponse.json({ ok: true })
+    }
+    if (userText === '/sonnet') {
+      await supabase.from('cervellone_config').update({ value: 'claude-sonnet-4-6', updated_by: 'telegram /sonnet' }).eq('key', 'model_default')
+      const { invalidateConfigCache } = await import('@/lib/claude')
+      invalidateConfigCache()
+      await sendTelegramMessage(chatId, '⚡ Modello: *Sonnet* (veloce)')
+      return NextResponse.json({ ok: true })
+    }
+    if (userText === '/modello') {
+      const { data } = await supabase.from('cervellone_config').select('value').eq('key', 'model_default').single()
+      const model = data?.value ? String(data.value).replace(/"/g, '') : 'sconosciuto'
+      await sendTelegramMessage(chatId, `🧠 Modello attivo: *${model}*`)
+      return NextResponse.json({ ok: true })
+    }
+    if (userText === '/aggiorna') {
+      const { executeTool } = await import('@/lib/tools')
+      const result = await executeTool('cervellone_check_aggiornamenti', { applica: true })
+      await sendTelegramMessage(chatId, result)
+      return NextResponse.json({ ok: true })
+    }
+    if (userText === '/skill') {
+      const { data } = await supabase.from('cervellone_skills').select('id, nome, descrizione').order('id')
+      if (data?.length) {
+        const list = data.map((s: any) => `*${s.nome}*\n${s.descrizione}`).join('\n\n')
+        await sendTelegramMessage(chatId, `🧠 *Skill disponibili*\n\n${list}`)
+      } else {
+        await sendTelegramMessage(chatId, 'Nessuna skill configurata.')
+      }
+      return NextResponse.json({ ok: true })
+    }
 
     // ── Typing + thinking timeout ──
     typingInterval = setInterval(() => sendTyping(chatId), 4000)
