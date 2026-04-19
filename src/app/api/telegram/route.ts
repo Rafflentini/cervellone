@@ -200,7 +200,7 @@ export async function POST(request: NextRequest) {
     const recentMessages = await safeSupabase(
       () => supabase.from('messages').select('role, content')
         .eq('conversation_id', conversationId)
-        .order('created_at', { ascending: true }).limit(20),
+        .order('created_at', { ascending: true }).limit(10),
       []
     )
 
@@ -214,6 +214,16 @@ export async function POST(request: NextRequest) {
       history.push({ role: 'user', content: userText })
     }
     if (history.length > 0 && history[0].role !== 'user') history.shift()
+
+    // V10: Comprimi documenti HTML nei messaggi precedenti
+    for (const msg of history) {
+      if (msg.role === 'assistant' && typeof msg.content === 'string') {
+        msg.content = msg.content.replace(
+          /~~~document\n[\s\S]*?~~~(?:\n|$)/g,
+          '[Documento gia generato]\n'
+        )
+      }
+    }
 
     // ── Claude (ASINCRONO) — risponde subito, elabora in background ──
     const bgProcess = async () => {

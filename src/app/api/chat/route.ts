@@ -39,6 +39,17 @@ export async function POST(request: NextRequest) {
   }
 
   const messages = filterEmptyMessages(rawMessages)
+
+  // V10: Comprimi blocchi ~~~document nei messaggi assistant (HTML enorme -> riferimento breve)
+  for (const msg of messages) {
+    if (msg.role === 'assistant' && typeof msg.content === 'string') {
+      msg.content = msg.content.replace(
+        /~~~document\n[\s\S]*?~~~(?:\n|$)/g,
+        '[Documento gia generato — visibile nel pannello anteprima]\n'
+      )
+    }
+  }
+
   if (messages.length === 0) {
     return new Response('Non ho ricevuto messaggi validi.', {
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },
