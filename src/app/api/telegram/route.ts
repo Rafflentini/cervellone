@@ -220,7 +220,7 @@ export async function POST(request: NextRequest) {
       try {
         const fullResponse = await callClaude({
           messages: history,
-          systemPrompt: await getTelegramSystemPrompt(),
+          systemPrompt: await getTelegramSystemPrompt(userText),
           userQuery: userText,
           conversationId,
           hasFiles: fileBlocks.length > 0,

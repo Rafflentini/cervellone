@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
     async start(controller) {
       try {
         const fullResponse = await callClaudeStream(
-          { messages: trimmedMessages, systemPrompt: await getChatSystemPrompt(), userQuery, conversationId, hasFiles },
+          { messages: trimmedMessages, systemPrompt: await getChatSystemPrompt(userQuery), userQuery, conversationId, hasFiles },
           {
             onText: (text) => controller.enqueue(encoder.encode(text)),
             onToolStart: () => controller.enqueue(encoder.encode('\n\n🔍 *Cerco informazioni...*\n\n')),

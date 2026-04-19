@@ -23,128 +23,34 @@ interface ModelConfig {
   maxTokens: number
 }
 
-interface CervelloneConfig {
-  model_default: string
-  model_complex: string
-  model_digest: string
-  nome: string
-  version: string
-  descrizione: string
-  thinking_budget_default: number
-  thinking_budget_medium: number
-  thinking_budget_high: number
-  max_tokens_default: number
-  max_tokens_medium: number
-  max_tokens_high: number
-  prompt_extra: string
-}
-
-// Cache config per 60 secondi (non query Supabase ad ogni messaggio)
-let configCache: CervelloneConfig | null = null
+// Cache config per 60 secondi
+let configCache: { model: string } | null = null
 let configCacheTime = 0
 const CONFIG_TTL = 60_000
 
-async function getConfig(): Promise<CervelloneConfig> {
+export async function getConfig(): Promise<{ model: string }> {
   if (configCache && Date.now() - configCacheTime < CONFIG_TTL) return configCache
 
   const { data } = await supabase
     .from('cervellone_config')
     .select('key, value')
+    .in('key', ['model_default'])
 
-  const defaults: CervelloneConfig = {
-    model_default: 'claude-sonnet-4-6',
-    model_complex: 'claude-sonnet-4-6',
-    model_digest: 'claude-sonnet-4-6',
-    nome: 'Cervellone',
-    version: '1.0.0',
-    descrizione: 'CEO digitale di Restruktura SRL',
-    thinking_budget_default: 4000,
-    thinking_budget_medium: 32000,
-    thinking_budget_high: 100000,
-    max_tokens_default: 16000,
-    max_tokens_medium: 48000,
-    max_tokens_high: 128000,
-    prompt_extra: '',
-  }
-
+  let model = 'claude-opus-4-6'
   if (data) {
     for (const row of data) {
-      if (row.key in defaults) {
-        (defaults as unknown as Record<string, unknown>)[row.key] = row.value
-      }
+      if (row.key === 'model_default') model = String(row.value).replace(/"/g, '')
     }
   }
 
-  configCache = defaults
+  configCache = { model }
   configCacheTime = Date.now()
-  return defaults
+  return configCache
 }
 
-// Esportata per il system prompt
-export { getConfig }
-
-// ── Routing intelligente basato sulla complessità ──
-
-async function selectModel(userQuery: string, hasFiles: boolean): Promise<ModelConfig> {
-  const cfg = await getConfig()
-  const len = userQuery.length
-
-  // ── RICHIESTA ESPLICITA DI POTENZA — sempre model_complex ──
-  const wantsMax = /(?:opus|massima\s*potenza|ragionamento\s*profondo|usa\s+il\s+modello\s+(?:migliore|più\s+potente))/i.test(userQuery)
-  if (wantsMax) {
-    return { model: cfg.model_complex, thinkingBudget: cfg.thinking_budget_high, maxTokens: cfg.max_tokens_high }
-  }
-
-  // ── TASK STRUTTURATI — richiedono almeno model_complex ──
-  // NB: "genera" da solo (senza contesto) matcha, ma va bene — meglio dare troppo che troppo poco
-  const isStructuredTask =
-    /(?:preventiv|computo|cme|cmE|c\.m\.e)/i.test(userQuery) ||
-    /(?:redigi|scrivi|prepara|elabora|genera)\b/i.test(userQuery) ||
-    /(?:relazione|perizia|parere|report|documento|lettera)\b/i.test(userQuery) ||
-    /(?:calcol[oa]|dimension[ai]|verifica\s+struttur)/i.test(userQuery)
-
-  if (isStructuredTask) {
-    const complexitySignals = countComplexitySignals(userQuery, hasFiles)
-    if (complexitySignals >= 4) {
-      return { model: cfg.model_complex, thinkingBudget: cfg.thinking_budget_high, maxTokens: cfg.max_tokens_high }
-    }
-    return { model: cfg.model_complex, thinkingBudget: cfg.thinking_budget_medium, maxTokens: cfg.max_tokens_medium }
-  }
-
-  // ── SEGNALI DI COMPLESSITÀ — calcola SEMPRE, anche per messaggi brevi ──
-  const complexitySignals = countComplexitySignals(userQuery, hasFiles)
-
-  if (complexitySignals >= 4) {
-    return { model: cfg.model_complex, thinkingBudget: cfg.thinking_budget_high, maxTokens: cfg.max_tokens_high }
-  }
-  if (complexitySignals >= 2) {
-    return { model: cfg.model_complex, thinkingBudget: cfg.thinking_budget_medium, maxTokens: cfg.max_tokens_medium }
-  }
-
-  // ── MESSAGGI SEMPLICI — model_default ──
-  if (len < 100 && !hasFiles && complexitySignals === 0) {
-    return { model: cfg.model_default, thinkingBudget: 1024, maxTokens: 4096 }
-  }
-  if (complexitySignals >= 1 || len > 300 || hasFiles) {
-    return { model: cfg.model_default, thinkingBudget: cfg.thinking_budget_default, maxTokens: cfg.max_tokens_default }
-  }
-  return { model: cfg.model_default, thinkingBudget: cfg.thinking_budget_default, maxTokens: cfg.max_tokens_default }
-}
-
-function countComplexitySignals(userQuery: string, hasFiles: boolean): number {
-  const len = userQuery.length
-  return [
-    /(?:approfond|dettagliat|(?:analisi|indagine|studio)\s+complet|esaustiv|accurata|minuziosa)/i.test(userQuery),
-    /(?:opus|massima\s*potenza|ragionamento\s*profondo|analisi\s*complessa)/i.test(userQuery),
-    (userQuery.match(/(?:analizza|confronta|verifica|valuta|esamina|studia|indaga|investiga|redigi|prepara|elabora)/gi) || []).length >= 2,
-    /(?:redigi|scrivi|prepara|elabora)\s+(?:un[ao']?\s+)?(?:relazione|perizia|parere|report|analisi|studio|indagine|piano|strategia|documento)/i.test(userQuery),
-    /(?:norma|legge|decreto|regolament|codice|testo unico|direttiva|circolare|D\.?M\.?|D\.?Lgs|NTC|GDPR|CCNL)/i.test(userQuery),
-    len > 500,
-    hasFiles && /(?:analizza|verifica|confronta|controlla|esamina|valuta)/i.test(userQuery),
-    /(?:calcol[oa]|verifica|dimension[ai]|stima|quantific)/i.test(userQuery) && len > 150,
-    /(?:confronta|compara|paragona|differenz[ae]|vs\.?|rispetto a)/i.test(userQuery) && len > 100,
-    /(?:strategia|piano\s+(?:di|per)|business\s*plan|marketing|posizionament|analisi\s+(?:di\s+)?mercato|target|competitor)/i.test(userQuery),
-  ].filter(Boolean).length
+export function invalidateConfigCache() {
+  configCache = null
+  configCacheTime = 0
 }
 
 export interface ClaudeRequest {
@@ -181,8 +87,14 @@ export async function callClaudeStream(
   let fullResponse = ''
   const MAX_ITERATIONS = 10 // PER-004 fix
 
-  const modelConfig = await selectModel(userQuery, request.hasFiles || false)
-  console.log(`MODEL: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+  const cfg = await getConfig()
+  const isOpus = cfg.model.includes('opus')
+  const modelConfig: ModelConfig = {
+    model: cfg.model,
+    thinkingBudget: isOpus ? 100_000 : 10_000,
+    maxTokens: isOpus ? 128_000 : 32_000,
+  }
+  console.log(`MODEL: ${modelConfig.model} for "${userQuery.slice(0, 50)}"`)
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     // REL-003: retry su errori transitori
@@ -250,8 +162,14 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
   let fullResponse = ''
   const MAX_ITERATIONS = 10
 
-  const modelConfig = await selectModel(userQuery, request.hasFiles || false)
-  console.log(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+  const cfg = await getConfig()
+  const isOpus = cfg.model.includes('opus')
+  const modelConfig: ModelConfig = {
+    model: cfg.model,
+    thinkingBudget: isOpus ? 100_000 : 10_000,
+    maxTokens: isOpus ? 128_000 : 32_000,
+  }
+  console.log(`MODEL TG: ${modelConfig.model} for "${userQuery.slice(0, 50)}"`)
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     // FIX V8: usa stream() invece di create() — evita "Streaming is required for >10min"
