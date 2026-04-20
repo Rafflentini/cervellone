@@ -73,7 +73,10 @@ export async function saveMessageWithEmbedding(
  * Ricerca ibrida: embedding (semantica) + keyword (ILIKE).
  * Cattura sia significato simile che nomi propri/codici esatti.
  */
-export async function searchMemory(query: string, limit = 15): Promise<string> {
+export async function searchMemory(query: string, limit = 5): Promise<string> {
+  // V10: Skip per saluti
+  if (TRIVIAL_PATTERN.test(query.trim())) return ''
+
   const results: Array<{ content: string; message_role: string; similarity: number }> = []
   const seenContent = new Set<string>()
 
@@ -101,12 +104,12 @@ export async function searchMemory(query: string, limit = 15): Promise<string> {
   try {
     const keywords = query.match(/\b[A-Z][a-zà-ú]{2,}\b|\b\d{4}\b|\b[A-Z]{2,}\b/g)
     if (keywords?.length) {
-      for (const kw of keywords.slice(0, 3)) {
+      for (const kw of keywords.slice(0, 2)) {
         const { data } = await supabase
           .from('embeddings')
           .select('content, message_role')
           .ilike('content', `%${kw}%`)
-          .limit(3)
+          .limit(2)
         if (data) {
           for (const item of data) {
             const key = item.content.slice(0, 100)
@@ -131,7 +134,7 @@ export async function searchMemory(query: string, limit = 15): Promise<string> {
       : item.message_role === 'assistant' ? '🧠 Risposta precedente'
       : item.message_role === 'user' ? '💬 Domanda precedente'
       : '📋 Dato'
-    return `[${label} ${idx + 1}]\n${item.content}`
+    return `[${label} ${idx + 1}]\n${item.content.slice(0, 500)}`
   })
 
   return `\n\n# Contesto dalla memoria\n${memories.join('\n\n---\n\n')}`
