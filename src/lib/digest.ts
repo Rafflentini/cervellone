@@ -62,7 +62,7 @@ export type DigestResult = {
 export async function digestDocument(content: string, fileName: string): Promise<DigestResult> {
   const { getConfig } = await import('./claude')
   const cfg = await getConfig()
-  const digestModel = cfg.model_digest || 'claude-sonnet-4-6'
+  const digestModel = cfg.model || 'claude-sonnet-4-6'
 
   const message = await client.messages.create({
     model: digestModel,
