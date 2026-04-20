@@ -785,15 +785,7 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       <td class="right"><strong>€ ${fmt(v.importo_mercato)}</strong></td>
     </tr>`).join('')
 
-      const prevHtml = `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>
-    *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
-    .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
-    .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
-    h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
-    table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
-    th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
-    tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
-    .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
+      const prevHtml = `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>${cssCommon}
     .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
     .info-box{background:#f8f9fa;padding:10px;border-radius:6px;border-left:3px solid #1e3a5f}
     .info-box strong{display:block;font-size:10px;color:#666;margin-bottom:2px}

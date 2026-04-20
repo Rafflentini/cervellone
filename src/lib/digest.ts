@@ -84,38 +84,6 @@ export async function digestDocument(content: string, fileName: string): Promise
     preserveReason = match ? match[1].trim() : 'Documento da conservare intatto'
   }
 
-  // Verifica di comprensione — solo se il documento è abbastanza lungo da giustificarla
-  if (content.length > 3000 && !shouldPreserve) {
-    const check = await client.messages.create({
-      model: digestModel,
-      max_tokens: 4000,
-      messages: [
-        {
-          role: 'user',
-          content: `Ecco un documento originale e il suo digest. Verifica che il digest contenga TUTTE le informazioni importanti. Se manca qualcosa, aggiungilo.
-
-DOCUMENTO ORIGINALE:
-${content.slice(0, 30000)}
-
-DIGEST PRODOTTO:
-${digest}
-
-Rispondi SOLO con le eventuali integrazioni in formato:
-### INTEGRAZIONI
-[informazioni mancanti]
-
-Se il digest è completo, rispondi: COMPLETO`
-        }
-      ],
-    })
-
-    const checkResult = check.content[0].type === 'text' ? check.content[0].text : ''
-
-    if (checkResult.trim() !== 'COMPLETO') {
-      return { digest: digest + '\n\n' + checkResult, shouldPreserve, preserveReason }
-    }
-  }
-
   return { digest, shouldPreserve, preserveReason }
 }
 
