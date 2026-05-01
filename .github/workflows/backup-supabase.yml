@@ -1,0 +1,77 @@
+name: Backup Supabase Database
+
+on:
+  schedule:
+    # Ogni giorno alle 04:00 UTC = 06:00 IT (CEST)
+    - cron: '0 4 * * *'
+  workflow_dispatch:  # permette esecuzione manuale dal tab Actions
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    name: pg_dump + GPG encrypt + upload artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Install PostgreSQL client (pg_dump)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client gnupg
+          pg_dump --version
+
+      - name: Run pg_dump
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::error::SUPABASE_DB_URL secret missing"
+            exit 1
+          fi
+          TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+          FILENAME="cervellone-${TIMESTAMP}.sql.gz"
+          echo "BACKUP_FILENAME=$FILENAME" >> $GITHUB_ENV
+          pg_dump \
+            --no-owner \
+            --no-privileges \
+            --clean \
+            --if-exists \
+            --quote-all-identifiers \
+            "$SUPABASE_DB_URL" | gzip -9 > "$FILENAME"
+          ls -lh "$FILENAME"
+
+      - name: Encrypt backup with GPG
+        env:
+          BACKUP_GPG_PASSPHRASE: ${{ secrets.BACKUP_GPG_PASSPHRASE }}
+        run: |
+          if [ -z "$BACKUP_GPG_PASSPHRASE" ]; then
+            echo "::error::BACKUP_GPG_PASSPHRASE secret missing"
+            exit 1
+          fi
+          gpg --batch --yes --passphrase "$BACKUP_GPG_PASSPHRASE" \
+              --symmetric --cipher-algo AES256 \
+              "$BACKUP_FILENAME"
+          ENCRYPTED="${BACKUP_FILENAME}.gpg"
+          rm "$BACKUP_FILENAME"
+          echo "ENCRYPTED_FILENAME=$ENCRYPTED" >> $GITHUB_ENV
+          ls -lh "$ENCRYPTED"
+
+      - name: Upload backup as artifact (90 days retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ENCRYPTED_FILENAME }}
+          path: ${{ env.ENCRYPTED_FILENAME }}
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          SIZE=$(stat -c%s "$ENCRYPTED_FILENAME")
+          SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
+          echo "## Backup riuscito" >> $GITHUB_STEP_SUMMARY
+          echo "- File: \`$ENCRYPTED_FILENAME\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Dimensione: ${SIZE_MB} MB" >> $GITHUB_STEP_SUMMARY
+          echo "- Retention: 90 giorni" >> $GITHUB_STEP_SUMMARY
+          echo "- Recovery: download artifact, gpg --decrypt, gunzip, psql restore" >> $GITHUB_STEP_SUMMARY
