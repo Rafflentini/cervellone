@@ -263,12 +263,12 @@ export async function POST(request: NextRequest) {
             conversationId,
             hasFiles: fileBlocks.length > 0,
           },
-          (accumulated) => {
+          async (accumulated) => {
             if (!currentMsgId) return
             const preview = accumulated.slice(0, 4000)
             if (preview === lastEditText) return
             lastEditText = preview
-            editTelegramMessage(chatId, currentMsgId, preview)
+            await editTelegramMessage(chatId, currentMsgId, preview)
           }
         )
 
