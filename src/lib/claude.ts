@@ -8,9 +8,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getToolDefinitions, executeTool } from './tools'
 import { searchMemory, saveMessageWithEmbedding } from './memory'
-import { sanitizeForStorage } from './sanitize'
-import { logInfo, logWarn, logError } from './sanitize'
-import { withRetry, safeSupabase } from './resilience'
+import { logError } from './sanitize'
+import { withRetry } from './resilience'
 import { supabase } from './supabase'
 
 const client = new Anthropic()
@@ -91,8 +90,8 @@ export async function callClaudeStream(
   const isOpus = cfg.model.includes('opus')
   const modelConfig: ModelConfig = {
     model: cfg.model,
-    thinkingBudget: isOpus ? 100_000 : 10_000,
-    maxTokens: isOpus ? 128_000 : 32_000,
+    thinkingBudget: isOpus ? 8_000 : 4_000,
+    maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL: ${modelConfig.model} for "${userQuery.slice(0, 50)}"`)
 
@@ -166,8 +165,8 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
   const isOpus = cfg.model.includes('opus')
   const modelConfig: ModelConfig = {
     model: cfg.model,
-    thinkingBudget: isOpus ? 100_000 : 10_000,
-    maxTokens: isOpus ? 128_000 : 32_000,
+    thinkingBudget: isOpus ? 8_000 : 4_000,
+    maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL TG: ${modelConfig.model} for "${userQuery.slice(0, 50)}"`)
 
@@ -218,7 +217,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
 
 export async function callClaudeStreamTelegram(
   request: ClaudeRequest,
-  onChunk: (accumulated: string) => void,
+  onChunk: (accumulated: string) => void | Promise<void>,
 ): Promise<string> {
   const { systemPrompt, userQuery, conversationId } = request
 
@@ -236,11 +235,14 @@ export async function callClaudeStreamTelegram(
 
   const cfg = await getConfig()
   const isOpus = cfg.model.includes('opus')
+  // FIX W1: budget thinking drasticamente ridotto. V10 lasciava 100_000 = il modello
+  // pensava per minuti, function killata da Vercel a 300s prima del primo text_delta.
   const modelConfig: ModelConfig = {
     model: cfg.model,
-    thinkingBudget: isOpus ? 100_000 : 10_000,
-    maxTokens: isOpus ? 128_000 : 32_000,
+    thinkingBudget: isOpus ? 8_000 : 4_000,
+    maxTokens: isOpus ? 32_000 : 16_000,
   }
+  console.log(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const stream = await withRetry(() =>
@@ -254,14 +256,33 @@ export async function callClaudeStreamTelegram(
       }))
     )
 
-    let lastChunkTime = 0
+    let lastTextEdit = 0
+    let lastThinkingEdit = 0
+    let thinkingChars = 0
+
     for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        fullResponse += event.delta.text
-        const now = Date.now()
-        if (now - lastChunkTime > 3000) {
-          onChunk(fullResponse)
-          lastChunkTime = now
+      if (event.type === 'content_block_delta') {
+        if (event.delta.type === 'text_delta') {
+          fullResponse += event.delta.text
+          const now = Date.now()
+          if (now - lastTextEdit > 3000) {
+            await onChunk(fullResponse)
+            lastTextEdit = now
+          }
+        }
+        // FIX W1: stream del thinking. Aggiorna placeholder Telegram con counter
+        // così l'utente vede progresso anche durante il reasoning.
+        // Solo finché non c'è ancora testo (poi il testo prevale).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        else if ((event.delta as any).type === 'thinking_delta' && fullResponse === '') {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const td = (event.delta as any).thinking
+          thinkingChars += typeof td === 'string' ? td.length : 0
+          const now = Date.now()
+          if (now - lastThinkingEdit > 5000) {
+            await onChunk(`🧠 Sto pensando... (${thinkingChars} char di reasoning)`)
+            lastThinkingEdit = now
+          }
         }
       }
     }
@@ -282,7 +303,9 @@ export async function callClaudeStreamTelegram(
     ]
   }
 
-  onChunk(fullResponse)
+  // FIX W1: await esplicito sull'edit finale (era fire-and-forget — se la function
+  // moriva subito dopo il loop, l'edit non partiva).
+  await onChunk(fullResponse)
 
   if (conversationId && fullResponse) {
     saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
