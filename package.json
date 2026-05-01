@@ -16,7 +16,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
     "@supabase/supabase-js": "^2.100.0",
-    "@trigger.dev/sdk": "^4.4.5",
+    "@trigger.dev/sdk": "4.4.5",
     "@vercel/functions": "^1.0.0",
     "docx": "^9.6.1",
     "exceljs": "^4.4.0",
