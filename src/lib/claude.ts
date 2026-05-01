@@ -8,9 +8,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getToolDefinitions, executeTool } from './tools'
 import { searchMemory, saveMessageWithEmbedding } from './memory'
-import { sanitizeForStorage } from './sanitize'
-import { logInfo, logWarn, logError } from './sanitize'
-import { withRetry, safeSupabase } from './resilience'
+import { logError } from './sanitize'
+import { withRetry } from './resilience'
 import { supabase } from './supabase'
 
 const client = new Anthropic()

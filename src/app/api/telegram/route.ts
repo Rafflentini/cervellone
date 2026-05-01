@@ -11,7 +11,7 @@ import { callClaudeStreamTelegram } from '@/lib/claude'
 import { supabase } from '@/lib/supabase'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { getTelegramSystemPrompt } from '@/lib/prompts'
-import { saveMessageWithEmbedding, saveFileKnowledge } from '@/lib/memory'
+import { saveMessageWithEmbedding } from '@/lib/memory'
 import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping, editTelegramMessage, sendTelegramMessageWithId } from '@/lib/telegram-helpers'
 import { validateWebhookSecret } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
@@ -255,7 +255,7 @@ export async function POST(request: NextRequest) {
     const bgProcess = async () => {
       try {
         const placeholderMsgId = await sendTelegramMessageWithId(chatId, '🧠 Sto elaborando...')
-        let currentMsgId = placeholderMsgId
+        const currentMsgId = placeholderMsgId
         let lastEditText = ''
 
         const fullResponse = await callClaudeStreamTelegram(

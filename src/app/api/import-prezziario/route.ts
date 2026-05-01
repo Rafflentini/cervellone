@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
-import JSZip from 'jszip'
 
 export const maxDuration = 300
 
@@ -18,7 +17,7 @@ export async function POST(request: NextRequest) {
   }
 
   const year = anno || new Date().getFullYear()
-  let voci: { codice_voce: string; descrizione: string; unita_misura: string; prezzo: number }[] = []
+  const voci: { codice_voce: string; descrizione: string; unita_misura: string; prezzo: number }[] = []
 
   if (format === 'ods-text') {
     // Contenuto già estratto come testo (righe separate da \n, celle da |)
