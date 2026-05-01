@@ -207,6 +207,19 @@ export async function sendTelegramMessageWithId(chatId: number, text: string): P
   }
 }
 
+/**
+ * Helper unificato per heartbeat su task lunghi durable.
+ * Aggiorna il placeholder iniziale via editMessageText.
+ * Stessa logica di editTelegramMessage ma con nome semantico per il dispatch.
+ */
+export async function sendHeartbeatToTelegram(
+  chatId: number,
+  messageId: number,
+  text: string,
+): Promise<void> {
+  await editTelegramMessage(chatId, messageId, text)
+}
+
 export async function transcribeAudio(fileId: string): Promise<string> {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) return ''

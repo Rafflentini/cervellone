@@ -16,6 +16,9 @@ import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegram
 import { validateWebhookSecret } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { safeSupabase } from '@/lib/resilience'
+import { tasks } from '@trigger.dev/sdk/v3'
+import { classifyTask } from '@/lib/task-classifier'
+import type { cervelloneLongTask } from '../../../../trigger/cervellone-long-task'
 
 export const maxDuration = 300
 
@@ -328,7 +331,43 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Lancia in background — NON aspettare
+    // ── Classifica task: veloce vs durable ──
+    const isLongTask = classifyTask(userText, fileBlocks)
+
+    if (isLongTask) {
+      // Path lungo: Trigger.dev durable workflow (no timeout 5 min Vercel)
+      const placeholderMsgId = await sendTelegramMessageWithId(
+        chatId,
+        '🛠️ Avvio elaborazione lunga... Le invio aggiornamenti durante il lavoro.',
+      )
+
+      try {
+        await tasks.trigger<typeof cervelloneLongTask>('cervellone.long-task', {
+          conversationId,
+          chatId,
+          placeholderMsgId,
+          userQuery: userText,
+          history,
+          systemPrompt: await getTelegramSystemPrompt(userText),
+          fileDescription,
+        })
+
+        if (typingInterval) {
+          clearInterval(typingInterval)
+          typingInterval = null
+        }
+        return NextResponse.json({ ok: true })
+      } catch (triggerErr) {
+        console.error('TRIGGER.DEV trigger failed, fallback to in-process:', triggerErr)
+        await sendTelegramMessage(
+          chatId,
+          '⚠️ Modalità degradata: lavoro in corso ma con limite 5 min.',
+        )
+        // Fall through al path veloce in-process come fallback
+      }
+    }
+
+    // Path veloce (o fallback): bgProcess in waitUntil (max 300s Vercel)
     waitUntil(bgProcess())
 
     // Rispondi SUBITO al webhook — niente più timeout
