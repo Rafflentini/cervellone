@@ -11,6 +11,7 @@
 
 import { supabase } from './supabase'
 import { sendTelegramMessage } from './telegram-helpers'
+import { DRIVE_TOOLS, executeDriveTool } from './drive'
 
 /**
  * Notifica all'Ingegnere il cambio modello — Telegram (immediato) + webchat
@@ -1387,8 +1388,27 @@ La modifica è attiva dalla prossima richiesta.`
 
 // ── Registry ──
 
-const ALL_TOOLS: ToolDefinition[] = [...STUDIO_TECNICO_TOOLS, ...SELF_TOOLS]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools]
+// FIX W1.3: wrapper per DRIVE_TOOLS che combacia signature con altri executor.
+// Ritorna null se il tool non è un drive_*/sheets_*, altrimenti delega a executeDriveTool.
+async function executeDriveWrapper(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<string | null> {
+  if (!name.startsWith('drive_') && !name.startsWith('sheets_')) return null
+  // executeDriveTool aspetta Record<string, string>; serializzo se necessario.
+  const stringInput: Record<string, string> = {}
+  for (const [k, v] of Object.entries(input)) {
+    stringInput[k] = typeof v === 'string' ? v : JSON.stringify(v)
+  }
+  return executeDriveTool(name, stringInput)
+}
+
+const ALL_TOOLS: ToolDefinition[] = [
+  ...STUDIO_TECNICO_TOOLS,
+  ...SELF_TOOLS,
+  ...DRIVE_TOOLS, // W1.3: 10 tool Drive/Sheets registrati
+]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executeDriveWrapper]
 
 export function getToolDefinitions() {
   return [
