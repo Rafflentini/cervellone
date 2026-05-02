@@ -73,13 +73,27 @@ export function extractClientName(prompt: string, recentHistory: string): string
 }
 
 // ── Helper Google Drive client ──
+// FIX W1.3.5: usa OAuth-first → SA fallback come drive.ts (consistente).
+// Lazy import di google-oauth per evitare side-effect supabase a test time.
 
-function getDriveClient() {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getAuth(): Promise<any> {
+  try {
+    const { getAuthorizedClient } = await import('./google-oauth')
+    const oauthClient = await getAuthorizedClient()
+    if (oauthClient) return oauthClient
+  } catch (err) {
+    console.error('[DRIVE-SAVER] OAuth lookup failed, fallback to SA:', err instanceof Error ? err.message : err)
+  }
   const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '{}')
-  const auth = new google.auth.GoogleAuth({
+  return new google.auth.GoogleAuth({
     credentials,
     scopes: ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets'],
   })
+}
+
+async function getDriveClient() {
+  const auth = await getAuth()
   return {
     drive: google.drive({ version: 'v3', auth }),
     sheets: google.sheets({ version: 'v4', auth }),
@@ -93,7 +107,7 @@ async function findClientFolderInParent(
   clientName: string,
 ): Promise<{ id: string; name: string } | null> {
   try {
-    const { drive } = getDriveClient()
+    const { drive } = await getDriveClient()
     const res = await drive.files.list({
       q: `'${parentFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: 'files(id, name)',
@@ -279,7 +293,7 @@ async function appendToRegistro(
   // [data, tipo, cliente, tipo_lavoro, file_name, drive_url, stato, note]
   const row = [today, docType.toUpperCase(), cliente, tipoLavoro, fileName, driveUrl, stato, 'auto-save Cervellone']
 
-  const { sheets } = getDriveClient()
+  const { sheets } = await getDriveClient()
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId,
     range,

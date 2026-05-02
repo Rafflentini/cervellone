@@ -1,7 +1,26 @@
 import { google } from 'googleapis'
 
-// Autenticazione con service account
-function getAuth() {
+/**
+ * FIX W1.3.5: auth dinamica OAuth-first → SA fallback.
+ *
+ * Prova prima OAuth2 utente (refresh_token in Supabase) → quota utente
+ * (643/2000 GB). Se non disponibile, fallback Service Account (quota = 0,
+ * funziona solo per READ).
+ *
+ * Lazy import di google-oauth per evitare side-effect del modulo supabase
+ * a load-time (supabase.ts crash se env mancante in test environment).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getAuth(): Promise<any> {
+  try {
+    const { getAuthorizedClient } = await import('./google-oauth')
+    const oauthClient = await getAuthorizedClient()
+    if (oauthClient) return oauthClient
+  } catch (err) {
+    console.error('[DRIVE] OAuth lookup failed, fallback to SA:', err instanceof Error ? err.message : err)
+  }
+
+  // Fallback SA — funziona solo per READ
   const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '{}')
   return new google.auth.GoogleAuth({
     credentials,
@@ -12,12 +31,12 @@ function getAuth() {
   })
 }
 
-function getDrive() {
-  return google.drive({ version: 'v3', auth: getAuth() })
+async function getDrive() {
+  return google.drive({ version: 'v3', auth: await getAuth() })
 }
 
-function getSheets() {
-  return google.sheets({ version: 'v4', auth: getAuth() })
+async function getSheets() {
+  return google.sheets({ version: 'v4', auth: await getAuth() })
 }
 
 // ID cartelle Restruktura (reali)
@@ -43,7 +62,7 @@ export const SHEETS = {
 // Elenca file/cartelle in una cartella
 export async function listFiles(folderId: string): Promise<string> {
   try {
-    const drive = getDrive()
+    const drive = await getDrive()
     const res = await drive.files.list({
       q: `'${folderId}' in parents and trashed = false`,
       fields: 'files(id, name, mimeType, modifiedTime, size)',
@@ -71,7 +90,7 @@ export async function listFiles(folderId: string): Promise<string> {
 export async function searchFiles(query: string, folderId?: string): Promise<string> {
   console.log(`[DRIVE] searchFiles query="${query}" folder="${folderId || 'root'}"`)
   try {
-    const drive = getDrive()
+    const drive = await getDrive()
     let q = `name contains '${query.replace(/'/g, "\\'")}' and trashed = false`
     if (folderId) q += ` and '${folderId}' in parents`
 
@@ -103,7 +122,7 @@ export async function searchFiles(query: string, folderId?: string): Promise<str
 export async function searchFilesFullText(query: string, folderId?: string): Promise<string> {
   console.log(`[DRIVE] searchFilesFullText query="${query}" folder="${folderId || 'root'}"`)
   try {
-    const drive = getDrive()
+    const drive = await getDrive()
     let q = `fullText contains '${query.replace(/'/g, "\\'")}' and trashed = false`
     if (folderId) q += ` and '${folderId}' in parents`
 
@@ -133,7 +152,7 @@ export async function searchFilesFullText(query: string, folderId?: string): Pro
 
 // FIX W1.3 Task 3: download binario per parsing client-side (PDF/DOCX/XLSX)
 async function downloadFile(fileId: string): Promise<{ buffer: Buffer; mimeType: string; name: string }> {
-  const drive = getDrive()
+  const drive = await getDrive()
   const meta = await drive.files.get({ fileId, fields: 'name, mimeType, size' })
   const sizeBytes = Number(meta.data.size || 0)
   if (sizeBytes > 20 * 1024 * 1024) {
@@ -233,7 +252,7 @@ export async function readXlsxFromDrive(fileId: string): Promise<string> {
 // Crea una cartella
 export async function createFolder(name: string, parentId: string): Promise<string> {
   try {
-    const drive = getDrive()
+    const drive = await getDrive()
     const res = await drive.files.create({
       requestBody: {
         name,
@@ -252,7 +271,7 @@ export async function createFolder(name: string, parentId: string): Promise<stri
 // Sposta un file/cartella
 export async function moveFile(fileId: string, newParentId: string): Promise<string> {
   try {
-    const drive = getDrive()
+    const drive = await getDrive()
     // Ottieni i parent attuali
     const file = await drive.files.get({ fileId, fields: 'parents, name' })
     const previousParents = (file.data.parents || []).join(',')
@@ -273,7 +292,7 @@ export async function moveFile(fileId: string, newParentId: string): Promise<str
 // Rinomina un file/cartella
 export async function renameFile(fileId: string, newName: string): Promise<string> {
   try {
-    const drive = getDrive()
+    const drive = await getDrive()
     await drive.files.update({
       fileId,
       requestBody: { name: newName },
@@ -288,7 +307,7 @@ export async function renameFile(fileId: string, newName: string): Promise<strin
 // Leggi contenuto di un Google Doc
 export async function readDocument(fileId: string): Promise<string> {
   try {
-    const drive = getDrive()
+    const drive = await getDrive()
     const res = await drive.files.export({
       fileId,
       mimeType: 'text/plain',
@@ -304,7 +323,7 @@ export async function readDocument(fileId: string): Promise<string> {
 // Crea un Google Doc con contenuto
 export async function createDocument(name: string, content: string, folderId: string): Promise<string> {
   try {
-    const drive = getDrive()
+    const drive = await getDrive()
 
     // Crea il documento
     const doc = await drive.files.create({
@@ -317,7 +336,7 @@ export async function createDocument(name: string, content: string, folderId: st
     })
 
     // Scrivi il contenuto usando Docs API
-    const docs = google.docs({ version: 'v1', auth: getAuth() })
+    const docs = google.docs({ version: 'v1', auth: await getAuth() })
     if (doc.data.id && content) {
       await docs.documents.batchUpdate({
         documentId: doc.data.id,
@@ -343,7 +362,7 @@ export async function createDocument(name: string, content: string, folderId: st
 // Leggi dati da un foglio
 export async function readSheet(spreadsheetId: string, range: string): Promise<string> {
   try {
-    const sheets = getSheets()
+    const sheets = await getSheets()
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range,
@@ -363,7 +382,7 @@ export async function readSheet(spreadsheetId: string, range: string): Promise<s
 // Scrivi dati in un foglio
 export async function writeSheet(spreadsheetId: string, range: string, values: string[][]): Promise<string> {
   try {
-    const sheets = getSheets()
+    const sheets = await getSheets()
     const res = await sheets.spreadsheets.values.update({
       spreadsheetId,
       range,
@@ -380,7 +399,7 @@ export async function writeSheet(spreadsheetId: string, range: string, values: s
 // Aggiungi riga in fondo al foglio
 export async function appendSheet(spreadsheetId: string, range: string, values: string[][]): Promise<string> {
   try {
-    const sheets = getSheets()
+    const sheets = await getSheets()
     const res = await sheets.spreadsheets.values.append({
       spreadsheetId,
       range,
@@ -454,7 +473,7 @@ export async function executeDriveTool(name: string, input: Record<string, strin
     case 'drive_read_office': {
       // Auto-detect DOCX vs XLSX da metadata
       try {
-        const drive = getDrive()
+        const drive = await getDrive()
         const meta = await drive.files.get({ fileId: input.file_id, fields: 'name, mimeType' })
         const fname = (meta.data.name || '').toLowerCase()
         const fmime = meta.data.mimeType || ''
