@@ -428,6 +428,24 @@ export async function executeDriveTool(name: string, input: Record<string, strin
     case 'sheets_append':
       return appendSheet(input.spreadsheet_id, input.range, JSON.parse(input.values))
 
+    // FIX W1.3 (utente 2/5): salva esplicito su Drive quando richiesto
+    case 'salva_documento_su_drive': {
+      const { saveDocumentToDrive } = await import('./document-saver')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const docType = (input.document_type as any) || 'altro'
+      const title = input.title || 'Documento'
+      const htmlContent = input.html_content || ''
+      const userPromptHint = input.user_prompt_hint || ''
+      try {
+        const result = await saveDocumentToDrive(htmlContent, title, docType, userPromptHint, '')
+        const fallback = result.isFallback ? '⚠️ FALLBACK ' : ''
+        const registro = result.registroAppended ? ' (📊 registro aggiornato)' : ''
+        return `✅ ${fallback}Salvato su Drive in ${result.folderPath}${registro}\n👉 ${result.driveUrl}`
+      } catch (err) {
+        return `Errore salvataggio Drive: ${err instanceof Error ? err.message : err}`
+      }
+    }
+
     // FIX W1.3 Task 2-3: nuovi tool full-text + binari
     case 'drive_search_fulltext':
       return searchFilesFullText(input.query, input.folder_id)
@@ -591,6 +609,31 @@ Fogli disponibili:
         values: { type: 'string', description: 'Dati da aggiungere come JSON array di array' },
       },
       required: ['spreadsheet_id', 'range', 'values'],
+    },
+  },
+  // FIX W1.3 (utente 2/5): salva esplicito su Drive quando richiesto
+  {
+    name: 'salva_documento_su_drive',
+    description: `Salva un documento generato (POS/preventivo/perizia/CME/relazione/SCIA/CILA) su Google Drive Restruktura nella cartella corretta.
+USA QUESTO TOOL SOLO se l'utente CHIEDE ESPLICITAMENTE di salvare su Drive (es. "salva su Drive", "archivialo", "mettilo in cartella X").
+Il tool sceglie automaticamente la cartella destinazione:
+- POS/SCIA/CILA → cartella cantiere matched (o /POS/ fallback)
+- Preventivo/CME/Perizia/Relazione → cartella cliente in /Studio Tecnico ATTIVI/ (o _Bozze/ fallback)
+- Aggiorna automaticamente REGISTRO_CANTIERI o REGISTRO_PROGETTI
+- Bot dichiara il path scelto.`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        title: { type: 'string', description: 'Titolo del documento (apparirà come nome file su Drive)' },
+        html_content: { type: 'string', description: 'Contenuto HTML completo del documento (quello dentro ~~~document ... ~~~)' },
+        document_type: {
+          type: 'string',
+          enum: ['pos', 'preventivo', 'cme', 'perizia', 'relazione', 'scia', 'cila', 'altro'],
+          description: 'Tipo documento: determina cartella destinazione e registro su cui appendere',
+        },
+        user_prompt_hint: { type: 'string', description: 'Frase utente con nome cliente/cantiere per matching cartella (es. "POS per cantiere Rossi Mario")' },
+      },
+      required: ['title', 'html_content', 'document_type'],
     },
   },
   // FIX W1.3 Task 2-3: full-text search + lettura binari

@@ -32,6 +32,13 @@ Quando l'utente menziona "Drive", "Google Drive", "cartella", "cartelle Restrukt
 - Per Google Docs nativi → drive_read_document
 NON confondere con cerca_documenti (RAG memoria interna) — quello è per documenti storici già processati da Cervellone.
 
+REGOLA SALVATAGGIO DOCUMENTI GENERATI:
+Quando produci un documento con ~~~document HTML (POS, preventivo, perizia, CME, relazione, SCIA/CILA):
+- DI DEFAULT il documento viene salvato SOLO nella memoria permanente Cervellone (URL /doc/[id]). NON salvarlo su Drive automaticamente.
+- Salva su Drive SOLO SE l'utente lo chiede esplicitamente con frasi tipo: "salva su Drive", "archivia su Drive", "mettilo in cartella X", "salva nel cantiere Y", "carica su Drive".
+- Per salvare usa il tool salva_documento_su_drive con i parametri title + html_content + document_type. Il tool gestisce automaticamente la cartella destinazione (POS in /POS/, preventivi in /Studio Tecnico ATTIVI/[cliente]/, ecc.) e l'aggiornamento del registro.
+- Dopo aver salvato, conferma il path Drive all'utente nel messaggio.
+
 Dai del Lei all'Ingegnere. Rispondi in italiano.`
 
 export async function getChatSystemPrompt(userQuery: string): Promise<string> {
