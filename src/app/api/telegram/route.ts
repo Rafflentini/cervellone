@@ -16,9 +16,10 @@ import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegram
 import { validateWebhookSecret } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { safeSupabase } from '@/lib/resilience'
-import { tasks } from '@trigger.dev/sdk/v3'
+// Trigger.dev imports temporaneamente non usati (Task #10 backlog)
+// import { tasks } from '@trigger.dev/sdk/v3'
+// import type { cervelloneLongTask } from '../../../../trigger/cervellone-long-task'
 import { classifyTask } from '@/lib/task-classifier'
-import type { cervelloneLongTask } from '../../../../trigger/cervellone-long-task'
 
 export const maxDuration = 300
 
@@ -339,42 +340,16 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Classifica task: veloce vs durable ──
+    // FIX W1.3 BUG-1: path Trigger.dev DISABILITATO temporaneamente.
+    // Il dispatch nativo fallisce silenziosamente (Task #10 backlog). Finché non
+    // funziona, ogni messaggio long-task entrava nel path durable, falliva,
+    // mandava "Modalità degradata" e si bloccava. Adesso TUTTI i messaggi vanno
+    // direttamente in waitUntil 300s che funziona perfettamente (testato in W1).
+    // Riabilitare quando Task #10 è risolto.
     const isLongTask = classifyTask(userText, fileBlocks)
+    console.log(`CLASSIFY: long=${isLongTask} userText="${userText.slice(0, 80)}"`)
 
-    if (isLongTask) {
-      // Path lungo: Trigger.dev durable workflow (no timeout 5 min Vercel)
-      const placeholderMsgId = await sendTelegramMessageWithId(
-        chatId,
-        '🛠️ Avvio elaborazione lunga... Le invio aggiornamenti durante il lavoro.',
-      )
-
-      try {
-        await tasks.trigger<typeof cervelloneLongTask>('cervellone.long-task', {
-          conversationId,
-          chatId,
-          placeholderMsgId,
-          userQuery: userText,
-          history,
-          systemPrompt: await getTelegramSystemPrompt(userText),
-          fileDescription,
-        })
-
-        if (typingInterval) {
-          clearInterval(typingInterval)
-          typingInterval = null
-        }
-        return NextResponse.json({ ok: true })
-      } catch (triggerErr) {
-        console.error('TRIGGER.DEV trigger failed, fallback to in-process:', triggerErr)
-        await sendTelegramMessage(
-          chatId,
-          '⚠️ Modalità degradata: lavoro in corso ma con limite 5 min.',
-        )
-        // Fall through al path veloce in-process come fallback
-      }
-    }
-
-    // Path veloce (o fallback): bgProcess in waitUntil (max 300s Vercel)
+    // Path veloce in-process (max 300s Vercel) — copre tutti i casi finché Task #10
     waitUntil(bgProcess())
 
     // Rispondi SUBITO al webhook — niente più timeout
