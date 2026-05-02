@@ -69,6 +69,7 @@ export async function listFiles(folderId: string): Promise<string> {
 
 // Cerca file per nome in tutto il Drive o in una cartella
 export async function searchFiles(query: string, folderId?: string): Promise<string> {
+  console.log(`[DRIVE] searchFiles query="${query}" folder="${folderId || 'root'}"`)
   try {
     const drive = getDrive()
     let q = `name contains '${query.replace(/'/g, "\\'")}' and trashed = false`
@@ -78,20 +79,141 @@ export async function searchFiles(query: string, folderId?: string): Promise<str
       q,
       fields: 'files(id, name, mimeType, parents, modifiedTime)',
       orderBy: 'modifiedTime desc',
-      pageSize: 20,
+      pageSize: 15, // FIX W1.3: ridotto da 20 per evitare prompt esplosi
     })
 
     const files = res.data.files || []
+    console.log(`[DRIVE] searchFiles found=${files.length}`)
     if (files.length === 0) return `Nessun file trovato per "${query}".`
 
     const lines = files.map(f => {
       const isFolder = f.mimeType === 'application/vnd.google-apps.folder'
-      return `${isFolder ? '📁' : '📄'} ${f.name} [ID: ${f.id}]`
+      const truncName = (f.name || '').slice(0, 100) // truncate nomi lunghi
+      return `${isFolder ? '📁' : '📄'} ${truncName} [ID: ${f.id}]`
     })
 
     return `${files.length} risultati per "${query}":\n${lines.join('\n')}`
   } catch (err) {
-    return `Errore nella ricerca: ${err}`
+    console.error(`[DRIVE] searchFiles ERROR:`, err)
+    return `Errore nella ricerca: ${err instanceof Error ? err.message : err}`
+  }
+}
+
+// FIX W1.3 Task 2: ricerca per CONTENUTO testuale (full-text indexed da Drive)
+export async function searchFilesFullText(query: string, folderId?: string): Promise<string> {
+  console.log(`[DRIVE] searchFilesFullText query="${query}" folder="${folderId || 'root'}"`)
+  try {
+    const drive = getDrive()
+    let q = `fullText contains '${query.replace(/'/g, "\\'")}' and trashed = false`
+    if (folderId) q += ` and '${folderId}' in parents`
+
+    const res = await drive.files.list({
+      q,
+      fields: 'files(id, name, mimeType, parents, modifiedTime)',
+      orderBy: 'modifiedTime desc',
+      pageSize: 15,
+    })
+
+    const files = res.data.files || []
+    console.log(`[DRIVE] searchFilesFullText found=${files.length}`)
+    if (files.length === 0) return `Nessun file con contenuto "${query}".`
+
+    const lines = files.map(f => {
+      const isFolder = f.mimeType === 'application/vnd.google-apps.folder'
+      const truncName = (f.name || '').slice(0, 100)
+      return `${isFolder ? '📁' : '📄'} ${truncName} [ID: ${f.id}]`
+    })
+
+    return `${files.length} file con contenuto "${query}":\n${lines.join('\n')}`
+  } catch (err) {
+    console.error(`[DRIVE] searchFilesFullText ERROR:`, err)
+    return `Errore nella ricerca full-text: ${err instanceof Error ? err.message : err}`
+  }
+}
+
+// FIX W1.3 Task 3: download binario per parsing client-side (PDF/DOCX/XLSX)
+async function downloadFile(fileId: string): Promise<{ buffer: Buffer; mimeType: string; name: string }> {
+  const drive = getDrive()
+  const meta = await drive.files.get({ fileId, fields: 'name, mimeType, size' })
+  const sizeBytes = Number(meta.data.size || 0)
+  if (sizeBytes > 20 * 1024 * 1024) {
+    throw new Error(`File troppo grande (${(sizeBytes / 1024 / 1024).toFixed(1)} MB > 20 MB max)`)
+  }
+  const res = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'arraybuffer' })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const buffer = Buffer.from(res.data as any)
+  return {
+    buffer,
+    mimeType: meta.data.mimeType || 'application/octet-stream',
+    name: meta.data.name || 'file',
+  }
+}
+
+export async function readPdfFromDrive(fileId: string): Promise<string> {
+  console.log(`[DRIVE] readPdfFromDrive id=${fileId}`)
+  try {
+    const file = await downloadFile(fileId)
+    if (!file.mimeType.includes('pdf')) {
+      return `File "${file.name}" non è un PDF (mime: ${file.mimeType}). Usa drive_read_office o drive_read_document.`
+    }
+    // pdf-parse v2 API: new PDFParse({ data }) + getText()
+    const { PDFParse } = await import('pdf-parse')
+    const parser = new PDFParse({ data: file.buffer })
+    let text = ''
+    let pages = 0
+    try {
+      const result = await parser.getText()
+      text = (result.text || '').slice(0, 50000)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      pages = (result as any).numpages || (result as any).pages?.length || 0
+    } finally {
+      await parser.destroy()
+    }
+    console.log(`[DRIVE] readPdfFromDrive ok pages=${pages} chars=${text.length}`)
+    return `📄 PDF: ${file.name}${pages ? ` (${pages} pagine)` : ''}\n\n${text || '(testo vuoto o solo immagini — considera Vision OCR)'}`
+  } catch (err) {
+    console.error(`[DRIVE] readPdfFromDrive ERROR:`, err)
+    return `Errore lettura PDF: ${err instanceof Error ? err.message : err}`
+  }
+}
+
+export async function readDocxFromDrive(fileId: string): Promise<string> {
+  console.log(`[DRIVE] readDocxFromDrive id=${fileId}`)
+  try {
+    const file = await downloadFile(fileId)
+    const isDocx = file.mimeType.includes('wordprocessing') || file.name.toLowerCase().endsWith('.docx')
+    if (!isDocx) return `File "${file.name}" non è un DOCX (mime: ${file.mimeType}).`
+    const mammoth = await import('mammoth')
+    const result = await mammoth.extractRawText({ buffer: file.buffer })
+    const text = (result.value || '').slice(0, 50000)
+    console.log(`[DRIVE] readDocxFromDrive ok chars=${text.length}`)
+    return `📄 DOCX: ${file.name}\n\n${text}`
+  } catch (err) {
+    console.error(`[DRIVE] readDocxFromDrive ERROR:`, err)
+    return `Errore lettura DOCX: ${err instanceof Error ? err.message : err}`
+  }
+}
+
+export async function readXlsxFromDrive(fileId: string): Promise<string> {
+  console.log(`[DRIVE] readXlsxFromDrive id=${fileId}`)
+  try {
+    const file = await downloadFile(fileId)
+    const isXlsx = file.mimeType.includes('spreadsheet') || file.name.toLowerCase().endsWith('.xlsx')
+    if (!isXlsx) return `File "${file.name}" non è un XLSX (mime: ${file.mimeType}).`
+    const JSZip = (await import('jszip')).default
+    const zip = await JSZip.loadAsync(file.buffer)
+    const shared = await zip.file('xl/sharedStrings.xml')?.async('string')
+    if (!shared) return `XLSX "${file.name}" senza sharedStrings — vuoto?`
+    const texts: string[] = []
+    const re = /<t[^>]*>([\s\S]*?)<\/t>/g
+    let m
+    while ((m = re.exec(shared)) !== null) texts.push(m[1].trim())
+    const content = texts.slice(0, 5000).join(' | ').slice(0, 50000)
+    console.log(`[DRIVE] readXlsxFromDrive ok strings=${texts.length}`)
+    return `📊 XLSX: ${file.name}\n\n${content}`
+  } catch (err) {
+    console.error(`[DRIVE] readXlsxFromDrive ERROR:`, err)
+    return `Errore lettura XLSX: ${err instanceof Error ? err.message : err}`
   }
 }
 
@@ -293,6 +415,30 @@ export async function executeDriveTool(name: string, input: Record<string, strin
     case 'sheets_append':
       return appendSheet(input.spreadsheet_id, input.range, JSON.parse(input.values))
 
+    // FIX W1.3 Task 2-3: nuovi tool full-text + binari
+    case 'drive_search_fulltext':
+      return searchFilesFullText(input.query, input.folder_id)
+    case 'drive_read_pdf':
+      return readPdfFromDrive(input.file_id)
+    case 'drive_read_office': {
+      // Auto-detect DOCX vs XLSX da metadata
+      try {
+        const drive = getDrive()
+        const meta = await drive.files.get({ fileId: input.file_id, fields: 'name, mimeType' })
+        const fname = (meta.data.name || '').toLowerCase()
+        const fmime = meta.data.mimeType || ''
+        if (fname.endsWith('.docx') || fmime.includes('wordprocessing')) {
+          return readDocxFromDrive(input.file_id)
+        }
+        if (fname.endsWith('.xlsx') || fmime.includes('spreadsheet')) {
+          return readXlsxFromDrive(input.file_id)
+        }
+        return `Formato non supportato: ${fmime}. Usa drive_read_pdf o drive_read_document.`
+      } catch (err) {
+        return `Errore drive_read_office: ${err instanceof Error ? err.message : err}`
+      }
+    }
+
     default:
       return `Tool "${name}" non riconosciuto.`
   }
@@ -432,6 +578,41 @@ Fogli disponibili:
         values: { type: 'string', description: 'Dati da aggiungere come JSON array di array' },
       },
       required: ['spreadsheet_id', 'range', 'values'],
+    },
+  },
+  // FIX W1.3 Task 2-3: full-text search + lettura binari
+  {
+    name: 'drive_search_fulltext',
+    description: 'Cerca file nel Drive di Restruktura per CONTENUTO testuale (NON solo nome). Usa per trovare documenti che parlano di un argomento specifico. Ritorna max 15 file con ID.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Testo da cercare nel contenuto dei file' },
+        folder_id: { type: 'string', description: 'ID cartella opzionale per restringere la ricerca' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'drive_read_pdf',
+    description: 'Leggi il contenuto testuale di un file PDF nel Drive di Restruktura. Limite 20MB, testo troncato a 50K char. Per PDF solo immagini il testo sarà vuoto.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        file_id: { type: 'string', description: 'ID del file PDF nel Drive' },
+      },
+      required: ['file_id'],
+    },
+  },
+  {
+    name: 'drive_read_office',
+    description: 'Leggi un file Microsoft Office (DOCX o XLSX) dal Drive Restruktura. Auto-detect formato. Limite 20MB, contenuto troncato a 50K char.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        file_id: { type: 'string', description: 'ID del file DOCX o XLSX nel Drive' },
+      },
+      required: ['file_id'],
     },
   },
 ]
