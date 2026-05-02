@@ -303,22 +303,11 @@ export async function POST(request: NextRequest) {
               ? `https://cervellone-5poc.vercel.app/doc/${(savedDoc as any).id}`
               : 'https://cervellone-5poc.vercel.app'
 
-            // FIX W1.3 Task 4: auto-save su Drive con Y+X mapping
-            let driveLine = ''
-            try {
-              const { saveDocumentToDrive, inferDocumentType, buildHistoryContext } = await import('@/lib/document-saver')
-              const docType = inferDocumentType(block.content, userText)
-              const historyContext = buildHistoryContext(history)
-              const driveResult = await saveDocumentToDrive(block.content, title, docType, userText, historyContext)
-              const fallbackTag = driveResult.isFallback ? '⚠️ ' : ''
-              const registroTag = driveResult.registroAppended ? ' 📊 + registro' : ''
-              driveLine = `\n📂 ${fallbackTag}Salvato in *${driveResult.folderPath}*${registroTag}\n👉 ${driveResult.driveUrl}`
-            } catch (err) {
-              console.error('[DRIVE-SAVER] save failed:', err)
-              driveLine = '\n⚠️ Drive non disponibile (salvato solo su Cervellone).'
-            }
-
-            textParts.push(`📄 *${title}*\n👉 ${docUrl}${driveLine}`)
+            // FIX W1.3 (utente 2/5): NO auto-save su Drive di default.
+            // Il documento resta nella memoria permanente Cervellone (Supabase + URL /doc/[id]).
+            // Per salvare su Drive, l'utente deve chiederlo esplicitamente — Cervellone
+            // chiama il tool salva_su_drive che fa la mappatura Y+X.
+            textParts.push(`📄 *${title}*\n👉 ${docUrl}`)
           } else if (block.content.trim()) {
             textParts.push(block.content)
           }

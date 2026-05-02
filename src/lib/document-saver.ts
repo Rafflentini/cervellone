@@ -1,5 +1,5 @@
 import { google } from 'googleapis'
-import { DRIVE_FOLDERS, SHEETS } from './drive'
+import { DRIVE_FOLDERS, SHEETS, createDocument } from './drive'
 
 export type DocumentType =
   | 'pos'
@@ -210,24 +210,34 @@ export async function saveDocumentToDrive(
 
   console.log(`[DRIVE-SAVER] saveDocumentToDrive type=${docType} folder="${target.folderPath}" fallback=${target.isFallback}`)
 
-  const { drive } = getDriveClient()
+  // Strategia: convertiamo HTML → testo plain (strip tag), usiamo createDocument
+  // esistente in drive.ts (testato in Task 1). Il Google Doc avrà testo flat,
+  // non layout HTML rendered, ma è funzionale e affidabile.
+  const plainText = htmlContent
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|h[1-6]|li|tr)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 
-  // Upload come Google Doc da HTML (Google converte automaticamente)
-  const res = await drive.files.create({
-    requestBody: {
-      name: fileName,
-      mimeType: 'application/vnd.google-apps.document',
-      parents: [target.folderId],
-    },
-    media: {
-      mimeType: 'text/html',
-      body: htmlContent,
-    },
-    fields: 'id, name, webViewLink',
-  })
+  const result = await createDocument(fileName, plainText, target.folderId)
+  console.log(`[DRIVE-SAVER] createDocument result: ${result.slice(0, 200)}`)
 
-  const fileId = res.data.id || ''
-  const driveUrl = res.data.webViewLink || ''
+  // createDocument ritorna stringa con format "Documento "X" creato.\nLink: URL\n[ID: id]"
+  const idMatch = result.match(/\[ID:\s*([^\]]+)\]/)
+  const linkMatch = result.match(/Link:\s*(https?:\/\/\S+)/)
+  const fileId = idMatch?.[1] || ''
+  const driveUrl = linkMatch?.[1] || ''
+
+  if (!fileId || !driveUrl) {
+    throw new Error(`createDocument failed: ${result.slice(0, 300)}`)
+  }
   console.log(`[DRIVE-SAVER] uploaded fileId=${fileId} url=${driveUrl}`)
 
   // Append a REGISTRO appropriato (best effort, non blocca su errori)
@@ -242,7 +252,7 @@ export async function saveDocumentToDrive(
     driveUrl,
     folderPath: target.folderPath,
     isFallback: target.isFallback,
-    fileName: res.data.name || fileName,
+    fileName,
     fileId,
     registroAppended,
   }
