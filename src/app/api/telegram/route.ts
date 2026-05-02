@@ -223,12 +223,19 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Storia ──
+    // FIX W1.2: history ridotta da 10 a 6 messaggi per ridurre contaminazione cross-turn
+    // (es. POS chiesto 3 turni fa che si trascina in nuovi saluti).
+    // Per knowledge persistente la RAG via embedding fa il resto.
     const recentMessages = await safeSupabase(
       () => supabase.from('messages').select('role, content')
         .eq('conversation_id', conversationId)
-        .order('created_at', { ascending: true }).limit(10),
+        .order('created_at', { ascending: false }).limit(6),
       []
     )
+    // L'order DESC + reverse: prendi gli ultimi 6, poi rimetti in ordine cronologico
+    if (Array.isArray(recentMessages)) {
+      (recentMessages as unknown[]).reverse()
+    }
 
     const history: any[] = ((recentMessages as any[]) || [])
       .filter(m => m.role === 'user' || m.role === 'assistant')

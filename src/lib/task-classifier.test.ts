@@ -40,4 +40,25 @@ describe('classifyTask', () => {
     expect(classifyTask('REDIGI UN POS', [])).toBe(true)
     expect(classifyTask('Preparami un Preventivo', [])).toBe(true)
   })
+
+  it('FIX W1.2: lamentele e dubbi con keyword task NON sono long', () => {
+    expect(classifyTask('Perché mi rispondi sempre con il POS?', [])).toBe(false)
+    expect(classifyTask('Come mai redigi un POS senza chiedermelo?', [])).toBe(false)
+    expect(classifyTask('Non ti ho chiesto un preventivo', [])).toBe(false)
+    expect(classifyTask('Smettila con il POS', [])).toBe(false)
+    expect(classifyTask('Basta con i preventivi', [])).toBe(false)
+    expect(classifyTask('non capisco perché redigi un POS', [])).toBe(false)
+  })
+
+  it('FIX W1.2: domande conversazionali NON sono long', () => {
+    expect(classifyTask('Chi sei?', [])).toBe(false)
+    expect(classifyTask("Cos'è un POS?", [])).toBe(false)
+    expect(classifyTask('Come stai?', [])).toBe(false)
+    expect(classifyTask('Come mai sei lento?', [])).toBe(false)
+  })
+
+  it('FIX W1.2: richieste esplicite RESTANO long anche se cortesi', () => {
+    expect(classifyTask('Mi prepari un preventivo completo?', [])).toBe(true)
+    expect(classifyTask('Fammi il POS per cantiere Test', [])).toBe(true)
+  })
 })
