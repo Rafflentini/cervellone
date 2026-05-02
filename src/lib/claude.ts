@@ -14,6 +14,97 @@ import { supabase } from './supabase'
 
 const client = new Anthropic()
 
+/**
+ * FIX W1.1: capability detection runtime per i parametri thinking/effort.
+ *
+ * Opus 4.7+ e Sonnet 4.6+ richiedono `thinking: { type: 'adaptive' }`.
+ * Modelli più vecchi (Opus 4.5 e prima, Sonnet 4.5 e prima) usano `thinking: { type: 'enabled', budget_tokens: N }`.
+ *
+ * Strategia future-proof:
+ * 1. Cache in-memory delle capability per 24h (lifetime Lambda)
+ * 2. Prima chiamata: client.models.retrieve(model) per scoprire capability vere
+ * 3. Fallback: regex su modelli legacy noti (assumiamo che TUTTI i modelli futuri
+ *    sconosciuti supportino adaptive, perché Anthropic ha annunciato che adaptive
+ *    è il futuro)
+ *
+ * Quando esce Opus 4.8/5.0/ecc., il codice si adatta da solo senza modifiche.
+ *
+ * Doc: https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
+ */
+interface ModelCaps {
+  supportsAdaptiveThinking: boolean
+  supportsEffort: boolean
+  cachedAt: number
+}
+
+const CAPS_TTL_MS = 24 * 60 * 60 * 1000 // 24h
+const capsCache = new Map<string, ModelCaps>()
+
+// Pattern legacy: modelli che richiedono enabled+budget_tokens.
+// IMPORTANTE: lista esplicita di modelli VECCHI. Tutti i modelli più recenti
+// (Opus 4.6+, Sonnet 4.6+, e qualunque modello futuro non in questa lista)
+// vengono trattati come adaptive. Questo è il default sicuro per il futuro.
+const LEGACY_THINKING_PATTERN =
+  /claude-opus-4-[01345](?!\d)|claude-opus-[123]|claude-sonnet-4-[01345](?!\d)|claude-sonnet-[123]|claude-haiku-[1234]|claude-3-/
+
+async function detectModelCapabilities(model: string): Promise<ModelCaps> {
+  const cached = capsCache.get(model)
+  if (cached && Date.now() - cached.cachedAt < CAPS_TTL_MS) return cached
+
+  // 1. Tentativo API capability lookup (autoritative, future-proof)
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = await (client as any).models.retrieve(model)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const caps = (m?.capabilities ?? {}) as Record<string, any>
+    const adaptive = caps?.thinking?.types?.adaptive?.supported
+    const effort = caps?.effort?.supported
+    if (typeof adaptive === 'boolean') {
+      const result: ModelCaps = {
+        supportsAdaptiveThinking: adaptive,
+        supportsEffort: effort === true,
+        cachedAt: Date.now(),
+      }
+      capsCache.set(model, result)
+      console.log(`MODEL CAPS [${model}]: adaptive=${adaptive} effort=${effort} (api)`)
+      return result
+    }
+  } catch (err) {
+    // API endpoint non disponibile o modello sconosciuto — fallback regex
+    console.warn(`MODEL CAPS [${model}]: api lookup failed, fallback regex`, err instanceof Error ? err.message : err)
+  }
+
+  // 2. Fallback regex: assume adaptive per tutti i modelli NON-legacy
+  const isLegacy = LEGACY_THINKING_PATTERN.test(model)
+  const result: ModelCaps = {
+    supportsAdaptiveThinking: !isLegacy,
+    supportsEffort: !isLegacy,
+    cachedAt: Date.now(),
+  }
+  capsCache.set(model, result)
+  console.log(`MODEL CAPS [${model}]: adaptive=${!isLegacy} effort=${!isLegacy} (regex fallback)`)
+  return result
+}
+
+export function invalidateModelCapsCache(): void {
+  capsCache.clear()
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function buildModelOptions(model: string, thinkingBudget: number): Promise<Record<string, any>> {
+  const caps = await detectModelCapabilities(model)
+  if (caps.supportsAdaptiveThinking) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts: Record<string, any> = { thinking: { type: 'adaptive' } }
+    if (caps.supportsEffort) opts.output_config = { effort: 'high' }
+    return opts
+  }
+  // Legacy: enabled + budget_tokens
+  return {
+    thinking: { type: 'enabled', budget_tokens: thinkingBudget },
+  }
+}
+
 // ── Config dinamica da Supabase ──
 
 interface ModelConfig {
@@ -94,6 +185,7 @@ export async function callClaudeStream(
     maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL: ${modelConfig.model} for "${userQuery.slice(0, 50)}"`)
+  const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget)
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     // REL-003: retry su errori transitori
@@ -104,7 +196,7 @@ export async function callClaudeStream(
         system: fullSystemPrompt,
         messages: currentMessages,
         tools,
-        thinking: { type: 'enabled', budget_tokens: modelConfig.thinkingBudget },
+        ...modelOpts,
       }))
     )
 
@@ -169,6 +261,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
     maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL TG: ${modelConfig.model} for "${userQuery.slice(0, 50)}"`)
+  const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget)
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     // FIX V8: usa stream() invece di create() — evita "Streaming is required for >10min"
@@ -179,7 +272,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
         system: fullSystemPrompt,
         messages: currentMessages,
         tools,
-        thinking: { type: 'enabled', budget_tokens: modelConfig.thinkingBudget },
+        ...modelOpts,
       }))
     )
 
@@ -243,6 +336,7 @@ export async function callClaudeStreamTelegram(
     maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+  const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget)
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const stream = await withRetry(() =>
@@ -252,7 +346,7 @@ export async function callClaudeStreamTelegram(
         system: fullSystemPrompt,
         messages: currentMessages,
         tools,
-        thinking: { type: 'enabled', budget_tokens: modelConfig.thinkingBudget },
+        ...modelOpts,
       }))
     )
 

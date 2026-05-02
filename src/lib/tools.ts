@@ -10,6 +10,43 @@
  */
 
 import { supabase } from './supabase'
+import { sendTelegramMessage } from './telegram-helpers'
+
+/**
+ * Notifica all'Ingegnere il cambio modello — Telegram (immediato) + webchat
+ * (inserisce assistant message nelle ultime 5 conversazioni web non-Telegram,
+ * così appare in cronologia al prossimo apri-chat).
+ */
+async function notifyModelChange(noticeText: string): Promise<void> {
+  // Telegram immediato all'admin
+  const adminChat = parseInt(process.env.ADMIN_CHAT_ID || '0', 10)
+  if (adminChat) {
+    await sendTelegramMessage(adminChat, noticeText).catch((err) => {
+      console.error('Notify Telegram failed:', err)
+    })
+  }
+
+  // Webchat: insert assistant message in ultime 5 conv web
+  try {
+    const { data: webConvs } = await supabase
+      .from('conversations')
+      .select('id')
+      .neq('title', '💬 Telegram')
+      .order('created_at', { ascending: false })
+      .limit(5)
+
+    if (webConvs && webConvs.length > 0) {
+      const inserts = webConvs.map((c: { id: string }) => ({
+        conversation_id: c.id,
+        role: 'assistant',
+        content: noticeText,
+      }))
+      await supabase.from('messages').insert(inserts)
+    }
+  } catch (err) {
+    console.error('Notify webchat failed:', err)
+  }
+}
 
 // ── Interfaccia ──
 
@@ -1220,6 +1257,24 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
               .eq('key', c.key)
           }
           report += `\n✅ AGGIORNAMENTO APPLICATO — i nuovi modelli sono attivi dalla prossima richiesta.`
+
+          // Notifica utente su Telegram + webchat (FIX W1.1: trasparenza cambi modello)
+          const noticeLines = changes.map((c) => `• *${c.key}*: ${c.from} → *${c.to}*`).join('\n')
+          const noticeText =
+            `🆕 *Cervellone aggiornato a un nuovo modello AI*\n\n` +
+            `${noticeLines}\n\n` +
+            `Le capability del nuovo modello vengono rilevate automaticamente. ` +
+            `Dalla prossima richiesta utilizzo i nuovi modelli.`
+          await notifyModelChange(noticeText)
+
+          // Invalida cache config + capability per pickup immediato
+          try {
+            const { invalidateConfigCache, invalidateModelCapsCache } = await import('./claude')
+            invalidateConfigCache()
+            invalidateModelCapsCache()
+          } catch (err) {
+            console.error('Cache invalidation failed (non-critical):', err)
+          }
         } else {
           report += `\n⏸️ Aggiornamento NON applicato (modalità anteprima). Richiama con applica=true per applicare.`
         }
@@ -1266,6 +1321,24 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
 
       if (error) {
         return `Errore modifica config: ${error.message}`
+      }
+
+      // Notifica utente se cambiato un modello (FIX W1.1: trasparenza cambi modello)
+      if (chiave.startsWith('model_')) {
+        const noticeText =
+          `🆕 *Cervellone aggiornato — modello cambiato manualmente*\n\n` +
+          `• *${chiave}*: nuovo valore *${String(jsonValue).replace(/"/g, '')}*\n` +
+          `• Motivo: ${motivo}\n\n` +
+          `Le capability del nuovo modello vengono rilevate automaticamente. ` +
+          `Dalla prossima richiesta utilizzo il nuovo modello.`
+        await notifyModelChange(noticeText)
+        try {
+          const { invalidateConfigCache, invalidateModelCapsCache } = await import('./claude')
+          invalidateConfigCache()
+          invalidateModelCapsCache()
+        } catch (err) {
+          console.error('Cache invalidation failed (non-critical):', err)
+        }
       }
 
       return `✅ CONFIGURAZIONE AGGIORNATA
