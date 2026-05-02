@@ -156,6 +156,19 @@ export async function readPdfFromDrive(fileId: string): Promise<string> {
     if (!file.mimeType.includes('pdf')) {
       return `File "${file.name}" non è un PDF (mime: ${file.mimeType}). Usa drive_read_office o drive_read_document.`
     }
+    // FIX W1.3: polyfill DOMMatrix per pdfjs-dist in Node.js serverless.
+    // pdfjs-dist (usato da pdf-parse v2) richiede DOMMatrix che NON esiste in Node serverless.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const g = globalThis as any
+    if (typeof g.DOMMatrix === 'undefined') {
+      g.DOMMatrix = class DOMMatrix {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        constructor(..._args: any[]) {}
+        // Stubs minimali per evitare crash, sufficienti per text extraction
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        multiply() { return this } translate() { return this } scale() { return this }
+      }
+    }
     // pdf-parse v2 API: new PDFParse({ data }) + getText()
     const { PDFParse } = await import('pdf-parse')
     const parser = new PDFParse({ data: file.buffer })
