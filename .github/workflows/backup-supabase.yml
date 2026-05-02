@@ -16,10 +16,13 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Install PostgreSQL client (pg_dump)
+      - name: Install PostgreSQL 17 client (pg_dump)
         run: |
+          sudo install -d /etc/apt/keyrings
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
-          sudo apt-get install -y postgresql-client gnupg
+          sudo apt-get install -y postgresql-client-17 gnupg
           pg_dump --version
 
       - name: Run pg_dump
@@ -51,8 +54,8 @@ jobs:
             exit 1
           fi
           gpg --batch --yes --passphrase "$BACKUP_GPG_PASSPHRASE" \
-              --symmetric --cipher-algo AES256 \
-              "$BACKUP_FILENAME"
+            --symmetric --cipher-algo AES256 \
+            "$BACKUP_FILENAME"
           ENCRYPTED="${BACKUP_FILENAME}.gpg"
           rm "$BACKUP_FILENAME"
           echo "ENCRYPTED_FILENAME=$ENCRYPTED" >> $GITHUB_ENV
