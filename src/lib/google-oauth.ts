@@ -37,20 +37,66 @@ export function buildConsentUrl(): string {
 
 /**
  * Scambia il code (dal callback) per access+refresh token e salva su Supabase.
+ *
+ * FIX W1.3.5: usa fetch manuale invece di googleapis library — il library
+ * causava "Request is missing required authentication credential" forse per
+ * mismatch di Content-Type o body encoding.
  */
 export async function exchangeCodeAndStore(code: string): Promise<{ email: string; refresh_token_present: boolean }> {
-  const oauth2Client = getOAuth2Client()
-  const { tokens } = await oauth2Client.getToken(code)
-  if (!tokens.refresh_token) {
-    throw new Error('Refresh token non ricevuto. Revoca app su https://myaccount.google.com/permissions e riprova.')
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID
+  const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET
+  if (!clientId || !clientSecret) {
+    throw new Error('GOOGLE_OAUTH_CLIENT_ID o GOOGLE_OAUTH_CLIENT_SECRET mancante in env')
+  }
+  const redirectUri = `${getBaseUrl()}/api/auth/google/callback`
+
+  console.log(`[OAUTH] exchangeCode: client_id_len=${clientId.length} client_secret_len=${clientSecret.length} redirect_uri="${redirectUri}"`)
+
+  // Token exchange — POST application/x-www-form-urlencoded
+  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+    }),
+  })
+
+  if (!tokenRes.ok) {
+    const errBody = await tokenRes.text()
+    console.error(`[OAUTH] token exchange failed status=${tokenRes.status} body=${errBody.slice(0, 500)}`)
+    throw new Error(`Token exchange HTTP ${tokenRes.status}: ${errBody.slice(0, 300)}`)
   }
 
-  oauth2Client.setCredentials(tokens)
-  const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client })
-  const userInfo = await oauth2.userinfo.get()
-  const email = userInfo.data.email || 'unknown'
+  const tokens = await tokenRes.json() as {
+    access_token: string
+    refresh_token?: string
+    expires_in?: number
+    id_token?: string
+    scope?: string
+    token_type?: string
+  }
 
-  const expiresAt = tokens.expiry_date ? new Date(tokens.expiry_date).toISOString() : null
+  if (!tokens.refresh_token) {
+    throw new Error('Refresh token non ricevuto. Revoca app su https://myaccount.google.com/permissions e riprova (con prompt consent).')
+  }
+
+  // Recupera email via userinfo endpoint (standard OAuth)
+  const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    headers: { Authorization: `Bearer ${tokens.access_token}` },
+  })
+  if (!userInfoRes.ok) {
+    throw new Error(`UserInfo HTTP ${userInfoRes.status}`)
+  }
+  const userInfo = await userInfoRes.json() as { email?: string }
+  const email = userInfo.email || 'unknown'
+
+  const expiresAt = tokens.expires_in
+    ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+    : null
 
   const { error } = await supabase.from('google_oauth_credentials').upsert(
     {
