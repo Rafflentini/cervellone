@@ -5,6 +5,9 @@ import { supabase } from './supabase'
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/spreadsheets',
+  'openid',  // FIX W1.3.5: richiesto per ottenere id_token con email
+  'email',
+  'profile',
 ]
 
 function getBaseUrl(): string {
@@ -84,15 +87,65 @@ export async function exchangeCodeAndStore(code: string): Promise<{ email: strin
     throw new Error('Refresh token non ricevuto. Revoca app su https://myaccount.google.com/permissions e riprova (con prompt consent).')
   }
 
-  // Recupera email via userinfo endpoint (standard OAuth)
-  const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-    headers: { Authorization: `Bearer ${tokens.access_token}` },
-  })
-  if (!userInfoRes.ok) {
-    throw new Error(`UserInfo HTTP ${userInfoRes.status}`)
+  // Recupera email — provo 3 metodi in cascata, fallback robusto
+  let email = 'unknown'
+
+  // Metodo 1: id_token JWT decode (se openid scope concesso, è incluso)
+  if (tokens.id_token) {
+    try {
+      const payload = JSON.parse(
+        Buffer.from(tokens.id_token.split('.')[1], 'base64').toString('utf-8'),
+      ) as { email?: string }
+      if (payload.email) {
+        email = payload.email
+        console.log(`[OAUTH] email from id_token: ${email}`)
+      }
+    } catch (err) {
+      console.error('[OAUTH] id_token decode failed:', err instanceof Error ? err.message : err)
+    }
   }
-  const userInfo = await userInfoRes.json() as { email?: string }
-  const email = userInfo.email || 'unknown'
+
+  // Metodo 2: userinfo endpoint (richiede scope email/profile concessi)
+  if (email === 'unknown') {
+    try {
+      const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      })
+      if (userInfoRes.ok) {
+        const userInfo = await userInfoRes.json() as { email?: string }
+        if (userInfo.email) {
+          email = userInfo.email
+          console.log(`[OAUTH] email from userinfo: ${email}`)
+        }
+      } else {
+        console.error(`[OAUTH] userinfo HTTP ${userInfoRes.status} (probabile mancanza scope email/profile)`)
+      }
+    } catch (err) {
+      console.error('[OAUTH] userinfo fetch failed:', err instanceof Error ? err.message : err)
+    }
+  }
+
+  // Metodo 3: Drive about endpoint (sempre disponibile con scope drive)
+  if (email === 'unknown') {
+    try {
+      const aboutRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      })
+      if (aboutRes.ok) {
+        const about = await aboutRes.json() as { user?: { emailAddress?: string } }
+        if (about.user?.emailAddress) {
+          email = about.user.emailAddress
+          console.log(`[OAUTH] email from drive.about: ${email}`)
+        }
+      }
+    } catch (err) {
+      console.error('[OAUTH] drive.about failed:', err instanceof Error ? err.message : err)
+    }
+  }
+
+  if (email === 'unknown') {
+    console.warn('[OAUTH] cannot determine email — saving as "unknown" (refresh_token still valid)')
+  }
 
   const expiresAt = tokens.expires_in
     ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
