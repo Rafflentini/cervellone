@@ -9,6 +9,8 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     '/api/telegram': ['./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'],
     '/api/chat': ['./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'],
+    '/api/projects': ['./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'],
+    '/api/import-prezziario': ['./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'],
   },
   experimental: {
     proxyClientMaxBodySize: '100mb',
