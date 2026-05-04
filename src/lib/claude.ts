@@ -126,7 +126,7 @@ export async function getConfig(): Promise<{ model: string }> {
     .select('key, value')
     .in('key', ['model_default'])
 
-  let model = 'claude-opus-4-6'
+  let model = 'claude-opus-4-7'
   if (data) {
     for (const row of data) {
       if (row.key === 'model_default') model = String(row.value).replace(/"/g, '')

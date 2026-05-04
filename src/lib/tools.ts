@@ -1104,7 +1104,7 @@ const SELF_TOOLS: ToolDefinition[] = [
         },
         valore: {
           type: 'string',
-          description: 'Nuovo valore (stringa JSON). Es: "claude-opus-4-6" per modello, "200000" per thinking budget',
+          description: 'Nuovo valore (stringa JSON). Es: "claude-opus-4-7" per modello, "200000" per thinking budget',
         },
         motivo: {
           type: 'string',
@@ -1394,7 +1394,7 @@ async function executeDriveWrapper(
   name: string,
   input: Record<string, unknown>,
 ): Promise<string | null> {
-  if (!name.startsWith('drive_') && !name.startsWith('sheets_')) return null
+  if (!name.startsWith('drive_') && !name.startsWith('sheets_') && name !== 'salva_documento_su_drive') return null
   // executeDriveTool aspetta Record<string, string>; serializzo se necessario.
   const stringInput: Record<string, string> = {}
   for (const [k, v] of Object.entries(input)) {

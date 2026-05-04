@@ -174,7 +174,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
     if (userText === '/opus') {
-      await supabase.from('cervellone_config').update({ value: 'claude-opus-4-6', updated_by: 'telegram /opus' }).eq('key', 'model_default')
+      await supabase.from('cervellone_config').update({ value: 'claude-opus-4-7', updated_by: 'telegram /opus' }).eq('key', 'model_default')
       const { invalidateConfigCache } = await import('@/lib/claude')
       invalidateConfigCache()
       await sendTelegramMessage(chatId, '🧠 Modello: *Opus* (massima potenza)')
