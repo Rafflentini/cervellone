@@ -383,6 +383,11 @@ export async function callClaudeStreamTelegram(
 
     const final = await stream.finalMessage()
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
+    const textBlocks = final.content.filter(b => b.type === 'text')
+    // FIX Bug 5: log diagnostico per capire perché iter N non emette text
+    // (caso visto: iter 0 emette "Ecco il conten" + tool_use, iter 1 finalize
+    // con end_turn ma 0 text_delta → fullResponse resta troncato).
+    console.log(`STREAM iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} texts=${textBlocks.length} fullLen=${fullResponse.length} thinkingChars=${thinkingChars}`)
 
     if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
     if (i > 0 && !final.content.some(b => b.type === 'text')) break
@@ -399,6 +404,7 @@ export async function callClaudeStreamTelegram(
 
   // FIX W1: await esplicito sull'edit finale (era fire-and-forget — se la function
   // moriva subito dopo il loop, l'edit non partiva).
+  console.log(`STREAM done fullLen=${fullResponse.length}`)
   await onChunk(fullResponse)
 
   if (conversationId && fullResponse) {

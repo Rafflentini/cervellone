@@ -169,26 +169,44 @@ export async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileNa
 export async function editTelegramMessage(chatId: number, messageId: number, text: string) {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) return
-  await fetch(`${TELEGRAM_API}${token}/editMessageText`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      message_id: messageId,
-      text: text.slice(0, 4000) || '...',
-      parse_mode: 'Markdown',
-    }),
-  }).catch(async () => {
-    await fetch(`${TELEGRAM_API}${token}/editMessageText`, {
+  const payload = text.slice(0, 4000) || '...'
+  // FIX Bug 5: NON ingoiare errori in silenzio.
+  // Telegram torna HTTP 200 con {ok:false, description:"..."} per errori applicativi
+  // (es. "message is not modified", "rate limit"). .catch() non li intercetta:
+  // bisogna ispezionare body.ok. Loggare tutto per diagnosi.
+  try {
+    const res = await fetch(`${TELEGRAM_API}${token}/editMessageText`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: chatId,
         message_id: messageId,
-        text: text.slice(0, 4000) || '...',
+        text: payload,
+        parse_mode: 'Markdown',
       }),
-    }).catch(() => {})
-  })
+    })
+    const body = await res.json().catch(() => ({}))
+    if (body?.ok) return
+    // Markdown fallito? Ritenta senza parse_mode.
+    const desc = body?.description || `HTTP ${res.status}`
+    if (typeof desc === 'string' && /can't parse|markdown/i.test(desc)) {
+      const res2 = await fetch(`${TELEGRAM_API}${token}/editMessageText`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: payload }),
+      })
+      const body2 = await res2.json().catch(() => ({}))
+      if (!body2?.ok) {
+        console.warn(`[TG edit] msg=${messageId} chars=${payload.length} fallback FAIL: ${body2?.description || res2.status}`)
+      }
+      return
+    }
+    // "message is not modified" è benigno (testo identico al precedente edit)
+    if (/not modified/i.test(desc)) return
+    console.warn(`[TG edit] msg=${messageId} chars=${payload.length} FAIL: ${desc}`)
+  } catch (err) {
+    console.warn(`[TG edit] msg=${messageId} chars=${payload.length} NETWORK ERROR:`, err instanceof Error ? err.message : err)
+  }
 }
 
 export async function sendTelegramMessageWithId(chatId: number, text: string): Promise<number | null> {
