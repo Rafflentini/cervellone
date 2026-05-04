@@ -187,8 +187,12 @@ export async function editTelegramMessage(chatId: number, messageId: number, tex
     })
     const body = await res.json().catch(() => ({}))
     if (body?.ok) return
-    // Markdown fallito? Ritenta senza parse_mode.
+    // "message is not modified" è benigno (testo identico al precedente edit) —
+    // controlla PRIMA del fallback Markdown per evitare log warning quando il
+    // primo tentativo già fallisce per contenuto identico.
     const desc = body?.description || `HTTP ${res.status}`
+    if (typeof desc === 'string' && /not modified/i.test(desc)) return
+    // Markdown fallito? Ritenta senza parse_mode.
     if (typeof desc === 'string' && /can't parse|markdown/i.test(desc)) {
       const res2 = await fetch(`${TELEGRAM_API}${token}/editMessageText`, {
         method: 'POST',
@@ -196,13 +200,14 @@ export async function editTelegramMessage(chatId: number, messageId: number, tex
         body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: payload }),
       })
       const body2 = await res2.json().catch(() => ({}))
-      if (!body2?.ok) {
-        console.warn(`[TG edit] msg=${messageId} chars=${payload.length} fallback FAIL: ${body2?.description || res2.status}`)
-      }
+      if (body2?.ok) return
+      const desc2 = body2?.description || `HTTP ${res2.status}`
+      // FIX Bug 6: anche il fallback può ricevere "not modified" se nel frattempo
+      // un altro edit (con Markdown OK) ha scritto lo stesso testo. Benigno.
+      if (typeof desc2 === 'string' && /not modified/i.test(desc2)) return
+      console.warn(`[TG edit] msg=${messageId} chars=${payload.length} fallback FAIL: ${desc2}`)
       return
     }
-    // "message is not modified" è benigno (testo identico al precedente edit)
-    if (/not modified/i.test(desc)) return
     console.warn(`[TG edit] msg=${messageId} chars=${payload.length} FAIL: ${desc}`)
   } catch (err) {
     console.warn(`[TG edit] msg=${messageId} chars=${payload.length} NETWORK ERROR:`, err instanceof Error ? err.message : err)
