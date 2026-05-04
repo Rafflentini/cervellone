@@ -384,10 +384,11 @@ export async function callClaudeStreamTelegram(
     const final = await stream.finalMessage()
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
     const textBlocks = final.content.filter(b => b.type === 'text')
-    // FIX Bug 5: log diagnostico per capire perché iter N non emette text
-    // (caso visto: iter 0 emette "Ecco il conten" + tool_use, iter 1 finalize
-    // con end_turn ma 0 text_delta → fullResponse resta troncato).
-    console.log(`STREAM iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} texts=${textBlocks.length} fullLen=${fullResponse.length} thinkingChars=${thinkingChars}`)
+    // FIX Bug 5: log diagnostico per capire quale tool viene chiamato in iter > 0
+    // (iter 1 con Opus 4.7 emette un altro tool_use invece di text → loop chiuso a fullLen=0).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const toolNames = toolBlocks.map(b => (b as any).name).join(',')
+    console.log(`STREAM iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} toolNames=[${toolNames}] texts=${textBlocks.length} fullLen=${fullResponse.length} thinkingChars=${thinkingChars}`)
 
     if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
     if (i > 0 && !final.content.some(b => b.type === 'text')) break
