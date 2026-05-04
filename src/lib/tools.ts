@@ -12,6 +12,7 @@
 import { supabase } from './supabase'
 import { sendTelegramMessage } from './telegram-helpers'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
+import { GITHUB_TOOLS, executeGithubTool } from './github-tools'
 
 /**
  * Notifica all'Ingegnere il cambio modello — Telegram (immediato) + webchat
@@ -1403,12 +1404,26 @@ async function executeDriveWrapper(
   return executeDriveTool(name, stringInput)
 }
 
+// Self-healing 2026-05-04: wrapper per i tool GitHub + Vercel deploy status.
+async function executeGithubWrapper(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<string | null> {
+  if (name !== 'github_read_file' && name !== 'github_propose_fix' && name !== 'vercel_deploy_status') return null
+  const stringInput: Record<string, string> = {}
+  for (const [k, v] of Object.entries(input)) {
+    stringInput[k] = typeof v === 'string' ? v : JSON.stringify(v)
+  }
+  return executeGithubTool(name, stringInput)
+}
+
 const ALL_TOOLS: ToolDefinition[] = [
   ...STUDIO_TECNICO_TOOLS,
   ...SELF_TOOLS,
   ...DRIVE_TOOLS, // W1.3: 10 tool Drive/Sheets registrati
+  ...GITHUB_TOOLS, // Self-healing 2026-05-04: github_read_file, github_propose_fix, vercel_deploy_status
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executeDriveWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executeDriveWrapper, executeGithubWrapper]
 
 export function getToolDefinitions() {
   return [
