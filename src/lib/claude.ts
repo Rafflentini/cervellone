@@ -325,6 +325,13 @@ export async function callClaudeStreamTelegram(
   let currentMessages = [...request.messages]
   let fullResponse = ''
   const MAX_ITERATIONS = 10
+  // FIX Bug 5: counter di iter consecutivi senza text_delta. Opus 4.7 chiama
+  // più tool_use legittimi in catena (es. fan-out drive_search dopo miss).
+  // Il vecchio break "i>0 && no text" era troppo aggressivo: interrompeva
+  // il modello PRIMA di eseguire i tool dell'iter corrente, sprecando lavoro.
+  // Nuovo approccio: lascia esplorare fino a 3 round, poi forza sintesi.
+  let consecutiveNoText = 0
+  const NO_TEXT_LIMIT = 3
 
   const cfg = await getConfig()
   const isOpus = cfg.model.includes('opus')
@@ -384,15 +391,20 @@ export async function callClaudeStreamTelegram(
     const final = await stream.finalMessage()
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
     const textBlocks = final.content.filter(b => b.type === 'text')
-    // FIX Bug 5: log diagnostico per capire quale tool viene chiamato in iter > 0
-    // (iter 1 con Opus 4.7 emette un altro tool_use invece di text → loop chiuso a fullLen=0).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const toolNames = toolBlocks.map(b => (b as any).name).join(',')
-    console.log(`STREAM iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} toolNames=[${toolNames}] texts=${textBlocks.length} fullLen=${fullResponse.length} thinkingChars=${thinkingChars}`)
 
+    if (textBlocks.length === 0) consecutiveNoText++
+    else consecutiveNoText = 0
+
+    console.log(`STREAM iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} toolNames=[${toolNames}] texts=${textBlocks.length} fullLen=${fullResponse.length} thinkingChars=${thinkingChars} consNoText=${consecutiveNoText}`)
+
+    // Break naturale: modello soddisfatto (no tool richiesti, conversazione finita)
     if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
-    if (i > 0 && !final.content.some(b => b.type === 'text')) break
 
+    // FIX Bug 5: ESEGUI sempre i tool dell'iter corrente PRIMA di valutare se
+    // forzare sintesi. Il modello li ha richiesti, eseguirli arricchisce il
+    // contesto per l'iter successivo (anche se quella sarà la sintesi forzata).
     const toolResults = await executeToolBlocks(toolBlocks, conversationId)
     if (toolResults.length === 0) break
 
@@ -401,10 +413,54 @@ export async function callClaudeStreamTelegram(
       { role: 'assistant' as const, content: final.content },
       { role: 'user' as const, content: toolResults },
     ]
+
+    // FIX Bug 5: dopo NO_TEXT_LIMIT iter consecutivi senza text, forza una
+    // sintesi finale con tool_choice=none. Il modello DEVE rispondere con
+    // text in quel turno, non può più chiamare tool. Garantisce che l'utente
+    // riceva sempre qualcosa di leggibile invece di "..." silenzioso.
+    if (consecutiveNoText >= NO_TEXT_LIMIT) {
+      console.log(`STREAM force-text: ${consecutiveNoText} consecutive no-text iters, forcing tool_choice=none`)
+      try {
+        const synthStream = await withRetry(() =>
+          Promise.resolve(client.messages.stream({
+            model: modelConfig.model,
+            max_tokens: modelConfig.maxTokens,
+            system: fullSystemPrompt,
+            messages: currentMessages,
+            tools,
+            tool_choice: { type: 'none' as const },
+            ...modelOpts,
+          }))
+        )
+        let synthLastEdit = 0
+        for await (const event of synthStream) {
+          if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+            fullResponse += event.delta.text
+            const now = Date.now()
+            if (now - synthLastEdit > 3000) {
+              await onChunk(fullResponse)
+              synthLastEdit = now
+            }
+          }
+        }
+        const synthFinal = await synthStream.finalMessage()
+        const synthTexts = synthFinal.content.filter(b => b.type === 'text').length
+        console.log(`STREAM force-text done texts=${synthTexts} fullLen=${fullResponse.length}`)
+      } catch (err) {
+        console.warn(`STREAM force-text FAIL:`, err instanceof Error ? err.message : err)
+      }
+      break
+    }
   }
 
   // FIX W1: await esplicito sull'edit finale (era fire-and-forget — se la function
   // moriva subito dopo il loop, l'edit non partiva).
+  // FIX Bug 5: fallback se per qualsiasi motivo (errore force-text, MAX_ITERATIONS,
+  // ecc.) il modello non ha mai prodotto text. Meglio onestà esplicita di "..." muto.
+  if (fullResponse.length === 0) {
+    fullResponse = '⚠️ Non sono riuscito a sintetizzare una risposta. Riformuli la richiesta o specifichi il file/contesto, per favore.'
+    console.warn(`STREAM EMPTY: fullResponse vuoto dopo loop, applicato fallback`)
+  }
   console.log(`STREAM done fullLen=${fullResponse.length}`)
   await onChunk(fullResponse)
 
