@@ -71,18 +71,29 @@ ALTER TABLE model_health DISABLE ROW LEVEL SECURITY;
 
 | key | esempio value | descrizione |
 |---|---|---|
-| `model_default` | `claude-opus-4-7` | Modello di default da usare in stato NORMAL (già esiste, semantica chiarita) |
-| `model_stable` | `claude-opus-4-6` | Fallback target manuale, usato quando circuit breaker scatta |
-| `model_active` | `claude-opus-4-7` | Modello attualmente in uso (cambia su rollback/recovery) |
+| `model_default` | `claude-opus-latest` | Modello di default in stato NORMAL. Alias auto-upgrade Anthropic |
+| `model_stable` | `claude-opus-4-7` | Fallback target manuale, usato quando circuit breaker scatta |
+| `model_active` | `claude-opus-latest` | Modello attualmente in uso (cambia su rollback/recovery) |
 | `circuit_state` | `{"state":"NORMAL","tripped_at":null,"reason":null,"canary_consecutive_ok":0}` | JSON con stato breaker |
+
+**Strategia "latest + safe stable":**
+- `model_default` usa l'alias `claude-opus-latest`: quando Anthropic rilascia un nuovo Opus, il bot lo prende automaticamente senza intervento manuale
+- `model_stable` punta a una versione specifica conosciuta come funzionante (oggi `claude-opus-4-7`)
+- Su rollback: bot torna a `claude-opus-4-7` (deterministico, funziona)
+- Quando il nuovo Opus si stabilizza (o l'utente lo promuove manualmente), il valore di `model_stable` viene aggiornato per puntare a quello
+
+**Verifica alias Anthropic:** la famiglia Claude 3.5 supporta `claude-3-5-sonnet-latest` e simili. Per la famiglia 4.x va verificato durante l'implementazione che `claude-opus-latest` (o `claude-opus-4-latest`) sia un alias valido. Se non lo fosse, il fallback è promozione manuale tramite tool `promuovi_modello` a ogni nuova release Anthropic — il sistema di rollback funziona uguale, perde solo l'auto-upgrade gratuito.
 
 Inserimento iniziale:
 ```sql
 INSERT INTO cervellone_config (key, value) VALUES
-  ('model_stable', '"claude-opus-4-6"'),
-  ('model_active', '"claude-opus-4-7"'),
+  ('model_stable', '"claude-opus-4-7"'),
+  ('model_active', '"claude-opus-latest"'),
   ('circuit_state', '{"state":"NORMAL","tripped_at":null,"reason":null,"canary_consecutive_ok":0}')
 ON CONFLICT (key) DO NOTHING;
+
+-- Aggiorna model_default a usare alias latest (era claude-opus-4-7 hardcoded)
+UPDATE cervellone_config SET value = '"claude-opus-latest"' WHERE key = 'model_default';
 ```
 
 ## 5. State machine
@@ -332,10 +343,13 @@ ALTER TABLE model_health DISABLE ROW LEVEL SECURITY;
 
 -- 2. Init circuit breaker config
 INSERT INTO cervellone_config (key, value) VALUES
-  ('model_stable', '"claude-opus-4-6"'),
-  ('model_active', '"claude-opus-4-7"'),
+  ('model_stable', '"claude-opus-4-7"'),
+  ('model_active', '"claude-opus-latest"'),
   ('circuit_state', '{"state":"NORMAL","tripped_at":null,"reason":null,"canary_consecutive_ok":0}')
 ON CONFLICT (key) DO NOTHING;
+
+-- 3. Aggiorna model_default a usare alias latest (era hardcoded a claude-opus-4-7)
+UPDATE cervellone_config SET value = '"claude-opus-latest"' WHERE key = 'model_default';
 ```
 
 File: `supabase/migrations/2026-05-04-circuit-breaker.sql`
