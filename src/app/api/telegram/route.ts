@@ -210,6 +210,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    // ── Bug 1: mutex per chat ──
+    // Evita bgProcess paralleli sulla stessa chat: se l'utente manda un messaggio
+    // mentre il bot sta elaborando il precedente, droppiamo il nuovo per non
+    // creare hallucination ("Trovato!" senza tool eseguito) e streaming sovrapposti.
+    // Stale lock cleanup a 5 min = Vercel function max duration.
+    const STALE_LOCK_MS = 5 * 60 * 1000
+    const requestId = `${chatId}-${msgId || Date.now()}-${Date.now()}`
+    const lockResult = await safeSupabase(async () => {
+      const { error: insertErr } = await supabase
+        .from('telegram_active_jobs')
+        .insert({ chat_id: chatId, request_id: requestId })
+      if (!insertErr) return { claimed: true }
+      // Conflict: chat già attiva. Verifica se stale.
+      const { data } = await supabase
+        .from('telegram_active_jobs')
+        .select('started_at')
+        .eq('chat_id', chatId)
+        .maybeSingle()
+      if (data?.started_at) {
+        const ageMs = Date.now() - new Date(data.started_at).getTime()
+        if (ageMs > STALE_LOCK_MS) {
+          await supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId)
+          const { error: retryErr } = await supabase
+            .from('telegram_active_jobs')
+            .insert({ chat_id: chatId, request_id: requestId })
+          if (!retryErr) {
+            console.log(`MUTEX chat=${chatId} stale lock released (age=${Math.round(ageMs/1000)}s) and re-acquired`)
+            return { claimed: true }
+          }
+        }
+      }
+      return { claimed: false }
+    }, { claimed: true }) // Se Supabase down: fallback degradato, lascia passare
+
+    if (!lockResult?.claimed) {
+      console.log(`MUTEX chat=${chatId} BUSY — drop msgId=${msgId}`)
+      await sendTelegramMessage(chatId, '⏳ Sto ancora elaborando il messaggio precedente, attenda un momento.')
+      return NextResponse.json({ ok: true })
+    }
+
     // ── Typing + thinking timeout ──
     typingInterval = setInterval(() => sendTyping(chatId), 4000)
     await sendTyping(chatId)
@@ -340,6 +380,10 @@ export async function POST(request: NextRequest) {
         await sendTelegramMessage(chatId, userMsg).catch(() => {})
       } finally {
         if (typingInterval) clearInterval(typingInterval)
+        // Bug 1: release del mutex chat (sempre, anche su errore)
+        await safeSupabase(() =>
+          supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId)
+        )
       }
     }
 
@@ -364,6 +408,11 @@ export async function POST(request: NextRequest) {
     if (errorChatId) {
       const msg = err instanceof Error ? err.message : String(err)
       await sendTelegramMessage(errorChatId, `⚠️ ${msg.slice(0, 300)}`).catch(() => {})
+      // Bug 1: release lock se errore prima del dispatch bgProcess (altrimenti
+      // il lock rimane fino a stale cleanup 5 min, bloccando l'utente).
+      await safeSupabase(() =>
+        supabase.from('telegram_active_jobs').delete().eq('chat_id', errorChatId!)
+      )
     }
     return NextResponse.json({ ok: true })
   }
