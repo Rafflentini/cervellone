@@ -78,3 +78,59 @@ export function detectHallucination(text: string, toolCount: number): boolean {
   if (!text || text.length === 0) return false
   return PROMISE_PATTERNS.some(p => p.test(text))
 }
+
+async function loadConfig(): Promise<{ activeModel: string; state: CircuitState } | null> {
+  const { data, error } = await supabase
+    .from('cervellone_config')
+    .select('key, value')
+    .in('key', ['model_active', 'circuit_state'])
+  if (error || !data) return null
+  let activeModel = 'claude-opus-latest'
+  let state: CircuitState = { state: 'NORMAL', tripped_at: null, reason: null, canary_consecutive_ok: 0 }
+  for (const row of data) {
+    if (row.key === 'model_active') {
+      activeModel = String(row.value).replace(/"/g, '')
+    } else if (row.key === 'circuit_state') {
+      try {
+        const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value
+        if (parsed && typeof parsed === 'object') {
+          state = parsed as CircuitState
+        }
+      } catch {
+        // value malformato, usa default
+      }
+    }
+  }
+  return { activeModel, state }
+}
+
+/**
+ * Restituisce il modello attualmente attivo. Cached 60s.
+ * Chiamato dal hot path di ogni request — deve essere veloce.
+ */
+export async function getActiveModel(): Promise<string> {
+  if (cache && Date.now() - cache.cachedAt < CACHE_TTL_MS) {
+    return cache.activeModel
+  }
+  const loaded = await loadConfig()
+  if (loaded) {
+    cache = { ...loaded, cachedAt: Date.now() }
+    return loaded.activeModel
+  }
+  return 'claude-opus-4-7'
+}
+
+/**
+ * Restituisce lo stato breaker corrente. Cached 60s (stessa cache di getActiveModel).
+ */
+export async function getCircuitState(): Promise<CircuitState> {
+  if (cache && Date.now() - cache.cachedAt < CACHE_TTL_MS) {
+    return cache.state
+  }
+  const loaded = await loadConfig()
+  if (loaded) {
+    cache = { ...loaded, cachedAt: Date.now() }
+    return loaded.state
+  }
+  return { state: 'NORMAL', tripped_at: null, reason: null, canary_consecutive_ok: 0 }
+}

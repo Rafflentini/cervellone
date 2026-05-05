@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'vitest'
-import { detectHallucination } from './circuit-breaker'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { detectHallucination, getActiveModel, invalidateCache } from './circuit-breaker'
+
+vi.mock('./supabase', () => ({
+  supabase: {
+    from: vi.fn(),
+  },
+}))
+
+import { supabase } from './supabase'
 
 describe('detectHallucination', () => {
   describe('promise pattern + 0 tool → true (hallucination)', () => {
@@ -42,5 +50,60 @@ describe('detectHallucination', () => {
         expect(detectHallucination(text, 0)).toBe(false)
       })
     })
+  })
+})
+
+describe('getActiveModel', () => {
+  beforeEach(() => {
+    invalidateCache()
+    vi.clearAllMocks()
+  })
+
+  it('legge model_active dalla config', async () => {
+    const fromMock = vi.fn().mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        in: vi.fn().mockResolvedValue({
+          data: [
+            { key: 'model_active', value: '"claude-opus-latest"' },
+            { key: 'circuit_state', value: '{"state":"NORMAL","tripped_at":null,"reason":null,"canary_consecutive_ok":0}' },
+          ],
+          error: null,
+        }),
+      }),
+    })
+    ;(supabase.from as any).mockImplementation(fromMock)
+
+    const model = await getActiveModel()
+    expect(model).toBe('claude-opus-latest')
+  })
+
+  it('usa fallback se Supabase ritorna errore', async () => {
+    const fromMock = vi.fn().mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        in: vi.fn().mockResolvedValue({
+          data: null,
+          error: new Error('connection lost'),
+        }),
+      }),
+    })
+    ;(supabase.from as any).mockImplementation(fromMock)
+
+    const model = await getActiveModel()
+    expect(model).toBe('claude-opus-4-7')
+  })
+
+  it('cache la seconda chiamata entro 60s', async () => {
+    const inMock = vi.fn().mockResolvedValue({
+      data: [{ key: 'model_active', value: '"test-model"' }],
+      error: null,
+    })
+    const fromMock = vi.fn().mockReturnValue({
+      select: vi.fn().mockReturnValue({ in: inMock }),
+    })
+    ;(supabase.from as any).mockImplementation(fromMock)
+
+    await getActiveModel()
+    await getActiveModel()
+    expect(inMock).toHaveBeenCalledTimes(1)
   })
 })
