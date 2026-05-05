@@ -215,36 +215,46 @@ export async function POST(request: NextRequest) {
     // mentre il bot sta elaborando il precedente, droppiamo il nuovo per non
     // creare hallucination ("Trovato!" senza tool eseguito) e streaming sovrapposti.
     // Stale lock cleanup a 5 min = Vercel function max duration.
+    // Se Supabase down → fallback degradato (lockClaimed=true), lascia passare.
     const STALE_LOCK_MS = 5 * 60 * 1000
     const requestId = `${chatId}-${msgId || Date.now()}-${Date.now()}`
-    const lockResult = await safeSupabase(async () => {
+    let lockClaimed = true
+    try {
       const { error: insertErr } = await supabase
         .from('telegram_active_jobs')
         .insert({ chat_id: chatId, request_id: requestId })
-      if (!insertErr) return { claimed: true }
-      // Conflict: chat già attiva. Verifica se stale.
-      const { data } = await supabase
-        .from('telegram_active_jobs')
-        .select('started_at')
-        .eq('chat_id', chatId)
-        .maybeSingle()
-      if (data?.started_at) {
-        const ageMs = Date.now() - new Date(data.started_at).getTime()
-        if (ageMs > STALE_LOCK_MS) {
-          await supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId)
-          const { error: retryErr } = await supabase
-            .from('telegram_active_jobs')
-            .insert({ chat_id: chatId, request_id: requestId })
-          if (!retryErr) {
-            console.log(`MUTEX chat=${chatId} stale lock released (age=${Math.round(ageMs/1000)}s) and re-acquired`)
-            return { claimed: true }
+      if (insertErr) {
+        // Conflict (PK chat_id): chat già attiva. Verifica se lock stale.
+        const { data: existing } = await supabase
+          .from('telegram_active_jobs')
+          .select('started_at')
+          .eq('chat_id', chatId)
+          .maybeSingle()
+        if (existing?.started_at) {
+          const ageMs = Date.now() - new Date(existing.started_at).getTime()
+          if (ageMs > STALE_LOCK_MS) {
+            await supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId)
+            const { error: retryErr } = await supabase
+              .from('telegram_active_jobs')
+              .insert({ chat_id: chatId, request_id: requestId })
+            if (retryErr) {
+              lockClaimed = false  // race con altra istanza, lasciamo vincere lei
+            } else {
+              console.log(`MUTEX chat=${chatId} stale lock released (age=${Math.round(ageMs/1000)}s) and re-acquired`)
+            }
+          } else {
+            lockClaimed = false  // lock attivo recente
           }
+        } else {
+          lockClaimed = false  // unknown error, conservativo
         }
       }
-      return { claimed: false }
-    }, { claimed: true }) // Se Supabase down: fallback degradato, lascia passare
+    } catch (err) {
+      console.warn('[MUTEX] Supabase down, fallback claim true:', err instanceof Error ? err.message : err)
+      // lockClaimed resta true → degraded mode, no serializzazione
+    }
 
-    if (!lockResult?.claimed) {
+    if (!lockClaimed) {
       console.log(`MUTEX chat=${chatId} BUSY — drop msgId=${msgId}`)
       await sendTelegramMessage(chatId, '⏳ Sto ancora elaborando il messaggio precedente, attenda un momento.')
       return NextResponse.json({ ok: true })
