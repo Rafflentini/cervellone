@@ -13,6 +13,7 @@ import { supabase } from './supabase'
 import { sendTelegramMessage } from './telegram-helpers'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
 import { GITHUB_TOOLS, executeGithubTool } from './github-tools'
+import { promoteModel } from './circuit-breaker'
 
 /**
  * Notifica all'Ingegnere il cambio modello — Telegram (immediato) + webchat
@@ -1115,6 +1116,20 @@ const SELF_TOOLS: ToolDefinition[] = [
       required: ['chiave', 'valore', 'motivo'],
     },
   },
+  {
+    name: 'promuovi_modello',
+    description: `Promuove un nuovo modello Claude a default (model_default). L'attuale default diventa stable di backup. SOLO admin. Usa quando Anthropic rilascia una nuova versione e l'hai testata. Esempio: "claude-opus-4-8" o "claude-opus-5".`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        new_default: {
+          type: 'string',
+          description: 'Identificatore modello, es. "claude-opus-4-8". Deve iniziare con "claude-".',
+        },
+      },
+      required: ['new_default'],
+    },
+  },
 ]
 
 async function executeSelfTools(name: string, input: Record<string, unknown>, _conversationId?: string): Promise<string | null> {
@@ -1380,6 +1395,15 @@ La modifica è attiva dalla prossima richiesta.`
       invalidateSkillCache()
 
       return `Skill "${skillId}" aggiornata (v${(current.versione || 1) + 1}). Motivo: ${motivo}`
+    }
+
+    case 'promuovi_modello': {
+      try {
+        const result = await promoteModel(input.new_default as string)
+        return `🚀 Promozione completata.\nNuovo default: ${result.newDefault}\nNuovo stable: ${result.newStable}\nVecchio stable archiviato: ${result.oldStable}`
+      } catch (err) {
+        return `Errore promozione: ${err instanceof Error ? err.message : err}`
+      }
     }
 
     default:
