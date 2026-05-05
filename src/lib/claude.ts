@@ -352,6 +352,9 @@ export async function callClaudeStreamTelegram(
   const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget)
 
   let totalToolCalls = 0
+  let apiErrorOccurred = false
+  let apiErrorMsg = ''
+  try {
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const stream = await withRetry(() =>
       Promise.resolve(client.messages.stream({
@@ -460,6 +463,27 @@ export async function callClaudeStreamTelegram(
       break
     }
   }
+  } catch (err) {
+    // FIX Bug 7: catch errori API Anthropic (404 model not found, 529 overloaded,
+    // timeout) per (a) tracciare outcome=api_error sul circuit breaker e (b)
+    // mostrare messaggio user-friendly invece dell'errore tecnico raw.
+    apiErrorOccurred = true
+    apiErrorMsg = err instanceof Error ? err.message : String(err)
+    console.warn(`[STREAM API ERROR] model=${modelConfig.model}: ${apiErrorMsg.slice(0, 200)}`)
+
+    // Mappa errori comuni a messaggi user-friendly
+    if (/not_found_error|404/i.test(apiErrorMsg)) {
+      fullResponse = '⚠️ Modello AI temporaneamente non disponibile. Il sistema sta cercando di recuperare automaticamente, riprovi tra un momento.'
+    } else if (/overloaded|529/i.test(apiErrorMsg)) {
+      fullResponse = '⚠️ Servizio AI sovraccarico. Riprovi tra qualche secondo.'
+    } else if (/credit|billing/i.test(apiErrorMsg)) {
+      fullResponse = '⚠️ Crediti API esauriti. L\'Ingegnere è stato avvisato.'
+    } else if (/rate.?limit|429/i.test(apiErrorMsg)) {
+      fullResponse = '⚠️ Troppe richieste al servizio AI. Attenda un momento.'
+    } else {
+      fullResponse = `⚠️ Errore temporaneo del servizio AI. Riprovi tra qualche secondo.`
+    }
+  }
 
   // FIX W1: await esplicito sull'edit finale (era fire-and-forget — se la function
   // moriva subito dopo il loop, l'edit non partiva).
@@ -469,17 +493,19 @@ export async function callClaudeStreamTelegram(
     fullResponse = '⚠️ Non sono riuscito a sintetizzare una risposta. Riformuli la richiesta o specifichi il file/contesto, per favore.'
     console.warn(`STREAM EMPTY: fullResponse vuoto dopo loop, applicato fallback`)
   }
-  console.log(`STREAM done fullLen=${fullResponse.length}`)
+  console.log(`STREAM done fullLen=${fullResponse.length} apiError=${apiErrorOccurred}`)
   await onChunk(fullResponse)
 
-  if (conversationId && fullResponse) {
+  if (conversationId && fullResponse && !apiErrorOccurred) {
     saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
   }
 
   // Determina outcome per circuit breaker
   let outcome: ModelOutcome = 'success'
   const FALLBACK_PREFIX = '⚠️ Non sono riuscito a sintetizzare'
-  if (fullResponse.startsWith(FALLBACK_PREFIX)) {
+  if (apiErrorOccurred) {
+    outcome = 'api_error'
+  } else if (fullResponse.startsWith(FALLBACK_PREFIX)) {
     outcome = 'empty'
   } else if (consecutiveNoText >= NO_TEXT_LIMIT) {
     outcome = 'force_text'
@@ -491,6 +517,7 @@ export async function callClaudeStreamTelegram(
     fullLen: fullResponse.length,
     consecutiveNoText,
     requestId: conversationId,
+    details: apiErrorOccurred ? apiErrorMsg.slice(0, 500) : undefined,
   }).catch(err => console.error('[CB] recordOutcome failed:', err))
 
   return fullResponse
