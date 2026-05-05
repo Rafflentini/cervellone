@@ -15,6 +15,13 @@ import { DRIVE_TOOLS, executeDriveTool } from './drive'
 import { GITHUB_TOOLS, executeGithubTool } from './github-tools'
 import { WEATHER_TOOLS, executeWeatherTool } from './weather-tool'
 import { promoteModel } from './circuit-breaker'
+import {
+  listInbox, searchGmail, readMessage, readThread,
+  createDraft, listDrafts, showDraft, deleteDraft, sendDraft,
+  applyLabel, removeLabel, listLabels, markAsRead, archive, trash,
+  type GmailMessageMeta, type GmailMessage, type GmailAttachmentMeta,
+} from './gmail-tools'
+import { buildDailySummary } from './gmail-summary'
 
 /**
  * Notifica all'Ingegnere il cambio modello — Telegram (immediato) + webchat
@@ -1460,14 +1467,286 @@ async function executeWeatherWrapper(
   return executeWeatherTool(name, stringInput)
 }
 
+// 2026-05-05 Gmail R+W: 16 tool per gestione email (read/draft/send/labels/archive/trash + summary)
+const GMAIL_TOOLS: ToolDefinition[] = [
+  {
+    name: 'gmail_list_inbox',
+    description: 'Elenca le mail in inbox della casella restruktura.drive@gmail.com. Default 20 mail più recenti, filtri opzionali.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        max_results: { type: 'string', description: 'Max risultati (default 20, max 100)' },
+        only_unread: { type: 'string', description: '"true" per solo non lette' },
+        since_days: { type: 'string', description: 'Solo ultimi N giorni' },
+      },
+    },
+  },
+  {
+    name: 'gmail_search',
+    description: 'Cerca mail con sintassi Gmail nativa (es. "from:rossi after:2026-04-01", "subject:DURC", "has:attachment").',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Query Gmail (sintassi nativa)' },
+        max_results: { type: 'string', description: 'Max risultati (default 20)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'gmail_read_message',
+    description: 'Legge il contenuto completo di una singola mail (corpo, headers, lista allegati).',
+    input_schema: {
+      type: 'object' as const,
+      properties: { message_id: { type: 'string', description: 'Gmail message ID' } },
+      required: ['message_id'],
+    },
+  },
+  {
+    name: 'gmail_read_thread',
+    description: 'Legge tutti i messaggi di un thread (conversazione email completa).',
+    input_schema: {
+      type: 'object' as const,
+      properties: { thread_id: { type: 'string', description: 'Gmail thread ID' } },
+      required: ['thread_id'],
+    },
+  },
+  {
+    name: 'gmail_create_draft',
+    description: 'Crea una bozza di mail. Mostrala SEMPRE all\'utente per conferma prima di inviare. Per rispondere a un thread esistente passa in_reply_to e thread_id.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        to: { type: 'string', description: 'Destinatario (email)' },
+        subject: { type: 'string', description: 'Oggetto' },
+        body: { type: 'string', description: 'Corpo testo (italiano formale per Restruktura)' },
+        in_reply_to: { type: 'string', description: 'Message-ID a cui rispondere' },
+        thread_id: { type: 'string', description: 'Thread ID per risposta in catena' },
+      },
+      required: ['to', 'subject', 'body'],
+    },
+  },
+  {
+    name: 'gmail_list_drafts',
+    description: 'Lista bozze pendenti (max 10).',
+    input_schema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'gmail_show_draft',
+    description: 'Mostra contenuto completo di una bozza per anteprima.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { draft_id: { type: 'string' } },
+      required: ['draft_id'],
+    },
+  },
+  {
+    name: 'gmail_send_draft',
+    description: 'INVIA UNA BOZZA. Usa SOLO dopo conferma esplicita dell\'utente (es. "/conferma", "manda", "invia"). Mai senza approvazione esplicita. Anti-loop: rifiuta se thread ha già una recente reply del bot.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { draft_id: { type: 'string' } },
+      required: ['draft_id'],
+    },
+  },
+  {
+    name: 'gmail_delete_draft',
+    description: 'Cancella una bozza non inviata (utente ha detto /annulla).',
+    input_schema: {
+      type: 'object' as const,
+      properties: { draft_id: { type: 'string' } },
+      required: ['draft_id'],
+    },
+  },
+  {
+    name: 'gmail_apply_label',
+    description: 'Aggiunge una label a una mail (la crea se non esiste).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        message_id: { type: 'string' },
+        label_name: { type: 'string', description: 'Nome label es. "Cliente Rossi" o "Urgente"' },
+      },
+      required: ['message_id', 'label_name'],
+    },
+  },
+  {
+    name: 'gmail_remove_label',
+    description: 'Rimuove una label da una mail.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        message_id: { type: 'string' },
+        label_name: { type: 'string' },
+      },
+      required: ['message_id', 'label_name'],
+    },
+  },
+  {
+    name: 'gmail_list_labels',
+    description: 'Elenca tutte le label disponibili nell\'inbox.',
+    input_schema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'gmail_mark_read',
+    description: 'Segna una mail come letta (rimuove label UNREAD).',
+    input_schema: {
+      type: 'object' as const,
+      properties: { message_id: { type: 'string' } },
+      required: ['message_id'],
+    },
+  },
+  {
+    name: 'gmail_archive',
+    description: 'Archivia una mail (rimuove dall\'inbox, recuperabile via search). NIENTE delete permanente.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { message_id: { type: 'string' } },
+      required: ['message_id'],
+    },
+  },
+  {
+    name: 'gmail_trash',
+    description: 'Sposta una mail nel cestino Gmail (recuperabile 30 giorni). Chiedi conferma esplicita all\'utente prima di chiamare.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { message_id: { type: 'string' } },
+      required: ['message_id'],
+    },
+  },
+  {
+    name: 'gmail_summary_inbox',
+    description: 'Riassunto delle mail non lette degli ultimi N giorni (default 1) — categorizzate, con highlight degli urgenti.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { since_days: { type: 'string', description: 'Numero giorni indietro (default 1)' } },
+    },
+  },
+]
+
+function formatGmailList(messages: GmailMessageMeta[]): string {
+  if (messages.length === 0) return 'Nessun messaggio trovato.'
+  return messages.map(m =>
+    `📧 [${m.id}] ${m.date.slice(0, 16)} | ${m.from.slice(0, 40)} | ${m.subject.slice(0, 60)}\n   ${m.snippet.slice(0, 100)}`
+  ).join('\n\n')
+}
+
+function formatGmailMessage(m: GmailMessage): string {
+  const lines = [
+    `Da: ${m.from}`,
+    `A: ${m.to}`,
+    `Data: ${m.date}`,
+    `Oggetto: ${m.subject}`,
+  ]
+  if (m.attachments.length > 0) {
+    lines.push(`Allegati: ${m.attachments.map((a: GmailAttachmentMeta) => `${a.filename} (${Math.round(a.sizeBytes/1024)}KB)`).join(', ')}`)
+  }
+  lines.push('', m.bodyText.slice(0, 5000))
+  return lines.join('\n')
+}
+
+async function executeGmailWrapper(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<string | null> {
+  if (!name.startsWith('gmail_')) return null
+
+  const get = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '')
+
+  try {
+    switch (name) {
+      case 'gmail_list_inbox': {
+        const res = await listInbox({
+          maxResults: parseInt(get('max_results') || '20', 10),
+          onlyUnread: get('only_unread') === 'true',
+          sinceDays: parseInt(get('since_days') || '0', 10) || undefined,
+        })
+        return formatGmailList(res)
+      }
+      case 'gmail_search': {
+        const res = await searchGmail(get('query'), parseInt(get('max_results') || '20', 10))
+        return formatGmailList(res)
+      }
+      case 'gmail_read_message': {
+        const m = await readMessage(get('message_id'))
+        return formatGmailMessage(m)
+      }
+      case 'gmail_read_thread': {
+        const t = await readThread(get('thread_id'))
+        return t.map(formatGmailMessage).join('\n\n---\n\n')
+      }
+      case 'gmail_create_draft': {
+        const res = await createDraft({
+          to: get('to'),
+          subject: get('subject'),
+          body: get('body'),
+          inReplyTo: get('in_reply_to') || undefined,
+          threadId: get('thread_id') || undefined,
+        })
+        return `✅ Bozza creata. draft_id=${res.draftId}\nUsa gmail_show_draft per anteprima, poi gmail_send_draft DOPO conferma utente.`
+      }
+      case 'gmail_list_drafts': {
+        const drafts = await listDrafts(20)
+        if (drafts.length === 0) return 'Nessuna bozza pendente.'
+        return drafts.map(d => `📝 ${d.draftId}: A: ${d.to} | Oggetto: ${d.subject}`).join('\n')
+      }
+      case 'gmail_show_draft': {
+        const d = await showDraft(get('draft_id'))
+        return formatGmailMessage(d)
+      }
+      case 'gmail_send_draft': {
+        const res = await sendDraft(get('draft_id'))
+        return `📤 Inviata. message_id=${res.messageId} thread_id=${res.threadId}`
+      }
+      case 'gmail_delete_draft': {
+        await deleteDraft(get('draft_id'))
+        return `🗑 Bozza cancellata.`
+      }
+      case 'gmail_apply_label': {
+        await applyLabel(get('message_id'), get('label_name'))
+        return `🏷 Label "${get('label_name')}" applicata.`
+      }
+      case 'gmail_remove_label': {
+        await removeLabel(get('message_id'), get('label_name'))
+        return `🏷 Label rimossa.`
+      }
+      case 'gmail_list_labels': {
+        const labels = await listLabels()
+        return labels.map(l => `- ${l.name} (id=${l.id})`).join('\n')
+      }
+      case 'gmail_mark_read': {
+        await markAsRead(get('message_id'))
+        return `✓ Segnata come letta.`
+      }
+      case 'gmail_archive': {
+        await archive(get('message_id'))
+        return `📦 Archiviata.`
+      }
+      case 'gmail_trash': {
+        await trash(get('message_id'))
+        return `🗑 Spostata nel cestino (recuperabile 30 giorni).`
+      }
+      case 'gmail_summary_inbox': {
+        const summary = await buildDailySummary(parseInt(get('since_days') || '1', 10))
+        return summary.digest
+      }
+      default:
+        return `Tool gmail "${name}" non riconosciuto.`
+    }
+  } catch (err) {
+    return `Errore Gmail: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 const ALL_TOOLS: ToolDefinition[] = [
   ...STUDIO_TECNICO_TOOLS,
   ...SELF_TOOLS,
   ...DRIVE_TOOLS, // W1.3: 10 tool Drive/Sheets registrati
   ...GITHUB_TOOLS, // Self-healing 2026-05-04: github_read_file, github_propose_fix, vercel_deploy_status
   ...WEATHER_TOOLS, // 2026-05-05: weather_now via Open-Meteo
+  ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeGmailWrapper]
 
 export function getToolDefinitions() {
   return [

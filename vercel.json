@@ -1,5 +1,7 @@
 {
   "crons": [
-    { "path": "/api/cron/canary", "schedule": "*/30 * * * *" }
+    { "path": "/api/cron/canary", "schedule": "*/30 * * * *" },
+    { "path": "/api/cron/gmail-morning", "schedule": "0 6 * * 1-5" },
+    { "path": "/api/cron/gmail-alerts", "schedule": "*/30 7-16 * * 1-5" }
   ]
 }

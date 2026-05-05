@@ -5,6 +5,8 @@ import { supabase } from './supabase'
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/gmail.send',
   'openid',  // FIX W1.3.5: richiesto per ottenere id_token con email
   'email',
   'profile',
