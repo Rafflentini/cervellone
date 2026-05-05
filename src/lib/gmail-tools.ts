@@ -295,3 +295,114 @@ export async function readThread(threadId: string): Promise<GmailMessage[]> {
   const msgs = res.data.messages || []
   return msgs.map(m => rawToFull(m as RawMessage))
 }
+
+// ── Draft tools ──
+
+function buildRfc822(opts: {
+  to: string
+  subject: string
+  body: string
+  inReplyTo?: string
+  references?: string
+}): string {
+  const lines: string[] = []
+  lines.push(`To: ${opts.to}`)
+  lines.push(`Subject: ${opts.subject}`)
+  if (opts.inReplyTo) lines.push(`In-Reply-To: ${opts.inReplyTo}`)
+  if (opts.references) lines.push(`References: ${opts.references}`)
+  lines.push('Content-Type: text/plain; charset="UTF-8"')
+  lines.push('MIME-Version: 1.0')
+  lines.push('')
+  lines.push(opts.body)
+  return lines.join('\r\n')
+}
+
+function rfc822ToBase64Url(raw: string): string {
+  return Buffer.from(raw, 'utf-8').toString('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+export async function createDraft(opts: {
+  to: string
+  subject: string
+  body: string
+  inReplyTo?: string
+  threadId?: string
+}): Promise<{ draftId: string; messageId: string }> {
+  if (!opts.to.includes('@')) throw new Error(`Indirizzo destinatario non valido: ${opts.to}`)
+  const gmail = await getGmailClient()
+  const rfc822 = buildRfc822({
+    to: opts.to,
+    subject: opts.subject,
+    body: opts.body,
+    inReplyTo: opts.inReplyTo,
+  })
+  const raw = rfc822ToBase64Url(rfc822)
+  console.log(`[GMAIL] createDraft to=${opts.to.slice(0, 40)} subj=${opts.subject.slice(0, 40)}`)
+
+  const res = await gmail.users.drafts.create({
+    userId: 'me',
+    requestBody: {
+      message: {
+        raw,
+        threadId: opts.threadId,
+      },
+    },
+  })
+  const draftId = res.data.id || ''
+  const messageId = res.data.message?.id || ''
+  if (!draftId) throw new Error('Gmail draft creation failed: nessun draftId restituito')
+  return { draftId, messageId }
+}
+
+export async function listDrafts(maxResults = 10): Promise<GmailDraftMeta[]> {
+  const gmail = await getGmailClient()
+  const list = await gmail.users.drafts.list({
+    userId: 'me',
+    maxResults: Math.min(maxResults, 50),
+  })
+  const drafts = list.data.drafts || []
+  if (drafts.length === 0) return []
+
+  const results: GmailDraftMeta[] = []
+  for (const d of drafts) {
+    if (!d.id || !d.message?.id) continue
+    try {
+      const msg = await gmail.users.messages.get({
+        userId: 'me',
+        id: d.message.id,
+        format: 'metadata',
+        metadataHeaders: ['To', 'Subject'],
+      })
+      const meta = rawToMeta(msg.data as RawMessage)
+      results.push({
+        draftId: d.id,
+        messageId: d.message.id,
+        to: meta.to,
+        subject: meta.subject,
+        snippet: meta.snippet,
+        threadId: meta.threadId,
+      })
+    } catch (err) {
+      console.error(`[GMAIL] listDrafts fetch ${d.id} failed:`, err)
+    }
+  }
+  return results
+}
+
+export async function showDraft(draftId: string): Promise<GmailMessage> {
+  const gmail = await getGmailClient()
+  const res = await gmail.users.drafts.get({
+    userId: 'me',
+    id: draftId,
+    format: 'full',
+  })
+  if (!res.data.message) throw new Error(`Draft ${draftId} non trovato`)
+  return rawToFull(res.data.message as RawMessage)
+}
+
+export async function deleteDraft(draftId: string): Promise<void> {
+  const gmail = await getGmailClient()
+  await gmail.users.drafts.delete({ userId: 'me', id: draftId })
+  console.log(`[GMAIL] deleteDraft id=${draftId}`)
+}
