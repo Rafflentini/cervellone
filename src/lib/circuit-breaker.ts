@@ -198,11 +198,21 @@ async function notifyAdmin(text: string, force = false): Promise<void> {
   lastNotifyAt = now
   console.log(`[CB] notify: ${text.slice(0, 100)}`)
 
-  const adminChat = parseInt(process.env.ADMIN_CHAT_ID || '0', 10)
+  // Risolve admin chat: ADMIN_CHAT_ID se settato, altrimenti il primo ID di
+  // TELEGRAM_ALLOWED_IDS (l'utente principale del bot — Raffaele in single-user setup).
+  // Test prod 2026-05-05 13:22: notifiche di rollback non arrivavano perché
+  // ADMIN_CHAT_ID non era configurato e TELEGRAM_ALLOWED_IDS non era usato come fallback.
+  let adminChat = parseInt(process.env.ADMIN_CHAT_ID || '0', 10)
+  if (!adminChat) {
+    const firstAllowed = (process.env.TELEGRAM_ALLOWED_IDS || '').split(',')[0]?.trim()
+    adminChat = parseInt(firstAllowed || '0', 10)
+  }
   if (adminChat) {
     await sendTelegramMessage(adminChat, text).catch(err =>
       console.error('[CB] notify Telegram failed:', err)
     )
+  } else {
+    console.warn('[CB] notify Telegram skipped: né ADMIN_CHAT_ID né TELEGRAM_ALLOWED_IDS configurati')
   }
 
   try {

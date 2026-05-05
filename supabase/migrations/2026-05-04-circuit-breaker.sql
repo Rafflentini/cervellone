@@ -18,18 +18,21 @@ CREATE TABLE IF NOT EXISTS model_health (
 CREATE INDEX IF NOT EXISTS idx_model_health_model_canary_ts
   ON model_health (model, is_canary, ts DESC);
 
--- Solo service_role scrive (backend). Niente policy = deny-by-default per anon/auth.
-ALTER TABLE model_health ENABLE ROW LEVEL SECURITY;
+-- RLS disabled — coerente con telegram_active_jobs (entrambe usate solo dal
+-- backend via service key). ENABLE senza policies blocca recordOutcome del
+-- Circuit Breaker (test prod 2026-05-05 13:22 ha confermato la regression).
+ALTER TABLE model_health DISABLE ROW LEVEL SECURITY;
 
 COMMENT ON TABLE model_health IS 'Outcome storico per ogni request modello — usato dal Circuit Breaker per detection di regressioni e canary recovery.';
 
 -- 2. Init valori config breaker
+-- IMPORTANTE: model_default usa claude-opus-4-7 (versione concreta attualmente
+-- supportata). NON usare alias *-latest perché Anthropic non li supporta per
+-- famiglia 4.x — test prod 2026-05-05 ha confermato che claude-opus-latest
+-- ritorna 404 not_found_error. Per upgrade a nuove versioni usare il tool admin
+-- promuovi_modello con model id concreto (es. claude-opus-4-8 quando esce).
 INSERT INTO cervellone_config (key, value) VALUES
   ('model_stable', '"claude-opus-4-7"'),
-  ('model_active', '"claude-opus-latest"'),
+  ('model_active', '"claude-opus-4-7"'),
   ('circuit_state', '{"state":"NORMAL","tripped_at":null,"reason":null,"canary_consecutive_ok":0}')
 ON CONFLICT (key) DO NOTHING;
-
--- 3. Aggiorna model_default a alias latest (era hardcoded a claude-opus-4-7)
-UPDATE cervellone_config SET value = '"claude-opus-latest"'
-  WHERE key = 'model_default' AND value = '"claude-opus-4-7"';

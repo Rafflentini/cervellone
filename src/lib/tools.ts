@@ -21,8 +21,13 @@ import { promoteModel } from './circuit-breaker'
  * così appare in cronologia al prossimo apri-chat).
  */
 async function notifyModelChange(noticeText: string): Promise<void> {
-  // Telegram immediato all'admin
-  const adminChat = parseInt(process.env.ADMIN_CHAT_ID || '0', 10)
+  // Telegram immediato all'admin. Fallback a TELEGRAM_ALLOWED_IDS[0] se ADMIN_CHAT_ID
+  // non configurato (single-user setup tipico).
+  let adminChat = parseInt(process.env.ADMIN_CHAT_ID || '0', 10)
+  if (!adminChat) {
+    const firstAllowed = (process.env.TELEGRAM_ALLOWED_IDS || '').split(',')[0]?.trim()
+    adminChat = parseInt(firstAllowed || '0', 10)
+  }
   if (adminChat) {
     await sendTelegramMessage(adminChat, noticeText).catch((err) => {
       console.error('Notify Telegram failed:', err)
