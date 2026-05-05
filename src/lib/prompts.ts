@@ -7,6 +7,33 @@
 
 import { matchSkills } from './skills'
 
+/**
+ * Restituisce la data/ora corrente in formato italiano fuso Europe/Rome.
+ * Iniettata nel system prompt all'inizio di ogni request così il modello
+ * conosce sempre quando siamo (e non cade sul knowledge cutoff).
+ */
+function currentDateTimeContext(): string {
+  const now = new Date()
+  const dateStr = now.toLocaleDateString('it-IT', {
+    timeZone: 'Europe/Rome',
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  })
+  const timeStr = now.toLocaleTimeString('it-IT', {
+    timeZone: 'Europe/Rome',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+  const isoDate = now.toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' }) // YYYY-MM-DD
+  return `\n\nCONTESTO TEMPORALE (fuso Europe/Rome):
+- Oggi è ${dateStr}, ore ${timeStr}.
+- Data ISO: ${isoDate}.
+- Usa questa data quando l'utente chiede "che giorno è", per calcolare scadenze, per intestazioni di documenti (es. "Villa d'Agri, ${isoDate}"), o per qualsiasi riferimento temporale. NON inventare date.
+`
+}
+
 const BASE_PROMPT = `Sei il Cervellone — coordinatore digitale di Restruktura SRL, Ing. Raffaele Lentini, Villa d'Agri (PZ).
 Restruktura: ingegneria strutturale, direzione lavori, collaudi, impresa edile, PonteggioSicuro.it.
 
@@ -57,10 +84,10 @@ Dai del Lei all'Ingegnere. Rispondi in italiano.`
 
 export async function getChatSystemPrompt(userQuery: string): Promise<string> {
   const skillContext = await matchSkills(userQuery)
-  return BASE_PROMPT + skillContext
+  return BASE_PROMPT + currentDateTimeContext() + skillContext
 }
 
 export async function getTelegramSystemPrompt(userQuery: string): Promise<string> {
   const skillContext = await matchSkills(userQuery)
-  return BASE_PROMPT + skillContext + '\nStai comunicando via Telegram. Rispondi conciso.'
+  return BASE_PROMPT + currentDateTimeContext() + skillContext + '\nStai comunicando via Telegram. Rispondi conciso.'
 }
