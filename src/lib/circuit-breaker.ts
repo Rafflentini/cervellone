@@ -68,3 +68,13 @@ const CACHE_TTL_MS = 60_000  // 60s
 export function invalidateCache(): void {
   cache = null
 }
+
+/**
+ * Rileva hallucination: il modello promette un'azione concreta nel testo
+ * ma non emette il tool_use corrispondente nello stesso turno.
+ */
+export function detectHallucination(text: string, toolCount: number): boolean {
+  if (toolCount > 0) return false  // tool chiamato → no hallucination
+  if (!text || text.length === 0) return false
+  return PROMISE_PATTERNS.some(p => p.test(text))
+}
