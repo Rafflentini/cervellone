@@ -13,6 +13,7 @@ import { supabase } from './supabase'
 import { sendTelegramMessage } from './telegram-helpers'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
 import { GITHUB_TOOLS, executeGithubTool } from './github-tools'
+import { WEATHER_TOOLS, executeWeatherTool } from './weather-tool'
 import { promoteModel } from './circuit-breaker'
 
 /**
@@ -1446,13 +1447,27 @@ async function executeGithubWrapper(
   return executeGithubTool(name, stringInput)
 }
 
+// 2026-05-05: wrapper per il tool meteo (Open-Meteo, no API key).
+async function executeWeatherWrapper(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<string | null> {
+  if (name !== 'weather_now') return null
+  const stringInput: Record<string, string> = {}
+  for (const [k, v] of Object.entries(input)) {
+    stringInput[k] = typeof v === 'string' ? v : JSON.stringify(v)
+  }
+  return executeWeatherTool(name, stringInput)
+}
+
 const ALL_TOOLS: ToolDefinition[] = [
   ...STUDIO_TECNICO_TOOLS,
   ...SELF_TOOLS,
   ...DRIVE_TOOLS, // W1.3: 10 tool Drive/Sheets registrati
   ...GITHUB_TOOLS, // Self-healing 2026-05-04: github_read_file, github_propose_fix, vercel_deploy_status
+  ...WEATHER_TOOLS, // 2026-05-05: weather_now via Open-Meteo
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executeDriveWrapper, executeGithubWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper]
 
 export function getToolDefinitions() {
   return [

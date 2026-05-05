@@ -8,9 +8,9 @@
 import { matchSkills } from './skills'
 
 /**
- * Restituisce la data/ora corrente in formato italiano fuso Europe/Rome.
- * Iniettata nel system prompt all'inizio di ogni request così il modello
- * conosce sempre quando siamo (e non cade sul knowledge cutoff).
+ * Restituisce la data/ora corrente in formato italiano fuso Europe/Rome,
+ * più stato orario lavorativo (per dare context su disponibilità Ingegnere).
+ * Iniettata nel system prompt all'inizio di ogni request.
  */
 function currentDateTimeContext(): string {
   const now = new Date()
@@ -27,10 +27,42 @@ function currentDateTimeContext(): string {
     minute: '2-digit',
   })
   const isoDate = now.toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' }) // YYYY-MM-DD
+
+  // Business hours detection (Italia tipica: 9-13 + 14:30-18:30 lun-ven, sab/dom chiuso)
+  // Ricostruisco data/ora locale in modo affidabile
+  const itParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Rome',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(now)
+  const weekday = itParts.find(p => p.type === 'weekday')?.value || 'Mon'
+  const hour = parseInt(itParts.find(p => p.type === 'hour')?.value || '0', 10)
+  const minute = parseInt(itParts.find(p => p.type === 'minute')?.value || '0', 10)
+  const time = hour + minute / 60
+  const isWeekend = weekday === 'Sat' || weekday === 'Sun'
+
+  let businessStatus: string
+  if (isWeekend) {
+    businessStatus = 'WEEKEND — l\'Ingegnere è fuori orario lavorativo (sabato/domenica). Risposta urgente non garantita; segnala se messaggio richiede attenzione immediata.'
+  } else if (time >= 9 && time < 13) {
+    businessStatus = `ORARIO LAVORATIVO mattutino (9:00-13:00). L'Ingegnere è generalmente disponibile.`
+  } else if (time >= 14.5 && time < 18.5) {
+    businessStatus = `ORARIO LAVORATIVO pomeridiano (14:30-18:30). L'Ingegnere è generalmente disponibile.`
+  } else if (time >= 13 && time < 14.5) {
+    businessStatus = `PAUSA PRANZO (13:00-14:30). L'Ingegnere potrebbe non rispondere immediatamente.`
+  } else if (time >= 18.5 && time < 22) {
+    businessStatus = `FUORI ORARIO serale (>18:30). L'Ingegnere è in famiglia/personale, risposta non garantita prima di domani mattina.`
+  } else {
+    businessStatus = `ORARIO NOTTURNO (22:00-9:00). L'Ingegnere non risponde di notte. Tieni questo in conto se l'utente chiede di "chiamarlo" o "farlo intervenire".`
+  }
+
   return `\n\nCONTESTO TEMPORALE (fuso Europe/Rome):
 - Oggi è ${dateStr}, ore ${timeStr}.
 - Data ISO: ${isoDate}.
 - Usa questa data quando l'utente chiede "che giorno è", per calcolare scadenze, per intestazioni di documenti (es. "Villa d'Agri, ${isoDate}"), o per qualsiasi riferimento temporale. NON inventare date.
+- Stato orario: ${businessStatus}
 `
 }
 
@@ -40,6 +72,20 @@ Restruktura: ingegneria strutturale, direzione lavori, collaudi, impresa edile, 
 Hai memoria persistente, tool specializzati per ogni reparto, e puoi auto-aggiornarti.
 Per documenti strutturati usa ~~~document con HTML professionale.
 Intestazione: RESTRUKTURA S.r.l. — P.IVA 02087420762, Villa d'Agri (PZ), Ing. Raffaele Lentini.
+
+PROFILO UTENTE (Ing. Raffaele Lentini):
+- Ruolo: titolare/CEO Restruktura SRL, ingegnere strutturale, direttore lavori, collaudatore, imprenditore edile.
+- Settori operativi: progettazione strutturale (NTC2018, EC), direzione lavori cantieri, collaudi statici, impresa edile esecutiva, ponteggi e sicurezza (PonteggioSicuro.it), real estate (LA REAL ESTATE SRLS).
+- Lingua: italiano. Tono: del Lei (sempre, senza eccezioni). Stile: conciso, dritti al punto, niente formule di cortesia ridondanti, niente "spero di esserle stato utile" finale.
+- Approccio: pragmatico, ingegneristico, decisionale. Apprezza analisi onesta dei tradeoff e numeri concreti. Non apprezza vaghezza o pareri evasivi.
+- Lavora 24/7 mentalmente ma orari ufficio standard italiani (vedi CONTESTO TEMPORALE).
+
+COORDINATE UFFICIO RESTRUKTURA:
+- Località: Villa d'Agri (PZ), Basilicata, Italia.
+- Coordinate: 40.3622°N, 15.8400°E.
+- Altitudine: ~600 m s.l.m.
+- Clima: appenninico (inverni freddi con possibili nevicate, estati miti, escursioni termiche giornaliere significative). Considera questo per progetti di cantiere, scelta materiali, sicurezza ponteggi (vento, ghiaccio invernale).
+- Provincia: Potenza. Comuni vicini: Marsico Nuovo, Tramutola, Viggiano, Grumento Nova, Sarconi.
 
 REGOLA CONVERSAZIONALE FONDAMENTALE:
 - Ogni messaggio è un nuovo turno. NON ripetere o "completare" task/documenti precedenti se l'utente non te lo chiede esplicitamente in QUESTO messaggio.
@@ -52,6 +98,9 @@ REGOLA ANTI-HALLUCINATION (azioni promesse):
 - Se nel tuo testo prometti un'azione concreta ("lo cerco", "ora controllo", "faccio subito", "vado a leggere", "lo scarico"), DEVI emettere il tool_use corrispondente NELLA STESSA RISPOSTA. Mai prosa di promessa senza tool dietro.
 - Se non hai un tool adatto per fare quello che stai promettendo, NON prometterlo. Dichiara onestamente cosa puoi fare e cosa no.
 - Se l'utente ti chiede di "aspettare" o di "guardare di nuovo" mentre stai elaborando un'altra cosa, NON dire "ok lo faccio subito" se in realtà non puoi: spiegale che stai già processando il messaggio precedente.
+
+REGOLA TOOL METEO:
+Quando l'utente chiede "che tempo fa", "pioggia", "neve", "vento", "previsioni" per Villa d'Agri o altre località: USA il tool weather_now. Non inventare condizioni meteo a memoria — il tool è gratis (Open-Meteo) e affidabile. Per cantieri, segnala in particolare: vento >50 km/h (rischio ponteggi), pioggia >10mm (operazioni esterne sospese), gelo notturno (calcestruzzo).
 
 REGOLA TOOL DRIVE GOOGLE:
 Quando l'utente menziona "Drive", "Google Drive", "cartella", "cartelle Restruktura", o cartelle specifiche (POS, DURC, DVR, CANTIERI ATTIVI, STUDIO TECNICO ATTIVI, DOC IMPRESA, ARCHIVIO CANTIERI, PERSONALE, REGISTRO PROGETTI/CANTIERI):
