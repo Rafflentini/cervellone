@@ -15,13 +15,13 @@ CREATE TABLE IF NOT EXISTS model_health (
   details TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_model_health_model_ts
-  ON model_health (model, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_model_health_model_canary_ts
+  ON model_health (model, is_canary, ts DESC);
 
-CREATE INDEX IF NOT EXISTS idx_model_health_canary
-  ON model_health (is_canary, model, ts DESC);
+-- Solo service_role scrive (backend). Niente policy = deny-by-default per anon/auth.
+ALTER TABLE model_health ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE model_health DISABLE ROW LEVEL SECURITY;
+COMMENT ON TABLE model_health IS 'Outcome storico per ogni request modello — usato dal Circuit Breaker per detection di regressioni e canary recovery.';
 
 -- 2. Init valori config breaker
 INSERT INTO cervellone_config (key, value) VALUES
@@ -31,4 +31,5 @@ INSERT INTO cervellone_config (key, value) VALUES
 ON CONFLICT (key) DO NOTHING;
 
 -- 3. Aggiorna model_default a alias latest (era hardcoded a claude-opus-4-7)
-UPDATE cervellone_config SET value = '"claude-opus-latest"' WHERE key = 'model_default';
+UPDATE cervellone_config SET value = '"claude-opus-latest"'
+  WHERE key = 'model_default' AND value = '"claude-opus-4-7"';
