@@ -90,6 +90,11 @@ export async function recordBotAction(
   fromAddress?: string,
   subject?: string,
 ): Promise<void> {
+  // PK composita (message_id, bot_action) post migration 2026-05-06-gmail-processed-pk-fix.sql.
+  // onConflict esplicito su entrambe le colonne — la stessa mail può transitare
+  // per più stati (es. in_summary → notified_critical → sent_reply) e ognuno
+  // viene tracciato come riga separata. Upsert aggiorna ts + altri campi se
+  // la stessa coppia (message_id, bot_action) si ripresenta.
   await supabase
     .from('gmail_processed_messages')
     .upsert({
@@ -98,7 +103,7 @@ export async function recordBotAction(
       from_address: fromAddress || null,
       subject: subject?.slice(0, 500) || null,
       bot_action: action,
-    })
+    }, { onConflict: 'message_id,bot_action' })
     .then(({ error }: { error: { message: string } | null }) => {
       if (error) console.error('[GMAIL] recordBotAction failed:', error.message)
     })
