@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { detectHallucination, getActiveModel, invalidateCache } from './circuit-breaker'
+import { detectHallucination, getActiveModel, invalidateCache, recordOutcome } from './circuit-breaker'
 
 vi.mock('./supabase', () => ({
   supabase: {
@@ -105,5 +105,60 @@ describe('getActiveModel', () => {
     await getActiveModel()
     await getActiveModel()
     expect(inMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('recordOutcome — threshold', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    invalidateCache()
+  })
+
+  function mockSelectReturning(rows: { outcome: string }[]) {
+    const insertMock = vi.fn().mockReturnValue({
+      then: (cb: (arg: { error: null }) => void) => { cb({ error: null }); return Promise.resolve() },
+    })
+    const limitMock = vi.fn().mockResolvedValue({ data: rows, error: null })
+    const orderMock = vi.fn().mockReturnValue({ limit: limitMock })
+    const eqCanary = vi.fn().mockReturnValue({ order: orderMock })
+    const eqModel = vi.fn().mockReturnValue({ eq: eqCanary })
+    const selectMock = vi.fn().mockReturnValue({ eq: eqModel })
+    ;(supabase.from as any).mockImplementation(() => ({
+      insert: insertMock,
+      select: selectMock,
+    }))
+    return { insertMock, limitMock }
+  }
+
+  it('skippa threshold check se outcome=success', async () => {
+    const { limitMock } = mockSelectReturning([])
+    await recordOutcome('claude-opus-latest', 'success')
+    expect(limitMock).not.toHaveBeenCalled()
+  })
+
+  it('skippa threshold check se canary', async () => {
+    const { limitMock } = mockSelectReturning([])
+    await recordOutcome('claude-opus-latest', 'empty', { isCanary: true })
+    expect(limitMock).not.toHaveBeenCalled()
+  })
+
+  it('non scatta breaker con sample insufficiente (<5)', async () => {
+    mockSelectReturning([
+      { outcome: 'force_text' },
+      { outcome: 'force_text' },
+    ])
+    await expect(recordOutcome('claude-opus-latest', 'empty')).resolves.not.toThrow()
+  })
+
+  it('verifica che threshold check si attiva con 5 sample', async () => {
+    const { limitMock } = mockSelectReturning([
+      { outcome: 'success' },
+      { outcome: 'success' },
+      { outcome: 'success' },
+      { outcome: 'success' },
+      { outcome: 'success' },
+    ])
+    await recordOutcome('claude-opus-latest', 'empty')
+    expect(limitMock).toHaveBeenCalled()
   })
 })

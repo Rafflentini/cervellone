@@ -134,3 +134,54 @@ export async function getCircuitState(): Promise<CircuitState> {
   }
   return { state: 'NORMAL', tripped_at: null, reason: null, canary_consecutive_ok: 0 }
 }
+
+/**
+ * Registra l'outcome di una request modello. Fire-and-forget — non blocca.
+ * Se non canary e outcome != success, verifica il threshold (3 fail su 5)
+ * e in caso scatta tripBreaker.
+ */
+export async function recordOutcome(
+  model: string,
+  outcome: ModelOutcome,
+  details?: OutcomeDetails,
+): Promise<void> {
+  // INSERT fire-and-forget — errori non devono bloccare
+  supabase
+    .from('model_health')
+    .insert({
+      model,
+      request_id: details?.requestId || null,
+      is_canary: details?.isCanary || false,
+      outcome,
+      full_len: details?.fullLen ?? null,
+      consecutive_no_text: details?.consecutiveNoText ?? null,
+      details: details?.details ?? null,
+    })
+    .then(({ error }: { error: { message: string } | null }) => {
+      if (error) console.error('[CB] recordOutcome insert failed:', error.message)
+    })
+
+  // Threshold check: solo se non canary e outcome è fail
+  if (details?.isCanary || outcome === 'success') return
+
+  try {
+    const { data } = await supabase
+      .from('model_health')
+      .select('outcome')
+      .eq('model', model)
+      .eq('is_canary', false)
+      .order('ts', { ascending: false })
+      .limit(SAMPLE_WINDOW)
+
+    if (!data || data.length < SAMPLE_WINDOW) return
+
+    const failures = data.filter((r: { outcome: string }) => r.outcome !== 'success').length
+    if (failures >= FAILURE_THRESHOLD) {
+      const reason = `${failures} fail su ${data.length} ultimi: ${data.map((r: { outcome: string }) => r.outcome).join(',')}`
+      console.log(`[CB] threshold tripped for ${model}: ${reason}`)
+      await tripBreaker(reason)
+    }
+  } catch (err) {
+    console.error('[CB] threshold check failed:', err instanceof Error ? err.message : err)
+  }
+}
