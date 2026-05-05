@@ -406,3 +406,44 @@ export async function deleteDraft(draftId: string): Promise<void> {
   await gmail.users.drafts.delete({ userId: 'me', id: draftId })
   console.log(`[GMAIL] deleteDraft id=${draftId}`)
 }
+
+// ── Send tool ──
+
+const NOREPLY_REGEX = /(?:^|<)(?:noreply|no-reply|donotreply|do-not-reply|notification|notifications)@/i
+
+export async function sendDraft(draftId: string): Promise<SendDraftResult> {
+  const gmail = await getGmailClient()
+  const draft = await showDraft(draftId)
+
+  if (draft.threadId) {
+    if (await isThreadInBotLoop(draft.threadId)) {
+      throw new Error('Anti-loop: bot ha già inviato 1+ risposta in questo thread negli ultimi 30 min. Verifica manualmente prima di re-inviare.')
+    }
+  }
+
+  if (draft.threadId) {
+    const thread = await readThread(draft.threadId).catch(() => [])
+    const incoming = thread.filter(m => m.from && !/me$/i.test(m.from))
+    const last = incoming[incoming.length - 1]
+    if (last) {
+      if (NOREPLY_REGEX.test(last.from)) {
+        throw new Error(`Anti-loop: thread contiene messaggio da noreply (${last.from.slice(0, 50)}). Bot non risponde.`)
+      }
+      if ((last.headers['Auto-Submitted'] || '').toLowerCase().startsWith('auto-')) {
+        throw new Error('Anti-loop: thread contiene Auto-Submitted reply. Bot non risponde.')
+      }
+    }
+  }
+
+  console.log(`[GMAIL] sendDraft id=${draftId}`)
+  const res = await gmail.users.drafts.send({
+    userId: 'me',
+    requestBody: { id: draftId },
+  })
+  const messageId = res.data.id || ''
+  const threadId = res.data.threadId || ''
+
+  await recordBotAction(messageId, threadId, 'sent_reply', undefined, draft.subject)
+
+  return { messageId, threadId }
+}
