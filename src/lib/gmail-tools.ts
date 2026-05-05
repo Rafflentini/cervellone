@@ -447,3 +447,101 @@ export async function sendDraft(draftId: string): Promise<SendDraftResult> {
 
   return { messageId, threadId }
 }
+
+// ── Management tools ──
+
+interface LabelInfo {
+  id: string
+  name: string
+}
+
+export async function listLabels(): Promise<LabelInfo[]> {
+  const gmail = await getGmailClient()
+  const res = await gmail.users.labels.list({ userId: 'me' })
+  return (res.data.labels || []).map(l => ({
+    id: l.id || '',
+    name: l.name || '',
+  })).filter(l => l.id && l.name)
+}
+
+async function ensureLabelId(labelName: string): Promise<string> {
+  const labels = await listLabels()
+  const existing = labels.find(l => l.name === labelName)
+  if (existing) return existing.id
+  const gmail = await getGmailClient()
+  const res = await gmail.users.labels.create({
+    userId: 'me',
+    requestBody: {
+      name: labelName,
+      labelListVisibility: 'labelShow',
+      messageListVisibility: 'show',
+    },
+  })
+  return res.data.id || ''
+}
+
+export async function applyLabel(messageId: string, labelName: string): Promise<void> {
+  const labelId = await ensureLabelId(labelName)
+  if (!labelId) throw new Error(`Label "${labelName}" non creabile`)
+  const gmail = await getGmailClient()
+  await gmail.users.messages.modify({
+    userId: 'me',
+    id: messageId,
+    requestBody: { addLabelIds: [labelId] },
+  })
+  await recordBotAction(messageId, '', 'labeled')
+  console.log(`[GMAIL] applyLabel msg=${messageId} label=${labelName}`)
+}
+
+export async function removeLabel(messageId: string, labelName: string): Promise<void> {
+  const labels = await listLabels()
+  const label = labels.find(l => l.name === labelName)
+  if (!label) return
+  const gmail = await getGmailClient()
+  await gmail.users.messages.modify({
+    userId: 'me',
+    id: messageId,
+    requestBody: { removeLabelIds: [label.id] },
+  })
+  console.log(`[GMAIL] removeLabel msg=${messageId} label=${labelName}`)
+}
+
+export async function markAsRead(messageId: string): Promise<void> {
+  const gmail = await getGmailClient()
+  await gmail.users.messages.modify({
+    userId: 'me',
+    id: messageId,
+    requestBody: { removeLabelIds: ['UNREAD'] },
+  })
+  await recordBotAction(messageId, '', 'marked_read')
+}
+
+export async function markAsUnread(messageId: string): Promise<void> {
+  const gmail = await getGmailClient()
+  await gmail.users.messages.modify({
+    userId: 'me',
+    id: messageId,
+    requestBody: { addLabelIds: ['UNREAD'] },
+  })
+}
+
+export async function archive(messageId: string): Promise<void> {
+  const gmail = await getGmailClient()
+  await gmail.users.messages.modify({
+    userId: 'me',
+    id: messageId,
+    requestBody: { removeLabelIds: ['INBOX'] },
+  })
+  await recordBotAction(messageId, '', 'archived')
+  console.log(`[GMAIL] archive msg=${messageId}`)
+}
+
+export async function trash(messageId: string): Promise<void> {
+  const gmail = await getGmailClient()
+  await gmail.users.messages.trash({
+    userId: 'me',
+    id: messageId,
+  })
+  await recordBotAction(messageId, '', 'trashed')
+  console.log(`[GMAIL] trash msg=${messageId}`)
+}
