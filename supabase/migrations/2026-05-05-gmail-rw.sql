@@ -29,8 +29,10 @@ INSERT INTO gmail_alert_rules (rule_type, pattern, severity, notes) VALUES
 ON CONFLICT DO NOTHING;
 
 -- 2. Track mail già processate dal bot (anti-loop + idempotenza summary/alert)
+-- PK composita: una mail può transitare per più bot_action distinte
+-- (in_summary → notified_critical → sent_reply, ecc.) e ogni stato è una riga.
 CREATE TABLE IF NOT EXISTS gmail_processed_messages (
-  message_id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL,
   thread_id TEXT NOT NULL,
   from_address TEXT,
   subject TEXT,
@@ -38,12 +40,13 @@ CREATE TABLE IF NOT EXISTS gmail_processed_messages (
     'notified_critical','in_summary','draft_created','sent_reply',
     'labeled','archived','trashed','marked_read'
   )),
-  ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (message_id, bot_action)
 );
 CREATE INDEX IF NOT EXISTS idx_gmail_processed_thread
   ON gmail_processed_messages (thread_id, ts DESC);
 ALTER TABLE gmail_processed_messages DISABLE ROW LEVEL SECURITY;
-COMMENT ON TABLE gmail_processed_messages IS 'Track mail viste/processate per anti-loop e idempotenza.';
+COMMENT ON TABLE gmail_processed_messages IS 'Track mail viste/processate per anti-loop e idempotenza. PK composita (message_id, bot_action) — una mail può passare per più stati.';
 
 -- 3. Config keys (cron timestamp + silent mode)
 INSERT INTO cervellone_config (key, value) VALUES
