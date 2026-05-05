@@ -219,11 +219,14 @@ export async function POST(request: NextRequest) {
     const STALE_LOCK_MS = 5 * 60 * 1000
     const requestId = `${chatId}-${msgId || Date.now()}-${Date.now()}`
     let lockClaimed = true
+    let lockReason = 'fresh'  // diagnostica: motivo dell'esito
     try {
       const { error: insertErr } = await supabase
         .from('telegram_active_jobs')
         .insert({ chat_id: chatId, request_id: requestId })
-      if (insertErr) {
+      if (!insertErr) {
+        lockReason = 'fresh'  // prima volta, lock acquisito pulito
+      } else {
         // Conflict (PK chat_id): chat già attiva. Verifica se lock stale.
         const { data: existing } = await supabase
           .from('telegram_active_jobs')
@@ -238,24 +241,29 @@ export async function POST(request: NextRequest) {
               .from('telegram_active_jobs')
               .insert({ chat_id: chatId, request_id: requestId })
             if (retryErr) {
-              lockClaimed = false  // race con altra istanza, lasciamo vincere lei
+              lockClaimed = false
+              lockReason = `race-after-stale (${Math.round(ageMs/1000)}s)`
             } else {
-              console.log(`MUTEX chat=${chatId} stale lock released (age=${Math.round(ageMs/1000)}s) and re-acquired`)
+              lockReason = `stale-released (${Math.round(ageMs/1000)}s)`
             }
           } else {
-            lockClaimed = false  // lock attivo recente
+            lockClaimed = false
+            lockReason = `active (${Math.round(ageMs/1000)}s)`
           }
         } else {
-          lockClaimed = false  // unknown error, conservativo
+          lockClaimed = false
+          lockReason = `insertErr-no-existing-row: ${insertErr.message}`
         }
       }
     } catch (err) {
-      console.warn('[MUTEX] Supabase down, fallback claim true:', err instanceof Error ? err.message : err)
+      lockReason = `supabase-down: ${err instanceof Error ? err.message : err}`
+      console.warn('[MUTEX] Supabase exception, degraded claim=true:', lockReason)
       // lockClaimed resta true → degraded mode, no serializzazione
     }
 
+    console.log(`[MUTEX] chat=${chatId} msgId=${msgId} claimed=${lockClaimed} reason=${lockReason}`)
+
     if (!lockClaimed) {
-      console.log(`MUTEX chat=${chatId} BUSY — drop msgId=${msgId}`)
       await sendTelegramMessage(chatId, '⏳ Sto ancora elaborando il messaggio precedente, attenda un momento.')
       return NextResponse.json({ ok: true })
     }
