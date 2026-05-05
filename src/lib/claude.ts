@@ -11,6 +11,7 @@ import { searchMemory, saveMessageWithEmbedding } from './memory'
 import { logError } from './sanitize'
 import { withRetry } from './resilience'
 import { supabase } from './supabase'
+import { recordOutcome, getActiveModel, detectHallucination, type ModelOutcome } from './circuit-breaker'
 
 const client = new Anthropic()
 
@@ -334,17 +335,23 @@ export async function callClaudeStreamTelegram(
   const NO_TEXT_LIMIT = 3
 
   const cfg = await getConfig()
-  const isOpus = cfg.model.includes('opus')
+  // Bug 5/Circuit Breaker: getActiveModel può sovrascrivere cfg.model se rolled back
+  const activeModel = await getActiveModel().catch(() => cfg.model)
+  if (activeModel !== cfg.model) {
+    console.log(`[CB] active=${activeModel} differs from default=${cfg.model}`)
+  }
+  const isOpus = activeModel.includes('opus')
   // FIX W1: budget thinking drasticamente ridotto. V10 lasciava 100_000 = il modello
   // pensava per minuti, function killata da Vercel a 300s prima del primo text_delta.
   const modelConfig: ModelConfig = {
-    model: cfg.model,
+    model: activeModel,
     thinkingBudget: isOpus ? 8_000 : 4_000,
     maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
   const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget)
 
+  let totalToolCalls = 0
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const stream = await withRetry(() =>
       Promise.resolve(client.messages.stream({
@@ -390,6 +397,7 @@ export async function callClaudeStreamTelegram(
 
     const final = await stream.finalMessage()
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
+    totalToolCalls += toolBlocks.length
     const textBlocks = final.content.filter(b => b.type === 'text')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const toolNames = toolBlocks.map(b => (b as any).name).join(',')
@@ -467,6 +475,23 @@ export async function callClaudeStreamTelegram(
   if (conversationId && fullResponse) {
     saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
   }
+
+  // Determina outcome per circuit breaker
+  let outcome: ModelOutcome = 'success'
+  const FALLBACK_PREFIX = '⚠️ Non sono riuscito a sintetizzare'
+  if (fullResponse.startsWith(FALLBACK_PREFIX)) {
+    outcome = 'empty'
+  } else if (consecutiveNoText >= NO_TEXT_LIMIT) {
+    outcome = 'force_text'
+  } else if (detectHallucination(fullResponse, totalToolCalls)) {
+    outcome = 'hallucination'
+  }
+
+  recordOutcome(modelConfig.model, outcome, {
+    fullLen: fullResponse.length,
+    consecutiveNoText,
+    requestId: conversationId,
+  }).catch(err => console.error('[CB] recordOutcome failed:', err))
 
   return fullResponse
 }
