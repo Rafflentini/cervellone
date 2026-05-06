@@ -193,16 +193,21 @@ export async function uploadToAnthropic(input: FileInput): Promise<{ fileId: str
 
   console.log(`[FILE-PIPELINE] uploadToAnthropic ok fileId=${fileId} file=${fileName}`)
 
-  // Track in DB (best-effort: se DB fail, non bloccare l'upload)
+  // Track in DB (best-effort: se DB fail, non bloccare l'upload).
+  // Pattern: Supabase JS v2 ritorna {error} invece di throw → leggere error esplicitamente.
+  // try/catch per sicurezza extra (errori transport-level che eccezionalmente fanno throw).
   try {
-    await supabase.from('cervellone_anthropic_files').insert({
+    const { error: dbError } = await supabase.from('cervellone_anthropic_files').insert({
       file_id: fileId,
       original_filename: fileName,
-      mime_type: mimeType,
+      mime_type: mimeType || null,
       size_bytes: buf.byteLength,
     })
+    if (dbError) {
+      console.warn(`[FILE-PIPELINE] DB tracking insert failed (non-fatal): ${dbError.message}`)
+    }
   } catch (err) {
-    console.warn(`[FILE-PIPELINE] DB tracking insert failed (non-fatal):`, err)
+    console.warn(`[FILE-PIPELINE] DB tracking transport error (non-fatal):`, err instanceof Error ? err.message : err)
   }
 
   return { fileId }

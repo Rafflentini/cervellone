@@ -160,4 +160,21 @@ describe('uploadToAnthropic', () => {
 
     expect(mockSupabaseInsert).not.toHaveBeenCalled()
   })
+
+  it('upload ok ma DB fail → ritorna fileId, non throw, warn loggato', async () => {
+    mockUpload.mockResolvedValue({ id: 'file_xyz', filename: 'f.bin', mime_type: 'application/octet-stream', size_bytes: 1 })
+    mockSupabaseInsert.mockReset().mockResolvedValue({ error: { message: 'relation does not exist' } })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const { uploadToAnthropic } = await import('./file-pipeline')
+    const result = await uploadToAnthropic({
+      buffer: Buffer.from('x'),
+      fileName: 'f.bin',
+      mimeType: 'application/octet-stream',
+    })
+
+    expect(result.fileId).toBe('file_xyz')
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('DB tracking insert failed'))
+    warnSpy.mockRestore()
+  })
 })
