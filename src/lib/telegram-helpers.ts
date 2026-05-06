@@ -86,84 +86,10 @@ export async function downloadTelegramFile(fileId: string): Promise<{ buffer: Ar
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: string; mimeType: string }): Promise<any[]> {
-  const { buffer, fileName, mimeType } = fileData
-  const base64 = Buffer.from(buffer).toString('base64')
-
-  if (mimeType === 'application/pdf') {
-    return [{ type: 'document', source: { type: 'base64', media_type: mimeType, data: base64 } }]
-  }
-  if (mimeType.startsWith('image/')) {
-    return [{ type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } }]
-  }
-  if (mimeType.includes('word') || mimeType === 'application/msword') {
-    try {
-      const mammoth = await import('mammoth')
-      const result = await mammoth.extractRawText({ arrayBuffer: buffer })
-      if (result.value && result.value.length > 50) {
-        return [{ type: 'text', text: `[File Word: ${fileName}]\n\n${result.value}` }]
-      }
-    } catch { /* ignore */ }
-  }
-  // ODS
-  if (fileName.endsWith('.ods')) {
-    try {
-      const JSZip = (await import('jszip')).default
-      const zip = await JSZip.loadAsync(Buffer.from(buffer))
-      const xml = await zip.file('content.xml')?.async('string')
-      if (xml) {
-        const rows: string[] = []
-        const rowRe = /<table:table-row[^>]*>([\s\S]*?)<\/table:table-row>/g
-        let rm
-        while ((rm = rowRe.exec(xml)) !== null) {
-          const cells: string[] = []
-          const cellRe = /<table:table-cell([^>]*)>([\s\S]*?)<\/table:table-cell>/g
-          let cm
-          while ((cm = cellRe.exec(rm[1])) !== null) {
-            const txt = (cm[2] || '').replace(/<[^>]+>/g, '').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&apos;/g,"'").trim()
-            if (txt) cells.push(txt)
-          }
-          if (cells.length >= 2) rows.push(cells.join(' | '))
-        }
-        const text = rows.slice(0, 3000).join('\n')
-        if (text.length > 50) {
-          return [{ type: 'text', text: `[File ODS: ${fileName} — ${rows.length} righe]\n\n${text.slice(0, 100000)}` }]
-        }
-      }
-    } catch { /* ignore */ }
-  }
-  // CSV/TXT
-  if (fileName.endsWith('.csv') || fileName.endsWith('.txt')) {
-    const text = Buffer.from(buffer).toString('utf-8')
-    if (text.length > 50) {
-      return [{ type: 'text', text: `[File ${fileName}]\n\n${text.slice(0, 100000)}` }]
-    }
-  }
-  // Excel
-  if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
-    try {
-      const JSZip = (await import('jszip')).default
-      const zip = await JSZip.loadAsync(Buffer.from(buffer))
-      const shared = await zip.file('xl/sharedStrings.xml')?.async('string')
-      if (shared) {
-        const texts: string[] = []
-        const re = /<t[^>]*>([\s\S]*?)<\/t>/g
-        let m
-        while ((m = re.exec(shared)) !== null) texts.push(m[1].trim())
-        if (texts.length > 0) {
-          return [{ type: 'text', text: `[File Excel: ${fileName}]\n\n${texts.join(' | ').slice(0, 100000)}` }]
-        }
-      }
-    } catch { /* ignore */ }
-  }
-  // Fallback: prova come testo
-  try {
-    const text = Buffer.from(buffer).toString('utf-8')
-    const printable = text.replace(/[^\x20-\x7E\r\n\t\xC0-\xFF]/g, '')
-    if (printable.length > text.length * 0.5 && text.length > 50) {
-      return [{ type: 'text', text: `[File: ${fileName}]\n\n${text.slice(0, 100000)}` }]
-    }
-  } catch { /* ignore */ }
-  return [{ type: 'text', text: `[File binario: ${fileName}, ${(buffer.byteLength / 1024).toFixed(0)} KB]` }]
+  const { processFile } = await import('./file-pipeline')
+  const result = await processFile(fileData)
+  console.log(`[BUILD-CONTENT-BLOCKS] file=${fileData.fileName} strategy=${result.strategy} fileId=${result.uploadedFileId ?? '-'}`)
+  return result.blocks
 }
 
 export async function editTelegramMessage(chatId: number, messageId: number, text: string) {
