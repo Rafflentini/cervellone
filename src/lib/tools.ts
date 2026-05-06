@@ -1751,6 +1751,7 @@ const EXECUTORS = [executeStudioTecnico, executeSelfTools, executeDriveWrapper, 
 export function getToolDefinitions() {
   return [
     { type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 },
+    { type: 'code_execution_20260120' as const, name: 'code_execution' },
     ...ALL_TOOLS.map(({ name, description, input_schema }) => ({ name, description, input_schema })),
   ]
 }

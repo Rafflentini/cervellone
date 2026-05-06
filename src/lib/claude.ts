@@ -209,7 +209,8 @@ export async function callClaudeStream(
         iterationHasText = true
       }
       if (event.type === 'content_block_start' && (event as any).content_block?.type === 'server_tool_use') {
-        callbacks.onToolStart?.('web_search')
+        const serverToolName = (event as any).content_block?.name ?? 'server_tool'
+        callbacks.onToolStart?.(serverToolName)
       }
     }
 
@@ -529,7 +530,7 @@ async function executeToolBlocks(toolBlocks: any[], conversationId?: string): Pr
   const results: any[] = []
   for (const block of toolBlocks) {
     if (block.type !== 'tool_use') continue
-    if (block.name === 'web_search') continue // server-side
+    if (block.name === 'web_search' || block.name === 'code_execution') continue // server-side
 
     try {
       const result = await executeTool(block.name, block.input as Record<string, unknown>, conversationId)
