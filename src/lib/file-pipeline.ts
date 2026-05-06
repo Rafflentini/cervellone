@@ -53,7 +53,7 @@ export function detectStrategy(mimeType: string, _fileName: string): 'native' | 
  */
 export async function processNative(input: FileInput): Promise<PipelineResult> {
   const { buffer, fileName, mimeType } = input
-  const buf = buffer instanceof Buffer ? buffer : Buffer.from(buffer)
+  const buf: Buffer = buffer instanceof Buffer ? buffer : Buffer.from(buffer as ArrayBuffer)
   const base64 = buf.toString('base64')
 
   // PDF → document block
@@ -175,7 +175,7 @@ const anthropicClient = new Anthropic()
  */
 export async function uploadToAnthropic(input: FileInput): Promise<{ fileId: string }> {
   const { buffer, fileName, mimeType } = input
-  const buf = buffer instanceof Buffer ? buffer : Buffer.from(buffer)
+  const buf: Buffer = buffer instanceof Buffer ? buffer : Buffer.from(buffer as ArrayBuffer)
 
   // Convert Buffer → Uploadable (Anthropic SDK helper toFile)
   const uploadable = await toFile(buf, fileName, { type: mimeType || 'application/octet-stream' })
