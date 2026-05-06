@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { detectStrategy, processNative } from './file-pipeline'
 
 describe('detectStrategy', () => {
@@ -97,5 +97,67 @@ describe('processNative', () => {
     expect(result.blocks[0].type).toBe('text')
     expect(result.blocks[0].text).toContain('Questo è un file di testo')
     expect(result.strategy).toBe('fallback-text')
+  })
+})
+
+// ─── uploadToAnthropic ────────────────────────────────────────────────────────
+
+const mockUpload = vi.fn()
+const mockSupabaseInsert = vi.fn()
+
+vi.mock('@anthropic-ai/sdk', async () => {
+  const actual = await vi.importActual<typeof import('@anthropic-ai/sdk')>('@anthropic-ai/sdk')
+  return {
+    ...actual,
+    default: vi.fn().mockImplementation(() => ({
+      beta: { files: { upload: mockUpload } },
+    })),
+  }
+})
+
+vi.mock('./supabase', () => ({
+  supabase: {
+    from: vi.fn(() => ({
+      insert: mockSupabaseInsert.mockResolvedValue({ error: null }),
+    })),
+  },
+}))
+
+describe('uploadToAnthropic', () => {
+  beforeEach(() => {
+    mockUpload.mockReset()
+    mockSupabaseInsert.mockReset().mockResolvedValue({ error: null })
+  })
+
+  it('upload riuscito → ritorna file_id e traccia in DB', async () => {
+    mockUpload.mockResolvedValue({ id: 'file_abc123', filename: 'DURC.p7m', mime_type: 'application/octet-stream', size_bytes: 12345 })
+
+    const { uploadToAnthropic } = await import('./file-pipeline')
+    const result = await uploadToAnthropic({
+      buffer: Buffer.from('fake p7m bytes'),
+      fileName: 'DURC.p7m',
+      mimeType: 'application/octet-stream',
+    })
+
+    expect(result.fileId).toBe('file_abc123')
+    expect(mockUpload).toHaveBeenCalledOnce()
+    // Verifica beta header passato
+    const callArgs = mockUpload.mock.calls[0]
+    expect(callArgs[1]?.headers?.['anthropic-beta']).toContain('files-api-2025-04-14')
+    // Verifica DB insert
+    expect(mockSupabaseInsert).toHaveBeenCalledOnce()
+  })
+
+  it('upload fallito → throw + nessun insert DB', async () => {
+    mockUpload.mockRejectedValue(new Error('Files API down'))
+
+    const { uploadToAnthropic } = await import('./file-pipeline')
+    await expect(uploadToAnthropic({
+      buffer: Buffer.from('test'),
+      fileName: 'test.bin',
+      mimeType: 'application/octet-stream',
+    })).rejects.toThrow('Files API down')
+
+    expect(mockSupabaseInsert).not.toHaveBeenCalled()
   })
 })

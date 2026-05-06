@@ -8,7 +8,8 @@
  * Spec: docs/superpowers/specs/2026-05-06-cervellone-file-pipeline-design.md
  */
 
-import type Anthropic from '@anthropic-ai/sdk'
+import Anthropic, { toFile } from '@anthropic-ai/sdk'
+import { supabase } from './supabase'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ContentBlockParam = any  // Anthropic.Messages.ContentBlockParam (avoid namespace import quirks)
@@ -160,4 +161,49 @@ export async function processNative(input: FileInput): Promise<PipelineResult> {
     blocks: [{ type: 'text', text: `[File binario: ${fileName}, ${(buf.byteLength / 1024).toFixed(0)} KB]` }],
     strategy: 'metadata-only',
   }
+}
+
+// ─── uploadToAnthropic ────────────────────────────────────────────────────────
+
+const FILES_API_BETA = 'files-api-2025-04-14'
+
+const anthropicClient = new Anthropic()
+
+/**
+ * uploadToAnthropic — uploads buffer to Anthropic Files API + tracks in DB.
+ * Throws on failure (no fallback here — caller handles).
+ */
+export async function uploadToAnthropic(input: FileInput): Promise<{ fileId: string }> {
+  const { buffer, fileName, mimeType } = input
+  const buf = buffer instanceof Buffer ? buffer : Buffer.from(buffer)
+
+  // Convert Buffer → Uploadable (Anthropic SDK helper toFile)
+  const uploadable = await toFile(buf, fileName, { type: mimeType || 'application/octet-stream' })
+
+  console.log(`[FILE-PIPELINE] uploadToAnthropic begin file=${fileName} size=${buf.byteLength}`)
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result: any = await anthropicClient.beta.files.upload(
+    { file: uploadable },
+    { headers: { 'anthropic-beta': FILES_API_BETA } }
+  )
+
+  const fileId = result?.id
+  if (!fileId) throw new Error('Files API: missing id in upload response')
+
+  console.log(`[FILE-PIPELINE] uploadToAnthropic ok fileId=${fileId} file=${fileName}`)
+
+  // Track in DB (best-effort: se DB fail, non bloccare l'upload)
+  try {
+    await supabase.from('cervellone_anthropic_files').insert({
+      file_id: fileId,
+      original_filename: fileName,
+      mime_type: mimeType,
+      size_bytes: buf.byteLength,
+    })
+  } catch (err) {
+    console.warn(`[FILE-PIPELINE] DB tracking insert failed (non-fatal):`, err)
+  }
+
+  return { fileId }
 }
