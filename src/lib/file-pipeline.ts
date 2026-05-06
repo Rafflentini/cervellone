@@ -241,6 +241,8 @@ export async function processFile(input: FileInput): Promise<PipelineResult> {
     }
   } catch (err) {
     console.warn(`[FILE-PIPELINE] Files API failed, fallback processNative:`, err instanceof Error ? err.message : err)
-    return processNative(input)
+    const fallback = await processNative(input)
+    console.log(`[FILE-PIPELINE] processFile end file=${input.fileName} finalStrategy=${fallback.strategy} (after upload failure)`)
+    return fallback
   }
 }
