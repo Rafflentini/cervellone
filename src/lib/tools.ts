@@ -130,13 +130,14 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'cerca_documenti',
-    description: 'Cerca documenti generati in passato per titolo o data.',
+    description: 'Cerca documenti generati in passato per titolo o data. Default ritorna metadati (id, name, type, date, url). Con include_content=true ritorna anche il contenuto HTML inline (troncato a 30K char) per leggere il documento direttamente senza secondo round-trip.',
     input_schema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Testo da cercare nel titolo (es. "Rossi", "ponteggio", "preventivo")' },
         data_da: { type: 'string', description: 'Data inizio ricerca (YYYY-MM-DD)' },
         data_a: { type: 'string', description: 'Data fine ricerca (YYYY-MM-DD)' },
+        include_content: { type: 'boolean', description: 'Se true, include il contenuto HTML del documento inline (troncato a 30K char). Default false (solo metadati). Usalo quando devi LEGGERE il contenuto, non solo elencare titoli.' },
       },
       required: ['query'],
     },
@@ -468,9 +469,14 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
 
     case 'cerca_documenti': {
       const query = input.query as string
+      const includeContent = input.include_content === true
+      const selectCols = includeContent
+        ? 'id, name, type, created_at, content'
+        : 'id, name, type, created_at'
+
       let q = supabase
         .from('documents')
-        .select('id, name, type, created_at')
+        .select(selectCols)
         .ilike('name', `%${query}%`)
 
       if (input.data_da) q = q.gte('created_at', input.data_da as string)
@@ -481,10 +487,18 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       if (!data?.length) return `Nessun documento trovato per "${query}".`
 
       return data.map(d => {
-        const date = new Date(d.created_at).toLocaleDateString('it')
-        const url = `https://cervellone-5poc.vercel.app/doc/${d.id}`
-        return `📄 ${d.name} — ${date} — ${url}`
-      }).join('\n')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const doc = d as any
+        const date = new Date(doc.created_at).toLocaleDateString('it')
+        const url = `https://cervellone-5poc.vercel.app/doc/${doc.id}`
+        const header = `📄 ${doc.name} — ${date} — ${url}`
+        if (!includeContent) return header
+        const content = String(doc.content ?? '')
+        const truncated = content.length > 30000
+          ? content.slice(0, 30000) + `\n\n[...troncato a 30K char, ${content.length} char totali]`
+          : content
+        return `${header}\n\n--- CONTENUTO ---\n${truncated}\n--- FINE CONTENUTO ---`
+      }).join('\n\n')
     }
 
     case 'scarica_file_da_url': {
