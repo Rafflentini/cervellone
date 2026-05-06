@@ -198,6 +198,8 @@ export async function callClaudeStream(
         messages: currentMessages,
         tools,
         ...modelOpts,
+      }, {
+        headers: { 'anthropic-beta': 'files-api-2025-04-14' },
       }))
     )
 
@@ -275,6 +277,8 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
         messages: currentMessages,
         tools,
         ...modelOpts,
+      }, {
+        headers: { 'anthropic-beta': 'files-api-2025-04-14' },
       }))
     )
 
@@ -365,6 +369,8 @@ export async function callClaudeStreamTelegram(
         messages: currentMessages,
         tools,
         ...modelOpts,
+      }, {
+        headers: { 'anthropic-beta': 'files-api-2025-04-14' },
       }))
     )
 
@@ -442,6 +448,8 @@ export async function callClaudeStreamTelegram(
             tools,
             tool_choice: { type: 'none' as const },
             ...modelOpts,
+          }, {
+            headers: { 'anthropic-beta': 'files-api-2025-04-14' },
           }))
         )
         let synthLastEdit = 0
