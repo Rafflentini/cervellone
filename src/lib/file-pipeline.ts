@@ -212,3 +212,35 @@ export async function uploadToAnthropic(input: FileInput): Promise<{ fileId: str
 
   return { fileId }
 }
+
+// ─── processFile (orchestrator) ──────────────────────────────────────────────
+
+/**
+ * processFile — orchestrator: detect strategy, route a processNative o uploadToAnthropic.
+ * Su upload error: fallback a processNative anche se non in whitelist.
+ */
+export async function processFile(input: FileInput): Promise<PipelineResult> {
+  const strategy = detectStrategy(input.mimeType, input.fileName)
+
+  console.log(`[FILE-PIPELINE] processFile begin file=${input.fileName} mime=${input.mimeType} strategy=${strategy}`)
+
+  if (strategy === 'native') {
+    return processNative(input)
+  }
+
+  // strategy === 'files-api'
+  try {
+    const { fileId } = await uploadToAnthropic(input)
+    return {
+      blocks: [
+        { type: 'container_upload', file_id: fileId },
+        { type: 'text', text: `[File caricato nel sandbox code_execution: ${input.fileName} (${input.mimeType || 'unknown mime'})]` },
+      ],
+      strategy: 'files-api',
+      uploadedFileId: fileId,
+    }
+  } catch (err) {
+    console.warn(`[FILE-PIPELINE] Files API failed, fallback processNative:`, err instanceof Error ? err.message : err)
+    return processNative(input)
+  }
+}

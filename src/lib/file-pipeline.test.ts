@@ -178,3 +178,59 @@ describe('uploadToAnthropic', () => {
     warnSpy.mockRestore()
   })
 })
+
+// ─── processFile (orchestrator) ──────────────────────────────────────────────
+
+import { processFile } from './file-pipeline'
+
+describe('processFile (orchestrator)', () => {
+  beforeEach(() => {
+    mockUpload.mockReset()
+    mockSupabaseInsert.mockReset().mockResolvedValue({ error: null })
+  })
+
+  it('mime nativo → processNative path', async () => {
+    const result = await processFile({
+      buffer: Buffer.from('%PDF-1.4 fake'),
+      fileName: 'doc.pdf',
+      mimeType: 'application/pdf',
+    })
+    expect(result.strategy).toBe('native')
+    expect(result.blocks[0].type).toBe('document')
+    expect(result.uploadedFileId).toBeUndefined()
+    expect(mockUpload).not.toHaveBeenCalled()
+  })
+
+  it('mime custom → uploadToAnthropic + container_upload block', async () => {
+    mockUpload.mockResolvedValue({ id: 'file_p7m_xyz', filename: 'DURC.p7m', mime_type: 'application/octet-stream', size_bytes: 1000 })
+
+    const result = await processFile({
+      buffer: Buffer.from('fake p7m'),
+      fileName: 'DURC.p7m',
+      mimeType: 'application/octet-stream',
+    })
+
+    expect(result.strategy).toBe('files-api')
+    expect(result.uploadedFileId).toBe('file_p7m_xyz')
+    expect(result.blocks).toHaveLength(2)
+    expect(result.blocks[0]).toEqual({ type: 'container_upload', file_id: 'file_p7m_xyz' })
+    expect(result.blocks[1].type).toBe('text')
+    expect(result.blocks[1].text).toContain('DURC.p7m')
+  })
+
+  it('upload fallisce → fallback processNative', async () => {
+    mockUpload.mockRejectedValue(new Error('upload error'))
+
+    // ASCII content — fallback-text dovrebbe scattare
+    const text = 'Some readable text content. '.repeat(20)
+    const result = await processFile({
+      buffer: Buffer.from(text),
+      fileName: 'unknown.xyz',
+      mimeType: 'application/octet-stream',
+    })
+
+    expect(result.strategy).toBe('fallback-text')
+    expect(result.uploadedFileId).toBeUndefined()
+    expect(result.blocks[0].text).toContain('Some readable text')
+  })
+})
