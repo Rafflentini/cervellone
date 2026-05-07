@@ -26,13 +26,20 @@ export async function generatePdfFromHtml(html: string, title: string): Promise<
   const marginBottom = 20
   const usableWidth = pageWidth - marginLeft - marginRight
   const pageHeight = 297
-  const usableHeight = pageHeight - marginTop - marginBottom
 
   // ── Estrai testo dall'HTML ──
   // Rimuove tag HTML, decodifica entità comuni, preserva struttura paragrafi
   function htmlToText(rawHtml: string): string[] {
-    // Sostituisce tag di blocco con newline
+    // FIX BUG-PDF-CSS: rimuovi PRIMA il contenuto di <style>, <script>, <head>
+    // altrimenti il CSS finisce stampato come testo nel PDF.
+    // Regex con flag 's' (dotAll) per matchare anche newline.
     let text = rawHtml
+      // Rimuovi blocchi che NON devono apparire come testo
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      // Sostituisce tag di blocco con newline
       .replace(/<\/?(h[1-6]|p|div|tr|li|br)[^>]*>/gi, '\n')
       .replace(/<\/?(th|td)[^>]*>/gi, '  ')
       // Rimuove tutti i tag rimanenti
@@ -58,7 +65,6 @@ export async function generatePdfFromHtml(html: string, title: string): Promise<
 
   // ── Layout ──
   let y = marginTop
-  let isFirstPage = true
 
   // Header pagina 1: titolo documento
   doc.setFont('helvetica', 'bold')
@@ -71,8 +77,6 @@ export async function generatePdfFromHtml(html: string, title: string): Promise<
   doc.setLineWidth(0.3)
   doc.line(marginLeft, y, pageWidth - marginRight, y)
   y += 6
-
-  isFirstPage = false
 
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(9)
