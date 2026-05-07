@@ -56,3 +56,32 @@ describe('ricorda', () => {
     expect(result.error).toContain('testo')
   })
 })
+
+describe('richiama_memoria', () => {
+  it('ritorna risultati espliciti se presenti (L1 prima)', async () => {
+    mockLimit.mockResolvedValueOnce({
+      data: [{ id: 'uuid-1', contenuto: 'Cliente Bianchi accordo 15k', tag: 'cliente', created_at: '2026-05-06T10:00:00Z' }],
+      error: null,
+    })
+    const { richiama_memoria } = await import('./memoria-tools')
+    const result = await richiama_memoria({ query: 'Bianchi', tipo_filtro: 'esplicita' })
+    expect(result.ok).toBe(true)
+    expect(result.results[0].livello).toBe('esplicita')
+    expect(result.results[0].testo).toContain('Bianchi')
+  })
+
+  it('ritorna array vuoto se nessun risultato', async () => {
+    mockLimit.mockResolvedValue({ data: [], error: null })
+    const { richiama_memoria } = await import('./memoria-tools')
+    const result = await richiama_memoria({ query: 'query inesistente xyz', tipo_filtro: 'tutto' })
+    expect(result.ok).toBe(true)
+    expect(result.results).toHaveLength(0)
+  })
+
+  it('gestisce errore DB gracefully', async () => {
+    mockLimit.mockResolvedValue({ data: null, error: { message: 'DB error' } })
+    const { richiama_memoria } = await import('./memoria-tools')
+    const result = await richiama_memoria({ query: 'test' })
+    expect(result.ok).toBe(false)
+  })
+})
