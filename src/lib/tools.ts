@@ -1752,6 +1752,82 @@ async function executeGmailWrapper(
   }
 }
 
+// 2026-05-07 Memoria persistente cross-sessione (sub-progetto B): 4 tool
+const MEMORIA_TOOLS: ToolDefinition[] = [
+  {
+    name: 'ricorda',
+    description: 'Salva in memoria persistente una decisione, contesto o fatto importante. Usare quando l\'Ingegnere dice esplicitamente di voler ricordare qualcosa, o quando si prende una decisione che dovrà essere recuperata in sessioni future. NON usare per fatti generici già presenti nella conversazione corrente.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        testo: { type: 'string', description: 'Testo da salvare in memoria. Essere precisi e auto-contenuti: includere chi, cosa, quando se rilevante.' },
+        tag: { type: 'string', description: 'Etichetta opzionale (es: "cliente", "scadenza", "cantiere", "decisione").' },
+      },
+      required: ['testo'],
+    },
+  },
+  {
+    name: 'richiama_memoria',
+    description: 'Cerca nella memoria persistente (3 livelli: esplicita → summary giornaliero → entità). Usare quando l\'Ingegnere chiede di ricordare qualcosa, o quando serve contesto storico.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Testo della ricerca. Usare parole chiave significative.' },
+        tipo_filtro: { type: 'string', enum: ['esplicita', 'summary', 'entita', 'tutto'], description: 'Filtra il livello di ricerca. Default "tutto".' },
+        limit: { type: 'number', description: 'Numero massimo risultati per livello. Default 10.' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'riepilogo_giorno',
+    description: 'Recupera il summary di una giornata specifica. Usare per query temporali esplicite: "cosa abbiamo fatto ieri", "lunedì scorso", "il 5 maggio".',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        data: { type: 'string', description: 'Data: "oggi", "ieri", "YYYY-MM-DD", "lunedi-scorso", "martedi-scorso", "mercoledi-scorso", "giovedi-scorso", "venerdi-scorso".' },
+      },
+      required: ['data'],
+    },
+  },
+  {
+    name: 'lista_entita',
+    description: 'Elenca clienti/cantieri/fornitori conosciuti estratti dalle conversazioni. Usare quando l\'Ingegnere chiede "quali clienti abbiamo" o simili.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        tipo: { type: 'string', enum: ['cliente', 'cantiere', 'fornitore'], description: 'Filtra per tipo. Se omesso, ritorna tutti.' },
+        limit: { type: 'number', description: 'Numero massimo entità ritornate. Default 20.' },
+      },
+      required: [],
+    },
+  },
+]
+
+async function executeMemoriaWrapper(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<string | null> {
+  if (!['ricorda', 'richiama_memoria', 'riepilogo_giorno', 'lista_entita'].includes(name)) return null
+  try {
+    const mod = await import('./memoria-tools')
+    let result: unknown
+    switch (name) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      case 'ricorda': result = await mod.ricorda(input as any); break
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      case 'richiama_memoria': result = await mod.richiama_memoria(input as any); break
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      case 'riepilogo_giorno': result = await mod.riepilogo_giorno(input as any); break
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      case 'lista_entita': result = await mod.lista_entita(input as any); break
+    }
+    return typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+  } catch (err) {
+    return `Errore memoria: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 const ALL_TOOLS: ToolDefinition[] = [
   ...STUDIO_TECNICO_TOOLS,
   ...SELF_TOOLS,
@@ -1759,8 +1835,9 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...GITHUB_TOOLS, // Self-healing 2026-05-04: github_read_file, github_propose_fix, vercel_deploy_status
   ...WEATHER_TOOLS, // 2026-05-05: weather_now via Open-Meteo
   ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool
+  ...MEMORIA_TOOLS, // 2026-05-07 Memoria persistente sub-progetto B: 4 tool
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeGmailWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeGmailWrapper, executeMemoriaWrapper]
 
 export function getToolDefinitions() {
   return [
