@@ -374,13 +374,53 @@ export async function POST(request: NextRequest) {
     }
     if (history.length > 0 && history[0].role !== 'user') history.shift()
 
-    // V10: Comprimi documenti HTML nei messaggi precedenti
-    for (const msg of history) {
-      if (msg.role === 'assistant' && typeof msg.content === 'string') {
-        msg.content = msg.content.replace(
-          /~~~document\n[\s\S]*?~~~(?:\n|$)/g,
-          '[Documento gia generato]\n'
-        )
+    // FIX BUG-DDT (07/05/2026): compressione documenti stratificata.
+    //
+    // Bug precedente: TUTTI i ~~~document venivano sostituiti con stringa
+    // generica "[Documento gia generato]", facendo sparire i dati reali
+    // (es. articoli DDT, voci preventivo) dalla history. Quando l'utente
+    // chiedeva modifiche di formato ("impaginalo A4"), il modello non
+    // vedeva più il contenuto e ricostruiva a memoria → HALLUCINATION
+    // di dati che non erano mai stati specificati.
+    //
+    // Repro: chat #X del 07/05 — DDT con piastrelle "IRIS cotto serie 8"
+    // mai menzionate dall'utente, inventate dal modello su richiesta di
+    // re-impaginazione perché non vedeva più i dati originali.
+    //
+    // Fix stratificato:
+    //   1. Identifica l'INDICE dell'ultimo messaggio assistant con un ~~~document.
+    //   2. L'ultimo documento NON viene compresso — è quello su cui si lavora ora.
+    //   3. I documenti precedenti vengono troncati a 3000 char (header + struttura
+    //      + dati chiave preservati) invece di cancellati interamente.
+    //   4. Il placeholder include il <h1> del documento per identificarlo.
+    {
+      // Trova l'indice dell'ultimo messaggio assistant che contiene un documento.
+      let lastDocIdx = -1
+      for (let k = history.length - 1; k >= 0; k--) {
+        const m = history[k]
+        if (m.role === 'assistant' && typeof m.content === 'string' && m.content.includes('~~~document')) {
+          lastDocIdx = k
+          break
+        }
+      }
+
+      const compressDoc = (docBlock: string): string => {
+        // docBlock = "~~~document\n...html...\n~~~"
+        const titleMatch = docBlock.match(/<h1[^>]*>([^<]+)<\/h1>/i)
+        const title = titleMatch ? titleMatch[1].trim().slice(0, 80) : 'senza titolo'
+        const TRUNCATE_AT = 3000
+        if (docBlock.length <= TRUNCATE_AT) return docBlock // già piccolo, lascia
+        const head = docBlock.slice(0, TRUNCATE_AT)
+        const remaining = docBlock.length - TRUNCATE_AT
+        return `${head}\n[...documento "${title}" troncato — ${remaining} char omessi per economia di contesto]\n~~~\n`
+      }
+
+      for (let k = 0; k < history.length; k++) {
+        const msg = history[k]
+        if (msg.role !== 'assistant' || typeof msg.content !== 'string') continue
+        if (k === lastDocIdx) continue // ultimo documento: integro
+        // Per i precedenti: sostituisci ogni blocco ~~~document con versione troncata
+        msg.content = msg.content.replace(/~~~document\n[\s\S]*?~~~(?:\n|$)/g, (match: string) => compressDoc(match))
       }
     }
 
