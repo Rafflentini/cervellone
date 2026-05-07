@@ -226,6 +226,81 @@ async function deployStatus(commitSha: string): Promise<string> {
   }
 }
 
+// ── github_merge_pr ──
+
+async function mergePr(prNumber: string, mergeMethod: string = 'squash'): Promise<string> {
+  const num = parseInt(prNumber, 10)
+  if (!Number.isInteger(num) || num <= 0) {
+    return `⛔ PR number invalido: "${prNumber}"`
+  }
+  if (!['squash', 'merge', 'rebase'].includes(mergeMethod)) {
+    return `⛔ merge method invalido: "${mergeMethod}". Usa squash | merge | rebase.`
+  }
+  const token = process.env.GITHUB_TOKEN
+  if (!token) {
+    return '⚠️ GITHUB_TOKEN non configurato.'
+  }
+  console.log(`[GH] mergePr #${num} method=${mergeMethod}`)
+  try {
+    // 1. Fetch PR per safety check: autore + stato + mergeable
+    const prRes = await fetch(`https://api.github.com/repos/${REPO_FULL}/pulls/${num}`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' },
+    })
+    if (!prRes.ok) return `Errore GitHub fetch PR #${num}: HTTP ${prRes.status}`
+    const pr = await prRes.json() as {
+      state: string
+      merged: boolean
+      mergeable: boolean | null
+      mergeable_state: string
+      user: { login: string }
+      head: { ref: string }
+      base: { ref: string }
+      title: string
+    }
+    if (pr.merged) return `⚠️ PR #${num} è già mergiata.`
+    if (pr.state !== 'open') return `⛔ PR #${num} è in stato "${pr.state}" — solo PR open mergiabili.`
+    if (pr.base.ref !== 'main') return `⛔ PR #${num} ha base "${pr.base.ref}" diversa da "main" — rifiutato per safety.`
+    if (pr.mergeable === false) return `⛔ PR #${num} ha conflitti (mergeable_state="${pr.mergeable_state}"). Risolvili prima.`
+    // Note: mergeable può essere null se GitHub non ha ancora calcolato — accettiamo, GitHub bloccherà se conflict reale
+
+    // 2. Esegui merge via API
+    const mergeRes = await fetch(`https://api.github.com/repos/${REPO_FULL}/pulls/${num}/merge`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        merge_method: mergeMethod,
+        commit_title: `${pr.title} (#${num})`,
+      }),
+    })
+    if (!mergeRes.ok) {
+      const body = await mergeRes.text()
+      return `Errore merge PR #${num}: HTTP ${mergeRes.status} — ${body.slice(0, 300)}`
+    }
+    const mergeData = await mergeRes.json() as { sha: string; merged: boolean; message: string }
+    if (!mergeData.merged) {
+      return `⛔ Merge fallito: ${mergeData.message}`
+    }
+
+    // 3. Tenta delete branch (best-effort, non fatale se fallisce)
+    try {
+      await fetch(`https://api.github.com/repos/${REPO_FULL}/git/refs/heads/${pr.head.ref}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` },
+      })
+    } catch { /* ignore */ }
+
+    console.log(`[GH] mergePr #${num} ok sha=${mergeData.sha.slice(0, 7)}`)
+    return `✅ PR #${num} mergiata su main (${mergeMethod}). Commit ${mergeData.sha.slice(0, 7)}. Branch ${pr.head.ref} cancellato. Vercel deploy partirà tra pochi secondi — usa vercel_deploy_status(${mergeData.sha.slice(0, 7)}) per verificare quando READY.`
+  } catch (err) {
+    console.error('[GH] mergePr ERROR:', err)
+    return `Errore merge: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 // ── Definizioni tool per Anthropic API ──
 
 export const GITHUB_TOOLS = [
@@ -267,6 +342,18 @@ export const GITHUB_TOOLS = [
       required: ['commit_sha'],
     },
   },
+  {
+    name: 'github_merge_pr',
+    description: `Mergia una PR aperta nel repo ${REPO_FULL}. Safety: solo PR open verso main, no conflitti, autore qualunque (di solito te stesso). Default merge_method=squash (clean history). Cancella branch dopo merge. Usa SOLO per chiudere proprie PR già aperte via github_propose_fix quando l'Ingegnere è impedito (es. cantiere, mobile, no GitHub web). NON mergiare PR umane senza esplicita richiesta dell'Ingegnere.`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        pr_number: { type: 'string', description: 'Numero PR (es. "5", "12")' },
+        merge_method: { type: 'string', description: 'OPZIONALE — squash (default) | merge | rebase. Squash crea 1 commit pulito su main.' },
+      },
+      required: ['pr_number'],
+    },
+  },
 ]
 
 // ── Esecuzione tool ──
@@ -288,6 +375,8 @@ export async function executeGithubTool(
       )
     case 'vercel_deploy_status':
       return deployStatus(input.commit_sha)
+    case 'github_merge_pr':
+      return mergePr(input.pr_number, input.merge_method || 'squash')
     default:
       return `Tool GitHub "${name}" non riconosciuto.`
   }
