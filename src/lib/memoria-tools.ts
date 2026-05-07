@@ -215,3 +215,31 @@ export async function riepilogo_giorno(input: RiepilogoInput): Promise<Riepilogo
     message_count: data.message_count,
   }
 }
+
+// ─── lista_entita ────────────────────────────────────────────────────────────
+
+export async function lista_entita(input: ListaEntitaInput): Promise<ListaEntitaResult> {
+  const limit = input.limit ?? 20
+
+  let q = supabase
+    .from('cervellone_entita_menzionate')
+    .select('name, type, last_seen_at, mention_count')
+    .order('last_seen_at', { ascending: false })
+
+  if (input.tipo) {
+    q = (q as any).eq('type', input.tipo)
+  }
+
+  const { data, error } = await (q as any).limit(limit)
+  if (error) return { ok: false, entita: [], error: error.message }
+
+  return {
+    ok: true,
+    entita: (data ?? []).map((row: any) => ({
+      name: row.name,
+      type: row.type,
+      last_seen_at: row.last_seen_at,
+      mention_count: row.mention_count,
+    })),
+  }
+}

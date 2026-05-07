@@ -132,3 +132,27 @@ describe('riepilogo_giorno — parser data', () => {
     expect(result.summary_text).toBe('Test summary')
   })
 })
+
+describe('lista_entita', () => {
+  it('ritorna lista clienti filtrata per tipo', async () => {
+    mockLimit.mockResolvedValueOnce({
+      data: [
+        { name: 'Bianchi Srl', type: 'cliente', last_seen_at: '2026-05-06', mention_count: 3 },
+        { name: 'Rossi Mario', type: 'cliente', last_seen_at: '2026-05-05', mention_count: 1 },
+      ],
+      error: null,
+    })
+    const { lista_entita } = await import('./memoria-tools')
+    const result = await lista_entita({ tipo: 'cliente' })
+    expect(result.ok).toBe(true)
+    expect(result.entita).toHaveLength(2)
+    expect(result.entita[0].name).toBe('Bianchi Srl')
+  })
+
+  it('ritorna tutti i tipi se tipo non specificato', async () => {
+    mockLimit.mockResolvedValueOnce({ data: [], error: null })
+    const { lista_entita } = await import('./memoria-tools')
+    const result = await lista_entita({})
+    expect(result.ok).toBe(true)
+  })
+})
