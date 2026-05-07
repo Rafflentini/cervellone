@@ -19,6 +19,11 @@ const DEFAULT_LAT = 40.3622
 const DEFAULT_LON = 15.8400
 const DEFAULT_NAME = "Villa d'Agri (PZ)"
 
+// Soglia vento critica per sicurezza ponteggi (km/h).
+// Riferimento: D.Lgs. 81/2008, NTC2018, e prassi Restruktura/PonteggioSicuro.it.
+// Sopra questa soglia: sospendere lavori in quota e segnalare ⚠️ in previsione.
+const WIND_ALERT_THRESHOLD_KMH = 50
+
 // Decodifica codice meteo Open-Meteo (WMO Weather codes)
 function decodeWeatherCode(code: number): string {
   if (code === 0) return 'sereno'
@@ -162,7 +167,7 @@ export async function weatherNow(input: { location?: string; days?: string }): P
         ? `${tMin.toFixed(0)}/${tMax.toFixed(0)}°C`
         : ''
       const rainStr = (typeof rain === 'number' && rain > 0) ? `, pioggia ${rain.toFixed(1)}mm` : ''
-      const windStr = (typeof wind === 'number' && wind > 30) ? `, vento max ${wind.toFixed(0)}km/h ⚠️` : ''
+      const windStr = (typeof wind === 'number' && wind > WIND_ALERT_THRESHOLD_KMH) ? `, vento max ${wind.toFixed(0)}km/h ⚠️` : ''
 
       lines.push(`- ${date}: ${desc} ${range}${rainStr}${windStr}`)
     }
