@@ -1,4 +1,5 @@
 import { google } from 'googleapis'
+import { Readable } from 'stream'
 
 /**
  * FIX W1.3.5: auth dinamica OAuth-first → SA fallback.
@@ -413,6 +414,123 @@ export async function appendSheet(spreadsheetId: string, range: string, values: 
   }
 }
 
+// --- UPLOAD BINARIO + FOLDER HELPERS ---
+
+/** Converte un Buffer Node.js in uno stream Readable per l'API Google Drive */
+function bufferToReadable(buffer: Buffer): Readable {
+  const readable = new Readable()
+  readable.push(buffer)
+  readable.push(null)
+  return readable
+}
+
+/** Cache module-level per folder ID (per non ri-creare a ogni upload) */
+const _folderIdCache = new Map<string, string>()
+
+/**
+ * Lazy-create la cartella "📥 BOZZE_PDF" sotto DOC_IMPRESA.
+ * Restituisce l'ID. Risultato cachato per tutta la vita del modulo.
+ */
+export async function getOrCreateBozzeFolder(): Promise<string> {
+  const CACHE_KEY = 'bozze_pdf'
+  if (_folderIdCache.has(CACHE_KEY)) return _folderIdCache.get(CACHE_KEY)!
+
+  const drive = await getDrive()
+  // Cerca se esiste già
+  const existing = await drive.files.list({
+    q: `name = '📥 BOZZE_PDF' and mimeType = 'application/vnd.google-apps.folder' and '${DRIVE_FOLDERS.DOC_IMPRESA}' in parents and trashed = false`,
+    fields: 'files(id)',
+    pageSize: 1,
+  })
+  if (existing.data.files?.length) {
+    const id = existing.data.files[0].id!
+    _folderIdCache.set(CACHE_KEY, id)
+    return id
+  }
+
+  // Crea
+  const res = await drive.files.create({
+    requestBody: {
+      name: '📥 BOZZE_PDF',
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [DRIVE_FOLDERS.DOC_IMPRESA],
+    },
+    fields: 'id',
+  })
+  const id = res.data.id!
+  _folderIdCache.set(CACHE_KEY, id)
+  console.log(`[DRIVE] getOrCreateBozzeFolder created id=${id}`)
+  return id
+}
+
+/**
+ * Lazy-create la cartella "📥 Telegram Inbox" sotto DOC_IMPRESA.
+ * Usata per l'auto-archive dei file ricevuti via Telegram.
+ */
+export async function getTelegramInboxFolderId(): Promise<string> {
+  const CACHE_KEY = 'telegram_inbox'
+  if (_folderIdCache.has(CACHE_KEY)) return _folderIdCache.get(CACHE_KEY)!
+
+  const drive = await getDrive()
+  const existing = await drive.files.list({
+    q: `name = '📥 Telegram Inbox' and mimeType = 'application/vnd.google-apps.folder' and '${DRIVE_FOLDERS.DOC_IMPRESA}' in parents and trashed = false`,
+    fields: 'files(id)',
+    pageSize: 1,
+  })
+  if (existing.data.files?.length) {
+    const id = existing.data.files[0].id!
+    _folderIdCache.set(CACHE_KEY, id)
+    return id
+  }
+
+  const res = await drive.files.create({
+    requestBody: {
+      name: '📥 Telegram Inbox',
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [DRIVE_FOLDERS.DOC_IMPRESA],
+    },
+    fields: 'id',
+  })
+  const id = res.data.id!
+  _folderIdCache.set(CACHE_KEY, id)
+  console.log(`[DRIVE] getTelegramInboxFolderId created id=${id}`)
+  return id
+}
+
+/**
+ * Carica un file binario (Buffer) su Google Drive.
+ * Crea la cartella BOZZE_PDF se folderId non specificato.
+ */
+export async function uploadBinaryToDrive(
+  buffer: Buffer,
+  fileName: string,
+  mimeType: string,
+  folderId?: string,
+): Promise<{ id: string; webViewLink: string }> {
+  const drive = await getDrive()
+  const resolvedFolderId = folderId || (await getOrCreateBozzeFolder())
+
+  const res = await drive.files.create({
+    requestBody: {
+      name: fileName,
+      parents: [resolvedFolderId],
+      mimeType,
+    },
+    media: {
+      mimeType,
+      body: bufferToReadable(buffer),
+    },
+    fields: 'id,webViewLink',
+    supportsAllDrives: true,
+  })
+
+  const id = res.data.id
+  const webViewLink = res.data.webViewLink
+  if (!id || !webViewLink) throw new Error(`uploadBinaryToDrive: risposta API incompleta id=${id}`)
+  console.log(`[DRIVE] uploadBinaryToDrive name="${fileName}" id=${id}`)
+  return { id, webViewLink }
+}
+
 // --- ESECUZIONE TOOL ---
 
 export async function executeDriveTool(name: string, input: Record<string, string>): Promise<string> {
@@ -486,6 +604,24 @@ export async function executeDriveTool(name: string, input: Record<string, strin
         return `Formato non supportato: ${fmime}. Usa drive_read_pdf o drive_read_document.`
       } catch (err) {
         return `Errore drive_read_office: ${err instanceof Error ? err.message : err}`
+      }
+    }
+
+    case 'drive_upload_binary': {
+      try {
+        const base64 = input.file_data_base64
+        const filename = input.filename
+        const mimeType = input.mime_type || 'application/octet-stream'
+        const folderId = input.folder_id || undefined
+
+        if (!base64 || !filename) return 'Errore: file_data_base64 e filename sono richiesti.'
+        if (base64.length > 14 * 1024 * 1024) return 'File troppo grande (>~10MB base64). Limite caricamento diretto.'
+
+        const buffer = Buffer.from(base64, 'base64')
+        const { webViewLink } = await uploadBinaryToDrive(buffer, filename, mimeType, folderId)
+        return `✅ File "${filename}" caricato su Drive.\n👉 ${webViewLink}`
+      } catch (err) {
+        return `Errore upload Drive: ${err instanceof Error ? err.message : err}`
       }
     }
 
@@ -688,6 +824,20 @@ Il tool sceglie automaticamente la cartella destinazione:
         file_id: { type: 'string', description: 'ID del file DOCX o XLSX nel Drive' },
       },
       required: ['file_id'],
+    },
+  },
+  {
+    name: 'drive_upload_binary',
+    description: 'Carica un file binario (PDF, immagine, ecc.) su Drive. Necessario per archiviare allegati ricevuti o PDF generati. Per HTML→PDF usa genera_pdf direttamente.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        file_data_base64: { type: 'string', description: 'Contenuto file in base64' },
+        filename: { type: 'string', description: 'Nome file con estensione (es. "DURC_Bianchi.pdf")' },
+        mime_type: { type: 'string', description: 'Mime type (es. application/pdf)' },
+        folder_id: { type: 'string', description: 'OPZIONALE — folder Drive destinazione' },
+      },
+      required: ['file_data_base64', 'filename', 'mime_type'],
     },
   },
 ]

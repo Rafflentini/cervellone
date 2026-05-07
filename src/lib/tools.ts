@@ -187,6 +187,46 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
 ]
 
+// ── PDF TOOLS ──
+
+const PDF_TOOLS: ToolDefinition[] = [
+  {
+    name: 'genera_pdf',
+    description: "Genera un PDF binario da contenuto HTML/testo formattato. Output: file PDF salvato in cartella Drive specifica e link cliccabile. Usalo SEMPRE quando l'Ingegnere chiede \"PDF da stampare\" o \"documento per stampa\". NON dire mai \"PDF allegato\" senza aver invocato questo tool.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Nome file PDF (senza estensione, max 100 char)' },
+        html_content: { type: 'string', description: 'Contenuto HTML del documento (verrà convertito in PDF A4)' },
+        folder_id: { type: 'string', description: 'OPZIONALE — folder Drive di destinazione. Se omesso, salva in /BOZZE_PDF/' },
+      },
+      required: ['title', 'html_content'],
+    },
+  },
+]
+
+async function executePdfTools(name: string, input: Record<string, unknown>): Promise<string | null> {
+  if (name !== 'genera_pdf') return null
+  try {
+    const title = (input.title as string || 'Documento').slice(0, 100)
+    const htmlContent = input.html_content as string
+    const folderId = input.folder_id as string | undefined
+
+    if (!htmlContent) return 'Errore: html_content è richiesto.'
+
+    const { generatePdfFromHtml } = await import('./pdf-generator')
+    const { uploadBinaryToDrive } = await import('./drive')
+
+    const buffer = await generatePdfFromHtml(htmlContent, title)
+    const fileName = `${title.replace(/[/\\:*?"<>|]/g, '_')}.pdf`
+    const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, 'application/pdf', folderId)
+
+    return `📄 **${fileName}** salvato su Drive.\n👉 ${webViewLink}`
+  } catch (err) {
+    return `Errore genera_pdf: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 // ── LOOKUP PREZZIARI — URL diretti ODS/XLS/CSV per auto-import ──
 const PREZZIARI_LEENO: Record<string, { url: string; anno: number; formato: string }> = {
   'emilia-romagna': { url: 'https://leeno.org/download/LeenO/public/listini/emilia_romagna/Emilia_Romagna_2026_LeenO.ods', anno: 2026, formato: 'ods' },
@@ -1831,13 +1871,14 @@ async function executeMemoriaWrapper(
 const ALL_TOOLS: ToolDefinition[] = [
   ...STUDIO_TECNICO_TOOLS,
   ...SELF_TOOLS,
-  ...DRIVE_TOOLS, // W1.3: 10 tool Drive/Sheets registrati
+  ...DRIVE_TOOLS, // W1.3: 10 tool Drive/Sheets registrati + drive_upload_binary
   ...GITHUB_TOOLS, // Self-healing 2026-05-04: github_read_file, github_propose_fix, vercel_deploy_status
   ...WEATHER_TOOLS, // 2026-05-05: weather_now via Open-Meteo
   ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool
   ...MEMORIA_TOOLS, // 2026-05-07 Memoria persistente sub-progetto B: 4 tool
+  ...PDF_TOOLS, // 2026-05-07 Pipeline PDF: genera_pdf
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeGmailWrapper, executeMemoriaWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeGmailWrapper, executeMemoriaWrapper]
 
 export function getToolDefinitions() {
   return [

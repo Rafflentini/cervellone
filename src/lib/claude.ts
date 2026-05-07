@@ -337,7 +337,7 @@ export async function callClaudeStreamTelegram(
   // il modello PRIMA di eseguire i tool dell'iter corrente, sprecando lavoro.
   // Nuovo approccio: lascia esplorare fino a 3 round, poi forza sintesi.
   let consecutiveNoText = 0
-  const NO_TEXT_LIMIT = 3
+  const NO_TEXT_LIMIT = 5 // Fix H: self-heal flow usa fino a 5 iter consecutive (read_file + propose_fix + status)
 
   const cfg = await getConfig()
   // Bug 5/Circuit Breaker: getActiveModel può sovrascrivere cfg.model se rolled back

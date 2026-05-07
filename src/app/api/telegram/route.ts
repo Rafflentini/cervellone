@@ -101,8 +101,31 @@ export async function POST(request: NextRequest) {
         await sendTelegramMessage(chatId, '⚠️ Non riesco a scaricare il file.')
         return NextResponse.json({ ok: true })
       }
+
+      // AUTO-ARCHIVE: salva sempre il file originale su Drive prima di passarlo al LLM
+      let archivedDriveLink: string | null = null
+      if (fileData && message.document.file_size && message.document.file_size < 32 * 1024 * 1024) {
+        try {
+          const { uploadBinaryToDrive, getTelegramInboxFolderId } = await import('@/lib/drive')
+          const folderId = await getTelegramInboxFolderId()
+          const { webViewLink } = await uploadBinaryToDrive(
+            Buffer.from(fileData.buffer),
+            fileData.fileName,
+            fileData.mimeType,
+            folderId,
+          )
+          archivedDriveLink = webViewLink
+          console.log(`[TG-ARCHIVE] file=${fileData.fileName} → ${archivedDriveLink}`)
+        } catch (err) {
+          console.warn(`[TG-ARCHIVE] failed, continuing without archive:`, err instanceof Error ? err.message : err)
+        }
+      }
+
       fileBlocks = await buildContentBlocks(fileData)
       fileDescription = message.document.file_name || fileData.fileName
+      if (archivedDriveLink) {
+        fileDescription += ` (originale archiviato su Drive: ${archivedDriveLink})`
+      }
     }
 
     // ── Photo ──
