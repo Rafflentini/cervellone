@@ -1500,7 +1500,7 @@ async function executeGithubWrapper(
   name: string,
   input: Record<string, unknown>,
 ): Promise<string | null> {
-  if (name !== 'github_read_file' && name !== 'github_propose_fix' && name !== 'vercel_deploy_status') return null
+  if (name !== 'github_read_file' && name !== 'github_propose_fix' && name !== 'vercel_deploy_status' && name !== 'github_merge_pr') return null
   const stringInput: Record<string, string> = {}
   for (const [k, v] of Object.entries(input)) {
     stringInput[k] = typeof v === 'string' ? v : JSON.stringify(v)
@@ -1872,7 +1872,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...STUDIO_TECNICO_TOOLS,
   ...SELF_TOOLS,
   ...DRIVE_TOOLS, // W1.3: 10 tool Drive/Sheets registrati + drive_upload_binary
-  ...GITHUB_TOOLS, // Self-healing 2026-05-04: github_read_file, github_propose_fix, vercel_deploy_status
+  ...GITHUB_TOOLS, // Self-healing 2026-05-04 + 2026-05-08: read_file, propose_fix, deploy_status, merge_pr
   ...WEATHER_TOOLS, // 2026-05-05: weather_now via Open-Meteo
   ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool
   ...MEMORIA_TOOLS, // 2026-05-07 Memoria persistente sub-progetto B: 4 tool
