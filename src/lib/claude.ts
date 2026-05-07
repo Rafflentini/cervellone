@@ -3,11 +3,14 @@
  * 
  * Fix integrati: REL-003 (retry), PER-004 (max iterations 10),
  * sanitization, safe logging, fault tolerance.
+ *
+ * FIX BUG-DDT-LOST (2026-05-07): wiring archiveDocumentBlocks nei 3 entrypoint
+ * dopo save assistant, per archiviare blocchi ~~~document nella tabella documents.
  */
 
 import Anthropic from '@anthropic-ai/sdk'
 import { getToolDefinitions, executeTool } from './tools'
-import { searchMemory, saveMessageWithEmbedding } from './memory'
+import { searchMemory, saveMessageWithEmbedding, archiveDocumentBlocks } from './memory'
 import { logError } from './sanitize'
 import { withRetry } from './resilience'
 import { supabase } from './supabase'
@@ -234,6 +237,8 @@ export async function callClaudeStream(
 
   if (conversationId && fullResponse) {
     saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+    // FIX BUG-DDT-LOST: auto-archivia eventuali blocchi ~~~document nella tabella documents
+    archiveDocumentBlocks(conversationId, fullResponse).catch(() => {})
   }
 
   return fullResponse
@@ -307,6 +312,8 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
 
   if (conversationId && fullResponse) {
     saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+    // FIX BUG-DDT-LOST: auto-archivia eventuali blocchi ~~~document nella tabella documents
+    archiveDocumentBlocks(conversationId, fullResponse).catch(() => {})
   }
 
   return fullResponse
@@ -507,6 +514,9 @@ export async function callClaudeStreamTelegram(
 
   if (conversationId && fullResponse && !apiErrorOccurred) {
     saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+    // FIX BUG-DDT-LOST (2026-05-07): auto-archivia eventuali blocchi ~~~document
+    // nella tabella documents per recupero futuro via cerca_documenti.
+    archiveDocumentBlocks(conversationId, fullResponse).catch(() => {})
   }
 
   // Determina outcome per circuit breaker
