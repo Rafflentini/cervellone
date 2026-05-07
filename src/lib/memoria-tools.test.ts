@@ -85,3 +85,50 @@ describe('richiama_memoria', () => {
     expect(result.ok).toBe(false)
   })
 })
+
+describe('riepilogo_giorno — parser data', () => {
+  // Freezare data: 2026-05-07 (mercoledì)
+  beforeEach(() => {
+    vi.setSystemTime(new Date('2026-05-07T10:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('oggi → 2026-05-07', async () => {
+    const { parseDateInput } = await import('./memoria-tools')
+    expect(parseDateInput('oggi')).toBe('2026-05-07')
+  })
+
+  it('ieri → 2026-05-06', async () => {
+    const { parseDateInput } = await import('./memoria-tools')
+    expect(parseDateInput('ieri')).toBe('2026-05-06')
+  })
+
+  it('lunedi-scorso → 2026-05-04', async () => {
+    const { parseDateInput } = await import('./memoria-tools')
+    expect(parseDateInput('lunedi-scorso')).toBe('2026-05-04')
+  })
+
+  it('venerdi-scorso → 2026-05-01', async () => {
+    const { parseDateInput } = await import('./memoria-tools')
+    expect(parseDateInput('venerdi-scorso')).toBe('2026-05-01')
+  })
+
+  it('data ISO pass-through → 2026-05-05', async () => {
+    const { parseDateInput } = await import('./memoria-tools')
+    expect(parseDateInput('2026-05-05')).toBe('2026-05-05')
+  })
+
+  it('riepilogo_giorno chiama supabase con data corretta', async () => {
+    mockEq.mockReturnValueOnce({ maybeSingle: vi.fn().mockResolvedValue({
+      data: { data: '2026-05-06', summary_text: 'Test summary', message_count: 5 },
+      error: null
+    })})
+    const { riepilogo_giorno } = await import('./memoria-tools')
+    const result = await riepilogo_giorno({ data: 'ieri' })
+    expect(result.ok).toBe(true)
+    expect(result.data_iso).toBe('2026-05-06')
+    expect(result.summary_text).toBe('Test summary')
+  })
+})

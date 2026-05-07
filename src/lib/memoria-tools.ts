@@ -149,3 +149,69 @@ export async function richiama_memoria(input: RichiamaInput): Promise<RichiamaRe
 
   return { ok: true, results }
 }
+
+// ─── parseDateInput ──────────────────────────────────────────────────────────
+
+// Mappa giorni italiani → offset JS (0=dom, 1=lun, ..., 6=sab)
+const GIORNO_TO_JS: Record<string, number> = {
+  'lunedi': 1, 'martedi': 2, 'mercoledi': 3,
+  'giovedi': 4, 'venerdi': 5, 'sabato': 6, 'domenica': 0,
+}
+
+export function parseDateInput(input: string): string {
+  const now = new Date()
+  const todayISO = now.toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' }) // YYYY-MM-DD
+
+  if (input === 'oggi') return todayISO
+
+  if (input === 'ieri') {
+    const d = new Date(now)
+    d.setDate(d.getDate() - 1)
+    return d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' })
+  }
+
+  // "lunedi-scorso", "venerdi-scorso", ecc.
+  const giornoMatch = input.match(/^([a-z]+)-scorso$/)
+  if (giornoMatch) {
+    const giornoNorm = giornoMatch[1]
+      .normalize('NFD').replace(/[̀-ͯ]/g, '') // rimuovi accenti
+      .toLowerCase()
+    const targetDay = GIORNO_TO_JS[giornoNorm]
+    if (targetDay !== undefined) {
+      const d = new Date(now)
+      const currentDay = d.getDay() // 0=dom
+      let diff = currentDay - targetDay
+      if (diff <= 0) diff += 7 // sempre la settimana scorsa
+      d.setDate(d.getDate() - diff)
+      return d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' })
+    }
+  }
+
+  // ISO pass-through YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(input)) return input
+
+  // Fallback: oggi
+  return todayISO
+}
+
+// ─── riepilogo_giorno ────────────────────────────────────────────────────────
+
+export async function riepilogo_giorno(input: RiepilogoInput): Promise<RiepilogoResult> {
+  const dataISO = parseDateInput(input.data)
+
+  const { data, error } = await supabase
+    .from('cervellone_summary_giornaliero')
+    .select('data, summary_text, message_count')
+    .eq('data', dataISO)
+    .maybeSingle()
+
+  if (error) return { ok: false, error: error.message }
+  if (!data) return { ok: true, data_iso: dataISO, summary_text: undefined, message_count: 0 }
+
+  return {
+    ok: true,
+    data_iso: data.data,
+    summary_text: data.summary_text,
+    message_count: data.message_count,
+  }
+}
