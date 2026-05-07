@@ -210,6 +210,50 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    // ─── /ricorda <testo> — salva in memoria esplicita (sub-progetto B) ───
+    if (userText.startsWith('/ricorda ') || userText === '/ricorda') {
+      const testo = userText.startsWith('/ricorda ') ? userText.slice('/ricorda '.length).trim() : ''
+      if (!testo) {
+        await sendTelegramMessage(chatId, '⛔ Uso: /ricorda <testo da memorizzare>')
+        return NextResponse.json({ ok: true })
+      }
+      const convId = chatIdToUuid(chatId)
+      const { error } = await supabase.from('cervellone_memoria_esplicita').insert({
+        contenuto: testo,
+        source: 'telegram',
+        conversation_id: convId,
+      })
+      if (error) {
+        await sendTelegramMessage(chatId, `⛔ Errore salvataggio: ${error.message}`)
+      } else {
+        await sendTelegramMessage(chatId, '✅ Salvato in memoria esplicita.')
+      }
+      return NextResponse.json({ ok: true })
+    }
+
+    // ─── /dimentica <uuid> — DELETE memoria esplicita (sub-progetto B) ───
+    if (userText.startsWith('/dimentica ') || userText === '/dimentica') {
+      const uuid = userText.startsWith('/dimentica ') ? userText.slice('/dimentica '.length).trim() : ''
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      if (!uuidRegex.test(uuid)) {
+        await sendTelegramMessage(chatId, '⛔ Formato UUID non valido. Serve UUID esatto.')
+        return NextResponse.json({ ok: true })
+      }
+      const { data, error } = await supabase
+        .from('cervellone_memoria_esplicita')
+        .delete()
+        .eq('id', uuid)
+        .select('id')
+      if (error) {
+        await sendTelegramMessage(chatId, `⛔ Errore: ${error.message}`)
+      } else if (!data || data.length === 0) {
+        await sendTelegramMessage(chatId, '⛔ ID non trovato.')
+      } else {
+        await sendTelegramMessage(chatId, '✅ Riga rimossa.')
+      }
+      return NextResponse.json({ ok: true })
+    }
+
     // ── Bug 1: mutex per chat ──
     // Evita bgProcess paralleli sulla stessa chat: se l'utente manda un messaggio
     // mentre il bot sta elaborando il precedente, droppiamo il nuovo per non
