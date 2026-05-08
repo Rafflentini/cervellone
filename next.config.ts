@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: false,
-  serverExternalPackages: ['pdf-parse', '@napi-rs/canvas', 'pdfjs-dist'],
+  serverExternalPackages: ['pdf-parse', '@napi-rs/canvas', 'pdfjs-dist', '@sparticuz/chromium', 'puppeteer-core'],
   // FIX Bug 4: Vercel file tracing non segue dynamic import .mjs di pdfjs-dist
   // → pdf.worker.mjs non viene bundlato → pdf.mjs crasha con "Cannot find module".
   // Forziamo l'inclusione esplicita per le route che chiamano drive_read_pdf.

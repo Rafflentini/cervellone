@@ -187,7 +187,7 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
 ]
 
-// ── PDF TOOLS ──
+// ── DOCUMENT TOOLS (PDF + DOCX + XLSX) ──
 
 const PDF_TOOLS: ToolDefinition[] = [
   {
@@ -203,27 +203,93 @@ const PDF_TOOLS: ToolDefinition[] = [
       required: ['title', 'html_content'],
     },
   },
+  {
+    name: 'genera_docx',
+    description: "Genera un file Word .docx editabile da contenuto HTML semplice (h1/h2/h3/p). Output: file DOCX salvato su Drive + link. Usalo quando l'Ingegnere chiede 'Word', 'documento editabile', 'lettera', 'relazione modificabile', 'checklist', 'verbale'. Per CME/quantità/prezziari usa invece genera_xlsx (Excel è migliore per dati tabellari numerici).",
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Nome file DOCX (senza estensione, max 100 char)' },
+        html_content: { type: 'string', description: 'Contenuto HTML semplice. h1/h2/h3 → headings Word, p/div/li → paragrafi. Niente tabelle complesse né CSS.' },
+        folder_id: { type: 'string', description: 'OPZIONALE — folder Drive di destinazione. Default /BOZZE_PDF/' },
+      },
+      required: ['title', 'html_content'],
+    },
+  },
+  {
+    name: 'genera_xlsx',
+    description: "Genera un file Excel .xlsx da dati strutturati (NON HTML). Output: file XLSX salvato su Drive + link. Usalo SEMPRE per CME, computi, registri quantità, SAL, prezziari, tabelle con dati numerici. Prima riga di ogni foglio è automaticamente formattata come header (grassetto bianco su blu Restruktura, freeze).",
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Nome file XLSX (senza estensione, max 100 char)' },
+        sheets: {
+          type: 'array',
+          description: 'Array di fogli. Ogni foglio ha name (max 31 char) e rows (array di array — prima riga = header, righe successive = dati). Numeri come number JSON, NON come stringa.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Nome foglio Excel (max 31 char)' },
+              rows: {
+                type: 'array',
+                description: 'Righe della tabella. Prima riga = header (intestazioni colonne). Righe seguenti = dati. Tipo cella: string | number | null.',
+                items: { type: 'array' },
+              },
+            },
+            required: ['name', 'rows'],
+          },
+        },
+        folder_id: { type: 'string', description: 'OPZIONALE — folder Drive di destinazione. Default /BOZZE_PDF/' },
+      },
+      required: ['title', 'sheets'],
+    },
+  },
 ]
 
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
 async function executePdfTools(name: string, input: Record<string, unknown>): Promise<string | null> {
-  if (name !== 'genera_pdf') return null
+  if (name !== 'genera_pdf' && name !== 'genera_docx' && name !== 'genera_xlsx') return null
+
   try {
-    const title = (input.title as string || 'Documento').slice(0, 100)
-    const htmlContent = input.html_content as string
+    const title = ((input.title as string) || 'Documento').slice(0, 100)
     const folderId = input.folder_id as string | undefined
-
-    if (!htmlContent) return 'Errore: html_content è richiesto.'
-
-    const { generatePdfFromHtml } = await import('./pdf-generator')
+    const safeTitle = title.replace(/[/\\:*?"<>|]/g, '_')
     const { uploadBinaryToDrive } = await import('./drive')
 
-    const buffer = await generatePdfFromHtml(htmlContent, title)
-    const fileName = `${title.replace(/[/\\:*?"<>|]/g, '_')}.pdf`
-    const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, 'application/pdf', folderId)
+    if (name === 'genera_pdf') {
+      const htmlContent = input.html_content as string
+      if (!htmlContent) return 'Errore: html_content è richiesto.'
+      const { generatePdfFromHtml } = await import('./pdf-generator')
+      const buffer = await generatePdfFromHtml(htmlContent, title)
+      const fileName = `${safeTitle}.pdf`
+      const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, 'application/pdf', folderId)
+      return `📄 **${fileName}** salvato su Drive.\n👉 ${webViewLink}`
+    }
 
-    return `📄 **${fileName}** salvato su Drive.\n👉 ${webViewLink}`
+    if (name === 'genera_docx') {
+      const htmlContent = input.html_content as string
+      if (!htmlContent) return 'Errore: html_content è richiesto.'
+      const { generateDocxFromHtml } = await import('./pdf-generator')
+      const buffer = await generateDocxFromHtml(htmlContent, title)
+      const fileName = `${safeTitle}.docx`
+      const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, DOCX_MIME, folderId)
+      return `📝 **${fileName}** salvato su Drive.\n👉 ${webViewLink}`
+    }
+
+    // genera_xlsx
+    const sheets = input.sheets as unknown
+    if (!Array.isArray(sheets) || sheets.length === 0) {
+      return 'Errore: sheets è richiesto e deve essere un array non vuoto.'
+    }
+    const { generateXlsxFromData } = await import('./pdf-generator')
+    const buffer = await generateXlsxFromData(sheets as { name: string; rows: (string | number | null)[][] }[], title)
+    const fileName = `${safeTitle}.xlsx`
+    const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, XLSX_MIME, folderId)
+    return `📊 **${fileName}** salvato su Drive.\n👉 ${webViewLink}`
   } catch (err) {
-    return `Errore genera_pdf: ${err instanceof Error ? err.message : err}`
+    return `Errore ${name}: ${err instanceof Error ? err.message : err}`
   }
 }
 
