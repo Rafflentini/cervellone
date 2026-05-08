@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>DDT TEST 2026</title>
+<style>
+@page { size: A4 portrait; margin: 15mm; }
+* { box-sizing: border-box; }
+body { font-family: 'Helvetica', Arial, sans-serif; font-size: 10pt; color: #1a1a1a; line-height: 1.35; margin: 0; }
+.header { border-bottom: 3px solid #c8102e; padding-bottom: 10px; margin-bottom: 12px; }
+.header-row { display: table; width: 100%; }
+.header-left, .header-right { display: table-cell; vertical-align: top; }
+.header-right { text-align: right; }
+.azienda-nome { font-size: 18pt; font-weight: bold; color: #c8102e; margin: 0; letter-spacing: 0.5px; }
+.azienda-info { font-size: 8.5pt; color: #555; margin-top: 3px; line-height: 1.3; }
+.ddt-titolo { font-size: 16pt; font-weight: bold; margin: 0; }
+.ddt-numero { font-size: 12pt; margin-top: 4px; }
+.ddt-data { font-size: 10pt; color: #555; margin-top: 2px; }
+table.box { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+table.box td { border: 1px solid #999; padding: 6px 8px; vertical-align: top; }
+.label { font-size: 7.5pt; text-transform: uppercase; color: #666; font-weight: bold; letter-spacing: 0.4px; margin-bottom: 3px; display: block; }
+.field { font-size: 10pt; }
+.due-colonne { display: table; width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+.col { display: table-cell; width: 50%; border: 1px solid #999; padding: 8px; vertical-align: top; }
+.col + .col { border-left: none; }
+.col-titolo { font-size: 8pt; text-transform: uppercase; color: #c8102e; font-weight: bold; margin-bottom: 5px; letter-spacing: 0.5px; }
+table.merce { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+table.merce th { background: #2c2c2c; color: white; padding: 6px 5px; font-size: 9pt; text-align: left; font-weight: bold; }
+table.merce th.center { text-align: center; }
+table.merce td { border: 1px solid #999; padding: 6px 5px; font-size: 10pt; vertical-align: top; }
+table.merce td.center { text-align: center; }
+.firme { display: table; width: 100%; margin-top: 18px; border-collapse: collapse; }
+.firma-cell { display: table-cell; width: 33.33%; border: 1px solid #999; padding: 6px 8px; height: 65px; vertical-align: top; }
+.firma-cell + .firma-cell { border-left: none; }
+.firma-label { font-size: 7.5pt; text-transform: uppercase; color: #666; font-weight: bold; letter-spacing: 0.4px; }
+.footer-note { margin-top: 12px; padding-top: 6px; border-top: 1px solid #ccc; font-size: 7.5pt; color: #888; text-align: center; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-row">
+    <div class="header-left">
+      <p class="azienda-nome">RESTRUKTURA S.r.l.</p>
+      <p class="azienda-info">
+        Via [Sede] – 85059 Villa d'Agri (PZ)<br>
+        P.IVA / C.F. 02087420762<br>
+        Tel. [—] — info@restruktura.it
+      </p>
+    </div>
+    <div class="header-right">
+      <p class="ddt-titolo">DOCUMENTO DI TRASPORTO</p>
+      <p class="ddt-numero">N. TEST/2026</p>
+      <p class="ddt-data">Data emissione: 08/05/2026</p>
+    </div>
+  </div>
+</div>
+
+<table class="box">
+  <tr>
+    <td>
+      <span class="label">Causale del Trasporto</span>
+      <span class="field">Consegna materiale per appalto</span>
+    </td>
+    <td>
+      <span class="label">Aspetto Esteriore dei Beni</span>
+      <span class="field">N. 3 pallet su bancali in legno</span>
+    </td>
+  </tr>
+</table>
+
+<div class="due-colonne">
+  <div class="col">
+    <p class="col-titolo">Mittente / Cedente</p>
+    <p><strong>RESTRUKTURA S.r.l.</strong></p>
+    <p>Via [Sede] – 85059 Villa d'Agri (PZ)</p>
+    <p>P.IVA 02087420762</p>
+  </div>
+  <div class="col">
+    <p class="col-titolo">Destinatario</p>
+    <p><strong>Cliente Test SRL</strong></p>
+    <p>Via Roma 1, 20100 Milano</p>
+    <p>Indirizzo completo da integrare</p>
+  </div>
+</div>
+
+<div class="due-colonne">
+  <div class="col">
+    <p class="col-titolo">Luogo di Partenza</p>
+    <p>Sede Restruktura S.r.l. — Villa d'Agri (PZ)</p>
+  </div>
+  <div class="col">
+    <p class="col-titolo">Luogo di Destinazione</p>
+    <p>Cantiere Cliente Test — Milano</p>
+  </div>
+</div>
+
+<table class="merce">
+  <thead>
+    <tr>
+      <th style="width: 5%;" class="center">N.</th>
+      <th>Descrizione Merce</th>
+      <th style="width: 10%;" class="center">U.M.</th>
+      <th style="width: 10%;" class="center">Quantità</th>
+      <th style="width: 25%;">Note</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="center">1</td>
+      <td>Frangisole modello IRIS 8<br><em>Colore: cotto — Imballaggio: pallet</em></td>
+      <td class="center">PALLET</td>
+      <td class="center">3</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td class="center">2</td>
+      <td>Test caratteri italiani: àèìòù é È</td>
+      <td class="center">PZ</td>
+      <td class="center">10</td>
+      <td>verifica encoding UTF-8</td>
+    </tr>
+  </tbody>
+</table>
+
+<table class="box">
+  <tr>
+    <td><span class="label">N. Colli</span><span class="field">3</span></td>
+    <td><span class="label">Peso Lordo (kg)</span><span class="field">__________</span></td>
+    <td><span class="label">Peso Netto (kg)</span><span class="field">__________</span></td>
+    <td><span class="label">Porto</span><span class="field">Franco destinatario</span></td>
+  </tr>
+</table>
+
+<table class="box">
+  <tr>
+    <td><span class="label">Trasporto a Cura del</span><span class="field">Mittente</span></td>
+    <td><span class="label">Mezzo di Trasporto</span><span class="field">Iveco Daily 35C — Targa GY486BF</span></td>
+    <td><span class="label">Vettore</span><span class="field">Restruktura S.r.l.</span></td>
+    <td><span class="label">Data e Ora Ritiro</span><span class="field">08/05/2026 — ore __________</span></td>
+  </tr>
+</table>
+
+<div class="firme">
+  <div class="firma-cell">
+    <span class="firma-label">Firma Mittente</span>
+  </div>
+  <div class="firma-cell">
+    <span class="firma-label">Firma Vettore / Conducente</span>
+  </div>
+  <div class="firma-cell">
+    <span class="firma-label">Firma Destinatario</span>
+  </div>
+</div>
+
+<p class="footer-note">DDT emesso ai sensi del D.P.R. 472/1996. Documento da conservare ai fini fiscali.</p>
+
+</body>
+</html>
