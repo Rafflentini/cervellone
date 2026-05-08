@@ -6,6 +6,10 @@
  * - Ricerca ibrida: embedding + keyword
  * - Chunk con overlap per file grandi
  * - Sanitizzazione prima del salvataggio
+ *
+ * FIX BUG-DDT-LOST (2026-05-07):
+ * - Troncamento retrieval alzato da 500 a 4000 char (8000 se ~~~document)
+ * - Nuova archiveDocumentBlocks: auto-salva blocchi ~~~document in tabella documents
  */
 
 import { supabase } from './supabase'
@@ -127,6 +131,11 @@ export async function searchMemory(query: string, limit = 5): Promise<string> {
 
   if (results.length === 0) return ''
 
+  // FIX BUG-DDT-LOST (2026-05-07):
+  // Vecchio limite 500 char troncava documenti generati (DDT, preventivi, POS,
+  // perizie), facendo perdere codici prodotto/quantità/pesi → modello rigenerava
+  // su dati allucinati. Limite alzato a 4000 char standard, 8000 char se il
+  // contenuto include un blocco ~~~document (per preservare HTML completo).
   const memories = results.slice(0, limit).map((item, idx) => {
     const label =
       item.message_role === 'knowledge' ? '📄 Documento'
@@ -134,10 +143,96 @@ export async function searchMemory(query: string, limit = 5): Promise<string> {
       : item.message_role === 'assistant' ? '🧠 Risposta precedente'
       : item.message_role === 'user' ? '💬 Domanda precedente'
       : '📋 Dato'
-    return `[${label} ${idx + 1}]\n${item.content.slice(0, 500)}`
+    const sliceLimit = item.content.includes('~~~document') ? 8000 : 4000
+    return `[${label} ${idx + 1}]\n${item.content.slice(0, sliceLimit)}`
   })
 
   return `\n\n# Contesto dalla memoria\n${memories.join('\n\n---\n\n')}`
+}
+
+/**
+ * FIX BUG-DDT-LOST (2026-05-07):
+ * Estrae blocchi ~~~document dalla risposta assistant e li salva nella tabella
+ * `documents` per recupero futuro via cerca_documenti. Il title è estratto dal
+ * primo <h1>/<h2>/<title> del HTML, altrimenti fallback "Documento <data> #N".
+ *
+ * Idempotente per content+conversation: se un documento identico esiste già,
+ * lo skip (evita duplicati su rigenerazioni).
+ *
+ * Da chiamare in claude.ts dopo ogni saveMessageWithEmbedding(assistant).
+ */
+export async function archiveDocumentBlocks(
+  conversationId: string,
+  fullResponse: string,
+): Promise<void> {
+  if (!fullResponse || !fullResponse.includes('~~~document')) return
+
+  const blockPattern = /~~~document\s*([\s\S]*?)~~~/g
+  let match: RegExpExecArray | null
+  let blockIdx = 0
+
+  while ((match = blockPattern.exec(fullResponse)) !== null) {
+    blockIdx++
+    const html = match[1].trim()
+    if (html.length < 100) continue // skip vuoti/trivial
+
+    // Estrai title da h1/h2/title (in quest'ordine di priorità)
+    let title = ''
+    const h1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i)
+    const h2 = html.match(/<h2[^>]*>([^<]+)<\/h2>/i)
+    const titleTag = html.match(/<title[^>]*>([^<]+)<\/title>/i)
+    if (h1) title = h1[1].trim()
+    else if (h2) title = h2[1].trim()
+    else if (titleTag) title = titleTag[1].trim()
+    else title = `Documento ${new Date().toISOString().slice(0, 10)} #${blockIdx}`
+
+    // Pulisce entità HTML basic dal title
+    title = title
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .slice(0, 200)
+
+    // Idempotenza: skip se già esiste documento con stesso name+conversation
+    try {
+      const { data: existing } = await supabase
+        .from('documents')
+        .select('id')
+        .eq('conversation_id', conversationId)
+        .eq('name', title)
+        .limit(1)
+      if (existing && existing.length > 0) {
+        logInfo(`DOC auto-archive skip (già esistente): "${title.slice(0, 60)}"`)
+        continue
+      }
+    } catch {
+      // Se la query fallisce, procedi con l'insert (meglio duplicato che perso)
+    }
+
+    // Salva in documents
+    try {
+      const { error } = await supabase.from('documents').insert({
+        name: title,
+        content: html,
+        conversation_id: conversationId,
+        type: 'html',
+        metadata: {
+          source: 'auto-archive',
+          block_idx: blockIdx,
+          archived_at: new Date().toISOString(),
+        },
+      })
+      if (error) {
+        logWarn(`archiveDocumentBlocks insert error: ${error.message}`)
+      } else {
+        logInfo(`DOC auto-archiviato: "${title.slice(0, 60)}" (${html.length} char)`)
+      }
+    } catch (err) {
+      logWarn(`archiveDocumentBlocks failed: ${(err as Error).message}`)
+    }
+  }
 }
 
 /**
