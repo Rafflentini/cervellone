@@ -11,10 +11,12 @@
     "test:ui": "npx playwright test --ui",
     "test:live": "TEST_BASE_URL=https://cervellone-5poc.vercel.app npx playwright test",
     "test:unit": "vitest run",
-    "test:unit:watch": "vitest"
+    "test:unit:watch": "vitest",
+    "smoke:pdf": "tsx scripts/smoke-pdf-puppeteer.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
+    "@sparticuz/chromium": "^138.0.0",
     "@supabase/supabase-js": "^2.100.0",
     "@trigger.dev/sdk": "4.4.5",
     "@vercel/functions": "^1.0.0",
@@ -26,6 +28,7 @@
     "mammoth": "^1.12.0",
     "next": "16.2.1",
     "pdf-parse": "^2.4.5",
+    "puppeteer-core": "^24.0.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
@@ -38,7 +41,9 @@
     "@vitest/ui": "^4.1.5",
     "eslint": "^9",
     "eslint-config-next": "16.2.1",
+    "puppeteer": "^24.0.0",
     "tailwindcss": "^4",
+    "tsx": "^4.19.0",
     "typescript": "^5",
     "vitest": "^4.1.5"
   }
