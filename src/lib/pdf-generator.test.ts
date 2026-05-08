@@ -23,7 +23,7 @@ vi.mock('@sparticuz/chromium', () => ({
 }))
 
 import puppeteer from 'puppeteer-core'
-import { generatePdfFromHtml } from './pdf-generator'
+import { generatePdfFromHtml, generateDocxFromHtml, generateXlsxFromData } from './pdf-generator'
 
 function makeMockBrowser(opts: {
   setContent?: ReturnType<typeof vi.fn>
@@ -117,5 +117,63 @@ describe('generatePdfFromHtml', () => {
     expect(opts.displayHeaderFooter).toBe(true)
     expect(opts.footerTemplate).toContain('RESTRUKTURA')
     expect(opts.footerTemplate).toContain('pageNumber')
+  })
+})
+
+describe('generateDocxFromHtml', () => {
+  it('returns Buffer with ZIP magic bytes (DOCX is ZIP)', async () => {
+    const buf = await generateDocxFromHtml('<h1>Titolo</h1><p>Corpo</p>', 'TestDoc')
+    expect(buf).toBeInstanceOf(Buffer)
+    // DOCX file = ZIP container, magic bytes "PK\x03\x04"
+    expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
+    expect(buf.length).toBeGreaterThan(2000)
+  })
+
+  it('handles plain text fallback when no semantic blocks', async () => {
+    const buf = await generateDocxFromHtml('Solo testo senza tag', 'PlainText')
+    expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
+  })
+
+  it('strips style/script/head from HTML before parsing', async () => {
+    const html = `<style>body{color:red}</style><h1>Vero titolo</h1>`
+    const buf = await generateDocxFromHtml(html, 'StripTest')
+    expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
+  })
+})
+
+describe('generateXlsxFromData', () => {
+  it('returns Buffer with ZIP magic bytes (XLSX is ZIP)', async () => {
+    const buf = await generateXlsxFromData(
+      [{ name: 'Test', rows: [['Codice', 'Descr', 'Q.tà'], ['BAS_01', 'Demolizione', 50]] }],
+      'TestXlsx',
+    )
+    expect(buf).toBeInstanceOf(Buffer)
+    expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
+    expect(buf.length).toBeGreaterThan(2000)
+  })
+
+  it('handles empty sheets array', async () => {
+    const buf = await generateXlsxFromData([], 'EmptyTest')
+    expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
+  })
+
+  it('sanitizes sheet names with forbidden characters', async () => {
+    // Excel proibisce \ / ? * [ ] : nei nomi foglio
+    const buf = await generateXlsxFromData(
+      [{ name: 'CME/2026:test', rows: [['a', 'b']] }],
+      'SanitizeTest',
+    )
+    expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
+  })
+
+  it('handles multi-sheet workbook', async () => {
+    const buf = await generateXlsxFromData(
+      [
+        { name: 'CME', rows: [['Codice', 'Descr'], ['A', 'X']] },
+        { name: 'SAL', rows: [['Voce', 'Importo'], ['Demo', 1000]] },
+      ],
+      'MultiSheet',
+    )
+    expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
   })
 })
