@@ -2,10 +2,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { getAccountConfig, listAccounts, EmailConfigError } from '../tools/email/config'
 
-const ENV_BACKUP = { ...process.env }
+const RELEVANT_KEYS = [
+  'TOPHOST_IMAP_HOST', 'TOPHOST_IMAP_PORT', 'TOPHOST_IMAP_TLS',
+  'TOPHOST_SMTP_HOST', 'TOPHOST_SMTP_PORT', 'TOPHOST_SMTP_STARTTLS',
+  'EMAIL_INFO_USER', 'EMAIL_INFO_PASS', 'EMAIL_INFO_FROM_ADDRESS', 'EMAIL_INFO_DISPLAY_NAME',
+  'EMAIL_RAFFAELE_USER', 'EMAIL_RAFFAELE_PASS', 'EMAIL_RAFFAELE_FROM_ADDRESS', 'EMAIL_RAFFAELE_DISPLAY_NAME',
+] as const
 
 describe('email/config', () => {
   beforeEach(() => {
+    for (const k of RELEVANT_KEYS) delete process.env[k]
     process.env.TOPHOST_IMAP_HOST = 'pop.tophost.it'
     process.env.TOPHOST_IMAP_PORT = '993'
     process.env.TOPHOST_IMAP_TLS = 'true'
@@ -17,7 +23,9 @@ describe('email/config', () => {
     process.env.EMAIL_INFO_FROM_ADDRESS = 'info@restruktura.it'
     process.env.EMAIL_INFO_DISPLAY_NAME = 'Restruktura'
   })
-  afterEach(() => { process.env = { ...ENV_BACKUP } })
+  afterEach(() => {
+    for (const k of RELEVANT_KEYS) delete process.env[k]
+  })
 
   it('returns account config for "info"', () => {
     const cfg = getAccountConfig('info')
@@ -43,5 +51,28 @@ describe('email/config', () => {
   it('listAccounts returns only configured accounts', () => {
     delete process.env.EMAIL_RAFFAELE_USER
     expect(listAccounts()).toEqual(['info'])
+  })
+
+  it('throws EmailConfigError on non-numeric port', () => {
+    process.env.TOPHOST_IMAP_PORT = 'abc'
+    expect(() => getAccountConfig('info')).toThrow(EmailConfigError)
+  })
+
+  it('throws EmailConfigError on out-of-range port', () => {
+    process.env.TOPHOST_IMAP_PORT = '70000'
+    expect(() => getAccountConfig('info')).toThrow(EmailConfigError)
+  })
+
+  it('throws EmailConfigError on unrecognized boolean', () => {
+    process.env.TOPHOST_IMAP_TLS = 'maybe'
+    expect(() => getAccountConfig('info')).toThrow(EmailConfigError)
+  })
+
+  it('accepts "1" and "yes" for boolean true', () => {
+    process.env.TOPHOST_IMAP_TLS = '1'
+    process.env.TOPHOST_SMTP_STARTTLS = 'yes'
+    const cfg = getAccountConfig('info')
+    expect(cfg.imap.secure).toBe(true)
+    expect(cfg.smtp.requireTLS).toBe(true)
   })
 })

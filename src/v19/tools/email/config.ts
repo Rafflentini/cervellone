@@ -20,26 +20,38 @@ export type EmailAccountConfig = {
   displayName: string
 }
 
-const SERVER_VARS = ['TOPHOST_IMAP_HOST', 'TOPHOST_IMAP_PORT', 'TOPHOST_IMAP_TLS', 'TOPHOST_SMTP_HOST', 'TOPHOST_SMTP_PORT', 'TOPHOST_SMTP_STARTTLS'] as const
-
 function requireEnv(key: string): string {
   const v = process.env[key]
   if (!v || v.trim() === '') throw new EmailConfigError(`Env mancante: ${key}`)
   return v
 }
 
+function parsePort(key: string, raw: string): number {
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n <= 0 || n > 65535) {
+    throw new EmailConfigError(`${key} non è una porta valida (1-65535): "${raw}"`)
+  }
+  return n
+}
+
+function parseBool(key: string, raw: string): boolean {
+  const v = raw.toLowerCase().trim()
+  if (v === 'true' || v === '1' || v === 'yes') return true
+  if (v === 'false' || v === '0' || v === 'no') return false
+  throw new EmailConfigError(`${key} deve essere true|false|1|0|yes|no, ricevuto: "${raw}"`)
+}
+
 function getServer() {
-  for (const k of SERVER_VARS) requireEnv(k)
   return {
     imap: {
       host: requireEnv('TOPHOST_IMAP_HOST'),
-      port: Number(requireEnv('TOPHOST_IMAP_PORT')),
-      secure: requireEnv('TOPHOST_IMAP_TLS').toLowerCase() === 'true',
+      port: parsePort('TOPHOST_IMAP_PORT', requireEnv('TOPHOST_IMAP_PORT')),
+      secure: parseBool('TOPHOST_IMAP_TLS', requireEnv('TOPHOST_IMAP_TLS')),
     },
     smtp: {
       host: requireEnv('TOPHOST_SMTP_HOST'),
-      port: Number(requireEnv('TOPHOST_SMTP_PORT')),
-      requireTLS: requireEnv('TOPHOST_SMTP_STARTTLS').toLowerCase() === 'true',
+      port: parsePort('TOPHOST_SMTP_PORT', requireEnv('TOPHOST_SMTP_PORT')),
+      requireTLS: parseBool('TOPHOST_SMTP_STARTTLS', requireEnv('TOPHOST_SMTP_STARTTLS')),
     },
   }
 }
