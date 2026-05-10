@@ -1,0 +1,13 @@
+-- 2026-05-11-v19-email-subagent.sql
+-- Mail subagent: audit log + senders whitelist + invoices dedup + pending send confirm
+-- Pattern: RLS DISABLED (allineato V19 foundation). Single-line per Monaco editor.
+
+CREATE TABLE IF NOT EXISTS cervellone_email_log (id BIGSERIAL PRIMARY KEY, ts TIMESTAMPTZ NOT NULL DEFAULT now(), account TEXT NOT NULL, action TEXT NOT NULL, direction TEXT, message_id TEXT, subject TEXT, from_addr TEXT, to_addrs TEXT[], cc_addrs TEXT[], bcc_addrs TEXT[], attachments_count INT NOT NULL DEFAULT 0, attachments_summary JSONB, status TEXT NOT NULL DEFAULT 'ok', error TEXT, request_id TEXT, routine_name TEXT, raw_meta JSONB); CREATE INDEX IF NOT EXISTS ix_email_log_ts ON cervellone_email_log (ts DESC); CREATE INDEX IF NOT EXISTS ix_email_log_account_action ON cervellone_email_log (account, action); ALTER TABLE cervellone_email_log DISABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS cervellone_email_senders (id BIGSERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, category TEXT NOT NULL, label TEXT, active BOOLEAN NOT NULL DEFAULT true, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), notes TEXT); CREATE INDEX IF NOT EXISTS ix_email_senders_cat ON cervellone_email_senders (category, active); ALTER TABLE cervellone_email_senders DISABLE ROW LEVEL SECURITY;
+
+INSERT INTO cervellone_email_senders (email, category, label) VALUES ('billing@anthropic.com', 'fatture_estere', 'Anthropic'), ('invoice@vercel.com', 'fatture_estere', 'Vercel'), ('support@openai.com', 'fatture_estere', 'OpenAI billing support'), ('billing@supabase.io', 'fatture_estere', 'Supabase') ON CONFLICT (email) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS cervellone_email_invoices_log (id BIGSERIAL PRIMARY KEY, month_ref TEXT NOT NULL, source_uid INT NOT NULL, source_folder TEXT NOT NULL DEFAULT 'INBOX', from_addr TEXT, subject TEXT, received_at TIMESTAMPTZ, forwarded_at TIMESTAMPTZ NOT NULL DEFAULT now(), forwarded_message_id TEXT, attachments_filenames TEXT[], UNIQUE (month_ref, source_uid, source_folder)); ALTER TABLE cervellone_email_invoices_log DISABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS cervellone_email_pending_send (uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(), created_at TIMESTAMPTZ NOT NULL DEFAULT now(), expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '30 minutes'), from_account TEXT NOT NULL, to_addrs TEXT[] NOT NULL, cc_addrs TEXT[], bcc_addrs TEXT[], subject TEXT NOT NULL, body_text TEXT NOT NULL, body_html TEXT, attachments JSONB, in_reply_to JSONB, status TEXT NOT NULL DEFAULT 'pending', sent_message_id TEXT, sent_at TIMESTAMPTZ); CREATE INDEX IF NOT EXISTS ix_email_pending_status ON cervellone_email_pending_send (status, expires_at); ALTER TABLE cervellone_email_pending_send DISABLE ROW LEVEL SECURITY;
