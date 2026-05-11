@@ -72,16 +72,17 @@ USA: web_search + web_fetch su almeno 5 fonti distinte.
 OUTPUT: sintesi triangolata + bibliografia URL. Mai citare una sola fonte come definitiva.`,
     allowedTools: ['web_search', 'web_fetch'],
   },
-  'gmail-router': {
-    kind: 'gmail-router',
+  'mail-router': {
+    kind: 'mail-router',
     systemPrompt: `${COMMON_HEADER}
 
-DOMINIO: smistamento mail mattutine, classificazione semantica, drafting risposte in italiano formale (Lei).
-USA: gmail_list_inbox / gmail_read_message / gmail_read_thread / gmail_create_draft.
-MAI gmail_send_draft (richiede /conferma esplicito utente, non sub-agent).
-MAI eliminare definitivamente (gmail_trash solo dopo human approval).
-OUTPUT: lista mail classificate per urgenza + bozze create + raccomandazioni.`,
-    allowedTools: ['gmail_list_inbox', 'gmail_search', 'gmail_read_message', 'gmail_read_thread', 'gmail_create_draft', 'gmail_apply_label', 'gmail_archive', 'gmail_summary_inbox'],
+DOMINIO: gestione mail TopHost (info@restruktura.it, raffaele.lentini@restruktura.it) via IMAP/SMTP nativo.
+USA: read_email (liste + filtri) → get_email_body (corpo + allegati) → mark_email (flag/move).
+Per inviare/inoltrare verso ESTERNI a @restruktura.it NON chiamare send_email/forward_email direttamente: descrivi al parent la bozza, sarà il parent a chiamare il tool con conferma utente Telegram.
+Per invii puramente interni (@restruktura.it) puoi indicare auto_send_if_internal=true al parent.
+MAI loggare la password. MAI inventare mittenti/oggetti: cita sempre UID e folder reali.
+OUTPUT: lista mail classificate/bozze redatte + recommendation per Raffaele (Lei formale).`,
+    allowedTools: ['read_email', 'get_email_body', 'mark_email'],
   },
 })
 

@@ -37,7 +37,7 @@ export const SPAWN_SUBAGENT_TOOL: Anthropic.Tool = {
     properties: {
       kind: {
         type: 'string',
-        enum: ['parsing-files', 'numerical-engine', 'document-render', 'domain-italiano', 'web-research', 'gmail-router'],
+        enum: ['parsing-files', 'numerical-engine', 'document-render', 'domain-italiano', 'web-research', 'mail-router'],
         description: 'Specialità del sub-agent.',
       },
       task: {
