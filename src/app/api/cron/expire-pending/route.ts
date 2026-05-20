@@ -15,10 +15,10 @@
  * reale. Vedi `feedback_vercel_cron_run_now.md` (lezione 7 mag).
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { supabase } from '@/lib/supabase'
 import { expirePendingOlderThan } from '@/v19/tools/email/pending'
 
 export const dynamic = 'force-dynamic'
-export const runtime = 'nodejs'
 export const maxDuration = 60
 
 export async function GET(req: NextRequest) {
@@ -26,11 +26,50 @@ export async function GET(req: NextRequest) {
   if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
   }
+
+  // DIAGNOSTIC PROBE: prima di chiamare expirePendingOlderThan, faccio una
+  // SELECT semplice sulla stessa tabella per discriminare il fail mode:
+  //  - se probe fallisce -> problema generale tabella/connessione
+  //  - se probe OK ma UPDATE fail -> problema specifico UPDATE+select chain
+  const probeStart = Date.now()
+  const { data: probeData, error: probeError } = await supabase
+    .from('cervellone_email_pending_send')
+    .select('uuid', { count: 'exact', head: true })
+  const probeMs = Date.now() - probeStart
+  if (probeError) {
+    console.error('[expire-pending] PROBE select fail', {
+      ms: probeMs,
+      message: probeError.message,
+      code: probeError.code,
+      details: probeError.details,
+      hint: probeError.hint,
+    })
+    return NextResponse.json({
+      ok: false,
+      stage: 'probe',
+      error: probeError.message,
+      code: probeError.code,
+    }, { status: 500 })
+  }
+  console.log('[expire-pending] PROBE OK', { ms: probeMs, count: probeData })
+
   try {
     const { expired } = await expirePendingOlderThan(30)
-    return NextResponse.json({ ok: true, expired })
+    return NextResponse.json({ ok: true, expired, probe_ms: probeMs })
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    return NextResponse.json({ ok: false, error: message }, { status: 500 })
+    const e = err as Error & { cause?: unknown; code?: string }
+    console.error('[expire-pending] UPDATE fail', {
+      name: e.name,
+      message: e.message,
+      stack: e.stack?.split('\n').slice(0, 5).join('\n'),
+      cause: e.cause ? String(e.cause) : undefined,
+      code: e.code,
+    })
+    return NextResponse.json({
+      ok: false,
+      stage: 'update',
+      error: e.message,
+      cause: e.cause ? String(e.cause) : undefined,
+    }, { status: 500 })
   }
 }
