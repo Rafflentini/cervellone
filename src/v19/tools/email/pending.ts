@@ -171,17 +171,21 @@ export async function expirePendingOlderThan(
   // Se il chiamante usa il default 30 min, ci fidiamo della colonna `expires_at`
   // (popolata dal DB con `now() + 30 min`). Altrimenti calcoliamo un cutoff
   // basato su `created_at` per onorare la soglia custom.
-  const query = supabase
+  //
+  // NB: chain unica (no variabile intermedia + ternary su builder Supabase) —
+  // pattern precedente causava "TypeError: fetch failed" runtime su Supabase JS v2.
+  const cutoffColumn = thresholdMin === 30 ? 'expires_at' : 'created_at'
+  const cutoffIso =
+    thresholdMin === 30
+      ? new Date().toISOString()
+      : new Date(Date.now() - thresholdMin * 60_000).toISOString()
+
+  const { data, error } = await supabase
     .from('cervellone_email_pending_send')
     .update({ status: 'expired' })
     .eq('status', 'pending')
-
-  const filtered =
-    thresholdMin === 30
-      ? query.lt('expires_at', new Date().toISOString())
-      : query.lt('created_at', new Date(Date.now() - thresholdMin * 60_000).toISOString())
-
-  const { data, error } = await filtered.select('uuid')
+    .lt(cutoffColumn, cutoffIso)
+    .select('uuid')
   if (error) throw new Error(`expirePendingOlderThan: ${error.message}`)
   return { expired: (data ?? []).length }
 }
