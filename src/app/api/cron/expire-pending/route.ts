@@ -27,10 +27,29 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
   }
 
-  // DIAGNOSTIC PROBE: 2 step per isolare il fail mode esatto.
-  // STEP 1: SELECT su tabella V18 LIVE (cervellone_config) -> baseline supabase OK
-  // STEP 2: SELECT su cervellone_email_pending_send (V19) -> se fail = problema specifico
+  // DIAGNOSTIC PROBE: 3 step per isolare se il problema e' lambda fetch, Supabase URL, o tabella V19.
+  // STEP 0: raw fetch a URL pubblico (api.ipify.org) -> se fail = lambda fetch primitive rotto
+  // STEP 1: SELECT su V18 cervellone_config -> baseline supabase OK
+  // STEP 2: SELECT su V19 cervellone_email_pending_send -> se fail = problema tabella
+
+  // PROBE 0: raw fetch pubblico
   const probeStart = Date.now()
+  try {
+    const r0 = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(10000) })
+    const ipText = await r0.text()
+    console.log('[expire-pending] PROBE0 raw fetch OK', { status: r0.status, body: ipText.slice(0, 100) })
+  } catch (e) {
+    const err = e as Error & { cause?: unknown }
+    console.error('[expire-pending] PROBE0 raw fetch FAIL', { message: err.message, cause: String(err.cause ?? '') })
+    return NextResponse.json({
+      ok: false,
+      stage: 'probe0_raw_fetch',
+      error: err.message,
+      cause: String(err.cause ?? ''),
+    }, { status: 500 })
+  }
+
+  // PROBE 1: SELECT V18 baseline
   const { data: probe1Data, error: probe1Error } = await supabase
     .from('cervellone_config')
     .select('key')
