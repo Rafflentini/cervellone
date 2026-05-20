@@ -277,6 +277,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    // ─── /invia_<uuid> + /annulla_<uuid> — confirm flow mail subagent V19 ───
+    const mInvia = userText.match(/^\/invia_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    if (mInvia) {
+      const { confirmPendingSend } = await import('@/v19/tools/email/telegram-confirm')
+      const r = await confirmPendingSend(mInvia[1])
+      await sendTelegramMessage(chatId, r.message)
+      return NextResponse.json({ ok: true })
+    }
+    const mAnnulla = userText.match(/^\/annulla_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    if (mAnnulla) {
+      const { cancelPendingSend } = await import('@/v19/tools/email/telegram-confirm')
+      const r = await cancelPendingSend(mAnnulla[1])
+      await sendTelegramMessage(chatId, r.message)
+      return NextResponse.json({ ok: true })
+    }
+
     // ── Bug 1: mutex per chat ──
     // Evita bgProcess paralleli sulla stessa chat: se l'utente manda un messaggio
     // mentre il bot sta elaborando il precedente, droppiamo il nuovo per non
