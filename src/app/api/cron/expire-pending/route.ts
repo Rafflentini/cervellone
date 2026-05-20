@@ -32,20 +32,53 @@ export async function GET(req: NextRequest) {
   // STEP 1: SELECT su V18 cervellone_config -> baseline supabase OK
   // STEP 2: SELECT su V19 cervellone_email_pending_send -> se fail = problema tabella
 
-  // PROBE 0: raw fetch pubblico
+  // PROBE 0a: raw fetch pubblico (ipify) -> baseline outbound HTTPS
   const probeStart = Date.now()
   try {
     const r0 = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(10000) })
     const ipText = await r0.text()
-    console.log('[expire-pending] PROBE0 raw fetch OK', { status: r0.status, body: ipText.slice(0, 100) })
+    console.log('[expire-pending] PROBE0a public fetch OK', { status: r0.status, body: ipText.slice(0, 100) })
   } catch (e) {
     const err = e as Error & { cause?: unknown }
-    console.error('[expire-pending] PROBE0 raw fetch FAIL', { message: err.message, cause: String(err.cause ?? '') })
     return NextResponse.json({
       ok: false,
-      stage: 'probe0_raw_fetch',
+      stage: 'probe0a_public_fetch',
       error: err.message,
       cause: String(err.cause ?? ''),
+    }, { status: 500 })
+  }
+
+  // PROBE 0b: raw fetch DIRETTO a Supabase URL (no client lib) -> isola hostname
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+  try {
+    const r0b = await fetch(`${supabaseUrl}/rest/v1/cervellone_config?select=key&limit=1`, {
+      headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
+      signal: AbortSignal.timeout(10000),
+    })
+    const body = await r0b.text()
+    console.log('[expire-pending] PROBE0b supabase raw fetch OK', {
+      status: r0b.status,
+      url_host: new URL(supabaseUrl).host,
+      body: body.slice(0, 200),
+    })
+    if (!r0b.ok) {
+      return NextResponse.json({
+        ok: false,
+        stage: 'probe0b_supabase_raw_http_error',
+        status: r0b.status,
+        body: body.slice(0, 200),
+      }, { status: 500 })
+    }
+  } catch (e) {
+    const err = e as Error & { cause?: unknown }
+    return NextResponse.json({
+      ok: false,
+      stage: 'probe0b_supabase_raw_fetch',
+      error: err.message,
+      cause: String(err.cause ?? ''),
+      supabase_url_len: supabaseUrl.length,
+      supabase_key_len: supabaseKey.length,
     }, { status: 500 })
   }
 
