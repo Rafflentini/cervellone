@@ -10,6 +10,7 @@ export default async function proxy(request: NextRequest) {
     || pathname.startsWith('/api/telegram')
     || pathname.startsWith('/api/doc/')
     || pathname.startsWith('/doc/')
+    || pathname.startsWith('/api/cron/')
 
   if (isPublic) return NextResponse.next()
 
