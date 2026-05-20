@@ -36,6 +36,8 @@ export type EmailAuditEntry = {
   request_id?: string | null
   routine_name?: string | null
   raw_meta?: Record<string, unknown> | null
+  /** SMTP send ok ma IMAP append-to-Sent fallito. La mail è inviata ma non visibile in Sent. */
+  append_failed?: boolean
 }
 
 export async function logEmail(entry: EmailAuditEntry): Promise<void> {

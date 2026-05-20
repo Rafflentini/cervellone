@@ -85,7 +85,8 @@ export const MARK_EMAIL_TOOL: Anthropic.Tool = {
 
 export async function executeMarkEmail(input: MarkEmailInput): Promise<string> {
   try {
-    return JSON.stringify({ ok: true, ...(await markEmail(input)) })
+    const result = await markEmail(input)
+    return JSON.stringify({ ...result, ok: true })
   } catch (e) {
     return JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) })
   }

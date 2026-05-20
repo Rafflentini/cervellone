@@ -31,5 +31,12 @@ export type SendEmailInput = {
 }
 
 export type SendEmailResult =
-  | { status: 'sent'; message_id: string; sent_folder: string; sent_uid: number | null }
+  | {
+      status: 'sent'
+      message_id: string
+      sent_folder: string
+      sent_uid: number | null
+      append_failed?: boolean
+      warning?: string
+    }
   | { status: 'pending'; uuid: string; reason: string }

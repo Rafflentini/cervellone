@@ -39,4 +39,17 @@ describe('appendToSent', () => {
     await expect(appendToSent('info', Buffer.from('raw'))).rejects.toThrow(/Sent folder/i)
     expect(closeImap).toHaveBeenCalled()
   })
+
+  it('throw se client.append fallisce (es. permission/quota) — caller gestisce atomicità', async () => {
+    // Contratto: appendToSent throw qualsiasi errore IMAP. sendEmailInternal
+    // wrappa la chiamata in try/catch per non rollbackare la SMTP send già
+    // andata a buon fine (vedi email-send.spec.ts test atomicità).
+    const client = {
+      list: vi.fn().mockResolvedValue([{ path: 'Sent' }]),
+      append: vi.fn().mockRejectedValue(new Error('NO Permission denied')),
+    }
+    ;(openImap as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(client)
+    await expect(appendToSent('info', Buffer.from('raw'))).rejects.toThrow(/Permission denied/)
+    expect(closeImap).toHaveBeenCalled()
+  })
 })

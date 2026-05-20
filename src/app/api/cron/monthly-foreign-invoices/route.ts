@@ -26,6 +26,10 @@ function previousMonthRef(now = new Date()): string {
 }
 
 export async function GET(req: NextRequest) {
+  // ATTENZIONE: Vercel UI "Run now" NON inietta Authorization: Bearer ${CRON_SECRET}.
+  // Smoke test SOLO via:
+  //   curl -H "Authorization: Bearer $CRON_SECRET" https://.../api/cron/monthly-foreign-invoices?dry=1
+  // oppure aspettando lo scheduler reale alle 08:00 UTC del 1° del mese.
   const auth = req.headers.get('authorization')
   if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })

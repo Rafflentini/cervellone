@@ -6,10 +6,18 @@
  *   - Tutti destinatari @restruktura.it → invia direttamente
  *   - Tutti destinatari @restruktura.it + auto_send_if_internal=true → invia direttamente
  *   - Almeno un destinatario esterno → crea pending, ritorna uuid, NON invia
- *   - bypass_user_confirmation=true (interno, non esposto al modello) → invia direttamente
- *     (usato dal flow di conferma Telegram dopo /invia_<uuid>)
+ *
+ * Bypass conferma:
+ *   - `sendEmailInternal(input, { bypassUserConfirmation: true })` invia direttamente
+ *     anche verso esterni. NON esposta come tool al modello — usata solo dal flow
+ *     Telegram (`confirmPendingSend`) dopo che l'utente ha digitato /invia_<uuid>.
+ *   - `sendEmail(input)` (tool pubblico) chiama sempre `sendEmailInternal` con
+ *     bypassUserConfirmation=false. Anche se l'input contenesse legacy
+ *     `bypass_user_confirmation`, viene ignorato qui — defense in depth.
  *
  * Dopo SMTP send → APPEND copia in folder Sent del mittente.
+ * Se SMTP riesce ma APPEND fallisce: la mail è inviata, segnaliamo warning
+ * (impossibile rollback) e logghiamo `append_failed=true`.
  */
 import type Anthropic from '@anthropic-ai/sdk'
 import { makeSmtp, fromHeader } from './connection'
@@ -22,6 +30,28 @@ import type { SendEmailInput, SendEmailResult, AttachmentInput } from './types'
 export type { SendEmailInput, SendEmailResult, AttachmentInput } from './types'
 
 const INTERNAL_DOMAIN = 'restruktura.it'
+
+export type SendEmailInternalOpts = {
+  /** Bypassa la policy di conferma utente. SOLO per confirmPendingSend (Telegram). */
+  bypassUserConfirmation: boolean
+}
+
+/**
+ * Estensione locale di SendEmailResult con campi diagnostici per atomicità
+ * SMTP→IMAP. Non vivono in types.ts per evitare churn cross-modulo.
+ */
+export type SendEmailResultExt =
+  | { status: 'pending'; uuid: string; reason: string }
+  | {
+      status: 'sent'
+      message_id: string
+      sent_folder: string
+      sent_uid: number | null
+      /** True se SMTP ok ma APPEND a Sent fallito. */
+      append_failed?: boolean
+      /** Warning user-facing presente solo se append_failed=true. */
+      warning?: string
+    }
 
 function isInternal(addrs: string[]): boolean {
   if (addrs.length === 0) return false
@@ -36,13 +66,29 @@ function buildAttachments(input: SendEmailInput) {
   }))
 }
 
-export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
+/**
+ * Tool pubblico esposto al modello via SEND_EMAIL_TOOL.
+ * Bypass MAI consentito: sempre subject a policy gate.
+ */
+export async function sendEmail(input: SendEmailInput): Promise<SendEmailResultExt> {
+  return sendEmailInternal(input, { bypassUserConfirmation: false })
+}
+
+/**
+ * Implementazione interna. NON esporre come tool al modello.
+ * `bypassUserConfirmation` è un secondo parametro (non parte di SendEmailInput)
+ * proprio per impedire al modello di settarlo via tool_use.
+ */
+export async function sendEmailInternal(
+  input: SendEmailInput,
+  opts: SendEmailInternalOpts,
+): Promise<SendEmailResultExt> {
   const recipients = [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])]
   const internalOnly = isInternal(recipients)
   const allowAutoSend = input.auto_send_if_internal === true && internalOnly
 
   // Policy gate: outbound esterno richiede conferma utente
-  if (!input.bypass_user_confirmation && !allowAutoSend && !internalOnly) {
+  if (!opts.bypassUserConfirmation && !allowAutoSend && !internalOnly) {
     const pending = await createPendingSend(input)
     await logEmail({
       account: input.from_account,
@@ -84,7 +130,27 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     envelope?: unknown
   }
   const raw = info.raw ?? Buffer.from(info.message ?? '')
-  const append = await appendToSent(input.from_account, raw)
+
+  // Atomicità SMTP→IMAP: se SMTP ok ma APPEND fallisce, la mail è già partita
+  // e non possiamo rollbackare. Segnaliamo warning + log, ma NON throw.
+  let appendPath: string | null = null
+  let appendUid: number | null = null
+  let appendFailed = false
+  let appendError: string | undefined
+  try {
+    const append = await appendToSent(input.from_account, raw)
+    appendPath = append.path
+    appendUid = append.uid
+  } catch (e) {
+    appendFailed = true
+    appendError = e instanceof Error ? e.message : String(e)
+    console.warn('[mail] appendToSent failed after SMTP success', {
+      account: input.from_account,
+      message_id: info.messageId,
+      error: appendError,
+    })
+  }
+
   await logEmail({
     account: input.from_account,
     action: 'send',
@@ -103,13 +169,24 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     })),
     request_id: input.request_id ?? null,
     routine_name: input.routine_name ?? null,
-    raw_meta: { sent_folder: append.path, sent_uid: append.uid },
+    raw_meta: {
+      sent_folder: appendPath,
+      sent_uid: appendUid,
+      append_failed: appendFailed,
+      append_error: appendError ?? null,
+    },
+    append_failed: appendFailed,
   })
+
   return {
     status: 'sent',
     message_id: info.messageId ?? '',
-    sent_folder: append.path,
-    sent_uid: append.uid,
+    sent_folder: appendPath ?? '',
+    sent_uid: appendUid,
+    append_failed: appendFailed,
+    warning: appendFailed
+      ? 'Mail inviata ma NON salvata in Sent IMAP — verifica manualmente su Outlook'
+      : undefined,
   }
 }
 

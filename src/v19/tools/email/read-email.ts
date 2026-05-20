@@ -58,7 +58,7 @@ export async function readEmail(input: ReadEmailInput): Promise<ReadEmailResult>
     if (input.from) criteria.from = input.from
     if (input.subject_contains) criteria.subject = input.subject_contains
     const uids = await client.search(criteria, { uid: true })
-    const tail = (uids ?? []).slice(-limit)
+    const tail = (Array.isArray(uids) ? uids : []).slice(-limit)
     const messages: ReadEmailMessage[] = []
     if (tail.length > 0) {
       for await (const msg of client.fetch(

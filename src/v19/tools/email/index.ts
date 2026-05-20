@@ -18,6 +18,9 @@ export { MARK_EMAIL_TOOL, executeMarkEmail } from './mark-email'
 export type { AccountKey, EmailAccountConfig } from './config'
 export { EmailConfigError } from './config'
 export type { SendEmailInput, SendEmailResult, AttachmentInput } from './types'
+// Connection helpers — esposti per chiamanti che vogliono gestire ciclo di vita
+// transporter (closeSmtp DOPO sendMail per evitare hung connections serverless).
+export { openImap, closeImap, makeSmtp, closeSmtp, fromHeader } from './connection'
 
 export const MAIL_TOOL_DEFINITIONS: Anthropic.Tool[] = [
   READ_EMAIL_TOOL,

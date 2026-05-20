@@ -17,6 +17,9 @@ export async function openImap(account: AccountKey): Promise<ImapFlow> {
     auth: { user: cfg.auth.user, pass: cfg.auth.pass },
     logger: false,
     socketTimeout: 30_000,
+    // connectionTimeout copre la fase TCP dial (socketTimeout copre solo dopo handshake).
+    // Senza questo, dial a host irraggiungibile può appendere la function fino al maxDuration.
+    connectionTimeout: 15_000,
   }
   const client = new ImapFlow(opts)
   await client.connect()
@@ -28,6 +31,20 @@ export async function closeImap(client: ImapFlow): Promise<void> {
     await client.logout()
   } catch {
     // ignore: connection may already be torn down
+  }
+}
+
+/**
+ * Chiude un transporter SMTP. Da chiamare DOPO sendMail() per evitare hung
+ * connections in serverless (socket aperti tengono in vita la function fino
+ * al maxDuration, sprecando risorse e provocando cascate di timeout).
+ * Best-effort: errori ignorati.
+ */
+export async function closeSmtp(transporter: Transporter): Promise<void> {
+  try {
+    transporter.close()
+  } catch {
+    // ignore — best effort
   }
 }
 

@@ -15,7 +15,7 @@ vi.mock('../tools/email/pending', () => ({
   createPendingSend: vi.fn().mockResolvedValue({ uuid: 'uuid-pending', expires_at: '2026-05-11T11:00:00Z' }),
 }))
 
-import { sendEmail } from '../tools/email/send-email'
+import { sendEmail, sendEmailInternal, SEND_EMAIL_TOOL } from '../tools/email/send-email'
 import { createPendingSend } from '../tools/email/pending'
 import { appendToSent } from '../tools/email/append-sent'
 
@@ -64,19 +64,100 @@ describe('send_email', () => {
     expect(sendMail).not.toHaveBeenCalled()
   })
 
-  it('bypass_user_confirmation invia subito anche verso esterni', async () => {
+  it('sendEmailInternal con bypassUserConfirmation=true invia subito anche verso esterni', async () => {
     sendMail.mockResolvedValue({
       messageId: '<bypass@x>',
       envelope: {},
       raw: Buffer.from('raw'),
     })
-    const res = await sendEmail({
-      from_account: 'info',
+    const res = await sendEmailInternal(
+      {
+        from_account: 'info',
+        to: ['external@x.com'],
+        subject: 's',
+        body_text: 'b',
+      },
+      { bypassUserConfirmation: true },
+    )
+    expect(res.status).toBe('sent')
+    expect(createPendingSend).not.toHaveBeenCalled()
+    expect(sendMail).toHaveBeenCalled()
+  })
+
+  it('sendEmail (tool pubblico) crea SEMPRE pending verso esterni — nessun bypass possibile', async () => {
+    // Anche se un caller maligno tentasse di passare il legacy field
+    // `bypass_user_confirmation` (ancora presente in SendEmailInput type per
+    // backward-compat ma rimosso dallo input_schema del tool), sendEmail
+    // chiama sendEmailInternal con bypassUserConfirmation=false hardcoded.
+    // Defense in depth: anche un input "sporco" non bypassa.
+    const inputWithLegacyBypass = {
+      from_account: 'info' as const,
       to: ['external@x.com'],
       subject: 's',
       body_text: 'b',
-      bypass_user_confirmation: true,
+      bypass_user_confirmation: true, // legacy field — sendEmail lo ignora
+    }
+    const res = await sendEmail(inputWithLegacyBypass)
+    expect(res.status).toBe('pending')
+    expect(createPendingSend).toHaveBeenCalled()
+    expect(sendMail).not.toHaveBeenCalled()
+  })
+
+  it('SEND_EMAIL_TOOL.input_schema NON espone bypass_user_confirmation', () => {
+    const props = (SEND_EMAIL_TOOL.input_schema as { properties: Record<string, unknown> })
+      .properties
+    expect(props).not.toHaveProperty('bypass_user_confirmation')
+    expect(props).not.toHaveProperty('bypassUserConfirmation')
+  })
+
+  it('atomicità: appendToSent fallisce → ok=true, append_failed=true, warning, no throw', async () => {
+    sendMail.mockResolvedValue({
+      messageId: '<append-fail@x>',
+      envelope: {},
+      raw: Buffer.from('raw'),
     })
+    ;(appendToSent as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('IMAP quota exceeded'),
+    )
+    const res = await sendEmailInternal(
+      {
+        from_account: 'info',
+        to: ['raffaele.lentini@restruktura.it'],
+        subject: 's',
+        body_text: 'b',
+      },
+      { bypassUserConfirmation: false },
+    )
     expect(res.status).toBe('sent')
+    if (res.status === 'sent') {
+      expect(res.message_id).toBe('<append-fail@x>')
+      expect(res.append_failed).toBe(true)
+      expect(res.warning).toMatch(/non salvata in Sent/i)
+      expect(res.sent_uid).toBeNull()
+    }
+  })
+
+  it('atomicità: append ok → append_failed assente/false, warning undefined', async () => {
+    sendMail.mockResolvedValue({
+      messageId: '<ok@x>',
+      envelope: {},
+      raw: Buffer.from('raw'),
+    })
+    const res = await sendEmailInternal(
+      {
+        from_account: 'info',
+        to: ['raffaele.lentini@restruktura.it'],
+        subject: 's',
+        body_text: 'b',
+      },
+      { bypassUserConfirmation: false },
+    )
+    expect(res.status).toBe('sent')
+    if (res.status === 'sent') {
+      expect(res.append_failed).toBeFalsy()
+      expect(res.warning).toBeUndefined()
+      expect(res.sent_folder).toBe('Sent')
+      expect(res.sent_uid).toBe(42)
+    }
   })
 })

@@ -17,7 +17,17 @@
  *   $env:TOPHOST_SMTP_STARTTLS='true'
  *   npx vitest run src/v19/__tests__/email-integration.spec.ts
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, vi, expect } from 'vitest'
+
+// Mock @/lib/supabase a top-level: audit.ts (importato transitivamente da
+// read-email/append-sent) fa eager createClient() che richiede NEXT_PUBLIC_SUPABASE_URL.
+// In test integration LIVE non vogliamo dipendere da quella env, audit è no-op qui.
+vi.mock('@/lib/supabase', () => ({
+  supabase: {
+    from: () => ({ insert: () => Promise.resolve({ error: null }) }),
+  },
+}))
+
 import { openImap, closeImap, makeSmtp } from '../tools/email/connection'
 import { readEmail } from '../tools/email/read-email'
 import { appendToSent } from '../tools/email/append-sent'
