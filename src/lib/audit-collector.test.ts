@@ -20,8 +20,9 @@ vi.mock('@/lib/supabase', () => ({
 // ── Catena mock: select → eq → gte → order → resolved ────────────────────────
 
 function resolveWith(data: unknown[], error = null) {
+  // Chain terminale è sempre .order() che risolve. .in() è chainabile a .order().
   mockOrder.mockResolvedValue({ data, error })
-  mockIn.mockResolvedValue({ data, error })
+  mockIn.mockReturnValue({ order: mockOrder })
   mockGte.mockReturnValue({ order: mockOrder, in: mockIn })
   mockEq.mockReturnValue({ gte: mockGte, order: mockOrder, in: mockIn })
   mockSelect.mockReturnValue({ gte: mockGte, eq: mockEq, in: mockIn, order: mockOrder })
@@ -30,7 +31,7 @@ function resolveWith(data: unknown[], error = null) {
 function resolveError(message: string) {
   const err = { message }
   mockOrder.mockResolvedValue({ data: null, error: err })
-  mockIn.mockResolvedValue({ data: null, error: err })
+  mockIn.mockReturnValue({ order: mockOrder })
   mockGte.mockReturnValue({ order: mockOrder, in: mockIn })
   mockEq.mockReturnValue({ gte: mockGte, order: mockOrder, in: mockIn })
   mockSelect.mockReturnValue({ gte: mockGte, eq: mockEq, in: mockIn, order: mockOrder })

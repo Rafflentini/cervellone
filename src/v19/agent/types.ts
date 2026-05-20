@@ -22,7 +22,7 @@ export type SubagentKind =
   | 'document-render'
   | 'domain-italiano'
   | 'web-research'
-  | 'gmail-router'
+  | 'mail-router'
 
 export type AgentRequest = {
   conversationId: string

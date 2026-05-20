@@ -102,23 +102,33 @@ describe('processNative', () => {
 
 // ─── uploadToAnthropic ────────────────────────────────────────────────────────
 
-const mockUpload = vi.fn()
-const mockSupabaseInsert = vi.fn()
+// vi.hoisted: vi.mock viene hoisted al top del modulo, quindi le ref usate dentro
+// il factory devono essere hoisted insieme — altrimenti TDZ "Cannot access ... before initialization".
+const { mockUpload, mockSupabaseInsert } = vi.hoisted(() => ({
+  mockUpload: vi.fn(),
+  mockSupabaseInsert: vi.fn(),
+}))
 
 vi.mock('@anthropic-ai/sdk', async () => {
   const actual = await vi.importActual<typeof import('@anthropic-ai/sdk')>('@anthropic-ai/sdk')
+  // NB: usiamo `function` (non arrow) perché file-pipeline.ts fa `new Anthropic()` a livello modulo.
+  // Arrow functions non sono costruttori → TypeError "is not a constructor".
+  function MockAnthropic() {
+    return { beta: { files: { upload: mockUpload } } }
+  }
   return {
     ...actual,
-    default: vi.fn().mockImplementation(() => ({
-      beta: { files: { upload: mockUpload } },
-    })),
+    default: MockAnthropic,
   }
 })
 
 vi.mock('./supabase', () => ({
   supabase: {
     from: vi.fn(() => ({
-      insert: mockSupabaseInsert.mockResolvedValue({ error: null }),
+      // NB: NON forzare qui .mockResolvedValue — il beforeEach setta il default,
+      // i singoli test possono override con .mockResolvedValueOnce/Once senza essere
+      // sovrascritti dalla factory ad ogni chiamata di from().
+      insert: mockSupabaseInsert,
     })),
   },
 }))

@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mock Supabase
+// NOTA: mockInsert qui rappresenta il risultato finale di `.insert(...).select('id')`.
+// Il source di `ricorda` fa: supabase.from(...).insert({...}).select('id')
+// quindi il mock di insert deve ritornare un oggetto con `.select()` che ritorna
+// la Promise risolta da `mockInsert`. Usiamo il pattern: insert() → { select() → Promise }.
 const mockInsert = vi.fn()
 const mockSelect = vi.fn()
 const mockEq = vi.fn()
@@ -13,7 +17,10 @@ const mockDelete = vi.fn()
 vi.mock('@/lib/supabase', () => ({
   supabase: {
     from: vi.fn(() => ({
-      insert: mockInsert,
+      // insert(...) ritorna un oggetto chainabile { select(cols) → Promise<insertResult> }
+      insert: vi.fn(() => ({
+        select: vi.fn(() => mockInsert()),
+      })),
       select: mockSelect,
       delete: mockDelete,
     })),
@@ -23,12 +30,16 @@ vi.mock('@/lib/supabase', () => ({
 // Patch chaining
 beforeEach(() => {
   vi.clearAllMocks()
+  // mockInsert è chiamato come funzione dentro .select() → ritorna la Promise finale.
+  // I test possono usare mockInsert.mockResolvedValueOnce(...) per simulare errori/ok.
   mockInsert.mockResolvedValue({ data: [{ id: 'test-uuid-1234' }], error: null })
-  mockSelect.mockReturnValue({ eq: mockEq, ilike: mockIlike })
-  mockEq.mockReturnValue({ maybeSingle: mockMaybeSingle, order: mockOrder, ilike: mockIlike })
+  // select() del read-path: ritorna oggetto con eq/ilike/order (tutti i metodi che il source può chiamare dopo .select())
+  mockSelect.mockReturnValue({ eq: mockEq, ilike: mockIlike, order: mockOrder })
+  mockEq.mockReturnValue({ maybeSingle: mockMaybeSingle, order: mockOrder, ilike: mockIlike, limit: mockLimit })
   mockMaybeSingle.mockResolvedValue({ data: null, error: null })
   mockIlike.mockReturnValue({ order: mockOrder, limit: mockLimit })
-  mockOrder.mockReturnValue({ limit: mockLimit })
+  // order() può essere seguito da limit() o eq() (lista_entita: select.order.eq.limit)
+  mockOrder.mockReturnValue({ limit: mockLimit, eq: mockEq })
   mockLimit.mockResolvedValue({ data: [], error: null })
   mockDelete.mockReturnValue({ eq: vi.fn().mockReturnValue({ select: vi.fn().mockResolvedValue({ data: [], error: null }) }) })
 })
