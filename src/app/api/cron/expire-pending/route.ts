@@ -27,14 +27,24 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
   }
 
-  // DIAGNOSTIC PROBE: prima di chiamare expirePendingOlderThan, faccio una
-  // SELECT semplice sulla stessa tabella per discriminare il fail mode:
-  //  - se probe fallisce -> problema generale tabella/connessione
-  //  - se probe OK ma UPDATE fail -> problema specifico UPDATE+select chain
+  // DIAGNOSTIC PROBE: 2 step per isolare il fail mode esatto.
+  // STEP 1: SELECT su tabella V18 LIVE (cervellone_config) -> baseline supabase OK
+  // STEP 2: SELECT su cervellone_email_pending_send (V19) -> se fail = problema specifico
   const probeStart = Date.now()
+  const { data: probe1Data, error: probe1Error } = await supabase
+    .from('cervellone_config')
+    .select('key')
+    .limit(1)
+  if (probe1Error) {
+    console.error('[expire-pending] PROBE1 baseline fail', { message: probe1Error.message, code: probe1Error.code })
+    return NextResponse.json({ ok: false, stage: 'probe1_baseline', error: probe1Error.message, code: probe1Error.code }, { status: 500 })
+  }
+  console.log('[expire-pending] PROBE1 OK (cervellone_config)', { rows: probe1Data?.length })
+
   const { data: probeData, error: probeError } = await supabase
     .from('cervellone_email_pending_send')
-    .select('uuid', { count: 'exact', head: true })
+    .select('status')
+    .limit(1)
   const probeMs = Date.now() - probeStart
   if (probeError) {
     console.error('[expire-pending] PROBE select fail', {
