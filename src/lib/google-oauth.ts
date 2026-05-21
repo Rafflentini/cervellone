@@ -1,6 +1,6 @@
 import { google } from 'googleapis'
 import type { OAuth2Client } from 'google-auth-library'
-import { supabase } from './supabase'
+import { getSupabaseServer } from './supabase-server'
 
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
@@ -13,7 +13,7 @@ const SCOPES = [
 ]
 
 function getBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_BASE_URL || 'https://cervellone-5poc.vercel.app'
+  return process.env.NEXT_PUBLIC_BASE_URL || 'https://cervellone-five.vercel.app'
 }
 
 export function getOAuth2Client(): OAuth2Client {
@@ -153,7 +153,7 @@ export async function exchangeCodeAndStore(code: string): Promise<{ email: strin
     ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
     : null
 
-  const { error } = await supabase.from('google_oauth_credentials').upsert(
+  const { error } = await getSupabaseServer().from('google_oauth_credentials').upsert(
     {
       account_email: email,
       refresh_token: tokens.refresh_token,
@@ -176,7 +176,7 @@ export async function exchangeCodeAndStore(code: string): Promise<{ email: strin
  */
 export async function getAuthorizedClient(): Promise<OAuth2Client | null> {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await getSupabaseServer()
       .from('google_oauth_credentials')
       .select('refresh_token, access_token, access_token_expires_at')
       .order('updated_at', { ascending: false })
@@ -197,7 +197,7 @@ export async function getAuthorizedClient(): Promise<OAuth2Client | null> {
 
     oauth2Client.on('tokens', async (tokens) => {
       if (tokens.access_token) {
-        await supabase
+        await getSupabaseServer()
           .from('google_oauth_credentials')
           .update({
             access_token: tokens.access_token,
