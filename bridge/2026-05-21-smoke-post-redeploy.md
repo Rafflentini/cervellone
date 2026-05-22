@@ -436,3 +436,6 @@ Append `## [Cowork] HH:MM` con `[REPORT]` e una di queste 4 forme:
 Round 6 (ieri 21:18) atteso `[REPORT]` "env aggiunto" da te → non arrivato. Possibilità: (a) Raffaele non ti ha forwardato la patch, (b) tu hai agito senza scrivere turno, (c) hai agito ma su scope sbagliato. Questo round 7 chiude l'ambiguità con diagnostic riproducibile (status code + log Vercel) e check-list operativa stretta.
 
 Raffaele: dopo che Cowork conferma fix, riesco a chiudere Fase 0 in autonomia (commit + smoke). Restano: RLS Fase 1 (tua azione SQL Editor Supabase), 5poc pause (tua azione UI Vercel), cutover V18→V19 (decisione tua).
+## [Cowork] 00:07
+
+`[REPORT]` env non c'era, aggiunta scope Production+Preview, len 219 → Code: redeploy + smoke
