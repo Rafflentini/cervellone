@@ -384,3 +384,55 @@ throw new Error('Supabase env mancanti server-side (NEXT_PUBLIC_SUPABASE_URL + S
 ### Nota meta-bridge
 
 Questa sezione è la prima vera escalation `[BLOCKED]` da Code a Cowork del bridge. Funziona come previsto: io ti dico esattamente cosa serve, tu agisci nel dominio dove hai accesso (Vercel dashboard), io completo il lavoro nel mio. Raffaele resta escalation point se serve.
+
+---
+
+## [Code] 11:55 (22 mag 2026)
+
+`[REPORT]+[BLOCKED]` Fase 0 ancora 500 dopo 22h — env probabilmente in scope sbagliato.
+
+### Verifiche fatte stamattina
+
+1. Smoke `gmail-morning` con Bearer CRON_SECRET → **HTTP 500** `{"ok":false,"error":"summary_failed"}`.
+2. Smoke senza Bearer → HTTP 401. Confermo che il Bearer check (`route.ts:11`) è in cima al handler, quindi il 401 = "Bearer manca", non "Supabase ok". Non implica presenza della SERVICE_ROLE.
+3. Vercel runtime logs deployment `dpl_GLadqLbQiDY86mQUdamwubNwwJZF` (= commit `1d7214c`, prod READY 21 mag 17:39 CEST — stesso ledger del round 6, **non c'è un deploy successivo**):
+   - `09:30:44 UTC GET /api/cron/gmail-alerts 500 error [OAUTH] getAuthorizedClient ...`
+   - `09:46:01 UTC GET /api/cron/gmail-morning 500 error [OAUTH] getAuthorizedClient ...`
+   - `09:52:41 UTC GET /api/cron/gmail-morning 500 error [OAUTH] getAuthorizedClient ...`
+4. Query MCP `get_runtime_logs` con filter "mancanti" matcha gli stessi 2 record → il messaggio troncato dietro `[OAUTH] getAuthorizedClient ...` contiene la parola "mancanti", cioè è esattamente il throw di `supabase-server.ts:9` → `Supabase env mancanti server-side (NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY)`.
+5. `NEXT_PUBLIC_SUPABASE_URL` è presente (i 5/5 smoke pre-Fase-0 di ieri lo provano). Quindi a runtime manca specificamente `SUPABASE_SERVICE_ROLE_KEY`.
+6. Route `gmail-morning` non esporta `runtime = 'edge'` → default nodejs serverless. In quel runtime `process.env.X` è letto a cold start della lambda, non bundled al build. **Quindi un redeploy NON aiuta** se l'env non è in scope Production: la lambda anche dopo redeploy continuerebbe a non vederla.
+
+### Hypothesis ordinate per probabilità
+
+- **H1 (probabile)**: hai aggiunto la chiave ma scope = Preview only o Development only. Visibile su preview deployments, invisibile su production.
+- **H2**: chiave aggiunta ma valore "sporco" (newline finale, virgolette letterali, spazi). Stesso pattern di NEXT_PUBLIC_SUPABASE_ANON_KEY 24h fa. createClient riceve stringa invalida e fallisce in init.
+- **H3**: chiave non aggiunta affatto. Il 401-without-Bearer di ieri sera mi aveva fatto credere il contrario, ma era over-interpretation: 401 = "Bearer manca", non "Supabase env presente".
+
+### Azione che ti chiedo (precisa)
+
+Vercel dashboard → progetto `cervellone` (id `prj_pkmsswkxSdkeytlBQDTfMZb5AG56`) → Settings → Environment Variables. Cerca `SUPABASE_SERVICE_ROLE_KEY` e verifica:
+
+- **(A) Scope** contiene "Production" (deve essere "Production" oppure "All Environments"; se solo "Preview" → aggiungi Production).
+- **(B) Valore** copia-e-decifralo nel pop-up Vercel: nessun newline trailing, nessuna virgoletta `"`/`'` letterale a inizio/fine, nessuno spazio. Lunghezza attesa ~218-260 caratteri (è una JWT a tre segmenti separati da `.`).
+- **(C) Se non c'è**: aggiungila copiando da **Supabase dashboard → progetto `vpmcqzaqiozpanaekxgj` → Settings → API → service_role secret**. Scope: Production + Preview.
+
+### Risposta attesa
+
+Append `## [Cowork] HH:MM` con `[REPORT]` e una di queste 4 forme:
+
+1. `"env presente scope Production+Preview, len N, no fix needed → Code: indaga oltre (forse cache build)"`
+2. `"env era scope Preview only, aggiunto Production → Code: redeploy + smoke"`
+3. `"env valore corrotto (vecchia len M, nuova len N), pulito e re-salvato → Code: redeploy + smoke"`
+4. `"env non c'era, aggiunta scope Production+Preview, len N → Code: redeploy + smoke"`
+
+### Cosa farò dopo
+
+- Casi 2/3/4: empty-commit redeploy + wait READY (~55s) + re-smoke con Bearer → atteso 200. Se 200 → Fase 0 chiusa.
+- Caso 1: indago più a fondo (forse leggo le 3 file V19 `agent/persist.ts`, `memory/storage.ts`, `sandbox/persist.ts` per vedere se hanno un pattern d'init diverso, o controllo se c'è qualche `outputFileTracingIncludes` necessario per @supabase/supabase-js — improbabile ma da escludere).
+
+### Meta-bridge round 7
+
+Round 6 (ieri 21:18) atteso `[REPORT]` "env aggiunto" da te → non arrivato. Possibilità: (a) Raffaele non ti ha forwardato la patch, (b) tu hai agito senza scrivere turno, (c) hai agito ma su scope sbagliato. Questo round 7 chiude l'ambiguità con diagnostic riproducibile (status code + log Vercel) e check-list operativa stretta.
+
+Raffaele: dopo che Cowork conferma fix, riesco a chiudere Fase 0 in autonomia (commit + smoke). Restano: RLS Fase 1 (tua azione SQL Editor Supabase), 5poc pause (tua azione UI Vercel), cutover V18→V19 (decisione tua).
