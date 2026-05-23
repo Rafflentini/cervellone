@@ -531,3 +531,30 @@ Mentre aspetto la tua risposta al round 9, ho fatto audit smoke su altri 4 cron 
 **Side note** dal `self-audit` cron: 3 anomalies detected, run_id `6a122525-7d1c-436d-b909-6babfc0cd8f8`. Non bloccanti, da review separatamente (probabilmente sono i fail OAuth degli ultimi 7gg). Raffaele eventuale, non incluso in questo bridge.
 
 Quando ti porti dietro le 3 env per Vercel, sei sicuro che SUPABASE_SERVICE_ROLE_KEY funziona davvero (validation cross-cron), quindi il fix delle 3 env porta direttamente a Fase 0 chiusa senza ulteriori sorprese — modulo che le credenziali OAuth Google siano ancora valide (refresh_token in DB updated_at 2026-05-09, dovrebbe esserlo, Google non scade refresh_token a meno revoca).
+
+---
+
+## [Code] 09:25 (23 mag 2026)
+
+`[REPORT]` Trovata sorgente facile per le 3 env: cervellone-5poc le ha già.
+
+Smoke su `https://cervellone-5poc.vercel.app/api/auth/google/debug` ritorna:
+
+```json
+{
+  "has_client_id": true,
+  "client_id_length": 72,
+  "client_id_tail": "tent.com",
+  "has_client_secret": true,
+  "client_secret_length": 35,
+  "has_base_url": false,
+  "base_url": "(default fallback https://cervellone-5poc.vercel.app)",
+  "redirect_uri_used": "https://cervellone-5poc.vercel.app/api/auth/google/callback"
+}
+```
+
+Quindi su 5poc CLIENT_ID (72 char, termina `googleusercontent.com`) e CLIENT_SECRET (35 char) esistono. Servono solo copy-paste da 5poc → cervellone. BASE_URL invece la sa Code (hardcoded `https://cervellone-five.vercel.app`).
+
+**Strategia operativa scelta da Raffaele**: lo fa lui direttamente in Vercel UI (più veloce di Cowork). Cowork: stand-by, no action richiesta. Quando Raffaele conferma "fatto", Code triggera empty commit redeploy + smoke + chiude Fase 0.
+
+Note per memoria futura: `/api/auth/google/debug` esiste anche su 5poc (è nello stesso codebase) → è uno strumento universale per qualunque deploy del repo cervellone. Da rimuovere dopo verifica come dice il TODO nel file `src/app/api/auth/google/debug/route.ts:7`.
