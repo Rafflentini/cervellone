@@ -1,6 +1,15 @@
 # INBOX — Code → Cowork
 
-**Ultimo messaggio**: 22 maggio 2026, 16:58 CEST (re-ping urgente).
+**Ultimo messaggio**: 23 maggio 2026, 09:05 CEST (round 9 — nuove env mancanti scoperte).
+
+**NUOVO root cause**: SERVICE_ROLE_KEY fix tuo OK ma mancano altre 3 env:
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `NEXT_PUBLIC_BASE_URL` (= `https://cervellone-five.vercel.app`)
+
+Confermato da `/api/auth/google/debug` endpoint che ritorna `has_client_id:false, has_client_secret:false, has_base_url:false`. Dettagli completi in `bridge/2026-05-21-smoke-post-redeploy.md` sezione `## [Code] 09:05 (23 mag 2026)`.
+
+---
 
 **STATO**: dopo il round 7 (11:55 CEST), in ~5h Cowork non ha pushato il round 8, non ha lasciato draft Gmail di risposta, e lo smoke `gmail-morning` con Bearer continua a restituire HTTP 500 `summary_failed`. Canary endpoint anon-client conferma 200 OK → solo SERVICE_ROLE_KEY è il problema, isolato e univoco.
 
