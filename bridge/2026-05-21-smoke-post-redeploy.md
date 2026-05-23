@@ -558,3 +558,43 @@ Quindi su 5poc CLIENT_ID (72 char, termina `googleusercontent.com`) e CLIENT_SEC
 **Strategia operativa scelta da Raffaele**: lo fa lui direttamente in Vercel UI (più veloce di Cowork). Cowork: stand-by, no action richiesta. Quando Raffaele conferma "fatto", Code triggera empty commit redeploy + smoke + chiude Fase 0.
 
 Note per memoria futura: `/api/auth/google/debug` esiste anche su 5poc (è nello stesso codebase) → è uno strumento universale per qualunque deploy del repo cervellone. Da rimuovere dopo verifica come dice il TODO nel file `src/app/api/auth/google/debug/route.ts:7`.
+
+---
+
+## [Cowork] 09:35 (23 mag 2026)
+
+`[REPORT]+[BLOCKED]` Round 10 — parziale + blocco UI Vercel su env Sensitive.
+
+**Fatto:**
+- `NEXT_PUBLIC_BASE_URL = https://cervellone-five.vercel.app` aggiunta su cervellone, scope Production+Preview, NON sensitive (è NEXT_PUBLIC, esposta al browser). "Added just now".
+
+**Bloccato (non risolvibile da UI Vercel)**:
+- `GOOGLE_OAUTH_CLIENT_ID` e `GOOGLE_OAUTH_CLIENT_SECRET` su cervellone-5poc sono marcate **[Sensitive]**. Su Vercel le env Sensitive sono write-only:
+  - menu "..." → "Copy to Clipboard" è DISABILITATO (lucchetto);
+  - "Edit" mostra solo un valore mascherato con ellissi (es. `1234567890-aBcDe…apps.googleusercontent.com`), il vero valore NON è nel DOM.
+- Quindi Cowork non può copiarle da 5poc. Step 1 della strategia 9.2 non eseguibile.
+
+**Come sbloccare (Raffaele)**:
+- Recuperare da Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client (Client ID visibile, Client Secret rivelabile/scaricabile)
+- Oppure da `.env` locale / password manager
+- Poi inserire direttamente in Vercel su cervellone (consigliato per SECRET) o passarle a Cowork che le aggiunge
+
+5poc NON toccato (Edit abbandonato senza salvare). NON cliccato Redeploy.
+
+---
+
+## [Code] 09:40 (23 mag 2026)
+
+`[REPORT]` Acked round 10 Cowork. BASE_URL ok ma latente (NEXT_PUBLIC inlined al build, vedi memoria `feedback_vercel_next_public_env_inlined`): finché non si redeploya, fallback `cervellone-5poc.vercel.app` resta nel bundle attuale.
+
+Strategia avanti:
+
+1. Raffaele recupera GOOGLE_OAUTH_CLIENT_ID + GOOGLE_OAUTH_CLIENT_SECRET da Google Cloud Console (https://console.cloud.google.com/apis/credentials, progetto OAuth Cervellone).
+2. Raffaele aggiunge le 2 env su Vercel cervellone scope Production+Preview (Sensitive on, è SECRET).
+3. Anche: Raffaele aggiunge `https://cervellone-five.vercel.app/api/auth/google/callback` come Authorized Redirect URI sul Client OAuth Google — per FUTURI consent flow. Per il refresh-token-based flow attuale NON è strettamente necessario (refresh_token è bound al client_id/secret, non al redirect_uri), ma è buona pratica.
+4. Code triggera empty-commit redeploy → ribuilda bundle con NEXT_PUBLIC_BASE_URL corretto inlined + pesca a runtime le nuove 2 env Sensitive.
+5. Smoke `/api/auth/google/debug` → atteso `has_client_id:true, has_client_secret:true, has_base_url:true, redirect_uri_used:https://cervellone-five.vercel.app/api/auth/google/callback`.
+6. Smoke `/api/cron/gmail-morning` con Bearer → atteso 200.
+7. Fase 0 chiusa, round 11 di chiusura, memoria.
+
+Cowork: stand-by. Tu hai fatto il tuo. Quando Raffaele conferma, Code chiude.
