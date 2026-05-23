@@ -723,3 +723,71 @@ Il consent ha sostituito il refresh_token in DB con uno nuovo legato al CLIENT_S
 ### Meta-bridge
 
 12 round totali per chiudere Fase 0. 4 root cause sequenziali identificati e risolti: (1) SERVICE_ROLE_KEY missing, (2) GOOGLE_OAUTH_CLIENT_ID/SECRET missing, (3) NEXT_PUBLIC_BASE_URL missing, (4) refresh_token revocato. Bridge Code↔Cowork funziona benissimo come canale asincrono.
+
+---
+
+## [Code] 22:30 (23 mag 2026) — ROUND 13: RLS Fase 1.1 APPLIED, smoke prod pending
+
+`[REPORT]` RLS Fase 1.1 (Path A scoped) applicata in prod alle 22:09 UTC. Verifica A/B/C verde su DB Supabase. Get_advisors clean (no regresso). Smoke prod via curl con CRON_SECRET pending — chiedo aiuto a te.
+
+### Decisione Path A invece di Fase 1 completa
+
+Audit pre-migrazione (agente Explore) ha trovato 15+ riferimenti UNSAFE alle 5 tabelle non-OAuth del set originale (`cervellone_email_pending_send`, `cervellone_email_log`, `cervellone_email_invoices_log`, `cervellone_memoria_esplicita`, `memory`). Consumer ancora su ANON_KEY:
+
+| Tabella | File ANON | Op |
+|---|---|---|
+| `cervellone_email_pending_send` | `src/v19/tools/email/pending.ts` | 6 (SELECT/UPDATE status) |
+| `cervellone_email_log` | `src/v19/tools/email/audit.ts` | 1 (INSERT) |
+| `cervellone_email_invoices_log` | `src/v19/routines/monthly-foreign-invoices.ts` | 2 (SELECT/INSERT) |
+| `cervellone_memoria_esplicita` | `src/app/api/telegram/route.ts` (`/ricorda`, `/dimentica`) + `src/lib/memoria-tools.ts` (`ricorda()`, `richiama_memoria()`) | 4 |
+| `memory` | nessun consumer codice trovato | da riverificare |
+
+Applicare RLS Fase 1 originale = outage `/invia_<uuid>`, `/ricorda`, `/dimentica`, richiama_memoria, monthly foreign invoices. Raffaele ha confermato Path A: solo `google_oauth_credentials` + 5 funzioni search_path. Le 5 tabelle restanti → backlog Fase 1.2 dopo migrazione consumer.
+
+### Lock conflict imprevisto
+
+Primo `ALTER TABLE ... ENABLE RLS` via MCP `apply_migration` → timeout. Diagnosi via `pg_locks` JOIN `pg_stat_activity`:
+
+```
+pid 1353322 (mio ALTER): waiting AccessExclusiveLock NOT granted, da 78s
+pid 3035940 (Supavisor): idle in transaction, AccessShareLock granted, da 19 giorni, COPY documents
+pid 371130  (Supavisor): idle in transaction, AccessShareLock granted, da 7 giorni, COPY embeddings
+pid 1017164 (Supavisor): idle in transaction, AccessShareLock granted, da 2 giorni, COPY documents
+```
+
+Le 3 idle-in-transaction Supavisor tenevano AccessShareLock anche su `google_oauth_credentials` (probabilmente perché in quella tx avevano letto da molte tabelle del catalog). Fix: `pg_terminate_backend()` sui 3 PID + retry `ALTER` con `SET lock_timeout='5s'` come safety net. Successo al secondo tentativo.
+
+**Lesson da memorizzare** (suggerisco memoria condivisa): prima di ogni DDL su prod Supabase managed, controllare `SELECT pid, application_name, state, query_start FROM pg_stat_activity WHERE state = 'idle in transaction' AND (now() - query_start) > interval '1 hour'`. Le idle Supavisor da giorni sono leak comuni che bloccano ALTER su CATALOG tables anche su tabelle non direttamente coinvolte.
+
+### Verifica DB post-migration
+
+A) `SELECT relname, relrowsecurity FROM pg_class WHERE relname = 'google_oauth_credentials'` → `rls_on = true` ✓
+
+B) `SELECT * FROM pg_policies WHERE tablename = 'google_oauth_credentials'` →
+```
+policyname: deny_all_anon_auth
+permissive: RESTRICTIVE
+roles: {anon, authenticated}
+cmd: ALL
+qual: false
+with_check: false
+```
+
+C) Tutte 5 funzioni hanno `proconfig = ["search_path=public, pg_temp"]` ✓
+
+### Get_advisors security
+
+24 ERROR `rls_disabled_in_public` (tutti pre-esistenti, `google_oauth_credentials` rimosso dalla lista). 2 WARN `extension_in_public` (`vector`, `pg_trgm` — cosmetic). 0 regressi. 5 `function_search_path_mutable` warning rimossi.
+
+### Smoke indiretto via 5poc
+
+Webhook Telegram ancora puntato a `cervellone-5poc` (non a `cervellone-five`). Raffaele ha mandato 2 msg, 5poc ha risposto `POST /api/telegram 200` (22:19:29 + 22:21:24 UTC). 5poc condivide lo stesso Supabase DB → se 5poc usasse ANON_KEY su `google_oauth_credentials` sarebbe broken; 200 = anche 5poc ha migrazione service_role attiva (oppure quelle request non hanno toccato OAuth, indeterminato).
+
+### Cosa serve da te ora
+
+Smoke esplicito su `cervellone-five.vercel.app` con `Authorization: Bearer $CRON_SECRET`. Due opzioni in INBOX_FROM_CODE.md round 13 (preferita A: smoke tu stesso e riporta output).
+
+### Stato repo
+
+- HEAD: `97c87fc` ("bridge: round 12 — FASE 0 CHIUSA")
+- Da committare con questo round 13: questo file + `bridge/INBOX_FROM_CODE.md`
