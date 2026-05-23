@@ -673,3 +673,53 @@ Net effect: rompere 5poc = beneficio (forziamo la migrazione di un POC da dismet
 Confidence ALTO sulla diagnosi (test del refresh diretto a Google da deploy + analisi DB + check 5poc-vs-five client_id match). Confidence ALTO sul recovery (nuovo consent è il path canonico). Il rischio principale è il prerequisito #2 (consent screen publishing) — se è in Testing senza `restruktura.drive@gmail.com` nei test users, il consent flow fallirà con "App not verified / access blocked".
 
 Cowork: se ti è possibile, fai tu punti 1+2 (richiedono accesso GCP). Raffaele fa il punto 3 (browser).
+
+---
+
+## [Cowork] 15:58 (23 mag 2026)
+
+`[REPORT]` Round 11 COMPLETATO ✅. Step 1 redirect URI aggiunto. Step 2 consent screen già Test users (1/100) includeva restruktura.drive@gmail.com, no publish (lasciato a Raffaele). Step 3 consent flow end-to-end OK: nuovo refresh_token emesso, callback ha mostrato "Cervellone autorizzato su Drive — Drive WRITE sbloccato". 2 secret attivi mantenuti (RUIR vivo per 5poc, 22VZ vivo per cervellone).
+
+---
+
+## [Code] 16:02 (23 mag 2026)
+
+`[REPORT]` 🎉 **FASE 0 CHIUSA. End-to-end verde.**
+
+### Smoke prod post-consent (23 mag 16:00 CEST)
+
+| Endpoint | HTTP | Body |
+|---|---|---|
+| `/api/cron/gmail-morning` (Bearer) | **200** | `{"ok":true,"total":4,"critical":0}` |
+| `/api/cron/gmail-alerts` (Bearer) | **200** | `{"ok":true,"alerts":0}` |
+
+### DB conferma nuovo refresh_token
+
+```
+account_email = restruktura.drive@gmail.com
+updated_at    = 2026-05-23 13:58:13 UTC (era 2026-05-09 16:18)
+rt_head_12    = 1//05PhvnVYX (era 1//05scFOcni — NUOVO TOKEN)
+rt_len        = 103
+```
+
+### Esito Fase 0
+
+- `src/lib/google-oauth.ts` migrato anon → service_role (commit `3356639` del 22 mag) ✓
+- `SUPABASE_SERVICE_ROLE_KEY` aggiunta su Vercel cervellone Production+Preview ✓
+- `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `NEXT_PUBLIC_BASE_URL` aggiunte su Vercel cervellone ✓
+- GCP: redirect URI `cervellone-five.vercel.app/callback` autorizzato ✓
+- Nuovo consent flow eseguito, nuovo refresh_token in DB ✓
+- 7 cron prod tutti funzionanti (canary, expire-pending, monthly-foreign-invoices, self-audit, gmail-morning, gmail-alerts, memoria-extract) ✓
+- 2 endpoint OAuth user-initiated funzionanti (/api/auth/google, /api/auth/google/callback) ✓
+
+### Pronto per RLS Fase 1
+
+Pre-requisito Fase 0 sbloccato. **Raffaele**: apri Supabase SQL Editor progetto `vpmcqzaqiozpanaekxgj`, esegui `scripts/rls_fase1_cervellone.sql`, verifica con 3 query A/B/C in coda allo script.
+
+### Side effect: 5poc rotto
+
+Il consent ha sostituito il refresh_token in DB con uno nuovo legato al CLIENT_SECRET `****22VZ` (di cervellone). 5poc usa `****RUIR`, ma il refresh_token in DB è ora associato all'altro secret → 5poc rifiutato da Google al prossimo refresh. **Coerente con la decisione 21 mag di pausare 5poc**. Raffaele azione 5poc pause da fare via Vercel UI Settings → Pause Project.
+
+### Meta-bridge
+
+12 round totali per chiudere Fase 0. 4 root cause sequenziali identificati e risolti: (1) SERVICE_ROLE_KEY missing, (2) GOOGLE_OAUTH_CLIENT_ID/SECRET missing, (3) NEXT_PUBLIC_BASE_URL missing, (4) refresh_token revocato. Bridge Code↔Cowork funziona benissimo come canale asincrono.

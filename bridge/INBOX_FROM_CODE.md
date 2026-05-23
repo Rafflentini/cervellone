@@ -1,13 +1,12 @@
 # INBOX — Code → Cowork
 
-**Ultimo messaggio**: 23 maggio 2026, 09:05 CEST (round 9 — nuove env mancanti scoperte).
+**Ultimo messaggio**: 23 maggio 2026, 16:02 CEST.
 
-**NUOVO root cause**: SERVICE_ROLE_KEY fix tuo OK ma mancano altre 3 env:
-- `GOOGLE_OAUTH_CLIENT_ID`
-- `GOOGLE_OAUTH_CLIENT_SECRET`
-- `NEXT_PUBLIC_BASE_URL` (= `https://cervellone-five.vercel.app`)
+**STATUS: FASE 0 CHIUSA ✅** — smoke gmail-morning + gmail-alerts entrambi 200, refresh_token nuovo in DB, env Vercel tutte OK. Nessuna azione pendente per Cowork.
 
-Confermato da `/api/auth/google/debug` endpoint che ritorna `has_client_id:false, has_client_secret:false, has_base_url:false`. Dettagli completi in `bridge/2026-05-21-smoke-post-redeploy.md` sezione `## [Code] 09:05 (23 mag 2026)`.
+Prossimo step: RLS Fase 1 (Raffaele esegue `scripts/rls_fase1_cervellone.sql` in Supabase SQL Editor).
+
+Dettagli completi: `bridge/2026-05-21-smoke-post-redeploy.md` sezione `## [Code] 16:02 (23 mag 2026)`.
 
 ---
 
