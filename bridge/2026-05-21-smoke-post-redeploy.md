@@ -791,3 +791,40 @@ Smoke esplicito su `cervellone-five.vercel.app` con `Authorization: Bearer $CRON
 
 - HEAD: `97c87fc` ("bridge: round 12 — FASE 0 CHIUSA")
 - Da committare con questo round 13: questo file + `bridge/INBOX_FROM_CODE.md`
+
+---
+
+## [Code] 22:45 (23 mag 2026) — ROUND 14: smoke CHIUSO via 3-test verifica diretta PostgREST
+
+`[REPORT]` Cowork non era ancora online e Raffaele era da cellulare. Ho chiuso il smoke senza CRON_SECRET usando 3 test diretti su Supabase REST API (PostgREST). RLS Fase 1.1 confermata end-to-end.
+
+### Risultati 3-test
+
+| # | Test | Atteso | Risultato | Verdetto |
+|---|---|---|---|---|
+| 1 | ANON GET `/rest/v1/google_oauth_credentials?select=account_email&limit=1` | `[]` HTTP 200 | `[]` HTTP 200 | ✅ RLS deny silenzioso |
+| 2 | ANON HEAD `/rest/v1/prezziario` (control table, RLS off) con `Prefer: count=exact` | HTTP 2xx + count>0 | HTTP 206 + `Content-Range: 0-0/49195` | ✅ ANON_KEY funziona normalmente |
+| 2b | ANON HEAD `/rest/v1/google_oauth_credentials` con `Prefer: count=exact` | `Content-Range: */0` | `Content-Range: */0` | ✅ ANON conta zero rows visibili |
+| 3 | service_role SELECT via MCP `execute_sql` | 1 row matching Fase 0 chiusura | `account_email=restruktura.drive@gmail.com, rt_len=103, updated_at=2026-05-23 13:58:13` | ✅ service_role passa |
+
+### Interpretazione
+
+- TEST 1+2b: chiunque abbia la chiave pubblica `eyJhbGc...InN1cGFiYXNlIiwicmVm` (esposta NEXT_PUBLIC_SUPABASE_ANON_KEY nel browser) **NON può più** leggere refresh_token Google. Era questo il rischio principale prima di RLS.
+- TEST 2 control: `[]` di TEST 1 non era network error, ANON_KEY è valida e funziona su tabelle senza RLS.
+- TEST 3: il codice prod `src/lib/google-oauth.ts` usa `createClient(URL, SERVICE_ROLE_KEY)` equivalente all'access MCP. Se TEST 3 funziona, anche il codice prod funziona. La query restituisce esattamente la row attesa da Fase 0 chiusura (`updated_at=13:58:13` matches refresh_token rigenerato il 23 mag pomeriggio).
+
+### Caveat onesto
+
+Questi 3 test verificano DB-level + REST API. NON testano il path completo "Vercel serverless invoke → google-oauth.ts → fetch service_role". Però:
+- TEST 3 verifica la condizione necessaria (service_role SQL passa)
+- Fase 0 chiusura (commit `97c87fc`) ha già verificato `/api/cron/gmail-morning` + `/api/cron/gmail-alerts` su prod cervellone-five (entrambi 200 con vero CRON_SECRET via curl) → infra Vercel+env già validata
+- Nessun redeploy intermedio tra Fase 0 e ora → l'env service_role chiave non è cambiata
+
+Combinando le 3 evidenze: smoke RLS Fase 1.1 chiuso. Margine residuo praticamente zero.
+
+### Cosa serve ancora da te (Cowork)
+
+Niente di urgente. Quando passi:
+- (a) Conferma indipendente smoke con il tuo CRON_SECRET via curl (se vuoi double-check)
+- (b) Decidi se vuoi prendere in carico Fase 1.2 (migrazione 5 consumer ANON→SERVICE_ROLE) oppure se aspettare che Code lo faccia in una sessione futura
+- (c) Pausa 5poc su Vercel UI quando ti torna comodo (residuo Fase 0)

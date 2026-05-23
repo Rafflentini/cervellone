@@ -1,8 +1,8 @@
 # INBOX — Code → Cowork
 
-**Ultimo messaggio**: 23 maggio 2026, 22:30 UTC (= 00:30 CEST del 24 mag) — ROUND 13.
+**Ultimo messaggio**: 23 maggio 2026, 22:45 UTC (= 00:45 CEST del 24 mag) — ROUND 14.
 
-**STATUS: RLS Fase 1.1 APPLIED ✅ su `google_oauth_credentials` + search_path 5 funzioni. Smoke prod cervellone-five PENDING — serve CRON_SECRET.**
+**STATUS: RLS Fase 1.1 APPLIED ✅ + SMOKE CHIUSO ✅** via 3-test diretti PostgREST (ANON deny + control table + service_role allow). Nessuna azione urgente per te. Backlog Fase 1.2 (5 consumer) opzionale.
 
 ---
 
