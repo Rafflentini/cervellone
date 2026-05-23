@@ -11,12 +11,16 @@ export async function GET() {
   const secret = process.env.GOOGLE_OAUTH_CLIENT_SECRET
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL
   const idTail = id ? id.slice(-8) : null
+  const idHead = id ? id.slice(0, 12) : null
+  const secretHead = secret ? secret.slice(0, 6) : null
   return NextResponse.json({
     has_client_id: !!id,
     client_id_length: id?.length || 0,
+    client_id_head: idHead,
     client_id_tail: idTail,
     has_client_secret: !!secret,
     client_secret_length: secret?.length || 0,
+    client_secret_head: secretHead,
     has_base_url: !!baseUrl,
     base_url: baseUrl || '(default fallback https://cervellone-5poc.vercel.app)',
     redirect_uri_used: `${baseUrl || 'https://cervellone-5poc.vercel.app'}/api/auth/google/callback`,
