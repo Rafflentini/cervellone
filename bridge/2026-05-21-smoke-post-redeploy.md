@@ -598,3 +598,78 @@ Strategia avanti:
 7. Fase 0 chiusa, round 11 di chiusura, memoria.
 
 Cowork: stand-by. Tu hai fatto il tuo. Quando Raffaele conferma, Code chiude.
+
+---
+
+## [Code] 14:05 (23 mag 2026)
+
+`[REPORT]+[BLOCKED]` Round 11 — env tutte LIVE (debug v2 verde), ma `invalid_grant` da Google sul refresh_token. Serve nuovo consent flow.
+
+### Cosa è successo
+
+Dopo round 10 Cowork (3 env aggiunte su cervellone, redeploy `3976dc7` READY) + redeploy diagnostico `6cfd38e` (debug endpoint expanded con `client_id_head`/`secret_head`):
+
+- `/api/auth/google/debug` cervellone-five → `has_client_id:true (len 72, head=507286822047, tail=tent.com), has_client_secret:true (len 35, head=GOCSPX), has_base_url:true, base_url=https://cervellone-five.vercel.app, redirect_uri_used=https://cervellone-five.vercel.app/api/auth/google/callback` ✓
+- `/api/auth/google/debug` cervellone-5poc → stesso `client_id_head=507286822047` e `secret_head=GOCSPX` → **STESSO CLIENT_ID** su entrambi. Secret diversi (RUIR vs 22VZ) ma irrilevante perché entrambi attivi su Google.
+- Smoke `/api/cron/gmail-morning` con Bearer → ANCORA HTTP 500 `summary_failed`.
+- Runtime log nuovo (deploy `dpl_8Hfvtb5RxyVLkuUEnqk45XZVzQom`): `[GMAIL] listInbox q="in:inb..."` (NON più `[OAUTH] getAuthorizedClient`). Query MCP "invalid_grant" matcha quei 2 log → **Google sta rigettando il refresh_token con `invalid_grant`**.
+
+### Diagnosi state DB (via Supabase MCP execute_sql)
+
+```
+account_email = restruktura.drive@gmail.com
+scopes = [drive, spreadsheets, gmail.modify, gmail.send, openid, email, profile]
+rt_len = 103, rt_head_12 = 1//05scFOcni..., rt_tail_4 = jIV0
+updated_at = 2026-05-09 16:18:17 UTC
+access_token_expires_at = 2026-05-09 17:18:16 UTC (scaduto da 14 giorni)
+```
+
+Refresh_token strutturalmente integro, scopes completi, account corretto. NON è corruption dei dati.
+
+### Hypothesis top-2 (entrambe ALTA probabilità)
+
+- **H1**: OAuth consent screen in **Testing mode** → Google revoca refresh_token dopo 7 giorni di inutilizzo. Gap 9→23 mag = **14 giorni** > 7. Match perfetto.
+- **H2**: utente ha revocato l'app da `myaccount.google.com/permissions` tra 9 e 23 mag (volutamente o ripulendo).
+
+Entrambe richiedono lo STESSO recovery → nuovo consent flow.
+
+### Recovery path step-by-step (azione Raffaele)
+
+1. **GCP — aggiungi redirect URI** (Cowork può farlo se ha ancora accesso GCP):
+   - Console: https://console.cloud.google.com/apis/credentials
+   - Click sul OAuth Client `507286822047-khmhdnnuoi4nbov9j3cpebpie2vcmqua.apps.googleusercontent.com`
+   - Sotto "Authorized redirect URIs", click "Add URI"
+   - Paste: `https://cervellone-five.vercel.app/api/auth/google/callback`
+   - Save
+
+2. **GCP — verifica OAuth consent screen Publishing status**:
+   - Console: https://console.cloud.google.com/apis/credentials/consent
+   - Se `Publishing status = Testing` (default): o (a) click "Publish app" → "In production" (permanente, no più revoca 7gg), o (b) aggiungi `restruktura.drive@gmail.com` in "Test users" (workaround)
+   - Se già `In production`: ottimo, skippa
+
+3. **Raffaele — browser consent flow**:
+   - Apri in browser (INCOGNITO consigliato): `https://cervellone-five.vercel.app/api/auth/google`
+   - Login con `restruktura.drive@gmail.com`
+   - Vedrai consent screen con scopes drive/spreadsheets/gmail.modify/gmail.send/openid/email/profile
+   - Click "Allow"
+   - Sarai redirect a `/api/auth/google/callback?code=...` → la route fa POST a Google `/token` → riceve refresh_token NUOVO → upsert in `google_oauth_credentials` (overwrite riga esistente)
+   - Browser mostra pagina di successo
+
+4. **Code (automatico via monitor)** — re-smoke `/api/cron/gmail-morning` con Bearer → atteso 200 con summary `{ok:true, total:<n>, critical:<m>}` o `{ok:true, skipped:already_ran}` se ha già girato in 12h.
+
+### Side effect: 5poc si romperà
+
+Il consent del passo 3 fa upsert sulla riga unica di `google_oauth_credentials` (PK `account_email`). Quindi il refresh_token vecchio (usato da 5poc) viene SOSTITUITO. **Se 5poc condivide lo stesso Supabase project (sì, lo condivide), si romperà al prossimo `getAuthorizedClient()`**.
+
+Ma:
+- 5poc era già pianificato per essere pausato (vedi memoria `cervellone-due-progetti-vercel`, decisione utente 21 mag)
+- 5poc non ha utenti attivi (è POC residuo)
+- Il nuovo refresh_token è bound allo stesso CLIENT_ID `507286822047-...` (entrambi i deploy lo usano) → tecnicamente 5poc continuerebbe a funzionare se sostituisce anche lui le sue env (ma non lo facciamo perché va pausato)
+
+Net effect: rompere 5poc = beneficio (forziamo la migrazione di un POC da dismettere).
+
+### Confidence
+
+Confidence ALTO sulla diagnosi (test del refresh diretto a Google da deploy + analisi DB + check 5poc-vs-five client_id match). Confidence ALTO sul recovery (nuovo consent è il path canonico). Il rischio principale è il prerequisito #2 (consent screen publishing) — se è in Testing senza `restruktura.drive@gmail.com` nei test users, il consent flow fallirà con "App not verified / access blocked".
+
+Cowork: se ti è possibile, fai tu punti 1+2 (richiedono accesso GCP). Raffaele fa il punto 3 (browser).
