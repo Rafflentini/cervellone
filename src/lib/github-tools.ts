@@ -5,6 +5,8 @@
  * - Leggere il proprio codice da GitHub (read-only)
  * - Proporre modifiche aprendo PR (mai push diretto su main)
  * - Verificare lo stato del deploy Vercel di un commit
+ * - Listare le proprie PR (per status check senza dover ricordare numeri)
+ * - Mergiare PR aperte (squash di default)
  *
  * Pattern human-in-the-loop: Cervellone propone, l'Ingegnere approva via merge.
  *
@@ -179,6 +181,49 @@ async function proposeFix(
   }
 }
 
+// ── github_list_prs ──
+
+async function listPrs(state: string = 'open', limit: number = 20): Promise<string> {
+  const validStates = ['open', 'closed', 'all']
+  const stateNorm = validStates.includes(state) ? state : 'open'
+  const limitNorm = Math.min(Math.max(limit || 20, 1), 50)
+  console.log(`[GH] listPrs state=${stateNorm} limit=${limitNorm}`)
+  try {
+    const url = `${GITHUB_API}/repos/${REPO_FULL}/pulls?state=${stateNorm}&per_page=${limitNorm}&sort=updated&direction=desc`
+    const res = await fetch(url, { headers: ghHeaders() })
+    if (!res.ok) {
+      const body = await res.text()
+      return `Errore GitHub listPrs: HTTP ${res.status} — ${body.slice(0, 200)}`
+    }
+    const prs = await res.json() as Array<{
+      number: number
+      title: string
+      state: string
+      merged_at: string | null
+      created_at: string
+      updated_at: string
+      user: { login: string }
+      head: { ref: string }
+      base: { ref: string }
+      draft: boolean
+      html_url: string
+      mergeable_state?: string
+    }>
+    if (!Array.isArray(prs) || prs.length === 0) {
+      return `Nessuna PR ${stateNorm === 'all' ? '' : stateNorm} trovata su ${REPO_FULL}.`
+    }
+    const lines = prs.map(pr => {
+      const merged = pr.merged_at ? '✅ MERGED' : pr.state === 'closed' ? '❌ CLOSED' : pr.draft ? '📝 DRAFT' : '🟢 OPEN'
+      const updated = new Date(pr.updated_at).toLocaleString('it-IT', { dateStyle: 'short', timeStyle: 'short' })
+      return `#${pr.number} ${merged} — ${pr.title}\n   autore: ${pr.user.login} | branch: ${pr.head.ref} → ${pr.base.ref} | aggiornata: ${updated}\n   ${pr.html_url}`
+    })
+    return `📋 PR su ${REPO_FULL} (state=${stateNorm}, ${prs.length} risultati):\n\n${lines.join('\n\n')}`
+  } catch (err) {
+    console.error('[GH] listPrs ERROR:', err)
+    return `Errore list PR: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 // ── vercel_deploy_status ──
 
 async function deployStatus(commitSha: string): Promise<string> {
@@ -332,6 +377,18 @@ export const GITHUB_TOOLS = [
     },
   },
   {
+    name: 'github_list_prs',
+    description: `Lista le Pull Request del repo ${REPO_FULL}. Usa per rispondere a "che PR ho aperte?" o "che fix ho in sospeso?" senza dover ricordare numeri PR. Ritorna numero, titolo, stato (open/closed/merged), autore, branch, data ultimo aggiornamento, URL.`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        state: { type: 'string', description: 'Filtra per stato: "open" (default), "closed", "all"' },
+        limit: { type: 'number', description: 'Numero massimo PR da ritornare (default 20, max 50)' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'vercel_deploy_status',
     description: `Verifica lo stato del deploy Vercel di un commit specifico. Usa dopo aver visto un merge della tua PR per confermare che il fix è andato live. Restituisce stato (READY/BUILDING/ERROR), URL deploy, durata.`,
     input_schema: {
@@ -372,6 +429,11 @@ export async function executeGithubTool(
         input.branch_name,
         input.pr_title,
         input.pr_body,
+      )
+    case 'github_list_prs':
+      return listPrs(
+        input.state || 'open',
+        input.limit ? parseInt(input.limit, 10) : 20,
       )
     case 'vercel_deploy_status':
       return deployStatus(input.commit_sha)
