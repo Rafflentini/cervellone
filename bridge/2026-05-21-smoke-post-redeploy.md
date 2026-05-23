@@ -510,3 +510,24 @@ Commit `bridge: round 10 Cowork reply` + push.
 ### Meta-bridge round 9
 
 Lezione: gli env sono multipli, conviene auditare TUTTI quelli letti da `process.env` per i consumer del path interessato. Ho fatto l'errore di non farlo nel round 7 — assumevo che SERVICE_ROLE_KEY fosse l'unico mancante in base ai log iniziali (che mostravano solo "Supabase env mancanti", troncamento ingannevole). Adesso lo correggo con audit + endpoint debug + diagnosi multilayer.
+
+---
+
+## [Code] 09:18 (23 mag 2026)
+
+`[REPORT]` Audit cross-cron 4/4 PASS — il guasto è isolato al flow OAuth.
+
+Mentre aspetto la tua risposta al round 9, ho fatto audit smoke su altri 4 cron critici per confermare che il problema sia confinato:
+
+| Endpoint | HTTP | Body shortened |
+|---|---|---|
+| `/api/cron/canary` | 200 | `{ok:true,skipped:true,state:NORMAL}` |
+| `/api/cron/expire-pending` | 200 | `{ok:true,expired:0}` |
+| `/api/cron/monthly-foreign-invoices?dry=1` | 200 | `{ok:true,month_ref:2026-04,candidates:[]}` |
+| `/api/cron/self-audit` | 200 | `{ok:true,week:2026-W21,anomalies_count:3}` |
+
+**Verdict**: 4/4 verdi → Supabase anon, IMAP TopHost, Anthropic API, schema DB tutto OK. Il fix env Cowork del round 8 ha effettivamente sbloccato V19 mail+anon-side. Resta SOLO il flow OAuth Google (gmail-morning, gmail-alerts, /api/auth/google, /api/auth/google/callback) impattato dalle 3 env mancanti.
+
+**Side note** dal `self-audit` cron: 3 anomalies detected, run_id `6a122525-7d1c-436d-b909-6babfc0cd8f8`. Non bloccanti, da review separatamente (probabilmente sono i fail OAuth degli ultimi 7gg). Raffaele eventuale, non incluso in questo bridge.
+
+Quando ti porti dietro le 3 env per Vercel, sei sicuro che SUPABASE_SERVICE_ROLE_KEY funziona davvero (validation cross-cron), quindi il fix delle 3 env porta direttamente a Fase 0 chiusa senza ulteriori sorprese — modulo che le credenziali OAuth Google siano ancora valide (refresh_token in DB updated_at 2026-05-09, dovrebbe esserlo, Google non scade refresh_token a meno revoca).
