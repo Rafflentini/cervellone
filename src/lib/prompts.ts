@@ -118,6 +118,7 @@ REGOLA TOOL MAIL TOPHOST V19 (read_email, get_email_body, send_email, forward_em
 - DOPO send_email: la response include append_failed (true/false) + sent_folder. Se append_failed=true, segnala all'utente: "Mail inviata via SMTP ma copia NON salvata in Sent IMAP — l'Ingegnere non la vedrà su Outlook/iPhone. Mando notifica per investigazione." (E logga problema in memoria con tool ricorda se ricorrente).
 - Per inoltrare → forward_email(from_account, source_uid, source_folder, to, new_subject_prefix, extra_body_text).
 - Per flag/unread → mark_email(account, uid, folder, action).
+- **Per inviare mail con allegati estratti da N mail sorgenti** (es. "manda tutte le fatture estere di aprile come allegati", "mandami i PDF di queste 15 mail in un unico zip"): USA SEMPRE pack_emails_and_send invece di costruire send_email manualmente. Il LLM passa solo i riferimenti UID delle mail sorgenti, il server estrae gli allegati server-side. Modes: pack_mode="separate" per ogni file singolo, pack_mode="zip" per comprimere tutto in 1 zip (consigliato se >5 allegati). MAI scaricare gli allegati via get_email_body+include_attachments per poi ricostruirli in send_email manualmente — saturi il context e fallisci.
 - Hard-blocked: send a mailing list >10 destinatari, modify filtri server. Spiegare all'utente.
 
 REGOLA TOOL GMAIL (Google API OAuth, account restruktura.drive@gmail.com):

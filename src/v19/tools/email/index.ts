@@ -9,12 +9,14 @@ import { GET_EMAIL_BODY_TOOL, executeGetEmailBody } from './get-email-body'
 import { SEND_EMAIL_TOOL, executeSendEmail } from './send-email'
 import { FORWARD_EMAIL_TOOL, executeForwardEmail } from './forward-email'
 import { MARK_EMAIL_TOOL, executeMarkEmail } from './mark-email'
+import { PACK_EMAILS_AND_SEND_TOOL, executePackEmailsAndSend } from './pack-emails-and-send'
 
 export { READ_EMAIL_TOOL, executeReadEmail } from './read-email'
 export { GET_EMAIL_BODY_TOOL, executeGetEmailBody } from './get-email-body'
 export { SEND_EMAIL_TOOL, executeSendEmail } from './send-email'
 export { FORWARD_EMAIL_TOOL, executeForwardEmail } from './forward-email'
 export { MARK_EMAIL_TOOL, executeMarkEmail } from './mark-email'
+export { PACK_EMAILS_AND_SEND_TOOL, executePackEmailsAndSend } from './pack-emails-and-send'
 export type { AccountKey, EmailAccountConfig } from './config'
 export { EmailConfigError } from './config'
 export type { SendEmailInput, SendEmailResult, AttachmentInput } from './types'
@@ -28,6 +30,7 @@ export const MAIL_TOOL_DEFINITIONS: Anthropic.Tool[] = [
   SEND_EMAIL_TOOL,
   FORWARD_EMAIL_TOOL,
   MARK_EMAIL_TOOL,
+  PACK_EMAILS_AND_SEND_TOOL,
 ]
 
 export const MAIL_TOOL_EXECUTORS: Record<string, (input: unknown) => Promise<string>> = {
@@ -36,6 +39,8 @@ export const MAIL_TOOL_EXECUTORS: Record<string, (input: unknown) => Promise<str
   send_email: (i) => executeSendEmail(i as Parameters<typeof executeSendEmail>[0]),
   forward_email: (i) => executeForwardEmail(i as Parameters<typeof executeForwardEmail>[0]),
   mark_email: (i) => executeMarkEmail(i as Parameters<typeof executeMarkEmail>[0]),
+  pack_emails_and_send: (i) =>
+    executePackEmailsAndSend(i as Parameters<typeof executePackEmailsAndSend>[0]),
 }
 
 /** Sub-agent allow-list (mail-router): solo read/get/mark.
