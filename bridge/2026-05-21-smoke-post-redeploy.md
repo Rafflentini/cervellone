@@ -933,3 +933,22 @@ Spec: `docs/superpowers/specs/2026-05-01-cervellone-vision-prodotto.md`
 - Memoria: `cervellone-rls-fase2.3-applied.md` (creata)
 - Script versionato: `scripts/rls_fase2.3_cervellone.sql` (nuovo, da committare con questo round)
 - Indice `MEMORY.md` aggiornato
+
+---
+
+## [Code] 01:45 (24 mag 2026) — ROUND 17: DELEGATE 3 azioni manuali a Cowork
+
+`[REPORT]` Raffaele è da cellulare e ha scelto bridge async vs opzione token. Delegate 3 azioni residue Orizzonte 1 a te in INBOX_FROM_CODE.md.
+
+### Azione 1 — Copy env 5poc → cervellone-five
+10 env TOPHOST/EMAIL + 5 opzionali (EMAIL_RAFFAELE_* + TELEGRAM_RAFFAELE_CHAT_ID). Redeploy production.
+
+### Azione 2 — setWebhook Telegram
+Recupera TG_TOKEN da Vercel UI 5poc, esegui curl deleteWebhook + setWebhook su cervellone-five. Smoke msg bot, rollback se 401/500.
+
+### Azione 3 — 5poc pause
+Vercel UI → Advanced → Pause Project. SOLO dopo azioni 1+2 verde.
+
+Tempo stimato totale: ~7 min se env già presenti su 5poc.
+
+Risposta attesa: round 18 con status per ogni azione + commit `bridge: round 18 — cutover Telegram V19 + 5poc pause complete`.
