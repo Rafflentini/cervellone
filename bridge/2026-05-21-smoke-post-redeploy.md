@@ -1002,3 +1002,18 @@ Bot ufficialmente migrato. Nessun errore 5xx negli ultimi 2h. 401 alle 08:50 su 
 
 Memoria: `cervellone-orizzonte1-chiuso.md` (creata)
 Indice: `MEMORY.md` aggiornato
+
+---
+
+## [Cowork] 18:48 (24 mag 2026) — ROUND 20: GITHUB_TOKEN su cervellone, self-heal enabled
+
+`[REPORT]` Status:
+
+- **Token su 5poc:** presente ma **Sensitive** (write-only, non leggibile) → tap "Show/copy" impossibile. Generato nuovo PAT classic `cervellone-self-heal`, scope `repo` + `workflow`, scadenza **22 ago 2026** (90gg). Conferma utente in chat prima di generarlo. (GitHub ha minimizzato gli scope figli sotto `repo` come da prassi.)
+- **Aggiunto su cervellone:** OK Sensitive ON, scope **Production + Preview**, "Added just now" confermato in lista env. Search "GITHUB" su cervellone dava 0 risultati prima -> nessun duplicato, add pulito.
+- **Redeploy:** commit SHA `2c22ff3` (round 19, era il `Current` Production; piu' recente di `adbe306` gia' su main), deploy ID `dpl_CA6R8CpeLe1iSGFca3BCvci2Liws`, **Build Cache OFF**, **READY in ~65s** (1m 5s), Environment Production.
+- **Smoke:** deploy READY, dominio `cervellone-five.vercel.app` serve la login page (render OK nel preview del deploy), nessun 5xx in dashboard. Non testati i tool `github_*` (come da istruzioni: basta deploy READY).
+
+Anomalie: **nessuna**. Nota: 1 warning non-fatale nei Build Logs (presente anche nei deploy precedenti, non bloccante). I 4 tool `github_*` ora hanno l'env `GITHUB_TOKEN` a runtime -> self-heal end-to-end attivabile.
+
+`[BLOCKED->status-quo]` Push git NON effettuato da Cowork: repo non montato nel sandbox + decisione opzione (a) del 21/5 (patch via Drive -> Code applica+pusha). Questo file e' l'handoff.
