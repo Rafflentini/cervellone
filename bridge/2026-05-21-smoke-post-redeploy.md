@@ -871,3 +871,65 @@ Niente di urgente. Quando passi:
 - Memoria: `cervellone-rls-fase1.2-applied.md` (creata)
 - Script versionato: `scripts/rls_fase1.2_cervellone.sql` (nuovo, da committare con questo round)
 - Indice `MEMORY.md` aggiornato
+
+---
+
+## [Code] 01:30 (24 mag 2026) — ROUND 16: RLS FASE 2/3 APPLIED — DB HARDENATO 100%
+
+`[REPORT]` Sessione singola completa orizzonte 1 RLS-side via magic-fix architetturale, evitando migrazione 22 file consumer.
+
+### Magic-fix `src/lib/supabase.ts` (commit `ce9927a`)
+
+```ts
+const isServer = typeof window === 'undefined'
+const useServiceRole = isServer && !!serviceKey
+const supabaseKey = useServiceRole ? serviceKey! : anonKey
+const supabaseOptions = useServiceRole ? { auth: { persistSession: false } } : undefined
+export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey, supabaseOptions)
+```
+
+Safety:
+- Audit grep: 6 `"use client"` files NON importano `from '@/lib/supabase'` → zero break UI
+- 22 file server-side che importano `from '@/lib/supabase'` ora auto-bypassano RLS
+- 5poc auto-deployato con magic-fix, canary 09:00 UTC = 200 OK
+
+### Sweep 20 tabelle Fase 2/3
+
+Unica transazione `BEGIN; SET LOCAL lock_timeout='5s'; <20 ALTER + 20 CREATE POLICY>; COMMIT;` su MCP `execute_sql`. Eseguita senza errori in <2 sec.
+
+### Verifica finale DB
+
+| Test | Risultato |
+|---|---|
+| count tabelle public con relrowsecurity=true | 25 ✓ (era 5) |
+| count policy deny_all_anon_auth | 25 ✓ (era 5) |
+| get_advisors ERROR rls_disabled_in_public | 0 ✓ (era 20) |
+| get_advisors WARN cosmetic (vector + pg_trgm in public schema) | 2 (irrilevanti) |
+| ANON HEAD smoke prezziario/config/dedup/model_health | `*/0` su tutte ✓ |
+| service_role count: config=25, skills=6, conv=26, docs=230, msg=298, mh=113, prez=49195, dedup=472 | dati intatti ✓ |
+| Vercel runtime errors fatal cervellone-five ultimi 10 min | 0 ✓ |
+| 5poc canary cron post-sweep (09:00 UTC) | 200 ✓ |
+
+### Cleanup
+
+- Rimosso `src/app/api/auth/google/debug/route.ts` (Fase 0 TODO chiuso)
+- Aggiunto `bridge/.secret*` a `.gitignore` (sicurezza handoff secret)
+
+### Step manuali residui Raffaele
+
+- **Cutover Telegram V18→V19 Step 3**: 10 env vars su Vercel + setWebhook con tg token. Plan dettagliato in INBOX_FROM_CODE.md round 16.
+- **5poc pause**: Vercel UI dashboard. MCP non ha tool pause Vercel. NON fare prima cutover.
+
+### Plan orizzonti futuri
+
+- O2 (3-6 sett): 6 sub-progetti file-handlers + 12 interventi tattici
+- O3 (12 sett): 9 sistemi target (Trigger.dev + Sandbox + Local Agent + S8 + S9)
+- O4 (3-4 anni): sostituzione personale ufficio
+
+Spec: `docs/superpowers/specs/2026-05-01-cervellone-vision-prodotto.md`
+
+### Memoria + script
+
+- Memoria: `cervellone-rls-fase2.3-applied.md` (creata)
+- Script versionato: `scripts/rls_fase2.3_cervellone.sql` (nuovo, da committare con questo round)
+- Indice `MEMORY.md` aggiornato

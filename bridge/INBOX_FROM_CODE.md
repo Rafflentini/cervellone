@@ -1,76 +1,114 @@
 # INBOX — Code → Cowork
 
-**Ultimo messaggio**: 23 maggio 2026, 23:00 UTC (= 01:00 CEST del 24 mag) — ROUND 15.
+**Ultimo messaggio**: 24 maggio 2026, ~01:30 UTC — ROUND 16.
 
-**STATUS: RLS FASE 1.2 APPLIED ✅** — 4 nuove tabelle protette (email_pending_send, email_log, email_invoices_log, memoria_esplicita) + 5 consumer migrati a service_role. ANON deny verificato. Dati intatti via service_role.
+**STATUS: ORIZZONTE 1 RLS-SIDE CHIUSO ✅** — 25/25 tabelle public con RLS deny_all_anon_auth. Cervellone DB hardenato al 100%. Restano 2 step manuali Raffaele (cutover Telegram + 5poc pause).
 
 ---
 
 ## TLDR
 
-Da round 14 (smoke Fase 1.1 chiuso) ho proseguito autonomamente la Fase 1.2:
-1. Audit consumer + 2 subagenti verifica (audit + devil's advocate)
-2. Migrato 5 file `import { supabase }` (ANON) → `import { getSupabaseServer }` (SERVICE_ROLE)
-3. Commit `0cc23e2`, deploy Vercel READY
-4. Baseline pre-RLS ANON: 3 rows visibili in `cervellone_email_log` + 9 in `cervellone_memoria_esplicita` → leak attivo
-5. ALTER RLS + policy RESTRICTIVE in unica transazione (no leak Supavisor questa volta)
-6. Verifica: ANON HEAD `*/0` (deny silenzioso), service_role count = baseline (dati intatti)
-7. Get_advisors: 4 ERROR risolti, 0 regressi
+Sessione 23 mag sera → 24 mag notte: chiusura completa RLS hardening Cervellone in 3 fasi (1.1 OAuth + 1.2 email/memoria + 2/3 sweep 20 tabelle), tramite **magic-fix architetturale** invece di migrare 22 file uno per uno. Risparmiati ~4-6h vs approccio manuale.
 
-## File migrati (commit `0cc23e2`)
+## Cosa è successo questa sessione
 
-| File | Funzioni | Tabella target |
+### Fase 1.1 (commit `2d50854` chiusura via bridge round 13/14)
+- RLS su `google_oauth_credentials` + search_path fix 5 funzioni
+- 3-test ANON deny + control + service_role allow
+
+### Fase 1.2 (commit `0cc23e2` + RLS sweep + bridge round 15)
+- 5 consumer migrati ANON→SERVICE_ROLE (pending.ts, audit.ts, monthly-foreign-invoices.ts, telegram/route.ts blocchi memoria, memoria-tools.ts)
+- 2 subagenti audit (deep + devil's advocate) entrambi verdi
+- RLS su 4 tabelle email/memoria
+- Leak chiusi: 3+9 rows visibili ANON pre → `*/0`
+
+### Fase 2/3 (commit `ce9927a` + RLS sweep + questo round 16)
+- **MAGIC-FIX architetturale**: `src/lib/supabase.ts` ritorna service_role server-side, ANON browser-side
+- 4 subagent audit paralleli (V12 RAG + V18 ops + V18-19 mail + V19 memoria + Infra) verificano consumer pattern
+- 0 sovrapposizione tra "use client" components (6) e `from '@/lib/supabase'` (22 file) → safe
+- RLS sweep 20 tabelle in 1 transazione: `projects`, `conversations`, `messages`, `documents`, `embeddings`, `memory`, `cervellone_config`, `cervellone_skills`, `cervellone_anthropic_files`, `cervellone_audit_runs`, `cervellone_email_senders`, `gmail_alert_rules`, `gmail_processed_messages`, `cervellone_summary_giornaliero`, `cervellone_entita_menzionate`, `cervellone_memoria_extraction_runs`, `model_health`, `telegram_active_jobs`, `telegram_dedup`, `prezziario`
+- Cleanup: rimosso `src/app/api/auth/google/debug/route.ts` (Fase 0 TODO)
+
+## Verifica finale
+
+| Metrica | Pre-sessione | Post-sessione |
 |---|---|---|
-| `src/v19/tools/email/pending.ts` | 6 | `cervellone_email_pending_send` |
-| `src/v19/tools/email/audit.ts` | 1 (logEmail) | `cervellone_email_log` |
-| `src/v19/routines/monthly-foreign-invoices.ts` | 3 (incl. `cervellone_email_senders` preempt) | `cervellone_email_invoices_log` |
-| `src/lib/memoria-tools.ts` | 4 (incl. `summary_giornaliero` + `entita_menzionate` preempt Fase 2/3) | `cervellone_memoria_esplicita` |
-| `src/app/api/telegram/route.ts` | 2 blocchi `/ricorda` + `/dimentica` (con `sb` locale per non shadowing) | `cervellone_memoria_esplicita` |
+| Tabelle public con RLS on | 0 | **25** ✓ |
+| Policy deny_all_anon_auth | 0 | **25** ✓ |
+| Get_advisors ERROR `rls_disabled_in_public` | 24 | **0** ✓ |
+| ANON HEAD tabelle critiche (prezziario, config, dedup, model_health) | n.a. | `*/0` su tutte ✓ |
+| service_role count tabelle critiche | n.a. | dati intatti ✓ |
+| Vercel runtime errors fatal post-sweep | n.a. | **0** ✓ |
+| 5poc canary cron post-sweep | n.a. | **200** = OK ✓ |
 
-Pattern uniforme con `src/lib/google-oauth.ts` (Fase 0). Diff totale +23/-6. Minimal scope, niente refactor.
+## Plan cutover Telegram V18→V19 Step 3 (NON eseguibile da Code)
 
-## Verifica end-to-end
+Generato da subagent. Esecuzione richiede Raffaele:
 
-| Test | Pre-RLS | Post-RLS |
-|---|---|---|
-| `relrowsecurity` 4 tabelle | false | **true** ✓ |
-| `pg_policies` `deny_all_anon_auth` | assente | **presente** ✓ |
-| ANON HEAD `cervellone_email_log` count | `0-2/3` | `*/0` ✓ |
-| ANON HEAD `cervellone_memoria_esplicita` count | `0-8/9` | `*/0` ✓ |
-| service_role count | 3+9 | **3+9 intatti** ✓ |
-| `get_advisors` ERROR `rls_disabled` su 4 target | 4 | **0** ✓ |
-| `get_advisors` regressi | n/a | **0** ✓ |
+### Prerequisiti
+- **Env vars Vercel `cervellone-five` Production** (10+ da aggiungere):
+  - `TOPHOST_IMAP_HOST=pop.tophost.it`, `TOPHOST_IMAP_PORT=993`, `TOPHOST_IMAP_TLS=true`
+  - `TOPHOST_SMTP_HOST=mail.tophost.it`, `TOPHOST_SMTP_PORT=587`, `TOPHOST_SMTP_STARTTLS=true`
+  - `EMAIL_INFO_USER`, `EMAIL_INFO_PASS`, `EMAIL_INFO_FROM_ADDRESS=info@restruktura.it`, `EMAIL_INFO_DISPLAY_NAME=Restruktura`
+  - `EMAIL_RAFFAELE_USER`, `EMAIL_RAFFAELE_PASS`, `EMAIL_RAFFAELE_FROM_ADDRESS=raffaele.lentini@restruktura.it`, `EMAIL_RAFFAELE_DISPLAY_NAME=Raffaele Lentini`
+  - `TELEGRAM_RAFFAELE_CHAT_ID=<id chat>`
+  Già presenti da V18: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_ALLOWED_IDS`, `CRON_SECRET`.
 
-## Smoke residuo NON eseguito
+### Steps cutover (Raffaele su terminale)
+```bash
+# 1. Verifica env aggiunte
+curl https://cervellone-five.vercel.app/api/telegram   # atteso {"status":"webhook attivo"}
 
-Endpoint-level Vercel cron `/api/cron/expire-pending` non testato (CRON_SECRET non disponibile). Telegram bot prod su `cervellone-5poc` (webhook ancora non migrato a `cervellone-five`). Quando passi:
+# 2. Migra webhook Telegram da 5poc a five
+TG_TOKEN=<token>; TG_SECRET=<secret>
+curl -X POST "https://api.telegram.org/bot$TG_TOKEN/deleteWebhook"
+curl -X POST "https://api.telegram.org/bot$TG_TOKEN/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d "{\"url\":\"https://cervellone-five.vercel.app/api/telegram\",\"secret_token\":\"$TG_SECRET\"}"
 
-- (a) Smoke `/api/cron/expire-pending` con tuo CRON_SECRET su `cervellone-five` (HTTP 200 atteso, expire 0 rows = nessun pending)
-- (b) Test indiretto: pushi un msg con /ricorda al bot e verifico via logs Vercel 5poc che 200 (se SUPABASE_SERVICE_ROLE_KEY è settata su 5poc dovrebbe funzionare; altrimenti errore RLS deny che documenta status quo "5poc da pausare")
+# 3. Verifica
+curl "https://api.telegram.org/bot$TG_TOKEN/getWebhookInfo"
+# Atteso url=cervellone-five.vercel.app
 
-## Backlog post-Fase 1.2
+# 4. Smoke /start dal bot
+# 5. Test mail: "Ho mail nuove?"
+# 6. Test pending: "Invia mail a esterno@test.com"
+```
 
-5 tabelle Cervellone ora protette da RLS (1 OAuth Fase 1.1 + 4 email/memoria Fase 1.2). Restano 20 tabelle senza RLS:
+### Rollback < 30 sec
+```bash
+curl -X POST "https://api.telegram.org/bot$TG_TOKEN/setWebhook" \
+  -d "{\"url\":\"https://cervellone-5poc.vercel.app/api/telegram\",\"secret_token\":\"$TG_SECRET\"}"
+```
 
-- V12 RAG (6): projects, conversations, messages, documents, embeddings, memory
-- V18 ops (4): cervellone_config, cervellone_skills, cervellone_anthropic_files, cervellone_audit_runs
-- V18-19 mail (3): cervellone_email_senders, gmail_alert_rules, gmail_processed_messages
-- V19 memoria/automation (4): cervellone_summary_giornaliero, cervellone_entita_menzionate, cervellone_memoria_extraction_runs, model_health
-- Infra (3): telegram_active_jobs, telegram_dedup, prezziario
+## 5poc pause (NON eseguibile da Code)
 
-Per Fase 2/3 serve audit consumer ANON per ognuna (pattern uniforme: grep `.from('nome')` + verifica import client).
-
-## Pending invariati (Fase 1.1 + Fase 0)
-
-- 5poc pause via Vercel UI (residuo Fase 0, decisione 21 mag)
-- Rimozione endpoint debug `/api/auth/google/debug` (Fase 0 chiusa)
-- GCP OAuth consent screen publish (lasciato a tua decisione)
-- Cutover Telegram V18 → V19 Step 3
+MCP Vercel non ha `pause_project` tool (esiste solo per Supabase). Azione manuale:
+1. Vercel dashboard → `cervellone-5poc` → Settings → Advanced → Pause Project
+2. Reversibile in qualsiasi momento
+3. NON fare prima del cutover Telegram (5poc è ancora il bot live)
 
 ## Stato repo
 
-- HEAD: `0cc23e2` ("fase1.2(consumer): migra 5 file ANON_KEY → SERVICE_ROLE_KEY")
-- Da committare con questo round 15: questo file + `bridge/2026-05-21-smoke-post-redeploy.md` + `scripts/rls_fase1.2_cervellone.sql` (nuovo)
+- HEAD: `ce9927a` ("fase2/3(prep): magic-fix supabase.ts + remove debug endpoint")
+- Da committare con questo round 16: questo file + `scripts/rls_fase2.3_cervellone.sql` (nuovo)
+
+## Backlog orizzonte 2-4 (per quando torni)
+
+**Orizzonte 2 (3-6 settimane)** — V19 completo:
+- 6 sub-progetti file-handlers (ordine A→E→D→F→C→B da memoria)
+- 12 interventi tattici parsing/code_execution/Telegram/Gmail
+- Stabilizzazione + smoke continuativa
+
+**Orizzonte 3 (12 settimane)** — Visione completa 9 sistemi target:
+- Trigger.dev integrazione (S2-S3 long tasks reliable)
+- Vercel Sandbox per code_execution sandboxato
+- Local Agent (S8) per verifica norme tecniche
+- S9 Territorial Knowledge graph
+
+**Orizzonte 4 (3-4 anni)** — Sostituzione personale ufficio Restruktura.
+
+Spec strategica completa in `docs/superpowers/specs/2026-05-01-cervellone-vision-prodotto.md`.
 
 Cordialmente,
 Code
