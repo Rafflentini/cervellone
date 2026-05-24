@@ -481,16 +481,27 @@ export async function callClaudeStreamTelegram(
     console.warn(`[STREAM API ERROR] model=${modelConfig.model}: ${apiErrorMsg.slice(0, 200)}`)
 
     // Mappa errori comuni a messaggi user-friendly
+    let errMsg: string
     if (/not_found_error|404/i.test(apiErrorMsg)) {
-      fullResponse = '⚠️ Modello AI temporaneamente non disponibile. Il sistema sta cercando di recuperare automaticamente, riprovi tra un momento.'
+      errMsg = '⚠️ Modello AI temporaneamente non disponibile. Il sistema sta cercando di recuperare automaticamente, riprovi tra un momento.'
     } else if (/overloaded|529/i.test(apiErrorMsg)) {
-      fullResponse = '⚠️ Servizio AI sovraccarico. Riprovi tra qualche secondo.'
+      errMsg = '⚠️ Servizio AI sovraccarico. Riprovi tra qualche secondo.'
     } else if (/credit|billing/i.test(apiErrorMsg)) {
-      fullResponse = '⚠️ Crediti API esauriti. L\'Ingegnere è stato avvisato.'
+      errMsg = '⚠️ Crediti API esauriti. L\'Ingegnere è stato avvisato.'
     } else if (/rate.?limit|429/i.test(apiErrorMsg)) {
-      fullResponse = '⚠️ Troppe richieste al servizio AI. Attenda un momento.'
+      errMsg = '⚠️ Troppe richieste al servizio AI. Attenda un momento.'
     } else {
-      fullResponse = `⚠️ Errore temporaneo del servizio AI. Riprovi tra qualche secondo.`
+      errMsg = `⚠️ Errore temporaneo del servizio AI. Riprovi tra qualche secondo.`
+    }
+    // FIX 24 mag: preserve partial response invece di sovrascriverla. Prima quando
+    // l'errore API arrivava a metà streaming (es. dopo aver già letto 5 mail via
+    // read_email e iniziato sintesi), editTelegramMessage finale cancellava tutto
+    // il testo già streamato sostituendolo con il msg di errore. Ora se c'è già
+    // contenuto parziale, lo manteniamo e appendiamo l'avviso in coda.
+    if (fullResponse.length > 0) {
+      fullResponse = fullResponse.trim() + '\n\n' + errMsg + '\n_(quanto sopra è la risposta parziale prima dell\'errore; riprovi per completarla)_'
+    } else {
+      fullResponse = errMsg
     }
   }
 
