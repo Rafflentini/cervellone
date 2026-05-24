@@ -1,5 +1,5 @@
 // src/lib/memoria-tools.ts — Memoria persistente cross-sessione
-import { supabase } from '@/lib/supabase'
+import { getSupabaseServer } from '@/lib/supabase-server'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -68,6 +68,7 @@ export async function ricorda(input: RicordaInput): Promise<RicordaResult> {
     return { ok: false, error: 'Il campo testo è obbligatorio e non può essere vuoto.' }
   }
 
+  const supabase = getSupabaseServer()
   const { data, error } = await supabase.from('cervellone_memoria_esplicita').insert({
     contenuto: input.testo.trim(),
     tag: input.tag ?? null,
@@ -88,6 +89,7 @@ export async function richiama_memoria(input: RichiamaInput): Promise<RichiamaRe
   const query = input.query?.trim()
   if (!query) return { ok: false, results: [], error: 'query obbligatoria' }
 
+  const supabase = getSupabaseServer()
   const limit = input.limit ?? 10
   const filtro = input.tipo_filtro ?? 'tutto'
   const results: RichiamaResult['results'] = []
@@ -199,6 +201,7 @@ export function parseDateInput(input: string): string {
 export async function riepilogo_giorno(input: RiepilogoInput): Promise<RiepilogoResult> {
   const dataISO = parseDateInput(input.data)
 
+  const supabase = getSupabaseServer()
   const { data, error } = await supabase
     .from('cervellone_summary_giornaliero')
     .select('data, summary_text, message_count')
@@ -221,6 +224,7 @@ export async function riepilogo_giorno(input: RiepilogoInput): Promise<Riepilogo
 export async function lista_entita(input: ListaEntitaInput): Promise<ListaEntitaResult> {
   const limit = input.limit ?? 20
 
+  const supabase = getSupabaseServer()
   let q = supabase
     .from('cervellone_entita_menzionate')
     .select('name, type, last_seen_at, mention_count')

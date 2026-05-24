@@ -6,7 +6,7 @@
  *
  * Mai loggare body completo o password — solo metadata + snippet redatti.
  */
-import { supabase } from '@/lib/supabase'
+import { getSupabaseServer } from '@/lib/supabase-server'
 import type { AccountKey } from './config'
 
 export type EmailAuditAction =
@@ -41,6 +41,7 @@ export type EmailAuditEntry = {
 }
 
 export async function logEmail(entry: EmailAuditEntry): Promise<void> {
+  const supabase = getSupabaseServer()
   const { error } = await supabase.from('cervellone_email_log').insert({
     account: entry.account,
     action: entry.action,

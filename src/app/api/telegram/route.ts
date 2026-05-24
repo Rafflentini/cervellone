@@ -9,6 +9,7 @@ import { waitUntil } from '@vercel/functions'
 import crypto from 'crypto'
 import { callClaudeStreamTelegram } from '@/lib/claude'
 import { supabase } from '@/lib/supabase'
+import { getSupabaseServer } from '@/lib/supabase-server'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { getTelegramSystemPrompt } from '@/lib/prompts'
 import { saveMessageWithEmbedding } from '@/lib/memory'
@@ -241,7 +242,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true })
       }
       const convId = chatIdToUuid(chatId)
-      const { error } = await supabase.from('cervellone_memoria_esplicita').insert({
+      const sb = getSupabaseServer()
+      const { error } = await sb.from('cervellone_memoria_esplicita').insert({
         contenuto: testo,
         source: 'telegram',
         conversation_id: convId,
@@ -262,7 +264,8 @@ export async function POST(request: NextRequest) {
         await sendTelegramMessage(chatId, '⛔ Formato UUID non valido. Serve UUID esatto.')
         return NextResponse.json({ ok: true })
       }
-      const { data, error } = await supabase
+      const sb = getSupabaseServer()
+      const { data, error } = await sb
         .from('cervellone_memoria_esplicita')
         .delete()
         .eq('id', uuid)

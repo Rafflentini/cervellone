@@ -14,7 +14,7 @@
 import { readEmail } from '../tools/email/read-email'
 import { forwardEmail } from '../tools/email/forward-email'
 import { markEmail } from '../tools/email/mark-email'
-import { supabase } from '@/lib/supabase'
+import { getSupabaseServer } from '@/lib/supabase-server'
 
 const KEYWORDS = ['invoice', 'fattura', 'receipt', 'ricevuta', 'billing']
 const TARGET = 'raffaele.lentini@restruktura.it'
@@ -45,6 +45,7 @@ function monthBounds(monthRef: string): { since: string; before: string } {
 }
 
 async function loadSenders(): Promise<string[]> {
+  const supabase = getSupabaseServer()
   const { data } = await supabase
     .from('cervellone_email_senders')
     .select('email')
@@ -54,6 +55,7 @@ async function loadSenders(): Promise<string[]> {
 }
 
 async function isAlreadyForwarded(monthRef: string, uid: number): Promise<boolean> {
+  const supabase = getSupabaseServer()
   const { data } = await supabase
     .from('cervellone_email_invoices_log')
     .select('id')
@@ -73,6 +75,7 @@ async function recordForwarded(args: {
   forwardedMessageId: string
   filenames: string[]
 }): Promise<void> {
+  const supabase = getSupabaseServer()
   await supabase.from('cervellone_email_invoices_log').insert({
     month_ref: args.monthRef,
     source_uid: args.uid,

@@ -5,7 +5,7 @@
  * esterni in attesa di conferma utente via Telegram (/invia_<uuid> | /annulla_<uuid>).
  * TTL 30 minuti (default DB).
  */
-import { supabase } from '@/lib/supabase'
+import { getSupabaseServer } from '@/lib/supabase-server'
 import type { SendEmailInput, AttachmentInput } from './types'
 
 export type PendingRow = {
@@ -43,6 +43,7 @@ export type PendingTransitionResult =
 export async function createPendingSend(
   input: SendEmailInput,
 ): Promise<{ uuid: string; expires_at: string }> {
+  const supabase = getSupabaseServer()
   const row = {
     from_account: input.from_account,
     to_addrs: input.to,
@@ -65,6 +66,7 @@ export async function createPendingSend(
 }
 
 export async function fetchPending(uuid: string): Promise<PendingRow | null> {
+  const supabase = getSupabaseServer()
   const { data, error } = await supabase
     .from('cervellone_email_pending_send')
     .select('*')
@@ -94,6 +96,7 @@ export async function markPendingSent(
   uuid: string,
   messageId: string,
 ): Promise<PendingTransitionResult> {
+  const supabase = getSupabaseServer()
   const { data, error } = await supabase
     .from('cervellone_email_pending_send')
     .update({ status: 'sent', sent_message_id: messageId, sent_at: new Date().toISOString() })
@@ -115,6 +118,7 @@ export async function updatePendingMessageId(
   uuid: string,
   messageId: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  const supabase = getSupabaseServer()
   const { error } = await supabase
     .from('cervellone_email_pending_send')
     .update({ sent_message_id: messageId })
@@ -140,6 +144,7 @@ export async function updatePendingMessageId(
  *   - `{ ok: false, reason: 'db_error' }` su errore Supabase
  */
 export async function markPendingCancelled(uuid: string): Promise<PendingTransitionResult> {
+  const supabase = getSupabaseServer()
   const { data, error } = await supabase
     .from('cervellone_email_pending_send')
     .update({ status: 'cancelled' })
@@ -168,6 +173,7 @@ export async function markPendingCancelled(uuid: string): Promise<PendingTransit
 export async function expirePendingOlderThan(
   thresholdMin = 30,
 ): Promise<{ expired: number }> {
+  const supabase = getSupabaseServer()
   // Se il chiamante usa il default 30 min, ci fidiamo della colonna `expires_at`
   // (popolata dal DB con `now() + 30 min`). Altrimenti calcoliamo un cutoff
   // basato su `created_at` per onorare la soglia custom.
