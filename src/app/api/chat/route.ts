@@ -72,6 +72,29 @@ export async function POST(request: NextRequest) {
     )
   )
 
+  // ─── Dispatcher /invia_<uuid> + /annulla_<uuid> per mail subagent V19 ───
+  // Stesso pattern di src/app/api/telegram/route.ts:283-296. PRIMA di chiamare LLM
+  // (altrimenti il modello vede il comando come msg normale e risponde "non posso
+  // bypassare il dispatcher"). Conferma pending send via web chat allineata a Telegram.
+  const mInvia = userQuery.match(/^\/invia_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  const mAnnulla = userQuery.match(/^\/annulla_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  if (mInvia || mAnnulla) {
+    const uuid = (mInvia ?? mAnnulla)![1]
+    const mod = await import('@/v19/tools/email/telegram-confirm')
+    const r = mInvia
+      ? await mod.confirmPendingSend(uuid)
+      : await mod.cancelPendingSend(uuid)
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(r.message))
+        controller.close()
+      },
+    })
+    return new Response(stream, {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  }
+
   const encoder = new TextEncoder()
   const readable = new ReadableStream({
     async start(controller) {
