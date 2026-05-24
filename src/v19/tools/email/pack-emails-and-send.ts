@@ -12,6 +12,11 @@
  * - 'separate': mail con N allegati separati (uno per file estratto)
  * - 'zip': zippa tutti gli allegati in un singolo file zip, mail con 1 allegato
  *
+ * Filtri opzionali su filename (regex case-insensitive, applicati prima del pack):
+ * - filename_pattern: include SOLO i file il cui nome matcha il pattern
+ * - filename_exclude_pattern: ESCLUDE i file il cui nome matcha il pattern
+ *   (applicato dopo filename_pattern se entrambi presenti)
+ *
  * Verso destinatari esterni eredita la policy di send_email → pending+confirm.
  */
 import type Anthropic from '@anthropic-ai/sdk'
@@ -39,12 +44,15 @@ export type PackEmailsAndSendInput = {
   pack_mode: 'separate' | 'zip'
   zip_filename?: string
   auto_send_if_internal?: boolean
+  filename_pattern?: string
+  filename_exclude_pattern?: string
 }
 
 export type PackEmailsAndSendResult = SendEmailResult & {
   packed_count: number
   total_size_bytes: number
   pack_mode: 'separate' | 'zip'
+  skipped_by_filter?: number
 }
 
 type AttachmentWithBase64 = {
@@ -58,12 +66,25 @@ function hasBase64(a: unknown): a is AttachmentWithBase64 {
   return typeof a === 'object' && a !== null && 'contentBase64' in (a as Record<string, unknown>)
 }
 
+function compileRegex(pattern: string | undefined): RegExp | null {
+  if (!pattern) return null
+  try {
+    return new RegExp(pattern, 'i')
+  } catch {
+    throw new Error(`Pattern regex non valido: ${pattern}`)
+  }
+}
+
 export async function packEmailsAndSend(
   input: PackEmailsAndSendInput,
 ): Promise<PackEmailsAndSendResult> {
+  const includeRx = compileRegex(input.filename_pattern)
+  const excludeRx = compileRegex(input.filename_exclude_pattern)
+
   // 1. Fetch allegati di tutte le mail sorgenti (server-side, no LLM context)
   const collected: AttachmentInput[] = []
   let attIndex = 0
+  let skippedByFilter = 0
 
   for (const ref of input.source_emails) {
     const body = await getEmailBody({
@@ -74,8 +95,18 @@ export async function packEmailsAndSend(
     })
     for (const att of body.attachments) {
       if (hasBase64(att) && att.contentBase64) {
+        const name = att.filename ?? `allegato_uid${ref.uid}_${attIndex}.bin`
+        // Applica filtri filename
+        if (includeRx && !includeRx.test(name)) {
+          skippedByFilter++
+          continue
+        }
+        if (excludeRx && excludeRx.test(name)) {
+          skippedByFilter++
+          continue
+        }
         collected.push({
-          filename: att.filename ?? `allegato_uid${ref.uid}_${attIndex}.bin`,
+          filename: name,
           content_base64: att.contentBase64,
           contentType: att.contentType ?? 'application/octet-stream',
         })
@@ -85,7 +116,11 @@ export async function packEmailsAndSend(
   }
 
   if (collected.length === 0) {
-    throw new Error('Nessun allegato trovato nelle mail sorgenti specificate.')
+    throw new Error(
+      skippedByFilter > 0
+        ? `Nessun allegato matcha i filtri (scartati ${skippedByFilter} per filename_pattern/exclude).`
+        : 'Nessun allegato trovato nelle mail sorgenti specificate.',
+    )
   }
 
   // 2. Costruisci attachment finale in base a pack_mode
@@ -151,13 +186,14 @@ export async function packEmailsAndSend(
     packed_count: collected.length,
     total_size_bytes: totalSize,
     pack_mode: input.pack_mode,
+    skipped_by_filter: skippedByFilter > 0 ? skippedByFilter : undefined,
   }
 }
 
 export const PACK_EMAILS_AND_SEND_TOOL: Anthropic.Tool = {
   name: 'pack_emails_and_send',
   description:
-    'Invia mail con allegati estratti server-side da N mail sorgenti (per UID). Il LLM NON passa binari base64 — solo riferimenti UID, il server fetcha via IMAP. Usalo per richieste tipo "manda le fatture estere come allegati" o "mandami tutti i PDF di queste mail in uno zip". pack_mode="separate" allega ogni file individualmente; pack_mode="zip" comprime tutto in un singolo .zip (consigliato se >5 allegati o per UX). Verso destinatari esterni ritorna pending+uuid come send_email.',
+    'Invia mail con allegati estratti server-side da N mail sorgenti (per UID). Il LLM NON passa binari base64 — solo riferimenti UID, il server fetcha via IMAP. Usalo per richieste tipo "manda le fatture estere come allegati" o "mandami tutti i PDF di queste mail in uno zip". pack_mode="separate" allega ogni file individualmente; pack_mode="zip" comprime tutto in un singolo .zip (consigliato se >5 allegati o per UX). Filtri opzionali su filename: filename_pattern (regex case-insensitive, include solo match) e filename_exclude_pattern (regex case-insensitive, esclude match). Es: filename_pattern="^Invoice-" per prendere solo le fatture e scartare le ricevute. Verso destinatari esterni ritorna pending+uuid come send_email.',
   input_schema: {
     type: 'object',
     properties: {
@@ -202,6 +238,16 @@ export const PACK_EMAILS_AND_SEND_TOOL: Anthropic.Tool = {
       auto_send_if_internal: {
         type: 'boolean',
         description: 'Se tutti i destinatari sono @restruktura.it, invia senza pending',
+      },
+      filename_pattern: {
+        type: 'string',
+        description:
+          'OPZIONALE — regex case-insensitive: include SOLO allegati il cui filename matcha. Es: "^Invoice-" per prendere solo file che iniziano con Invoice-. Utile per distinguere fatture da ricevute quando una mail contiene entrambe.',
+      },
+      filename_exclude_pattern: {
+        type: 'string',
+        description:
+          'OPZIONALE — regex case-insensitive: ESCLUDE allegati il cui filename matcha. Es: "^Receipt-" per scartare ricevute. Applicato dopo filename_pattern se entrambi presenti.',
       },
     },
     required: ['from_account', 'source_emails', 'to', 'subject', 'body_text', 'pack_mode'],
