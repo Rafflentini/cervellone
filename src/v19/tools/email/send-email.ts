@@ -20,6 +20,7 @@
  * (impossibile rollback) e logghiamo `append_failed=true`.
  */
 import type Anthropic from '@anthropic-ai/sdk'
+import nodemailer from 'nodemailer'
 import { makeSmtp, fromHeader } from './connection'
 import { appendToSent } from './append-sent'
 import { logEmail } from './audit'
@@ -129,7 +130,30 @@ export async function sendEmailInternal(
     message?: string
     envelope?: unknown
   }
-  const raw = info.raw ?? Buffer.from(info.message ?? '')
+
+  // Bug-fix 24 mag: Nodemailer SMTP transport NON popola automaticamente info.raw o
+  // info.message dopo sendMail. Senza questo, raw è 0 byte e IMAP APPEND fallisce con
+  // "NO Can't save a zero byte message" (server Dovecot TopHost). Soluzione canonica:
+  // generare il raw RFC822 separatamente via streamTransport (buffer:true) DOPO l'invio
+  // SMTP riuscito, usando lo stesso message object. Costo: extra MIME compose ~10ms,
+  // zero rete (streamTransport non invia, solo serializza).
+  let raw: Buffer = info.raw ?? Buffer.from(info.message ?? '')
+  if (raw.length === 0) {
+    try {
+      const composer = nodemailer.createTransport({ streamTransport: true, buffer: true })
+      const composed = (await composer.sendMail({
+        ...message,
+        messageId: info.messageId, // mantieni stesso Message-ID dell'SMTP send
+      })) as { message?: Buffer | string }
+      if (composed.message) {
+        raw = Buffer.isBuffer(composed.message)
+          ? composed.message
+          : Buffer.from(composed.message)
+      }
+    } catch (composeErr) {
+      console.warn('[mail] raw compose for IMAP APPEND failed:', composeErr)
+    }
+  }
 
   // Atomicità SMTP→IMAP: se SMTP ok ma APPEND fallisce, la mail è già partita
   // e non possiamo rollbackare. Segnaliamo warning + log, ma NON throw.
