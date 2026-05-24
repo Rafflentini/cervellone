@@ -14,6 +14,7 @@ import { sendTelegramMessage } from './telegram-helpers'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
 import { GITHUB_TOOLS, executeGithubTool } from './github-tools'
 import { WEATHER_TOOLS, executeWeatherTool } from './weather-tool'
+import { MAIL_TOOL_DEFINITIONS, MAIL_TOOL_EXECUTORS } from '@/v19/tools/email'
 import { promoteModel } from './circuit-breaker'
 import {
   listInbox, searchGmail, readMessage, readThread,
@@ -1587,6 +1588,21 @@ async function executeWeatherWrapper(
   return executeWeatherTool(name, stringInput)
 }
 
+// 2026-05-24 V19 Mail (TopHost IMAP/SMTP per info@/raffaele.lentini@):
+// 5 tool — read_email, get_email_body, send_email, forward_email, mark_email
+async function executeMailWrapper(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<string | null> {
+  const executor = MAIL_TOOL_EXECUTORS[name]
+  if (!executor) return null
+  try {
+    return await executor(input)
+  } catch (err) {
+    return `Errore mail (${name}): ${err instanceof Error ? err.message : String(err)}`
+  }
+}
+
 // 2026-05-05 Gmail R+W: 16 tool per gestione email (read/draft/send/labels/archive/trash + summary)
 const GMAIL_TOOLS: ToolDefinition[] = [
   {
@@ -1940,11 +1956,12 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...DRIVE_TOOLS, // W1.3: 10 tool Drive/Sheets registrati + drive_upload_binary
   ...GITHUB_TOOLS, // Self-healing 2026-05-04 + 2026-05-08: read_file, propose_fix, deploy_status, merge_pr
   ...WEATHER_TOOLS, // 2026-05-05: weather_now via Open-Meteo
-  ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool
+  ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool (account restruktura.drive@gmail.com via Google API)
   ...MEMORIA_TOOLS, // 2026-05-07 Memoria persistente sub-progetto B: 4 tool
   ...PDF_TOOLS, // 2026-05-07 Pipeline PDF: genera_pdf
+  ...(MAIL_TOOL_DEFINITIONS as unknown as ToolDefinition[]), // 2026-05-24 V19 Mail TopHost IMAP/SMTP: 5 tool (info@/raffaele.lentini@)
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeGmailWrapper, executeMemoriaWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeGmailWrapper, executeMemoriaWrapper, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [
