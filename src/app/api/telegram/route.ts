@@ -82,6 +82,10 @@ export async function POST(request: NextRequest) {
           await sendTelegramMessage(chatId, 'Non sono riuscito a trascrivere il vocale.')
           return NextResponse.json({ ok: true })
         }
+        // Echo trascrizione all'utente PRIMA del processing LLM (pattern Claude AI app).
+        // Cosi se la risposta poi si interrompe / sbaglia, l'utente ha la trascrizione
+        // come riferimento e puo riformulare. Best-effort: errori non bloccano il flow.
+        await sendTelegramMessage(chatId, `🎙 _Trascrizione:_ ${userText}`).catch(() => {})
       }
     }
 
