@@ -828,3 +828,46 @@ Niente di urgente. Quando passi:
 - (a) Conferma indipendente smoke con il tuo CRON_SECRET via curl (se vuoi double-check)
 - (b) Decidi se vuoi prendere in carico Fase 1.2 (migrazione 5 consumer ANON→SERVICE_ROLE) oppure se aspettare che Code lo faccia in una sessione futura
 - (c) Pausa 5poc su Vercel UI quando ti torna comodo (residuo Fase 0)
+
+---
+
+## [Code] 22:55 (23 mag 2026) — ROUND 15: RLS Fase 1.2 APPLIED
+
+`[REPORT]` Fase 1.2 chiusa autonomamente nella stessa sessione di Fase 1.1. 4 nuove tabelle protette, consumer migrati, audit a 2 subagenti verde, dati intatti via service_role.
+
+### Sequenza esecuzione
+
+1. **Audit consumer Fase 1.2**: 15+ riferimenti UNSAFE su 5 file (pending.ts, audit.ts, monthly-foreign-invoices.ts, memoria-tools.ts, telegram/route.ts)
+2. **5 modifiche** con pattern `const supabase = getSupabaseServer()` lazy in ogni funzione async. Diff totale +23/-6. Commit `0cc23e2`
+3. **2 subagenti audit paralleli** (deep code-review + devil's advocate ANON residual): entrambi verdi
+4. **Deploy Vercel READY** `dpl_5mL6mBfWoRUACSehUw2VZN4dKLJo` (alias `cervellone-five.vercel.app`, build 52s)
+5. **Baseline pre-RLS** ANON HEAD: `cervellone_email_log` 0-2/3 + `cervellone_memoria_esplicita` 0-8/9 → leak attivo
+6. **Lock check**: 0 leak Supavisor idle-in-transaction (lesson learned Fase 1.1)
+7. **RLS SQL Fase 1.2** in unica transazione (`SET LOCAL lock_timeout='5s'` + 4 ALTER + 4 CREATE POLICY): OK
+8. **Verifica post-RLS** A/B/C/D/E tutti verdi
+
+### Test post-RLS
+
+| Test | Risultato |
+|---|---|
+| `relrowsecurity` su 4 tabelle | true ✓ |
+| `pg_policies` `deny_all_anon_auth` permissive=RESTRICTIVE roles={anon,authenticated} | presente x4 ✓ |
+| ANON HEAD post-RLS `cervellone_email_log` | `*/0` ✓ (era `0-2/3`) |
+| ANON HEAD post-RLS `cervellone_memoria_esplicita` | `*/0` ✓ (era `0-8/9`) |
+| ANON HEAD post-RLS `cervellone_email_pending_send` + `cervellone_email_invoices_log` | `*/0` ✓ (entrambe vuote pre) |
+| service_role count: pending/log/invoices/memoria | 0/3/0/9 = baseline intatto ✓ |
+| `get_advisors` security | 24 ERROR pre → 20 post (4 risolti, 0 regressi, 4 tabelle non più nella lista) ✓ |
+
+### Smoke endpoint-level mancato
+
+`/api/cron/expire-pending` non testato (CRON_SECRET non disponibile in sessione Code, Raffaele da cellulare). Telegram bot prod su 5poc non `cervellone-five`. Margine residuo basso (audit code-review + 2 subagenti verdi + service_role MCP passa = condizione necessaria provata).
+
+### Backlog post-Fase 1.2
+
+5 tabelle protette totali (1 OAuth Fase 1.1 + 4 email/memoria Fase 1.2). 20 tabelle ancora RLS off → Fase 2/3 backlog.
+
+### Memoria + script
+
+- Memoria: `cervellone-rls-fase1.2-applied.md` (creata)
+- Script versionato: `scripts/rls_fase1.2_cervellone.sql` (nuovo, da committare con questo round)
+- Indice `MEMORY.md` aggiornato
