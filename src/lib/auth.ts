@@ -15,11 +15,17 @@ import crypto from 'crypto'
  * Poi impostalo come cookie nel browser.
  */
 export function validateAuth(cookieValue: string | undefined): boolean {
-  if (!cookieValue || !process.env.AUTH_SECRET) return false
+  if (!cookieValue) return false
+
+  // Allinea fallback con /api/auth/route.ts:5 (entrambi usano 'cervellone' se env mancante).
+  // Bug pre-24mag: validateAuth early-returns false su AUTH_SECRET missing, mentre login
+  // accetta password e setta cookie con HMAC default → mismatch → 401 perpetuo su /api/chat
+  // anche dopo login OK su /api/auth. Vedi memoria feedback_auth_secret_fallback_mismatch.
+  const secret = process.env.AUTH_SECRET || 'cervellone'
 
   try {
     const expected = crypto
-      .createHmac('sha256', process.env.AUTH_SECRET)
+      .createHmac('sha256', secret)
       .update('cervellone_v2')
       .digest('hex')
 
