@@ -12,6 +12,7 @@ function cleanInput(): AnalysisInput {
       data: {
         rows: [{ model: 'claude-sonnet-4-6', outcome: 'success', n: 100 }],
         total: 100,
+        mitigated_count: 0,
         error_rate: 0.01,      // 1% — sotto soglia 5%
         hallucination_rate: 0.01, // 1% — sotto soglia 2%
       },
