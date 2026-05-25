@@ -40,6 +40,9 @@ yarn-error.log*
 # bridge secrets (Code↔Cowork shared secret handoff, must never commit)
 bridge/.secret*
 
+# Codex↔Claude loop coordination (local, ephemeral, per-worktree)
+/.loop/
+
 # vercel
 .vercel
 
