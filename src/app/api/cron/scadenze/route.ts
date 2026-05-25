@@ -178,7 +178,9 @@ export async function GET(req: NextRequest) {
 
     for (const row of rows) {
       const remindersSent = parseStringArray(row.reminders_sent)
-      if (remindersSent.includes(today)) continue
+      // One-shot: una sola notifica per scadenza, al primo giorno entro la finestra reminder_days.
+      // (Niente mail ogni giorno.) Per riattivare il reminder basta svuotare reminders_sent.
+      if (remindersSent.length > 0) continue
 
       const days = daysUntil(row.data_scadenza, today)
       const reminderDays = row.reminder_days ?? 5
