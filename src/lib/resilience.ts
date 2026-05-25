@@ -61,7 +61,7 @@ export function trackEmbeddingFailure(sendAlert: (msg: string) => Promise<void>)
   }
 }
 
-export function resetEmbeddingFailure() {
+export function resetEmbeddingFailure(): void {
   embeddingFailCount = 0
 }
 

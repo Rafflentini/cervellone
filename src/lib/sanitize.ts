@@ -27,14 +27,14 @@ export function sanitizeForStorage(text: string): string {
 
 const IS_PROD = process.env.NODE_ENV === 'production'
 
-export function logInfo(msg: string) {
+export function logInfo(msg: string): void {
   if (!IS_PROD) console.log(msg)
 }
 
-export function logWarn(msg: string) {
+export function logWarn(msg: string): void {
   console.warn(msg)
 }
 
-export function logError(msg: string, err?: unknown) {
+export function logError(msg: string, err?: unknown): void {
   console.error(msg, err instanceof Error ? err.message : '')
 }

@@ -139,7 +139,7 @@ export async function getConfig(): Promise<{ model: string }> {
   return configCache
 }
 
-export function invalidateConfigCache() {
+export function invalidateConfigCache(): void {
   configCache = null
   configCacheTime = 0
 }

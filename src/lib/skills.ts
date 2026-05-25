@@ -59,7 +59,7 @@ export async function matchSkills(userQuery: string): Promise<string> {
 /**
  * Invalida la cache (dopo modifica skill).
  */
-export function invalidateSkillCache() {
+export function invalidateSkillCache(): void {
   skillCache = null
   skillCacheTime = 0
 }
