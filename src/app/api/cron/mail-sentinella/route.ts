@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { sendTelegramMessage } from '@/lib/telegram-helpers'
 import { estraiScadenzaDaAllegato } from '@/lib/scadenza-extract'
+import { confirmProposta } from '@/lib/doc-proposte-actions'
+import { ricorda } from '@/lib/memoria-tools'
 import { readEmail, type ReadEmailMessage } from '@/v19/tools/email/read-email'
 import { getEmailBody } from '@/v19/tools/email/get-email-body'
 import type { AccountKey } from '@/v19/tools/email/config'
@@ -27,12 +29,22 @@ type ProposalResult = {
   notified: boolean
 }
 
+type NotificationProposal = Pick<
+  ProposalResult,
+  'id' | 'attachment_filename' | 'tipo_documento' | 'soggetto' | 'data_scadenza'
+>
+
+type PendingProposal = NotificationProposal & {
+  attempts: number | null
+}
+
 const ACCOUNTS: AccountKey[] = ['info', 'raffaele']
 const FOLDER = 'INBOX'
 const LOOKBACK_DAYS = 3
 const READ_LIMIT = 50
 const MAX_EXTRACTIONS = 10
 const MIN_CONFIDENCE = 0.5
+const ONE_DAY_MS = 24 * 60 * 60 * 1000
 const KEYWORDS = [
   'idoneita',
   'attestato',
@@ -77,7 +89,7 @@ function getAdminChatId(): number {
   return adminChat
 }
 
-function buildNotification(result: ProposalResult): string {
+function buildNotification(result: NotificationProposal): string {
   const tipo = result.tipo_documento || 'documento'
   const soggetto = result.soggetto || 'soggetto non riconosciuto'
   return [
@@ -162,6 +174,115 @@ async function notifyProposal(result: ProposalResult, adminChat: number): Promis
   return { ...result, notified: true }
 }
 
+function olderThan24h(): string {
+  return new Date(Date.now() - ONE_DAY_MS).toISOString()
+}
+
+function autoMemoryText(proposal: NotificationProposal): string {
+  const tipo = proposal.tipo_documento || 'documento'
+  const soggetto = proposal.soggetto || 'soggetto non riconosciuto'
+  return `AUTO-MEMORIZZATO (3 solleciti senza risposta): ${tipo} di ${soggetto}, scade ${proposal.data_scadenza}. Allegato ${proposal.attachment_filename}.`
+}
+
+async function updateReminderAttempt(proposal: PendingProposal): Promise<void> {
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('cervellone_doc_proposte')
+    .update({
+      attempts: (proposal.attempts ?? 0) + 1,
+      last_notified_at: now,
+      updated_at: now,
+    })
+    .eq('id', proposal.id)
+    .eq('stato', 'in_attesa')
+
+  if (error) throw new Error(`Errore update sollecito proposta ${proposal.id}: ${error.message}`)
+}
+
+async function remindPendingProposals(adminChat: number, errors: string[]): Promise<number> {
+  const { data, error } = await supabase
+    .from('cervellone_doc_proposte')
+    .select('id, attachment_filename, tipo_documento, soggetto, data_scadenza, attempts')
+    .eq('stato', 'in_attesa')
+    .lt('attempts', 3)
+    .lt('last_notified_at', olderThan24h())
+    .order('last_notified_at', { ascending: true })
+    .limit(20)
+
+  if (error) throw new Error(`Errore query proposte da risollecitare: ${error.message}`)
+
+  let riproposte = 0
+  for (const proposal of (data ?? []) as PendingProposal[]) {
+    if (adminChat) {
+      await sendTelegramMessage(adminChat, buildNotification(proposal)).catch((err) => {
+        console.error('[CRON mail-sentinella] reminder telegram failed:', err)
+      })
+    }
+    try {
+      await updateReminderAttempt(proposal)
+      riproposte += 1
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err))
+    }
+  }
+  return riproposte
+}
+
+async function autoMemorizePendingProposals(adminChat: number, errors: string[]): Promise<number> {
+  const { data, error } = await supabase
+    .from('cervellone_doc_proposte')
+    .select('id, attachment_filename, tipo_documento, soggetto, data_scadenza, attempts')
+    .eq('stato', 'in_attesa')
+    .gte('attempts', 3)
+    .lt('last_notified_at', olderThan24h())
+    .order('last_notified_at', { ascending: true })
+    .limit(20)
+
+  if (error) throw new Error(`Errore query proposte da auto-memorizzare: ${error.message}`)
+
+  let autoMemorizzate = 0
+  for (const proposal of (data ?? []) as PendingProposal[]) {
+    const confirmed = await confirmProposta(proposal.id)
+    if (!confirmed.ok) {
+      errors.push(`Auto-memoria proposta ${proposal.id}: ${confirmed.message}`)
+      continue
+    }
+
+    const { error: updateError } = await supabase
+      .from('cervellone_doc_proposte')
+      .update({ stato: 'auto_memorizzata', updated_at: new Date().toISOString() })
+      .eq('id', proposal.id)
+      .eq('stato', 'confermata')
+    if (updateError) {
+      errors.push(`Errore stato auto_memorizzata proposta ${proposal.id}: ${updateError.message}`)
+      continue
+    }
+
+    const memory = await ricorda({
+      testo: autoMemoryText(proposal),
+      tag: 'scadenza:auto',
+      source: 'cron',
+    })
+    if (!memory.ok) {
+      errors.push(`Errore memoria proposta ${proposal.id}: ${memory.error ?? 'errore sconosciuto'}`)
+    }
+
+    if (adminChat) {
+      const tipo = proposal.tipo_documento || 'documento'
+      const soggetto = proposal.soggetto || 'soggetto non riconosciuto'
+      await sendTelegramMessage(
+        adminChat,
+        `Nessuna risposta dopo 3 solleciti: ho archiviato e registrato comunque ${tipo} di ${soggetto} (scade ${proposal.data_scadenza}).`,
+      ).catch((err) => {
+        console.error('[CRON mail-sentinella] auto-memory telegram failed:', err)
+      })
+    }
+
+    autoMemorizzate += 1
+  }
+  return autoMemorizzate
+}
+
 export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization')
   if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -235,11 +356,22 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  let riproposte = 0
+  let autoMemorizzate = 0
+  try {
+    riproposte = await remindPendingProposals(adminChat, errors)
+    autoMemorizzate = await autoMemorizePendingProposals(adminChat, errors)
+  } catch (err) {
+    errors.push(err instanceof Error ? err.message : String(err))
+  }
+
   const body = {
     ok: errors.length === 0,
     checked,
     nuove_proposte: nuoveProposte.length,
     estrazioni: extractionCount,
+    riproposte,
+    auto_memorizzate: autoMemorizzate,
     details: nuoveProposte,
     errors,
   }
