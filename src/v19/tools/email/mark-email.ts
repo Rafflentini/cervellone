@@ -69,7 +69,7 @@ export async function markEmail(input: MarkEmailInput): Promise<{ ok: true }> {
 export const MARK_EMAIL_TOOL: Anthropic.Tool = {
   name: 'mark_email',
   description:
-    'Flag/unflag, seen/unseen, o move di un messaggio per UID. Move crea la target_folder se non esiste.',
+    'Flag/unflag, seen/unseen, o move di un messaggio per UID in un account TopHost (info@restruktura.it o raffaele.lentini@restruktura.it). NON per Gmail restruktura.drive@gmail.com: per quello usa i tool gmail_*. Move crea la target_folder se non esiste.',
   input_schema: {
     type: 'object',
     properties: {

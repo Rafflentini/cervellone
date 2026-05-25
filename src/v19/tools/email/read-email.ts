@@ -102,7 +102,7 @@ export async function readEmail(input: ReadEmailInput): Promise<ReadEmailResult>
 export const READ_EMAIL_TOOL: Anthropic.Tool = {
   name: 'read_email',
   description:
-    'Lista messaggi (metadata, no body) da una cartella IMAP di un account TopHost. Per leggere il body usa get_email_body. Default folder INBOX, default limit 20 (max 100).',
+    'Lista messaggi (metadata, no body) da una cartella IMAP di un account TopHost (info@restruktura.it o raffaele.lentini@restruktura.it). NON per Gmail restruktura.drive@gmail.com: per quello usa i tool gmail_*. Per leggere il body usa get_email_body. Default folder INBOX, default limit 20 (max 100).',
   input_schema: {
     type: 'object',
     properties: {

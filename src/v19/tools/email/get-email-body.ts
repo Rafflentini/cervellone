@@ -80,7 +80,7 @@ export async function getEmailBody(input: GetEmailBodyInput): Promise<GetEmailBo
 export const GET_EMAIL_BODY_TOOL: Anthropic.Tool = {
   name: 'get_email_body',
   description:
-    'Leggi corpo + allegati di una specifica mail per UID. Se include_attachments=true ritorna anche il contenuto base64 (attenzione token).',
+    'Leggi corpo + allegati di una specifica mail per UID da un account TopHost (info@restruktura.it o raffaele.lentini@restruktura.it). NON per Gmail restruktura.drive@gmail.com: per quello usa i tool gmail_*. Se include_attachments=true ritorna anche il contenuto base64 (attenzione token).',
   input_schema: {
     type: 'object',
     properties: {

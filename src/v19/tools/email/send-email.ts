@@ -217,7 +217,7 @@ export async function sendEmailInternal(
 export const SEND_EMAIL_TOOL: Anthropic.Tool = {
   name: 'send_email',
   description:
-    'Invia mail da un account TopHost (info|raffaele). Verso destinatari ESTERNI a @restruktura.it ritorna status="pending" + uuid: l\'utente conferma via Telegram /invia_<uuid>. Verso destinatari interni con auto_send_if_internal=true invia subito. Salva sempre copia in Sent del mittente.',
+    'Invia mail da un account TopHost (info@restruktura.it o raffaele.lentini@restruktura.it). NON per Gmail restruktura.drive@gmail.com: per quello usa i tool gmail_*. Verso destinatari ESTERNI a @restruktura.it ritorna status="pending" + uuid: l\'utente conferma via Telegram /invia_<uuid>. Verso destinatari interni con auto_send_if_internal=true invia subito. Salva sempre copia in Sent del mittente.',
   input_schema: {
     type: 'object',
     properties: {

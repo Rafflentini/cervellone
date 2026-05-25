@@ -69,7 +69,7 @@ export async function forwardEmail(input: ForwardEmailInput): Promise<SendEmailR
 export const FORWARD_EMAIL_TOOL: Anthropic.Tool = {
   name: 'forward_email',
   description:
-    'Inoltra mail (preserva allegati). Verso destinatari esterni ritorna pending (vedi send_email). Default prefix oggetto "[Fwd] ".',
+    'Inoltra mail da un account TopHost (info@restruktura.it o raffaele.lentini@restruktura.it), preservando allegati. NON per Gmail restruktura.drive@gmail.com: per quello usa i tool gmail_*. Verso destinatari esterni ritorna pending (vedi send_email). Default prefix oggetto "[Fwd] ".',
   input_schema: {
     type: 'object',
     properties: {
