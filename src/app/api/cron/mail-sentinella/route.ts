@@ -83,8 +83,8 @@ function buildNotification(result: ProposalResult): string {
   return [
     `Documento personale rilevato: ${tipo} di ${soggetto}, scade ${result.data_scadenza}.`,
     `Allegato: ${result.attachment_filename}`,
-    `Per archiviare e registrare: /conferma_${result.id}`,
-    `Per ignorare: /ignora_${result.id}`,
+    `Per archiviare e registrare: \`/conferma_${result.id}\``,
+    `Per ignorare: \`/ignora_${result.id}\``,
   ].join('\n')
 }
 
