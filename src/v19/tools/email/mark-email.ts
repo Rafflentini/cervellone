@@ -24,6 +24,7 @@ export async function markEmail(input: MarkEmailInput): Promise<{ ok: true }> {
   if (input.action === 'move' && !input.target_folder) {
     throw new Error('move richiede target_folder')
   }
+  const targetFolder = input.target_folder ?? ''
   const client = await openImap(input.account)
   try {
     await client.mailboxOpen(folder, { readOnly: false })
@@ -43,11 +44,11 @@ export async function markEmail(input: MarkEmailInput): Promise<{ ok: true }> {
         break
       case 'move':
         try {
-          await client.mailboxCreate(input.target_folder as string)
+          await client.mailboxCreate(targetFolder)
         } catch {
           // folder già esiste — ignore
         }
-        await client.messageMove(uidStr, input.target_folder as string, { uid: true })
+        await client.messageMove(uidStr, targetFolder, { uid: true })
         break
     }
     await logEmail({
