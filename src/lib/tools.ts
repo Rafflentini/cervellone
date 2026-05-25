@@ -15,6 +15,7 @@ import { DRIVE_TOOLS, executeDriveTool } from './drive'
 import { GITHUB_TOOLS, executeGithubTool } from './github-tools'
 import { WEATHER_TOOLS, executeWeatherTool } from './weather-tool'
 import { SCADENZE_TOOLS, executeScadenzeTool } from './scadenze-tools'
+import { LEGGI_ALLEGATO_TOOLS, executeLeggiAllegatoTool } from './scadenza-extract'
 import { MAIL_TOOL_DEFINITIONS, MAIL_TOOL_EXECUTORS } from '@/v19/tools/email'
 import { promoteModel } from './circuit-breaker'
 import {
@@ -1973,12 +1974,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...GITHUB_TOOLS, // Self-healing 2026-05-04 + 2026-05-08: read_file, propose_fix, deploy_status, merge_pr
   ...WEATHER_TOOLS, // 2026-05-05: weather_now via Open-Meteo
   ...SCADENZE_TOOLS, // 2026-05-25: scadenzario documenti/mezzi/cantieri
+  ...LEGGI_ALLEGATO_TOOLS, // 2026-05-25 SP-1: leggi allegato mail → estrai scadenza
   ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool (account restruktura.drive@gmail.com via Google API)
   ...MEMORIA_TOOLS, // 2026-05-07 Memoria persistente sub-progetto B: 4 tool
   ...PDF_TOOLS, // 2026-05-07 Pipeline PDF: genera_pdf
   ...(MAIL_TOOL_DEFINITIONS as unknown as ToolDefinition[]), // 2026-05-24 V19 Mail TopHost IMAP/SMTP: 5 tool (info@/raffaele.lentini@)
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeGmailWrapper, executeMemoriaWrapper, executeMailWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeGmailWrapper, executeMemoriaWrapper, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [
