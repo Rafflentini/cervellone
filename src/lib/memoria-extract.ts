@@ -41,6 +41,16 @@ export interface ExtractResult {
   error?: string
 }
 
+interface MemoriaMessageRow {
+  id: string
+  conversation_id: string | null
+  role: string
+  content: unknown
+  created_at: string
+}
+
+type AnthropicTextBlock = Anthropic.TextBlock
+
 // ── Cost estimate (Sonnet 4.6 pricing) ────────────────────────────────────────
 // Formula: (input_tokens * $3/M) + (output_tokens * $15/M)
 // Approssimazione con split esatto se disponibile, altrimenti 80/20.
@@ -110,7 +120,7 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
 
     if (msgsErr) throw new Error(`Fetch messages: ${msgsErr.message}`)
 
-    const msgList = msgs ?? []
+    const msgList: MemoriaMessageRow[] = msgs ?? []
 
     // Giornata vuota
     if (msgList.length === 0) {
@@ -139,9 +149,9 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
     }
 
     // Step 5: Group by conversation_id
-    const groups = new Map<string, typeof msgList>()
+    const groups = new Map<string, MemoriaMessageRow[]>()
     for (const msg of msgList) {
-      const key = (msg as any).conversation_id ?? 'unknown'
+      const key = msg.conversation_id ?? 'unknown'
       if (!groups.has(key)) groups.set(key, [])
       groups.get(key)!.push(msg)
     }
@@ -162,7 +172,7 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
     // Step 6 (cont.): Per ogni gruppo → call Anthropic
     for (const [convId, convMsgs] of groups.entries()) {
       const transcript = convMsgs
-        .map((m: any) => `[${m.role}]: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
+        .map(m => `[${m.role}]: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
         .join('\n')
 
       try {
@@ -181,10 +191,10 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
         totalInputTokens += resp.usage?.input_tokens ?? 0
         totalOutputTokens += resp.usage?.output_tokens ?? 0
 
-        const textBlock = resp.content.find((b: any) => b.type === 'text')
-        if (textBlock && textBlock.type === 'text') {
+        const textBlock = resp.content.find((b): b is AnthropicTextBlock => b.type === 'text')
+        if (textBlock) {
           try {
-            const parsed = JSON.parse((textBlock as any).text)
+            const parsed = JSON.parse(textBlock.text)
             if (parsed.summary) allSummaries.push(parsed.summary)
             if (Array.isArray(parsed.entita)) allEntita.push(...parsed.entita)
           } catch {
