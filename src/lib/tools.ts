@@ -678,18 +678,20 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
           .eq('conversation_id', conversationId)
           .order('created_at', { ascending: true })
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const cached = (allDocs || []).filter((d: any) =>
-          ['preventivo', 'cme', 'quadro_economico'].includes(d.metadata?.doc_type)
+        type CachedDocument = {
+          content: string
+          metadata?: { doc_type?: string } | null
+        }
+        const docs: CachedDocument[] = allDocs || []
+        const cachedDocTypes: Array<string | undefined> = ['preventivo', 'cme', 'quadro_economico']
+        const cached = docs.filter(d =>
+          cachedDocTypes.includes(d.metadata?.doc_type)
         )
 
         if (cached.length >= 2) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const prevDoc = cached.find((d: any) => d.metadata?.doc_type === 'preventivo')
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const cmeDoc = cached.find((d: any) => d.metadata?.doc_type === 'cme')
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const qeDoc = cached.find((d: any) => d.metadata?.doc_type === 'quadro_economico')
+          const prevDoc = cached.find(d => d.metadata?.doc_type === 'preventivo')
+          const cmeDoc = cached.find(d => d.metadata?.doc_type === 'cme')
+          const qeDoc = cached.find(d => d.metadata?.doc_type === 'quadro_economico')
 
           if (prevDoc && cmeDoc) {
             let result = `DOCUMENTI GIÀ GENERATI PER QUESTA CONVERSAZIONE (risultati invariati).\n\nPREVENTIVO:\n~~~document\n${prevDoc.content}\n~~~\n\nCME:\n~~~document\n${cmeDoc.content}\n~~~`
