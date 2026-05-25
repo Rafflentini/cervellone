@@ -9,6 +9,8 @@
  */
 
 import { google } from 'googleapis'
+import type { gmail_v1 } from 'googleapis'
+import type { OAuth2Client } from 'google-auth-library'
 import { supabase } from './supabase'
 
 // ── Types ──
@@ -55,8 +57,7 @@ export interface SendDraftResult {
 
 // ── Auth (riusa pattern di drive.ts) ──
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getGmailAuth(): Promise<any> {
+async function getGmailAuth(): Promise<OAuth2Client> {
   const { getAuthorizedClient } = await import('./google-oauth')
   const oauthClient = await getAuthorizedClient()
   if (!oauthClient) {
@@ -65,7 +66,7 @@ async function getGmailAuth(): Promise<any> {
   return oauthClient
 }
 
-async function getGmailClient() {
+async function getGmailClient(): Promise<gmail_v1.Gmail> {
   return google.gmail({ version: 'v1', auth: await getGmailAuth() })
 }
 
