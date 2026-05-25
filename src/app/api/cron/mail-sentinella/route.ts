@@ -171,6 +171,8 @@ export async function GET(req: NextRequest) {
   let extractionCount = 0
 
   for (const account of ACCOUNTS) {
+    if (extractionCount >= MAX_EXTRACTIONS) break
+
     try {
       const inbox = await readEmail({
         account,
