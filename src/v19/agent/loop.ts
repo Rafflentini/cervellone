@@ -260,7 +260,9 @@ type CreateArgsInput = {
   containerId: string | null
 }
 
-function buildCreateArgs(input: CreateArgsInput): any {
+type MessageStreamCreateArgs = Parameters<Anthropic['beta']['messages']['stream']>[0]
+
+function buildCreateArgs(input: CreateArgsInput): MessageStreamCreateArgs {
   // Opus 4.7 NON accetta thinking.budget_tokens ne' temperature/top_p/top_k.
   // Usa thinking adaptive + output_config.effort.
   const args: any = {
