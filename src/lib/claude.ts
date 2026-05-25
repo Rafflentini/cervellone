@@ -409,8 +409,10 @@ export async function callClaudeStreamTelegram(
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
     totalToolCalls += toolBlocks.length
     const textBlocks = final.content.filter(b => b.type === 'text')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const toolNames = toolBlocks.map(b => (b as any).name).join(',')
+    const toolNames = toolBlocks
+      .filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+      .map(b => b.name)
+      .join(',')
 
     if (textBlocks.length === 0) consecutiveNoText++
     else consecutiveNoText = 0
