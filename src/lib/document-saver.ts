@@ -1,4 +1,5 @@
 import { google } from 'googleapis'
+import type { GoogleAuth, OAuth2Client } from 'google-auth-library'
 import { DRIVE_FOLDERS, SHEETS, createDocument } from './drive'
 
 export type DocumentType =
@@ -76,8 +77,7 @@ export function extractClientName(prompt: string, recentHistory: string): string
 // FIX W1.3.5: usa OAuth-first → SA fallback come drive.ts (consistente).
 // Lazy import di google-oauth per evitare side-effect supabase a test time.
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getAuth(): Promise<any> {
+async function getAuth(): Promise<OAuth2Client | GoogleAuth> {
   try {
     const { getAuthorizedClient } = await import('./google-oauth')
     const oauthClient = await getAuthorizedClient()
