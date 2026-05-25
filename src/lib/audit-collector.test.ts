@@ -1,5 +1,5 @@
 // src/lib/audit-collector.test.ts — TDD Task 2 audit-collector
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // ── Mock Supabase ─────────────────────────────────────────────────────────────
 
@@ -41,6 +41,10 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
+afterEach(() => {
+  vi.useRealTimers()
+})
+
 // ── D1: collectModelHealth ────────────────────────────────────────────────────
 
 describe('collectModelHealth', () => {
@@ -49,6 +53,9 @@ describe('collectModelHealth', () => {
       { model: 'claude-sonnet-4-6', outcome: 'success' },
       { model: 'claude-sonnet-4-6', outcome: 'success' },
       { model: 'claude-sonnet-4-6', outcome: 'api_error' },
+      { model: 'claude-sonnet-4-6', outcome: 'empty' },
+      { model: 'claude-sonnet-4-6', outcome: 'force_text' },
+      { model: 'claude-sonnet-4-6', outcome: 'hallucination' },
       { model: 'claude-opus-latest', outcome: 'success' },
     ])
     const { collectModelHealth } = await import('./audit-collector')
@@ -60,9 +67,10 @@ describe('collectModelHealth', () => {
     expect(sonnetSuccess?.n).toBe(2)
     const sonnetErr = rows.find(r => r.model === 'claude-sonnet-4-6' && r.outcome === 'api_error')
     expect(sonnetErr?.n).toBe(1)
-    expect(result.data!.total).toBe(4)
-    expect(typeof result.data!.error_rate).toBe('number')
-    expect(typeof result.data!.hallucination_rate).toBe('number')
+    expect(result.data!.total).toBe(7)
+    expect(result.data!.mitigated_count).toBe(2)
+    expect(result.data!.error_rate).toBeCloseTo(1 / 7)
+    expect(result.data!.hallucination_rate).toBeCloseTo(1 / 7)
   })
 
   it('error: supabase failure → ok false', async () => {
@@ -128,6 +136,8 @@ describe('collectGmailHealth', () => {
 
 describe('collectMemoriaRuns', () => {
   it('happy path: ritorna runs + missing dates calcolati', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-25T08:00:00Z'))
     resolveWith([
       { date_processed: '2026-05-06', status: 'ok', conversations_count: 5, entities_count: 3, llm_cost_estimate_usd: 0.01, error_message: null },
       { date_processed: '2026-05-05', status: 'ok', conversations_count: 2, entities_count: 1, llm_cost_estimate_usd: 0.005, error_message: null },
@@ -137,6 +147,8 @@ describe('collectMemoriaRuns', () => {
     expect(result.ok).toBe(true)
     expect(result.data!.runs).toHaveLength(2)
     expect(Array.isArray(result.data!.missing_dates)).toBe(true)
+    expect(result.data!.missing_dates).not.toContain('2026-05-24')
+    expect(result.data!.missing_dates).toContain('2026-05-23')
     expect(result.data!.error_count).toBe(0)
     expect(result.data!.ok_count).toBe(2)
   })

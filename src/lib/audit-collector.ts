@@ -39,6 +39,7 @@ export interface ModelHealthRow {
 export interface ModelHealthData {
   rows: ModelHealthRow[]
   total: number
+  mitigated_count: number
   error_rate: number
   hallucination_rate: number
 }
@@ -75,7 +76,8 @@ export async function collectModelHealth(): Promise<DimensionResult<ModelHealthD
     aggregated.push({ model, outcome, n })
   }
 
-  const errorCount = rows.filter(r => r.outcome !== 'success' && r.outcome !== 'hallucination').length
+  const errorCount = rows.filter(r => r.outcome === 'api_error' || r.outcome === 'timeout').length
+  const mitigatedCount = rows.filter(r => r.outcome === 'empty' || r.outcome === 'force_text').length
   const hallucinationCount = rows.filter(r => r.outcome === 'hallucination').length
 
   const error_rate = total > 0 ? errorCount / total : 0
@@ -83,7 +85,7 @@ export async function collectModelHealth(): Promise<DimensionResult<ModelHealthD
 
   return {
     ok: true,
-    data: { rows: aggregated, total, error_rate, hallucination_rate },
+    data: { rows: aggregated, total, mitigated_count: mitigatedCount, error_rate, hallucination_rate },
   }
 }
 
@@ -223,10 +225,11 @@ export async function collectMemoriaRuns(): Promise<DimensionResult<MemoriaRunsD
   const ok_count = runs.filter(r => r.status === 'ok').length
   const error_count = runs.filter(r => r.status === 'error').length
 
-  // Calcola date mancanti (ieri e ultimi 6 giorni lavorativi = semplificato: ultimi 7 gg)
+  // Calcola date mancanti: la run per D avviene D+1 alle 21:30 Europe/Rome,
+  // quindi today-1 non è ancora dovuta durante l'audit del mattino.
   const foundDates = new Set(runs.map(r => r.date_processed))
   const missing_dates: string[] = []
-  for (let i = 1; i <= 7; i++) {
+  for (let i = 2; i <= 8; i++) {
     const d = new Date()
     d.setUTCDate(d.getUTCDate() - i)
     const ds = dateISO(d)
