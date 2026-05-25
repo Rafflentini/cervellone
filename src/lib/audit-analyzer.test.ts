@@ -40,6 +40,8 @@ function cleanInput(): AnalysisInput {
           { bot_action: 'in_summary', day: '2026-05-03', n: 2 },
           { bot_action: 'in_summary', day: '2026-05-02', n: 6 },
         ],
+        alertsCronRecent: true,
+        summaryCronRecent: true,
       },
     },
     memoriaRuns: {
@@ -141,6 +143,7 @@ describe('analyze — Gmail anomalie', () => {
     input.gmailHealth.data!.rows = input.gmailHealth.data!.rows.filter(
       r => r.bot_action !== 'notified_critical'
     )
+    input.gmailHealth.data!.alertsCronRecent = false
     const result = analyze(input)
     const a = result.anomalies.find(x => x.code === 'GMAIL_ALERTS_DEAD')
     expect(a).toBeDefined()
@@ -152,6 +155,7 @@ describe('analyze — Gmail anomalie', () => {
     input.gmailHealth.data!.rows = input.gmailHealth.data!.rows.filter(
       r => r.bot_action !== 'in_summary'
     )
+    input.gmailHealth.data!.summaryCronRecent = false
     const result = analyze(input)
     const a = result.anomalies.find(x => x.code === 'GMAIL_MORNING_DEAD')
     expect(a).toBeDefined()

@@ -119,7 +119,8 @@ export function analyze(input: AnalysisInput): AnalysisResult {
   let gmail_actions_count = 0
 
   if (input.gmailHealth.ok && input.gmailHealth.data) {
-    const rows = input.gmailHealth.data.rows
+    const d = input.gmailHealth.data
+    const rows = d.rows
     gmail_actions_count = rows.reduce((sum, r) => sum + r.n, 0)
 
     // Conta giorni distinti con notified_critical
@@ -131,7 +132,7 @@ export function analyze(input: AnalysisInput): AnalysisResult {
       rows.filter(r => r.bot_action === 'in_summary').map(r => r.day)
     )
 
-    if (criticalDays.size === 0) {
+    if (criticalDays.size === 0 && !d.alertsCronRecent) {
       anomalies.push({
         code: 'GMAIL_ALERTS_DEAD',
         severity: 'high',
@@ -141,7 +142,7 @@ export function analyze(input: AnalysisInput): AnalysisResult {
       })
     }
 
-    if (summaryDays.size === 0) {
+    if (summaryDays.size === 0 && !d.summaryCronRecent) {
       anomalies.push({
         code: 'GMAIL_MORNING_DEAD',
         severity: 'high',

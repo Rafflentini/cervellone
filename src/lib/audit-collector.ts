@@ -141,6 +141,8 @@ export interface GmailDayRow {
 
 export interface GmailHealthData {
   rows: GmailDayRow[]
+  alertsCronRecent: boolean
+  summaryCronRecent: boolean
 }
 
 /**
@@ -181,7 +183,33 @@ export async function collectGmailHealth(): Promise<DimensionResult<GmailHealthD
   // Ordina per day DESC
   aggregated.sort((a, b) => b.day.localeCompare(a.day))
 
-  return { ok: true, data: { rows: aggregated } }
+  // Heartbeat cron: gmail-alerts/gmail-morning aggiornano un timestamp di ultima
+  // esecuzione su cervellone_config ad OGNI run, anche nei giorni "silenti" (nessuna
+  // mail critica / nessuna non letta). Leggerlo evita i falsi positivi GMAIL_*_DEAD.
+  // Soglia 48h: il cron è giornaliero, quindi >2gg senza run = davvero rotto.
+  let alertsCronRecent = false
+  let summaryCronRecent = false
+  const { data: cfgRows } = await supabase
+    .from('cervellone_config')
+    .select('key, value')
+    .in('key', ['gmail_alert_check_last_run', 'gmail_summary_last_run'])
+    .order('key')
+  if (cfgRows) {
+    const cutoff = Date.now() - 48 * 60 * 60 * 1000
+    const isRecent = (v: unknown): boolean => {
+      if (typeof v !== 'string') return false
+      const t = Date.parse(v)
+      return !Number.isNaN(t) && t >= cutoff
+    }
+    const byKey = new Map<string, unknown>()
+    for (const r of cfgRows as Array<{ key?: string; value?: unknown }>) {
+      if (r && typeof r.key === 'string') byKey.set(r.key, r.value)
+    }
+    alertsCronRecent = isRecent(byKey.get('gmail_alert_check_last_run'))
+    summaryCronRecent = isRecent(byKey.get('gmail_summary_last_run'))
+  }
+
+  return { ok: true, data: { rows: aggregated, alertsCronRecent, summaryCronRecent } }
 }
 
 // ── D4: Memoria Runs ──────────────────────────────────────────────────────────
