@@ -497,6 +497,50 @@ export async function getTelegramInboxFolderId(): Promise<string> {
   return id
 }
 
+export async function getOrCreatePathFolders(baseFolderId: string, segments: string[]): Promise<string> {
+  const drive = await getDrive()
+  let parentId = baseFolderId
+
+  for (const rawSegment of segments) {
+    const segment = rawSegment.trim()
+    if (!segment) continue
+
+    const cacheKey = `path:${parentId}:${segment}`
+    if (_folderIdCache.has(cacheKey)) {
+      parentId = _folderIdCache.get(cacheKey)!
+      continue
+    }
+
+    const safeName = segment.replace(/'/g, "\\'")
+    const existing = await drive.files.list({
+      q: `name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`,
+      fields: 'files(id)',
+      pageSize: 1,
+    })
+    if (existing.data.files?.length) {
+      const id = existing.data.files[0].id!
+      _folderIdCache.set(cacheKey, id)
+      parentId = id
+      continue
+    }
+
+    const created = await drive.files.create({
+      requestBody: {
+        name: segment,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentId],
+      },
+      fields: 'id',
+    })
+    const id = created.data.id!
+    _folderIdCache.set(cacheKey, id)
+    console.log(`[DRIVE] getOrCreatePathFolders created "${segment}" id=${id}`)
+    parentId = id
+  }
+
+  return parentId
+}
+
 /**
  * Carica un file binario (Buffer) su Google Drive.
  * Crea la cartella BOZZE_PDF se folderId non specificato.
@@ -529,6 +573,56 @@ export async function uploadBinaryToDrive(
   if (!id || !webViewLink) throw new Error(`uploadBinaryToDrive: risposta API incompleta id=${id}`)
   console.log(`[DRIVE] uploadBinaryToDrive name="${fileName}" id=${id}`)
   return { id, webViewLink }
+}
+
+function extractDriveFileId(value: string): string {
+  const trimmed = value.trim()
+  const pathMatch = trimmed.match(/\/d\/([a-zA-Z0-9_-]+)/)
+  if (pathMatch) return pathMatch[1]
+  const queryMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/)
+  if (queryMatch) return queryMatch[1]
+  return trimmed
+}
+
+export async function archiveDocumentToDrive(
+  folderPath: string,
+  driveFileId: string,
+  filename?: string,
+): Promise<string> {
+  const fileId = extractDriveFileId(driveFileId)
+  const segments = folderPath.split('/').map(s => s.trim()).filter(Boolean)
+  if (!fileId) return JSON.stringify({ ok: false, error: 'drive_file_id richiesto' })
+  if (segments.length === 0) return JSON.stringify({ ok: false, error: 'folder_path richiesto' })
+
+  try {
+    const normalizedPath = segments.join('/')
+    const targetFolderId = await getOrCreatePathFolders(DRIVE_FOLDERS.DOC_IMPRESA, segments)
+    const moveResult = await moveFile(fileId, targetFolderId)
+    if (moveResult.startsWith('Errore')) {
+      return JSON.stringify({ ok: false, folder_path: normalizedPath, file_id: fileId, error: moveResult })
+    }
+
+    if (filename?.trim()) {
+      const renameResult = await renameFile(fileId, filename.trim())
+      if (renameResult.startsWith('Errore')) {
+        return JSON.stringify({ ok: false, folder_path: normalizedPath, file_id: fileId, error: renameResult })
+      }
+    }
+
+    return JSON.stringify({
+      ok: true,
+      folder_path: normalizedPath,
+      file_id: fileId,
+      url: `https://drive.google.com/file/d/${fileId}/view`,
+    })
+  } catch (err) {
+    return JSON.stringify({
+      ok: false,
+      folder_path: segments.join('/'),
+      file_id: fileId,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
 }
 
 // --- ESECUZIONE TOOL ---
@@ -582,6 +676,9 @@ export async function executeDriveTool(name: string, input: Record<string, strin
         return `Errore salvataggio Drive: ${err instanceof Error ? err.message : err}`
       }
     }
+
+    case 'archivia_documento':
+      return archiveDocumentToDrive(input.folder_path, input.drive_file_id, input.filename || undefined)
 
     // FIX W1.3 Task 2-3: nuovi tool full-text + binari
     case 'drive_search_fulltext':
@@ -789,6 +886,19 @@ Il tool sceglie automaticamente la cartella destinazione:
         user_prompt_hint: { type: 'string', description: 'Frase utente con nome cliente/cantiere per matching cartella (es. "POS per cantiere Rossi Mario")' },
       },
       required: ['title', 'html_content', 'document_type'],
+    },
+  },
+  {
+    name: 'archivia_documento',
+    description: `Sposta un file già caricato su Google Drive dalla Telegram Inbox alla cartella corretta sotto DOC. IMPRESA EDILE (${DRIVE_FOLDERS.DOC_IMPRESA}), creando le sottocartelle mancanti. Usa quando l'utente chiede di archiviare/spostare un file ricevuto via Telegram. Accetta drive_file_id come ID o URL Drive (/d/<id> o id=<id>).`,
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        folder_path: { type: 'string', description: 'Percorso relativo sotto DOC. IMPRESA EDILE, es. "Automezzi/AB123CD"' },
+        drive_file_id: { type: 'string', description: 'ID del file Drive già caricato, oppure URL Drive contenente /d/<id> o id=<id>' },
+        filename: { type: 'string', description: 'OPZIONALE — nuovo nome file dopo lo spostamento' },
+      },
+      required: ['folder_path', 'drive_file_id'],
     },
   },
   // FIX W1.3 Task 2-3: full-text search + lettura binari

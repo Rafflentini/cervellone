@@ -1555,7 +1555,12 @@ async function executeDriveWrapper(
   name: string,
   input: Record<string, unknown>,
 ): Promise<string | null> {
-  if (!name.startsWith('drive_') && !name.startsWith('sheets_') && name !== 'salva_documento_su_drive') return null
+  if (
+    !name.startsWith('drive_') &&
+    !name.startsWith('sheets_') &&
+    name !== 'salva_documento_su_drive' &&
+    name !== 'archivia_documento'
+  ) return null
   // executeDriveTool aspetta Record<string, string>; serializzo se necessario.
   const stringInput: Record<string, string> = {}
   for (const [k, v] of Object.entries(input)) {
