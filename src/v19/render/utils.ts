@@ -13,6 +13,19 @@ import {
 } from 'docx'
 import type { DocxAlignment, DocxBordersKind, DocxCell, DocxCellStyle, DocxRunStyle } from './types'
 
+type DocxBorderSide = {
+  style: (typeof BorderStyle)[keyof typeof BorderStyle]
+  size: number
+  color: string
+}
+
+type DocxBorderConfig = {
+  top: DocxBorderSide
+  bottom: DocxBorderSide
+  left: DocxBorderSide
+  right: DocxBorderSide
+} | undefined
+
 export function alignFromString(a?: DocxAlignment): typeof AlignmentType[keyof typeof AlignmentType] | undefined {
   switch (a) {
     case 'center':
@@ -28,7 +41,7 @@ export function alignFromString(a?: DocxAlignment): typeof AlignmentType[keyof t
   }
 }
 
-export function borderConfig(kind: DocxBordersKind = 'all') {
+export function borderConfig(kind: DocxBordersKind = 'all'): DocxBorderConfig {
   if (kind === 'none') {
     return undefined
   }
@@ -59,7 +72,7 @@ export function buildTextRunFromStyle(text: string, style?: DocxRunStyle): TextR
 export function renderCell(cell: DocxCell, borders: DocxBordersKind, columnAlign?: DocxAlignment): TableCell {
   if (typeof cell === 'string') {
     return new TableCell({
-      borders: borderConfig(borders) as any,
+      borders: borderConfig(borders),
       children: [
         new Paragraph({
           alignment: alignFromString(columnAlign),
@@ -70,7 +83,7 @@ export function renderCell(cell: DocxCell, borders: DocxBordersKind, columnAlign
   }
   const style: DocxCellStyle = cell.style ?? {}
   return new TableCell({
-    borders: borderConfig(borders) as any,
+    borders: borderConfig(borders),
     shading: style.bgColor
       ? { type: ShadingType.SOLID, color: style.bgColor, fill: style.bgColor }
       : undefined,
