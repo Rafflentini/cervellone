@@ -1,17 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
-import { estraiScadenzaDaAllegato } from '@/lib/scadenza-extract'
 import { sendTelegramMessage } from '@/lib/telegram-helpers'
+import { estraiScadenzaDaAllegato } from '@/lib/scadenza-extract'
+import { readEmail, type ReadEmailMessage } from '@/v19/tools/email/read-email'
 import { getEmailBody } from '@/v19/tools/email/get-email-body'
-import { readEmail } from '@/v19/tools/email/read-email'
 import type { AccountKey } from '@/v19/tools/email/config'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 60
+export const maxDuration = 300
+
+type AttachmentWithContent = {
+  filename: string | null
+  contentType: string
+  size: number
+  contentBase64?: string
+}
+
+type ProposalResult = {
+  id?: string
+  account: AccountKey
+  uid: number
+  attachment_filename: string
+  tipo_documento: string | null
+  soggetto: string | null
+  data_scadenza: string
+  notified: boolean
+}
 
 const ACCOUNTS: AccountKey[] = ['info', 'raffaele']
 const FOLDER = 'INBOX'
+const LOOKBACK_DAYS = 3
+const READ_LIMIT = 50
 const MAX_EXTRACTIONS = 10
+const MIN_CONFIDENCE = 0.5
 const KEYWORDS = [
   'idoneita',
   'attestato',
@@ -23,34 +44,47 @@ const KEYWORDS = [
   'abilitazione',
 ]
 
-type AttachmentWithContent = {
-  filename: string | null
-  contentType: string
-  size: number
-  contentBase64?: string
+function sinceISO(days: number): string {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return date.toISOString().slice(0, 10)
 }
 
-function recentSince(): string {
-  return new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-}
-
-function normalizeText(value: string | null | undefined): string {
-  return (value ?? '')
+function normalizeForMatch(value: string): string {
+  return value
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
 }
 
-function hasDocumentKeyword(...values: Array<string | null | undefined>): boolean {
-  const haystack = values.map(normalizeText).join(' ')
-  return KEYWORDS.some((keyword) => haystack.includes(keyword))
+function hasKeyword(value: string | null | undefined): boolean {
+  if (!value) return false
+  const normalized = normalizeForMatch(value)
+  return KEYWORDS.some((keyword) => normalized.includes(keyword))
+}
+
+function attachmentName(attachment: AttachmentWithContent, index: number): string {
+  const name = attachment.filename?.trim()
+  return name || `allegato-${index + 1}`
 }
 
 function getAdminChatId(): number {
-  const adminChat = parseInt(process.env.ADMIN_CHAT_ID || '0', 10)
-  if (adminChat) return adminChat
-  const firstAllowed = (process.env.TELEGRAM_ALLOWED_IDS || '').split(',')[0]?.trim()
-  return parseInt(firstAllowed || '0', 10)
+  let adminChat = parseInt(process.env.ADMIN_CHAT_ID || '0', 10)
+  if (!adminChat) {
+    const firstAllowed = (process.env.TELEGRAM_ALLOWED_IDS || '').split(',')[0]?.trim()
+    adminChat = parseInt(firstAllowed || '0', 10)
+  }
+  return adminChat
+}
+
+function buildNotification(result: ProposalResult): string {
+  const tipo = result.tipo_documento || 'documento'
+  const soggetto = result.soggetto || 'soggetto non riconosciuto'
+  return [
+    `Documento personale rilevato: ${tipo} di ${soggetto}, scade ${result.data_scadenza}.`,
+    `Allegato: ${result.attachment_filename}`,
+    'Vuoi che lo archivi e aggiunga allo scadenzario? (gestione conferma in arrivo)',
+  ].join('\n')
 }
 
 async function proposalExists(account: AccountKey, uid: number, attachmentFilename: string): Promise<boolean> {
@@ -62,8 +96,66 @@ async function proposalExists(account: AccountKey, uid: number, attachmentFilena
     .eq('attachment_filename', attachmentFilename)
     .maybeSingle()
 
-  if (error) throw error
+  if (error) throw new Error(`Errore dedup proposta ${account}/${uid}/${attachmentFilename}: ${error.message}`)
   return Boolean(data)
+}
+
+async function insertProposal(
+  account: AccountKey,
+  message: ReadEmailMessage,
+  attachmentFilename: string,
+  extracted: {
+    tipo_documento: string | null
+    soggetto: string | null
+    data_scadenza: string
+    emittente: string | null
+    confidenza: number
+  },
+): Promise<ProposalResult | null> {
+  const now = new Date().toISOString()
+  const { data, error } = await supabase
+    .from('cervellone_doc_proposte')
+    .insert({
+      account,
+      uid: message.uid,
+      folder: FOLDER,
+      message_subject: message.subject,
+      attachment_filename: attachmentFilename,
+      drive_url: null,
+      tipo_documento: extracted.tipo_documento,
+      soggetto: extracted.soggetto,
+      data_scadenza: extracted.data_scadenza,
+      emittente: extracted.emittente,
+      confidenza: extracted.confidenza,
+      stato: 'in_attesa',
+      attempts: 1,
+      last_notified_at: now,
+      updated_at: now,
+    })
+    .select('id')
+    .single()
+
+  if (error) {
+    if (error.code === '23505') return null
+    throw new Error(`Errore insert proposta ${account}/${message.uid}/${attachmentFilename}: ${error.message}`)
+  }
+
+  return {
+    id: (data as { id?: string } | null)?.id,
+    account,
+    uid: message.uid,
+    attachment_filename: attachmentFilename,
+    tipo_documento: extracted.tipo_documento,
+    soggetto: extracted.soggetto,
+    data_scadenza: extracted.data_scadenza,
+    notified: false,
+  }
+}
+
+async function notifyProposal(result: ProposalResult, adminChat: number): Promise<ProposalResult> {
+  if (!adminChat) return result
+  await sendTelegramMessage(adminChat, buildNotification(result))
+  return { ...result, notified: true }
 }
 
 export async function GET(req: NextRequest) {
@@ -72,84 +164,78 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
   }
 
+  const adminChat = getAdminChatId()
+  const errors: string[] = []
+  const nuoveProposte: ProposalResult[] = []
   let checked = 0
-  let nuoveProposte = 0
-  let extractions = 0
-  const adminChatId = getAdminChatId()
-  const since = recentSince()
+  let extractionCount = 0
 
-  try {
-    for (const account of ACCOUNTS) {
-      const { messages } = await readEmail({ account, folder: FOLDER, since, limit: 50 })
-      for (const message of messages) {
+  for (const account of ACCOUNTS) {
+    try {
+      const inbox = await readEmail({
+        account,
+        folder: FOLDER,
+        since: sinceISO(LOOKBACK_DAYS),
+        limit: READ_LIMIT,
+      })
+
+      for (const message of inbox.messages) {
         checked += 1
-        if (!message.has_attachments || extractions >= MAX_EXTRACTIONS) continue
+        if (!message.has_attachments) continue
+        if (extractionCount >= MAX_EXTRACTIONS) break
 
-        const subjectMatches = hasDocumentKeyword(message.subject)
+        const subjectMatches = hasKeyword(message.subject)
         const mail = await getEmailBody({ account, uid: message.uid, folder: FOLDER, include_attachments: true })
-        const attachments = mail.attachments as AttachmentWithContent[]
+        const attachments = (mail.attachments ?? []) as AttachmentWithContent[]
         const candidateAttachments = attachments
-          .map((attachment, index) => ({
-            ...attachment,
-            filename: attachment.filename || `allegato-${index + 1}`,
-          }))
-          .filter((attachment) => subjectMatches || hasDocumentKeyword(attachment.filename))
+          .map((attachment, index) => ({ attachment, filename: attachmentName(attachment, index) }))
+          .filter(({ filename }) => subjectMatches || hasKeyword(filename))
 
-        for (const attachment of candidateAttachments) {
-          if (extractions >= MAX_EXTRACTIONS) break
+        for (const { attachment, filename } of candidateAttachments) {
+          if (extractionCount >= MAX_EXTRACTIONS) break
+          if (await proposalExists(account, message.uid, filename)) continue
           if (!attachment.contentBase64) continue
-          if (await proposalExists(account, message.uid, attachment.filename)) continue
 
-          extractions += 1
+          extractionCount += 1
           const extracted = await estraiScadenzaDaAllegato(
             attachment.contentBase64,
             attachment.contentType,
-            attachment.filename,
+            filename,
           )
-          if (!extracted.ok || !extracted.data.data_scadenza || extracted.data.confidenza < 0.5) continue
+          if (!extracted.ok) continue
+          const data = extracted.data
+          if (!data.data_scadenza || data.confidenza < MIN_CONFIDENCE) continue
 
-          const now = new Date().toISOString()
-          const { error } = await supabase.from('cervellone_doc_proposte').insert({
-            account,
-            uid: message.uid,
-            folder: FOLDER,
-            message_subject: message.subject,
-            attachment_filename: attachment.filename,
-            drive_url: null,
-            tipo_documento: extracted.data.tipo_documento,
-            soggetto: extracted.data.soggetto,
-            data_scadenza: extracted.data.data_scadenza,
-            emittente: extracted.data.emittente,
-            confidenza: extracted.data.confidenza,
-            stato: 'in_attesa',
-            attempts: 1,
-            last_notified_at: now,
-            created_at: now,
-            updated_at: now,
+          const proposal = await insertProposal(account, message, filename, {
+            tipo_documento: data.tipo_documento,
+            soggetto: data.soggetto,
+            data_scadenza: data.data_scadenza,
+            emittente: data.emittente,
+            confidenza: data.confidenza,
           })
+          if (!proposal) continue
 
-          if (error) {
-            if (error.code === '23505') continue
-            throw error
-          }
-
-          nuoveProposte += 1
-          if (adminChatId) {
-            const tipo = extracted.data.tipo_documento || 'documento'
-            const soggetto = extracted.data.soggetto || 'soggetto non identificato'
-            const text = `Documento personale rilevato: ${tipo} di ${soggetto}, scade ${extracted.data.data_scadenza}. Vuoi che lo archivi e aggiunga allo scadenzario? (gestione conferma in arrivo)`
-            await sendTelegramMessage(adminChatId, text).catch((err) =>
-              console.error('[CRON mail-sentinella] telegram send failed:', err),
-            )
+          try {
+            nuoveProposte.push(await notifyProposal(proposal, adminChat))
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            errors.push(`Telegram proposta ${proposal.id ?? filename}: ${message}`)
+            nuoveProposte.push(proposal)
           }
         }
       }
+    } catch (err) {
+      errors.push(`${account}: ${err instanceof Error ? err.message : String(err)}`)
     }
-
-    return NextResponse.json({ ok: true, checked, nuove_proposte: nuoveProposte })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.error('[CRON mail-sentinella] failed:', err)
-    return NextResponse.json({ ok: false, error: message, checked, nuove_proposte: nuoveProposte }, { status: 500 })
   }
+
+  const body = {
+    ok: errors.length === 0,
+    checked,
+    nuove_proposte: nuoveProposte.length,
+    estrazioni: extractionCount,
+    details: nuoveProposte,
+    errors,
+  }
+  return NextResponse.json(body, { status: errors.length === 0 ? 200 : 500 })
 }
