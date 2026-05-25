@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
+import type Anthropic from '@anthropic-ai/sdk'
 import crypto from 'crypto'
 import { callClaudeStreamTelegram } from '@/lib/claude'
 import { supabase } from '@/lib/supabase'
@@ -64,12 +65,12 @@ export async function POST(request: NextRequest) {
           .eq('chat_id', chatId).eq('message_id', msgId).limit(1),
         []
       )
-      if (existing && (existing as any[]).length > 0) return NextResponse.json({ ok: true })
+      if (Array.isArray(existing) && existing.length > 0) return NextResponse.json({ ok: true })
       await safeSupabase(() => supabase.from('telegram_dedup').insert({ chat_id: chatId, message_id: msgId }))
     }
 
     let userText = message.text || message.caption || ''
-    let fileBlocks: any[] = []
+    let fileBlocks: Anthropic.ContentBlockParam[] = []
     let fileDescription = ''
 
     // ── Voice ──
@@ -383,10 +384,10 @@ export async function POST(request: NextRequest) {
     )
     // L'order DESC + reverse: prendi gli ultimi 6, poi rimetti in ordine cronologico
     if (Array.isArray(recentMessages)) {
-      (recentMessages as unknown[]).reverse()
+      recentMessages.reverse()
     }
 
-    const history: any[] = ((recentMessages as any[]) || [])
+    const history: Anthropic.MessageParam[] = ((recentMessages as any[]) || [])
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role, content: m.content }))
 
