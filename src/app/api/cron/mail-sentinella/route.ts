@@ -17,7 +17,7 @@ type AttachmentWithContent = {
 }
 
 type ProposalResult = {
-  id?: string
+  id: string
   account: AccountKey
   uid: number
   attachment_filename: string
@@ -83,7 +83,8 @@ function buildNotification(result: ProposalResult): string {
   return [
     `Documento personale rilevato: ${tipo} di ${soggetto}, scade ${result.data_scadenza}.`,
     `Allegato: ${result.attachment_filename}`,
-    'Vuoi che lo archivi e aggiunga allo scadenzario? (gestione conferma in arrivo)',
+    `Per archiviare e registrare: /conferma_${result.id}`,
+    `Per ignorare: /ignora_${result.id}`,
   ].join('\n')
 }
 
@@ -140,8 +141,11 @@ async function insertProposal(
     throw new Error(`Errore insert proposta ${account}/${message.uid}/${attachmentFilename}: ${error.message}`)
   }
 
+  const id = (data as { id?: string } | null)?.id
+  if (!id) throw new Error(`Insert proposta senza id ${account}/${message.uid}/${attachmentFilename}`)
+
   return {
-    id: (data as { id?: string } | null)?.id,
+    id,
     account,
     uid: message.uid,
     attachment_filename: attachmentFilename,
@@ -221,7 +225,7 @@ export async function GET(req: NextRequest) {
             nuoveProposte.push(await notifyProposal(proposal, adminChat))
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
-            errors.push(`Telegram proposta ${proposal.id ?? filename}: ${message}`)
+            errors.push(`Telegram proposta ${proposal.id}: ${message}`)
             nuoveProposte.push(proposal)
           }
         }

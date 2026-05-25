@@ -95,6 +95,25 @@ export async function POST(request: NextRequest) {
     })
   }
 
+  const mConferma = userQuery.match(/^\/conferma_([0-9a-fA-F-]{36})\b/i)
+  const mIgnora = userQuery.match(/^\/ignora_([0-9a-fA-F-]{36})\b/i)
+  if (mConferma || mIgnora) {
+    const uuid = (mConferma ?? mIgnora)![1]
+    const mod = await import('@/lib/doc-proposte-actions')
+    const r = mConferma
+      ? await mod.confirmProposta(uuid)
+      : await mod.ignoraProposta(uuid)
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(r.message))
+        controller.close()
+      },
+    })
+    return new Response(stream, {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  }
+
   const encoder = new TextEncoder()
   const readable = new ReadableStream({
     async start(controller) {

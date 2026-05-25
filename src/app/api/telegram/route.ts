@@ -344,6 +344,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    const mConferma = userText.match(/^\/conferma_([0-9a-fA-F-]{36})\b/i)
+    const mIgnora = userText.match(/^\/ignora_([0-9a-fA-F-]{36})\b/i)
+    if (mConferma || mIgnora) {
+      const uuid = (mConferma ?? mIgnora)![1]
+      const mod = await import('@/lib/doc-proposte-actions')
+      const r = mConferma
+        ? await mod.confirmProposta(uuid)
+        : await mod.ignoraProposta(uuid)
+      await sendTelegramMessage(chatId, r.message)
+      return NextResponse.json({ ok: true })
+    }
+
     // ── Bug 1: mutex per chat ──
     // Evita bgProcess paralleli sulla stessa chat: se l'utente manda un messaggio
     // mentre il bot sta elaborando il precedente, droppiamo il nuovo per non
