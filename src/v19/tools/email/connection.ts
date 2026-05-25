@@ -34,20 +34,6 @@ export async function closeImap(client: ImapFlow): Promise<void> {
   }
 }
 
-/**
- * Chiude un transporter SMTP. Da chiamare DOPO sendMail() per evitare hung
- * connections in serverless (socket aperti tengono in vita la function fino
- * al maxDuration, sprecando risorse e provocando cascate di timeout).
- * Best-effort: errori ignorati.
- */
-export async function closeSmtp(transporter: Transporter): Promise<void> {
-  try {
-    transporter.close()
-  } catch {
-    // ignore — best effort
-  }
-}
-
 export function makeSmtp(account: AccountKey): Transporter {
   const cfg = getAccountConfig(account)
   return nodemailer.createTransport({
