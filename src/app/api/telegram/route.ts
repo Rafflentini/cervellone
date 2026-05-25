@@ -72,6 +72,7 @@ export async function POST(request: NextRequest) {
     let userText = message.text || message.caption || ''
     let fileBlocks: Anthropic.ContentBlockParam[] = []
     let fileDescription = ''
+    let currentUploadFileId: string | null = null // FIX multi-foto: file_id dell'upload di QUESTO turno
 
     // ── Voice ──
     if (!userText && (message.voice || message.audio)) {
@@ -132,6 +133,16 @@ export async function POST(request: NextRequest) {
       if (archivedDriveLink) {
         fileDescription += ` (originale archiviato su Drive: ${archivedDriveLink})`
       }
+      // FIX multi-upload: registra l'upload (prima del mutex) per poterlo allegare al turno
+      await safeSupabase(() => supabase.from('telegram_recent_uploads').insert({
+        chat_id: chatId,
+        telegram_file_id: message.document.file_id,
+        drive_url: archivedDriveLink,
+        filename: fileData.fileName,
+        caption: message.caption ?? null,
+        mime_type: fileData.mimeType,
+      }))
+      currentUploadFileId = message.document.file_id
     }
 
     // ── Photo ──
@@ -164,6 +175,16 @@ export async function POST(request: NextRequest) {
         if (archivedDriveLink) {
           fileDescription += ` (originale archiviato su Drive: ${archivedDriveLink})`
         }
+        // FIX multi-foto: registra l'upload (prima del mutex) per poterlo allegare al turno
+        await safeSupabase(() => supabase.from('telegram_recent_uploads').insert({
+          chat_id: chatId,
+          telegram_file_id: largest.file_id,
+          drive_url: archivedDriveLink,
+          filename: fileData.fileName,
+          caption: message.caption ?? null,
+          mime_type: fileData.mimeType,
+        }))
+        currentUploadFileId = largest.file_id
       }
     }
 
@@ -412,6 +433,44 @@ export async function POST(request: NextRequest) {
     const history: Anthropic.MessageParam[] = ((recentMessages as any[]) || [])
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role, content: m.content }))
+
+    // FIX multi-foto (Approccio 2): allega gli upload recenti NON ancora processati di questa chat
+    // (es. 2ª foto di un album scartata dal mutex), escludendo quello del messaggio corrente.
+    try {
+      const cutoffIso = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+      const pending = await safeSupabase(
+        () => supabase.from('telegram_recent_uploads')
+          .select('id, telegram_file_id')
+          .eq('chat_id', chatId)
+          .eq('processed', false)
+          .gt('inserted_at', cutoffIso)
+          .order('inserted_at', { ascending: true })
+          .limit(5),
+        []
+      )
+      const pendingRows = (Array.isArray(pending) ? pending : []) as Array<{ id: string; telegram_file_id: string }>
+      for (const row of pendingRows) {
+        if (row.telegram_file_id === currentUploadFileId) continue // già nei fileBlocks correnti
+        try {
+          const extra = await downloadTelegramFile(row.telegram_file_id)
+          if (extra) {
+            fileBlocks = [...fileBlocks, ...(await buildContentBlocks(extra))]
+          } else {
+            console.warn(`[recent-uploads] download fallito file_id=${row.telegram_file_id}, skip`)
+          }
+        } catch (err) {
+          console.warn('[recent-uploads] attach error:', err instanceof Error ? err.message : err)
+        }
+      }
+      const markIds = pendingRows.map(r => r.id)
+      if (markIds.length > 0) {
+        await safeSupabase(() => supabase.from('telegram_recent_uploads')
+          .update({ processed: true, processed_at: new Date().toISOString() })
+          .in('id', markIds))
+      }
+    } catch (err) {
+      console.warn('[recent-uploads] step saltato:', err instanceof Error ? err.message : err)
+    }
 
     if (fileBlocks.length > 0) {
       history.push({ role: 'user', content: [...fileBlocks, { type: 'text', text: userText }] })
