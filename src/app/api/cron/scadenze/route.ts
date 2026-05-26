@@ -133,15 +133,20 @@ async function sendReminder(row: ScadenzaRow, days: number, today: string): Prom
     })
   }
 
-  const previous = parseStringArray(row.reminders_sent)
-  const nextReminders = [...new Set([...previous, today])]
-  const { error } = await supabase
-    .from('cervellone_scadenze')
-    .update({ reminders_sent: nextReminders, updated_at: new Date().toISOString() })
-    .eq('id', row.id)
+  const hasSent = sent.some((recipient) => recipient.status === 'sent')
+  if (hasSent) {
+    const previous = parseStringArray(row.reminders_sent)
+    const nextReminders = [...new Set([...previous, today])]
+    const { error } = await supabase
+      .from('cervellone_scadenze')
+      .update({ reminders_sent: nextReminders, updated_at: new Date().toISOString() })
+      .eq('id', row.id)
 
-  if (error) {
-    throw new Error(`Errore aggiornamento reminders_sent per ${row.id}: ${error.message}`)
+    if (error) {
+      throw new Error(`Errore aggiornamento reminders_sent per ${row.id}: ${error.message}`)
+    }
+  } else {
+    console.warn(`[CRON scadenze] reminder non marcato per ${row.id}: nessun invio completato`)
   }
 
   return {

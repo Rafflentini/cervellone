@@ -213,16 +213,17 @@ async function remindPendingProposals(adminChat: number, errors: string[]): Prom
 
   let riproposte = 0
   for (const proposal of (data ?? []) as PendingProposal[]) {
-    if (adminChat) {
-      await sendTelegramMessage(adminChat, buildNotification(proposal)).catch((err) => {
-        console.error('[CRON mail-sentinella] reminder telegram failed:', err)
-      })
-    }
     try {
       await updateReminderAttempt(proposal)
       riproposte += 1
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err))
+      continue
+    }
+    if (adminChat) {
+      await sendTelegramMessage(adminChat, buildNotification(proposal)).catch((err) => {
+        console.error('[CRON mail-sentinella] reminder telegram failed:', err)
+      })
     }
   }
   return riproposte
