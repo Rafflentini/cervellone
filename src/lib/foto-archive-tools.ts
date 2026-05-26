@@ -91,22 +91,24 @@ function todayRomeISO(): string {
 }
 
 function isMoveSuccess(result: string): boolean {
+  if (!result || typeof result !== 'string') return false
   const normalized = result.toLocaleLowerCase('it-IT')
   return !normalized.startsWith('errore') && !normalized.includes('scrittura non consentita')
 }
 
 function parseHeaderColumns(sheetText: string): string[] {
-  const headerLine = sheetText
+  // Il Registro ha header su più righe (es. 3, dati dalla riga 4): scegli la riga "Riga N:"
+  // con PIÙ celle — è quella coi nomi colonna reali (titolo/merge hanno poche celle).
+  const candidates = sheetText
     .split('\n')
     .map(line => line.trim())
-    .find(line => /^Riga\s+\d+:/i.test(line))
-
-  if (!headerLine) return []
-  const [, rawColumns = ''] = headerLine.split(/Riga\s+\d+:\s*/i)
-  return rawColumns
-    .split(' | ')
-    .map(col => col.trim())
-    .filter(Boolean)
+    .filter(line => /^Riga\s+\d+:/i.test(line))
+    .map(line => {
+      const [, rawColumns = ''] = line.split(/Riga\s+\d+:\s*/i)
+      return rawColumns.split(' | ').map(col => col.trim()).filter(Boolean)
+    })
+  if (candidates.length === 0) return []
+  return candidates.reduce((best, cur) => (cur.length > best.length ? cur : best), candidates[0])
 }
 
 async function fetchOpenPending(conversationId: string): Promise<{ rows: FotoPendingRow[]; error?: string }> {
@@ -116,6 +118,7 @@ async function fetchOpenPending(conversationId: string): Promise<{ rows: FotoPen
     .eq('chat_id', conversationId)
     .in('stato', OPEN_STATI)
     .order('created_at', { ascending: true })
+    .limit(500)
 
   if (error) return { rows: [], error: error.message }
   return { rows: (data ?? []) as FotoPendingRow[] }
