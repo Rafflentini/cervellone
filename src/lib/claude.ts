@@ -157,6 +157,27 @@ export interface ClaudeStreamCallbacks {
   onToolStart?: (toolName: string) => void
 }
 
+// ── Cost control (26 mag 2026) ──
+// Thinking budget DINAMICO: default basso per i task di routine; "massima potenza" on-demand
+// se il messaggio contiene un trigger (/think, ultrathink, "pensa a fondo", "massima potenza", ...).
+const DEEP_THINK_RE = /(^|\s)(\/think|\/ragiona|ultrathink|pensa(?:ci)?\s+a\s+fondo|ragiona\s+(?:bene|a\s+fondo)|massim[ao]\s+(?:potenza|ragionamento))\b/i
+function resolveThinkingBudget(userQuery: string, isOpus: boolean): number {
+  if (DEEP_THINK_RE.test(userQuery || '')) return isOpus ? 16_000 : 10_000 // massima potenza on-demand
+  return isOpus ? 2_000 : 1_500 // default ridotto (era 8000/4000) — taglia output (il thinking è fatturato come output)
+}
+
+// Prompt caching: cache del prefisso STATICO (tools + system prompt). La memoria RAG (variabile per
+// messaggio) va in un blocco separato NON cachato dopo il breakpoint, così non invalida la cache.
+// Il breakpoint sul system cacha l'intera catena tools→system. Hit garantiti nei giri del tool-loop
+// e tra messaggi ravvicinati (TTL 5 min) → input ~‑80/90% sul prefisso fisso (~4-5K token).
+function buildCachedSystem(systemPrompt: string, memoryContext: string): Anthropic.TextBlockParam[] {
+  const blocks: Anthropic.TextBlockParam[] = [
+    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+  ]
+  if (memoryContext && memoryContext.trim()) blocks.push({ type: 'text', text: memoryContext })
+  return blocks
+}
+
 // ── Streaming (chat web) ──
 
 export async function callClaudeStream(
@@ -166,7 +187,7 @@ export async function callClaudeStream(
   const { systemPrompt, userQuery, conversationId } = request
 
   const memoryContext = await searchMemory(userQuery).catch(() => '')
-  const fullSystemPrompt = systemPrompt + memoryContext
+  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext)
 
   if (conversationId && userQuery) {
     saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
@@ -182,7 +203,7 @@ export async function callClaudeStream(
   const isOpus = cfg.model.includes('opus')
   const modelConfig: ModelConfig = {
     model: cfg.model,
-    thinkingBudget: isOpus ? 8_000 : 4_000,
+    thinkingBudget: resolveThinkingBudget(userQuery, isOpus),
     maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL: ${modelConfig.model} for "${userQuery.slice(0, 50)}"`)
@@ -194,7 +215,7 @@ export async function callClaudeStream(
       Promise.resolve(client.messages.stream({
         model: modelConfig.model,
         max_tokens: modelConfig.maxTokens,
-        system: fullSystemPrompt,
+        system: systemBlocks,
         messages: currentMessages,
         tools,
         ...modelOpts,
@@ -245,7 +266,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
   const { systemPrompt, userQuery, conversationId } = request
 
   const memoryContext = await searchMemory(userQuery).catch(() => '')
-  const fullSystemPrompt = systemPrompt + memoryContext
+  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext)
 
   if (conversationId && userQuery) {
     saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
@@ -261,7 +282,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
   const isOpus = cfg.model.includes('opus')
   const modelConfig: ModelConfig = {
     model: cfg.model,
-    thinkingBudget: isOpus ? 8_000 : 4_000,
+    thinkingBudget: resolveThinkingBudget(userQuery, isOpus),
     maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL TG: ${modelConfig.model} for "${userQuery.slice(0, 50)}"`)
@@ -273,7 +294,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
       Promise.resolve(client.messages.stream({
         model: modelConfig.model,
         max_tokens: modelConfig.maxTokens,
-        system: fullSystemPrompt,
+        system: systemBlocks,
         messages: currentMessages,
         tools,
         ...modelOpts,
@@ -321,7 +342,7 @@ export async function callClaudeStreamTelegram(
   const { systemPrompt, userQuery, conversationId } = request
 
   const memoryContext = await searchMemory(userQuery).catch(() => '')
-  const fullSystemPrompt = systemPrompt + memoryContext
+  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext)
 
   if (conversationId && userQuery) {
     saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
@@ -350,7 +371,7 @@ export async function callClaudeStreamTelegram(
   // pensava per minuti, function killata da Vercel a 300s prima del primo text_delta.
   const modelConfig: ModelConfig = {
     model: activeModel,
-    thinkingBudget: isOpus ? 8_000 : 4_000,
+    thinkingBudget: resolveThinkingBudget(userQuery, isOpus),
     maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
@@ -365,7 +386,7 @@ export async function callClaudeStreamTelegram(
       Promise.resolve(client.messages.stream({
         model: modelConfig.model,
         max_tokens: modelConfig.maxTokens,
-        system: fullSystemPrompt,
+        system: systemBlocks,
         messages: currentMessages,
         tools,
         ...modelOpts,
@@ -445,7 +466,7 @@ export async function callClaudeStreamTelegram(
           Promise.resolve(client.messages.stream({
             model: modelConfig.model,
             max_tokens: modelConfig.maxTokens,
-            system: fullSystemPrompt,
+            system: systemBlocks,
             messages: currentMessages,
             tools,
             tool_choice: { type: 'none' as const },

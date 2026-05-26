@@ -42,7 +42,7 @@ const ACCOUNTS: AccountKey[] = ['info', 'raffaele']
 const FOLDER = 'INBOX'
 const LOOKBACK_DAYS = 3
 const READ_LIMIT = 50
-const MAX_EXTRACTIONS = 10
+const MAX_EXTRACTIONS = 5
 const MIN_CONFIDENCE = 0.5
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 const KEYWORDS = [
@@ -334,6 +334,7 @@ export async function GET(req: NextRequest) {
           if (extractionCount >= MAX_EXTRACTIONS) break
           if (await proposalExists(account, message.uid, filename)) continue
           if (!attachment.contentBase64) continue
+          if (attachment.size && attachment.size > 2 * 1024 * 1024) continue // cost: salta allegati >2MB
 
           extractionCount += 1
           const extracted = await estraiScadenzaDaAllegato(
