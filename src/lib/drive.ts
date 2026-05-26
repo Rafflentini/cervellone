@@ -169,12 +169,16 @@ export async function listFiles(folderId: string): Promise<string> {
   }
 }
 
+function escapeDriveQueryString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+}
+
 // Cerca file per nome in tutto il Drive o in una cartella
 export async function searchFiles(query: string, folderId?: string): Promise<string> {
   console.log(`[DRIVE] searchFiles query="${query}" folder="${folderId || 'root'}"`)
   try {
     const drive = await getDrive()
-    let q = `name contains '${query.replace(/'/g, "\\'")}' and trashed = false`
+    let q = `name contains '${escapeDriveQueryString(query)}' and trashed = false`
     if (folderId) q += ` and '${folderId}' in parents`
 
     const res = await drive.files.list({
@@ -204,7 +208,7 @@ export async function searchFiles(query: string, folderId?: string): Promise<str
 // Cerca SOLO cartelle per nome, ritorno strutturato (per la gestione policy accessi).
 export async function findFoldersByName(query: string): Promise<Array<{ id: string; name: string }>> {
   const drive = await getDrive()
-  const safe = query.replace(/'/g, "\\'")
+  const safe = escapeDriveQueryString(query)
   const res = await drive.files.list({
     q: `name contains '${safe}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
     fields: 'files(id, name)',
@@ -223,7 +227,7 @@ export async function searchFilesFullText(query: string, folderId?: string): Pro
   console.log(`[DRIVE] searchFilesFullText query="${query}" folder="${folderId || 'root'}"`)
   try {
     const drive = await getDrive()
-    let q = `fullText contains '${query.replace(/'/g, "\\'")}' and trashed = false`
+    let q = `fullText contains '${escapeDriveQueryString(query)}' and trashed = false`
     if (folderId) q += ` and '${folderId}' in parents`
 
     const res = await drive.files.list({
@@ -549,6 +553,7 @@ const _folderIdCache = new Map<string, string>()
  * Restituisce l'ID. Risultato cachato per tutta la vita del modulo.
  */
 export async function getOrCreateBozzeFolder(): Promise<string> {
+  await assertWriteAllowed(DRIVE_FOLDERS.DOC_IMPRESA)
   const CACHE_KEY = 'bozze_pdf'
   if (_folderIdCache.has(CACHE_KEY)) return _folderIdCache.get(CACHE_KEY)!
 
@@ -585,6 +590,7 @@ export async function getOrCreateBozzeFolder(): Promise<string> {
  * Usata per l'auto-archive dei file ricevuti via Telegram.
  */
 export async function getTelegramInboxFolderId(): Promise<string> {
+  await assertWriteAllowed(DRIVE_FOLDERS.DOC_IMPRESA)
   const CACHE_KEY = 'telegram_inbox'
   if (_folderIdCache.has(CACHE_KEY)) return _folderIdCache.get(CACHE_KEY)!
 
@@ -631,7 +637,7 @@ export async function getOrCreatePathFolders(baseFolderId: string, segments: str
       continue
     }
 
-    const safeName = segment.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    const safeName = escapeDriveQueryString(segment)
     const existing = await drive.files.list({
       q: `name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`,
       fields: 'files(id)',
