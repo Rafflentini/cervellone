@@ -260,13 +260,19 @@ async function autoMemorizePendingProposals(adminChat: number, errors: string[])
       continue
     }
 
-    const { error: updateError } = await supabase
+    const { data: updatedRows, error: updateError } = await supabase
       .from('cervellone_doc_proposte')
       .update({ stato: 'auto_memorizzata', updated_at: new Date().toISOString() })
       .eq('id', proposal.id)
       .eq('stato', 'confermata')
+      .select('id')
     if (updateError) {
       errors.push(`Errore stato auto_memorizzata proposta ${proposal.id}: ${updateError.message}`)
+      continue
+    }
+    if (!updatedRows || updatedRows.length === 0) {
+      errors.push(`Auto-memoria proposta ${proposal.id}: stato non aggiornato, probabilmente gia gestita da un altro canale.`)
+      console.warn(`[CRON mail-sentinella] auto-memory state update affected 0 rows for ${proposal.id}`)
       continue
     }
 
