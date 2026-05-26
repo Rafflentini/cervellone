@@ -314,13 +314,15 @@ export async function GET(req: NextRequest) {
         if (!message.has_attachments) continue
         if (extractionCount >= MAX_EXTRACTIONS) break
 
+        // Match su subject/mittente; se non matcha, l'allegato può comunque essere candidato
+        // se il NOME FILE contiene una keyword (es. "idoneita_rossi.pdf" con subject generico).
         const metadataMatches = hasKeyword(message.subject) || hasKeyword(message.from)
-        if (!metadataMatches) continue
 
         const mail = await getEmailBody({ account, uid: message.uid, folder: FOLDER, include_attachments: true })
         const attachments = (mail.attachments ?? []) as AttachmentWithContent[]
         const candidateAttachments = attachments
           .map((attachment, index) => ({ attachment, filename: attachmentName(attachment, index) }))
+          .filter(({ filename }) => metadataMatches || hasKeyword(filename))
 
         for (const { attachment, filename } of candidateAttachments) {
           if (extractionCount >= MAX_EXTRACTIONS) break
