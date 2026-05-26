@@ -463,6 +463,8 @@ export async function POST(request: NextRequest) {
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role, content: m.content }))
 
+    const attachedRecentUploadIds: string[] = []
+
     // FIX multi-foto (Approccio 2): allega gli upload recenti NON ancora processati di questa chat
     // (es. 2ª foto di un album scartata dal mutex), escludendo quello del messaggio corrente.
     try {
@@ -484,18 +486,13 @@ export async function POST(request: NextRequest) {
           const extra = await downloadTelegramFile(row.telegram_file_id)
           if (extra) {
             fileBlocks = [...fileBlocks, ...(await buildContentBlocks(extra))]
+            attachedRecentUploadIds.push(row.id)
           } else {
             console.warn(`[recent-uploads] download fallito file_id=${row.telegram_file_id}, skip`)
           }
         } catch (err) {
           console.warn('[recent-uploads] attach error:', err instanceof Error ? err.message : err)
         }
-      }
-      const markIds = pendingRows.map(r => r.id)
-      if (markIds.length > 0) {
-        await safeSupabase(() => supabase.from('telegram_recent_uploads')
-          .update({ processed: true, processed_at: new Date().toISOString() })
-          .in('id', markIds))
       }
     } catch (err) {
       console.warn('[recent-uploads] step saltato:', err instanceof Error ? err.message : err)
@@ -581,6 +578,12 @@ export async function POST(request: NextRequest) {
             await editTelegramMessage(chatId, currentMsgId, preview)
           }
         )
+
+        if (attachedRecentUploadIds.length > 0) {
+          await safeSupabase(() => supabase.from('telegram_recent_uploads')
+            .update({ processed: true, processed_at: new Date().toISOString() })
+            .in('id', attachedRecentUploadIds))
+        }
 
         if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
 
