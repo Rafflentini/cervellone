@@ -74,12 +74,12 @@ function mapDoc(d: any) {
     numero: d?.number ?? d?.numeration ?? null,
     data: d?.date ?? null,
     soggetto: d?.entity?.name ?? null,
-    totale: d?.amount_gross ?? d?.amount_net ?? null,
+    totale: d?.amount_gross ?? d?.amountGross ?? d?.amount_net ?? d?.amountNet ?? null,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     pagata: typeof d?.is_marked === 'boolean'
       ? d.is_marked
-      : (Array.isArray(d?.payments_list) ? d.payments_list.every((p: any) => p?.status === 'paid') : null),
-    scadenza: d?.next_due_date ?? d?.due_date ?? null,
+      : (Array.isArray(d?.payments_list ?? d?.paymentsList) ? (d.payments_list ?? d.paymentsList).every((p: any) => p?.status === 'paid') : null),
+    scadenza: d?.next_due_date ?? d?.nextDueDate ?? d?.due_date ?? d?.dueDate ?? null,
   }
 }
 
@@ -180,10 +180,10 @@ export async function executeFicTool(
       const nome = String(input.nome || '').trim()
       if (!nome) return JSON.stringify({ ok: false, error: 'nome richiesto' })
       const seg = input.tipo === 'fornitore' ? 'suppliers' : 'clients'
-      const r = await ficGet(`/c/${cid}/entities/${seg}`, { q: `name contains '${nome.replace(/'/g, '')}'`, per_page: 25 })
+      const r = await ficGet(`/c/${cid}/entities/${seg}`, { q: `name contains '${nome.replace(/[\\']/g, '')}'`, per_page: 25 })
       if (!r.ok) return JSON.stringify({ ok: false, error: r.error })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const list = (r.data?.data ?? []).map((e: any) => ({ id: e?.id, nome: e?.name, piva: e?.vat_number, cf: e?.tax_code, email: e?.email }))
+      const list = (r.data?.data ?? []).map((e: any) => ({ id: e?.id, nome: e?.name, piva: e?.vat_number ?? e?.vatNumber, cf: e?.tax_code ?? e?.taxCode, email: e?.email }))
       return JSON.stringify({ ok: true, count: list.length, anagrafiche: list })
     }
     return JSON.stringify({ ok: false, error: `tool FIC sconosciuto: ${name}` })
