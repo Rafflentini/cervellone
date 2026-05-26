@@ -1,8 +1,8 @@
 // src/lib/fatture-in-cloud.ts
-// Integrazione Fatture in Cloud — SOLO LETTURA (sub-progetto A Amministrazione Contabile).
-// Il modulo espone UNICAMENTE ficGet (HTTP GET): nessuna funzione POST/PUT/DELETE esiste,
-// quindi la scrittura sul gestionale è impossibile per costruzione. La scrittura arriverà
-// in un sub-progetto dedicato (F) con bozza + doppia conferma.
+// Integrazione Fatture in Cloud — lettura + create/delete BOZZE.
+// Il modulo espone ficGet per le letture e solo due operazioni write dedicate:
+// creaDocumentoFIC ed eliminaDocumentoFIC. NESSUNA trasmissione SdI è implementata
+// per costruzione: le creazioni forzano e_invoice:false e omettono sempre number.
 
 const FIC_BASE = 'https://api-v2.fattureincloud.it'
 
@@ -14,6 +14,8 @@ interface ToolDefinition {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type FicResult = { ok: true; data: any } | { ok: false; error: string }
+type FicCreateResult = { ok: true; id: string; url: string | null } | { ok: false; error: string }
+type FicDeleteResult = { ok: true } | { ok: false; error: string }
 
 let _companyId: string | null = null
 
@@ -53,6 +55,72 @@ export async function getCompanyId(): Promise<{ ok: true; id: string } | { ok: f
   if (!first?.id) return { ok: false, error: 'company_id non trovato in /user/companies' }
   _companyId = String(first.id)
   return { ok: true, id: _companyId }
+}
+
+export async function creaDocumentoFIC(payload: Record<string, unknown>): Promise<FicCreateResult> {
+  const token = process.env.FIC_ACCESS_TOKEN
+  if (!token) return { ok: false, error: 'FIC_ACCESS_TOKEN non configurato su Vercel.' }
+
+  const company = await getCompanyId()
+  if (!company.ok) return { ok: false, error: company.error }
+
+  const { number: _number, ...payloadWithoutNumber } = payload
+  void _number
+  const forcedPayload = { ...payloadWithoutNumber, e_invoice: false }
+  const path = `/c/${company.id}/issued_documents`
+  console.log('[FIC] POST issued_documents') // audit (mai loggare il token)
+
+  try {
+    const res = await fetch(FIC_BASE + path, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ data: forcedPayload }),
+    })
+    if (res.status === 401) return { ok: false, error: 'Token FIC non valido/revocato: rigeneralo nelle Applicazioni collegate.' }
+    if (res.status === 429) return { ok: false, error: 'Troppe richieste a Fatture in Cloud, riprova tra poco.' }
+    if (!res.ok) return { ok: false, error: `Errore creazione bozza FIC ${res.status}: ${(await res.text()).slice(0, 300)}` }
+
+    const json = await res.json()
+    const data = json?.data ?? json
+    const id = data?.id ? String(data.id) : ''
+    if (!id) return { ok: false, error: 'Bozza FIC creata ma id documento non trovato nella risposta.' }
+    const url = typeof data?.url === 'string' && data.url ? data.url : `https://secure.fattureincloud.it/issued_documents/${id}`
+    return { ok: true, id, url }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export async function eliminaDocumentoFIC(id: string): Promise<FicDeleteResult> {
+  const token = process.env.FIC_ACCESS_TOKEN
+  if (!token) return { ok: false, error: 'FIC_ACCESS_TOKEN non configurato su Vercel.' }
+
+  const cleanId = String(id || '').trim()
+  if (!cleanId) return { ok: false, error: 'id documento FIC richiesto' }
+
+  const company = await getCompanyId()
+  if (!company.ok) return { ok: false, error: company.error }
+
+  console.log('[FIC] DELETE issued_documents') // audit (mai loggare il token)
+  try {
+    const res = await fetch(`${FIC_BASE}/c/${company.id}/issued_documents/${encodeURIComponent(cleanId)}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+    })
+    if (res.status === 401) return { ok: false, error: 'Token FIC non valido/revocato: rigeneralo nelle Applicazioni collegate.' }
+    if (res.status === 429) return { ok: false, error: 'Troppe richieste a Fatture in Cloud, riprova tra poco.' }
+    if (!res.ok) return { ok: false, error: `Errore eliminazione bozza FIC ${res.status}: ${(await res.text()).slice(0, 300)}` }
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 // Costruisce un filtro data FIC (campo `q`) da anno/mese opzionali.
