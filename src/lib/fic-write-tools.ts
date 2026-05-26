@@ -26,8 +26,17 @@ interface RigaDocumento {
   name: string
   qty: number
   net_price: number
-  vat: { value: number }
+  aliquota: number
 }
+
+interface RigaDocumentoPayload {
+  name: string
+  qty: number
+  net_price: number
+  vat: { id: number }
+}
+
+const vatIdCache = new Map<number, number>()
 
 function ok(payload: Record<string, unknown>): string {
   return JSON.stringify({ ok: true, ...payload })
@@ -67,6 +76,24 @@ function escapeFicQuery(value: string): string {
   return value.replace(/[\\']/g, '')
 }
 
+async function resolveVatId(aliquota: number): Promise<number | null> {
+  if (vatIdCache.has(aliquota)) return vatIdCache.get(aliquota) ?? null
+
+  const company = await getCompanyId()
+  if (!company.ok) return null
+
+  const r = await ficGet(`/c/${company.id}/vat_types`)
+  if (!r.ok) return null
+
+  const list = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
+  const match = list.find(row => parseNumber(row.value) === aliquota)
+  const id = parseNumber(match?.id)
+  if (id === null) return null
+
+  vatIdCache.set(aliquota, id)
+  return id
+}
+
 function normalizeRighe(value: unknown, fallbackDescrizione?: string): { righe?: RigaDocumento[]; error?: string } {
   const rawRows = Array.isArray(value) ? value : []
   if (rawRows.length === 0 && fallbackDescrizione) {
@@ -75,7 +102,7 @@ function normalizeRighe(value: unknown, fallbackDescrizione?: string): { righe?:
         name: fallbackDescrizione,
         qty: 1,
         net_price: 0,
-        vat: { value: 22 },
+        aliquota: 22,
       }],
     }
   }
@@ -92,7 +119,7 @@ function normalizeRighe(value: unknown, fallbackDescrizione?: string): { righe?:
     const vat = money(row.aliquota ?? row.vat ?? 22)
     if (qty <= 0) return { error: `quantita non valida per riga "${name}"` }
     if (netPrice < 0) return { error: `prezzo_unitario non valido per riga "${name}"` }
-    righe.push({ name, qty, net_price: netPrice, vat: { value: vat || 22 } })
+    righe.push({ name, qty, net_price: netPrice, aliquota: vat || 22 })
   }
   return { righe }
 }
@@ -123,7 +150,7 @@ function descriviDocumento(input: {
 }): string {
   const titolo = input.tipo === 'fattura_emessa' ? 'Bozza fattura emessa FIC' : 'Bozza rapporto intervento FIC'
   const righe = input.righe
-    .map(row => `- ${row.name}: ${row.qty} x ${row.net_price} + IVA ${row.vat.value}%`)
+    .map(row => `- ${row.name}: ${row.qty} x ${row.net_price} + IVA ${row.aliquota}%`)
     .join('\n')
   const totaleNetto = Math.round(input.righe.reduce((sum, row) => sum + row.qty * row.net_price, 0) * 100) / 100
   return [
@@ -188,10 +215,22 @@ async function compilaDocumento(input: Record<string, unknown>, tipo: PendingTip
   const entity = await resolveClientEntity(cliente)
   if (!entity.ok) return fail(entity.error)
 
+  const itemsList: RigaDocumentoPayload[] = []
+  for (const riga of parsedRighe.righe) {
+    const vatId = await resolveVatId(riga.aliquota)
+    if (vatId === null) return fail(`aliquota ${riga.aliquota}% non trovata tra le aliquote IVA di Fatture in Cloud`)
+    itemsList.push({
+      name: riga.name,
+      qty: riga.qty,
+      net_price: riga.net_price,
+      vat: { id: vatId },
+    })
+  }
+
   const payload: Record<string, unknown> = {
     type: tipo === 'fattura_emessa' ? 'invoice' : 'work_report',
     entity: entity.entity,
-    items_list: parsedRighe.righe,
+    items_list: itemsList,
     date: data,
     e_invoice: false,
   }
@@ -289,8 +328,27 @@ export async function confirmFicStep2(id: string): Promise<string> {
   if (row.stato !== 'in_attesa') return 'Bozza FIC gia elaborata.'
   if (Number(row.conferme) < 1) return `Serve prima la prima conferma -> /fic_ok_${cleanId}`
 
+  const claim = await supabase
+    .from('cervellone_fic_pending')
+    .update({ conferme: 2, updated_at: new Date().toISOString() })
+    .eq('id', cleanId)
+    .eq('stato', 'in_attesa')
+    .eq('conferme', 1)
+    .select('id')
+
+  if (claim.error) return `Errore claim bozza FIC: ${claim.error.message}`
+  if (!claim.data?.length) return 'Bozza gia in elaborazione o elaborata.'
+
   const created = await creaDocumentoFIC(row.payload)
-  if (!created.ok) return `Creazione bozza FIC fallita: ${created.error}`
+  if (!created.ok) {
+    await supabase
+      .from('cervellone_fic_pending')
+      .update({ conferme: 1, updated_at: new Date().toISOString() })
+      .eq('id', cleanId)
+      .eq('stato', 'in_attesa')
+      .eq('conferme', 2)
+    return `Creazione bozza FIC fallita: ${created.error}`
+  }
 
   const updated = await supabase
     .from('cervellone_fic_pending')
@@ -302,6 +360,7 @@ export async function confirmFicStep2(id: string): Promise<string> {
     })
     .eq('id', cleanId)
     .eq('stato', 'in_attesa')
+    .eq('conferme', 2)
     .select('id')
 
   if (updated.error) return `Bozza creata su FIC ma aggiornamento audit fallito: ${updated.error.message}`
