@@ -58,6 +58,88 @@ export const SHEETS = {
   REGISTRO_CANTIERI: '1LvUkPRCWhDRZW5qIAiap0aJ_qA9TKHm-HOhV1H6FBso',
 }
 
+// --- RECINZIONE SCRITTURE (folder access policy) ---
+// Una scrittura su Drive è permessa SOLO se la cartella di destinazione è una "radice
+// consentita" (tabella cervellone_drive_policy, can_write=true) oppure una sua DISCENDENTE.
+// Tutto il resto è bloccato finché l'utente non autorizza la cartella (doppia conferma da chat).
+// Fail-closed: in caso di dubbio (policy non leggibile, ancestry non determinabile) si blocca.
+
+export class DrivePolicyError extends Error {
+  constructor(public folderId: string, public folderName?: string) {
+    super(
+      `Scrittura non consentita nella cartella ${folderName || folderId}. ` +
+        `Cervellone può scrivere solo nelle cartelle autorizzate (e relative sottocartelle). ` +
+        `Per autorizzare questa cartella chiedimi di darti accesso: serve la doppia conferma.`,
+    )
+    this.name = 'DrivePolicyError'
+  }
+}
+
+let _rootsCache: { ids: Set<string>; at: number } | null = null
+const ROOTS_TTL_MS = 30_000
+const _ancestryCache = new Map<string, { allowed: boolean; at: number }>()
+const ANCESTRY_TTL_MS = 5 * 60_000
+
+async function loadWritableRoots(): Promise<Set<string>> {
+  if (_rootsCache && Date.now() - _rootsCache.at < ROOTS_TTL_MS) return _rootsCache.ids
+  const { supabase } = await import('./supabase')
+  const { data, error } = await supabase
+    .from('cervellone_drive_policy')
+    .select('folder_id')
+    .eq('can_write', true)
+  if (error) throw new Error(`Policy Drive non leggibile: ${error.message}`)
+  const ids = new Set((data ?? []).map((r: { folder_id: string }) => r.folder_id))
+  _rootsCache = { ids, at: Date.now() }
+  return ids
+}
+
+/** Invalida la cache delle radici consentite. Chiamare dopo una modifica di policy. */
+export function invalidateDrivePolicyCache(): void {
+  _rootsCache = null
+  _ancestryCache.clear()
+}
+
+/**
+ * Verifica che `targetFolderId` sia una radice consentita o una sua discendente,
+ * risalendo i parent (max 15 livelli). Lancia DrivePolicyError se non consentita.
+ * Fail-closed: se l'ancestry non è determinabile (errore API), blocca.
+ */
+export async function assertWriteAllowed(targetFolderId: string): Promise<void> {
+  if (!targetFolderId) throw new DrivePolicyError(targetFolderId)
+  const roots = await loadWritableRoots()
+  if (roots.has(targetFolderId)) return
+
+  const cached = _ancestryCache.get(targetFolderId)
+  if (cached && Date.now() - cached.at < ANCESTRY_TTL_MS) {
+    if (cached.allowed) return
+    throw new DrivePolicyError(targetFolderId)
+  }
+
+  const drive = await getDrive()
+  let current = targetFolderId
+  const seen = new Set<string>()
+  for (let depth = 0; depth < 15; depth++) {
+    if (roots.has(current)) {
+      _ancestryCache.set(targetFolderId, { allowed: true, at: Date.now() })
+      return
+    }
+    if (seen.has(current)) break
+    seen.add(current)
+    let parents: string[] | undefined
+    try {
+      const meta = await drive.files.get({ fileId: current, fields: 'parents', supportsAllDrives: true })
+      parents = meta.data.parents || undefined
+    } catch (err) {
+      console.error(`[DRIVE POLICY] ancestry lookup failed for ${current}:`, err instanceof Error ? err.message : err)
+      throw new DrivePolicyError(targetFolderId) // fail-closed
+    }
+    if (!parents || parents.length === 0) break // radice del Drive raggiunta senza match
+    current = parents[0]
+  }
+  _ancestryCache.set(targetFolderId, { allowed: false, at: Date.now() })
+  throw new DrivePolicyError(targetFolderId)
+}
+
 // --- OPERAZIONI FILE E CARTELLE ---
 
 // Elenca file/cartelle in una cartella
@@ -117,6 +199,23 @@ export async function searchFiles(query: string, folderId?: string): Promise<str
     console.error(`[DRIVE] searchFiles ERROR:`, err)
     return `Errore nella ricerca: ${err instanceof Error ? err.message : err}`
   }
+}
+
+// Cerca SOLO cartelle per nome, ritorno strutturato (per la gestione policy accessi).
+export async function findFoldersByName(query: string): Promise<Array<{ id: string; name: string }>> {
+  const drive = await getDrive()
+  const safe = query.replace(/'/g, "\\'")
+  const res = await drive.files.list({
+    q: `name contains '${safe}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+    fields: 'files(id, name)',
+    orderBy: 'name',
+    pageSize: 15,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  })
+  return (res.data.files || [])
+    .filter((f): f is { id: string; name: string } => Boolean(f.id && f.name))
+    .map(f => ({ id: f.id, name: f.name }))
 }
 
 // FIX W1.3 Task 2: ricerca per CONTENUTO testuale (full-text indexed da Drive)
@@ -253,6 +352,12 @@ export async function readXlsxFromDrive(fileId: string): Promise<string> {
 // Crea una cartella
 export async function createFolder(name: string, parentId: string): Promise<string> {
   try {
+    await assertWriteAllowed(parentId)
+  } catch (err) {
+    if (err instanceof DrivePolicyError) return `🔒 ${err.message}`
+    return `Errore verifica permessi: ${err instanceof Error ? err.message : err}`
+  }
+  try {
     const drive = await getDrive()
     const res = await drive.files.create({
       requestBody: {
@@ -271,6 +376,12 @@ export async function createFolder(name: string, parentId: string): Promise<stri
 
 // Sposta un file/cartella
 export async function moveFile(fileId: string, newParentId: string): Promise<string> {
+  try {
+    await assertWriteAllowed(newParentId)
+  } catch (err) {
+    if (err instanceof DrivePolicyError) return `🔒 ${err.message}`
+    return `Errore verifica permessi: ${err instanceof Error ? err.message : err}`
+  }
   try {
     const drive = await getDrive()
     // Ottieni i parent attuali
@@ -323,6 +434,12 @@ export async function readDocument(fileId: string): Promise<string> {
 
 // Crea un Google Doc con contenuto
 export async function createDocument(name: string, content: string, folderId: string): Promise<string> {
+  try {
+    await assertWriteAllowed(folderId)
+  } catch (err) {
+    if (err instanceof DrivePolicyError) return `🔒 ${err.message}`
+    return `Errore verifica permessi: ${err instanceof Error ? err.message : err}`
+  }
   try {
     const drive = await getDrive()
 
@@ -498,6 +615,8 @@ export async function getTelegramInboxFolderId(): Promise<string> {
 }
 
 export async function getOrCreatePathFolders(baseFolderId: string, segments: string[]): Promise<string> {
+  // La base deve essere consentita: ogni sottocartella creata qui ne è discendente.
+  await assertWriteAllowed(baseFolderId)
   const drive = await getDrive()
   let parentId = baseFolderId
 
@@ -553,6 +672,7 @@ export async function uploadBinaryToDrive(
 ): Promise<{ id: string; webViewLink: string }> {
   const drive = await getDrive()
   const resolvedFolderId = folderId || (await getOrCreateBozzeFolder())
+  await assertWriteAllowed(resolvedFolderId)
 
   const res = await drive.files.create({
     requestBody: {

@@ -1,0 +1,275 @@
+/**
+ * app/api/telegram/route.ts — All fixes integrated
+ * SEC-002: webhook secret, SEC-003: rate limit, FUN-002: video,
+ * FUN-003: sticker/location, /nuova: clears embeddings, UX-002: thinking msg
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import crypto from 'crypto'
+import { callClaude } from '@/lib/claude'
+import { supabase } from '@/lib/supabase'
+import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
+import { TELEGRAM_SYSTEM_PROMPT } from '@/lib/prompts'
+import { saveMessageWithEmbedding, saveFileKnowledge } from '@/lib/memory'
+import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
+import { validateWebhookSecret } from '@/lib/auth'
+import { rateLimit } from '@/lib/rate-limiter'
+import { safeSupabase } from '@/lib/resilience'
+
+export const maxDuration = 300
+
+function chatIdToUuid(chatId: number): string {
+  const hash = crypto.createHash('md5').update(`telegram_${chatId}`).digest('hex')
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`
+}
+
+function isAuthorized(chatId: number): boolean {
+  return (process.env.TELEGRAM_ALLOWED_IDS || '').split(',').map(Number).includes(chatId)
+}
+
+export async function POST(request: NextRequest) {
+  // SEC-002: Validate webhook secret
+  if (!validateWebhookSecret(request.headers.get('x-telegram-bot-api-secret-token'))) {
+    return new Response('Unauthorized', { status: 401 })
+  }
+
+  let errorChatId: number | null = null
+  let typingInterval: NodeJS.Timeout | null = null
+
+  try {
+    const body = await request.json()
+    const message = body.message
+    if (!message) return NextResponse.json({ ok: true })
+
+    const chatId: number = message.chat.id
+    errorChatId = chatId
+
+    // SEC-003: Rate limiting
+    if (!rateLimit(`tg_${chatId}`, 60_000, 5)) {
+      await sendTelegramMessage(chatId, '⚠️ Troppi messaggi. Attenda un momento.')
+      return NextResponse.json({ ok: true })
+    }
+
+    // REL-001: Dedup con fallback se Supabase è down
+    const msgId = message.message_id
+    if (msgId) {
+      const existing = await safeSupabase(
+        () => supabase.from('telegram_dedup').select('message_id')
+          .eq('chat_id', chatId).eq('message_id', msgId).limit(1),
+        []
+      )
+      if (existing && (existing as any[]).length > 0) return NextResponse.json({ ok: true })
+      await safeSupabase(() => supabase.from('telegram_dedup').insert({ chat_id: chatId, message_id: msgId }))
+    }
+
+    let userText = message.text || message.caption || ''
+    let fileBlocks: any[] = []
+    let fileDescription = ''
+
+    // ── Voice ──
+    if (!userText && (message.voice || message.audio)) {
+      const fileId = message.voice?.file_id || message.audio?.file_id
+      if (fileId) {
+        await sendTyping(chatId)
+        userText = await transcribeAudio(fileId)
+        if (!userText) {
+          await sendTelegramMessage(chatId, 'Non sono riuscito a trascrivere il vocale.')
+          return NextResponse.json({ ok: true })
+        }
+      }
+    }
+
+    // ── Document ──
+    if (message.document) {
+      await sendTyping(chatId)
+      if ((message.document.file_size || 0) > 20 * 1024 * 1024) {
+        await sendTelegramMessage(chatId, '⚠️ File troppo pesante (max 20 MB).')
+        return NextResponse.json({ ok: true })
+      }
+      const ext = (message.document.file_name || '').split('.').pop()?.toLowerCase()
+      if (!ext) {
+        await sendTelegramMessage(chatId, '⚠️ File senza estensione.')
+        return NextResponse.json({ ok: true })
+      }
+      const fileData = await downloadTelegramFile(message.document.file_id)
+      if (!fileData) {
+        await sendTelegramMessage(chatId, '⚠️ Non riesco a scaricare il file.')
+        return NextResponse.json({ ok: true })
+      }
+      fileBlocks = await buildContentBlocks(fileData)
+      fileDescription = message.document.file_name || fileData.fileName
+    }
+
+    // ── Photo ──
+    if (message.photo?.length > 0) {
+      await sendTyping(chatId)
+      const largest = message.photo[message.photo.length - 1]
+      const fileData = await downloadTelegramFile(largest.file_id)
+      if (fileData) {
+        fileBlocks = await buildContentBlocks(fileData)
+        fileDescription = fileData.fileName
+      }
+    }
+
+    // ── FUN-002: Video (extract thumbnail) ──
+    if (message.video && fileBlocks.length === 0) {
+      await sendTyping(chatId)
+      const thumb = message.video.thumb || message.video.thumbnail
+      if (thumb) {
+        const fileData = await downloadTelegramFile(thumb.file_id)
+        if (fileData) {
+          fileBlocks = await buildContentBlocks({ ...fileData, mimeType: 'image/jpeg', fileName: 'video_frame.jpg' })
+          fileDescription = 'frame dal video'
+        }
+      }
+      if (!userText && fileBlocks.length === 0) {
+        userText = 'Ho ricevuto un video ma non riesco a estrarre il frame. Può rimandarlo come foto?'
+      }
+    }
+
+    // ── FUN-003: Sticker, Location, Contact ──
+    if (!userText && fileBlocks.length === 0) {
+      if (message.sticker || message.animation) {
+        userText = "(L'utente ha inviato uno sticker/GIF)"
+      } else if (message.location) {
+        userText = `L'utente ha condiviso una posizione GPS: lat ${message.location.latitude}, lon ${message.location.longitude}`
+      } else if (message.contact) {
+        userText = `L'utente ha condiviso un contatto: ${message.contact.first_name} ${message.contact.phone_number || ''}`
+      } else {
+        return NextResponse.json({ ok: true })
+      }
+    }
+
+    if (!userText && fileBlocks.length > 0) userText = `Analizza questo file: ${fileDescription}`
+
+    if (!isAuthorized(chatId)) {
+      await sendTelegramMessage(chatId, '⛔ Non autorizzato.')
+      return NextResponse.json({ ok: true })
+    }
+
+    // ── Comandi ──
+    if (userText === '/start') {
+      await sendTelegramMessage(chatId, '🧠 *Cervellone attivo.* Come posso aiutarLa?')
+      return NextResponse.json({ ok: true })
+    }
+    if (userText === '/id') {
+      await sendTelegramMessage(chatId, `Chat ID: ${chatId}`)
+      return NextResponse.json({ ok: true })
+    }
+    if (userText === '/nuova') {
+      const convId = chatIdToUuid(chatId)
+      // FIX: pulisce anche embeddings
+      await Promise.all([
+        safeSupabase(() => supabase.from('messages').delete().eq('conversation_id', convId)),
+        safeSupabase(() => supabase.from('embeddings').delete().eq('conversation_id', convId)),
+      ])
+      await sendTelegramMessage(chatId, 'Conversazione e memoria azzerata.')
+      return NextResponse.json({ ok: true })
+    }
+
+    // ── Typing + thinking timeout ──
+    typingInterval = setInterval(() => sendTyping(chatId), 4000)
+    await sendTyping(chatId)
+
+    // UX-002: Messaggio dopo 12 secondi di attesa
+    const thinkingTimeout = setTimeout(async () => {
+      await sendTelegramMessage(chatId, '🧠 Sto elaborando una risposta dettagliata...')
+    }, 12_000)
+
+    // ── Conversazione ──
+    const conversationId = chatIdToUuid(chatId)
+    const existingConv = await safeSupabase(
+      () => supabase.from('conversations').select('id').eq('id', conversationId).single()
+    )
+    if (!existingConv) {
+      await safeSupabase(() => supabase.from('conversations').insert({ id: conversationId, title: '💬 Telegram' }))
+    }
+
+    // ── Storia ──
+    const recentMessages = await safeSupabase(
+      () => supabase.from('messages').select('role, content')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: true }).limit(20),
+      []
+    )
+
+    const history: any[] = ((recentMessages as any[]) || [])
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => ({ role: m.role, content: m.content }))
+
+    if (fileBlocks.length > 0) {
+      history.push({ role: 'user', content: [...fileBlocks, { type: 'text', text: userText }] })
+    } else {
+      history.push({ role: 'user', content: userText })
+    }
+    if (history.length > 0 && history[0].role !== 'user') history.shift()
+
+    // ── Claude ──
+    const fullResponse = await callClaude({
+      messages: history,
+      systemPrompt: TELEGRAM_SYSTEM_PROMPT,
+      userQuery: userText,
+      conversationId,
+    })
+
+    // ── Cleanup ──
+    clearTimeout(thinkingTimeout)
+    if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
+
+    // ── Salva file in memoria ──
+    if (fileBlocks.length > 0 && fullResponse.length > 200) {
+      const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
+      saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
+    }
+
+    // ── UX-001: Detect tabelle e salva come documento ──
+    const hasTable = /\|[\s-]+\|/.test(fullResponse) && fullResponse.length > 3500
+
+    // ── Manda risposta ──
+    const responseBlocks = parseDocumentBlocks(fullResponse)
+    let sentSomething = false
+
+    for (const block of responseBlocks) {
+      if (block.type === 'document' || (hasTable && block.content.length > 3500)) {
+        const content = block.type === 'document' ? block.content : `<pre>${block.content}</pre>`
+        const titleMatch = content.match(/<h1[^>]*>(.*?)<\/h1>/i)
+        const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
+
+        const savedDoc = await safeSupabase(
+          () => supabase.from('documents')
+            .insert({ name: title, content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
+            .select('id').single()
+        )
+        const docUrl = (savedDoc as any)?.id
+          ? `https://cervellone-5poc.vercel.app/doc/${(savedDoc as any).id}`
+          : 'https://cervellone-5poc.vercel.app'
+
+        await sendTelegramMessage(chatId, `📄 *${title}*\n\n👉 ${docUrl}`)
+        sentSomething = true
+      } else if (block.content.trim()) {
+        await sendTelegramMessage(chatId, block.content)
+        sentSomething = true
+      }
+    }
+
+    if (!sentSomething) {
+      await sendTelegramMessage(chatId, fullResponse || 'Non sono riuscito a elaborare una risposta.')
+    }
+
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    console.error('TELEGRAM error:', err)
+    const msg = err instanceof Error ? err.message : String(err)
+    let userMsg = `⚠️ ${msg.slice(0, 300)}`
+    if (msg.includes('credit') || msg.includes('billing')) userMsg = '⚠️ Crediti API esauriti.'
+    if (msg.includes('too large') || msg.includes('payload')) userMsg = '⚠️ File troppo pesante.'
+    if (errorChatId) await sendTelegramMessage(errorChatId, userMsg).catch(() => {})
+    return NextResponse.json({ ok: true })
+  } finally {
+    if (typingInterval) clearInterval(typingInterval)
+  }
+}
+
+export async function GET() {
+  return NextResponse.json({ status: 'Cervellone Telegram webhook attivo' })
+}

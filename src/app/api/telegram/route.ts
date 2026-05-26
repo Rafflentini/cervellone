@@ -356,6 +356,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    // Governance accesso cartelle Drive — doppia conferma (parità con web)
+    const mAccOk2 = userText.match(/^\/accesso_ok2_([0-9a-fA-F-]{36})\b/i)
+    const mAccOk = userText.match(/^\/accesso_ok_([0-9a-fA-F-]{36})\b/i)
+    const mAccNo = userText.match(/^\/accesso_no_([0-9a-fA-F-]{36})\b/i)
+    if (mAccOk2 || mAccOk || mAccNo) {
+      const uuid = (mAccOk2 ?? mAccOk ?? mAccNo)![1]
+      const mod = await import('@/lib/drive-policy-actions')
+      const r = mAccOk2
+        ? await mod.confirmStep2(uuid)
+        : mAccOk
+          ? await mod.confirmStep1(uuid)
+          : await mod.cancelPending(uuid)
+      await sendTelegramMessage(chatId, r.message)
+      return NextResponse.json({ ok: true })
+    }
+
     // ── Bug 1: mutex per chat ──
     // Evita bgProcess paralleli sulla stessa chat: se l'utente manda un messaggio
     // mentre il bot sta elaborando il precedente, droppiamo il nuovo per non

@@ -114,6 +114,29 @@ export async function POST(request: NextRequest) {
     })
   }
 
+  // Governance accesso cartelle Drive — doppia conferma (parità con Telegram)
+  const mAccOk2 = userQuery.match(/^\/accesso_ok2_([0-9a-fA-F-]{36})\b/i)
+  const mAccOk = userQuery.match(/^\/accesso_ok_([0-9a-fA-F-]{36})\b/i)
+  const mAccNo = userQuery.match(/^\/accesso_no_([0-9a-fA-F-]{36})\b/i)
+  if (mAccOk2 || mAccOk || mAccNo) {
+    const uuid = (mAccOk2 ?? mAccOk ?? mAccNo)![1]
+    const mod = await import('@/lib/drive-policy-actions')
+    const r = mAccOk2
+      ? await mod.confirmStep2(uuid)
+      : mAccOk
+        ? await mod.confirmStep1(uuid)
+        : await mod.cancelPending(uuid)
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(r.message))
+        controller.close()
+      },
+    })
+    return new Response(stream, {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  }
+
   const encoder = new TextEncoder()
   const readable = new ReadableStream({
     async start(controller) {

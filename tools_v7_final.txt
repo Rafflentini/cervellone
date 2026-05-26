@@ -1,0 +1,331 @@
+========================================
+FILE: src/lib/tools.ts (984 righe)
+COMMIT: b5cbde6 — V7 con cache fix JSONB
+========================================
+
+/**
+ * lib/tools.ts — Registry tool completo con tutti i fix
+ *
+ * Fix applicati:
+ * - PER-003: cerca_prezziario multi-risultato
+ * - FUN-004: ricerca per codice_voce
+ * - PER-004: cerca_prezziario_batch per preventivi grandi
+ * - NEW: importa_da_url (Opzione B — scarica prezziario da URL)
+ * - NEW: cerca_documenti (preventivi/relazioni passate)
+ */
+
+import { supabase } from './supabase'
+
+// ── Interfaccia ──
+
+interface ToolDefinition {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+}
+
+// ── STUDIO TECNICO ──
+
+const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
+  {
+    name: 'cerca_prezziario',
+    description: 'Cerca voci nel prezziario regionale. Restituisce MULTIPLI risultati (fino a 15). Cerca per descrizione O per codice voce (es. BAS25_E03.015). Regioni disponibili: verificare con conta_prezziario.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Descrizione lavorazione o codice voce (es. "demolizione pavimento" o "BAS25_E03")' },
+        regione: { type: 'string', description: 'Regione del prezziario (default: basilicata). Es: basilicata, lazio, campania' },
+        limit: { type: 'number', description: 'Numero massimo risultati (default: 10, max: 20)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'cerca_prezziario_batch',
+    description: 'Cerca MULTIPLE voci nel prezziario in una sola chiamata. Efficiente per preventivi con molte voci.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        voci: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array di descrizioni da cercare (es. ["demolizione pavimento", "massetto", "piastrelle"])',
+        },
+        regione: { type: 'string' },
+      },
+      required: ['voci'],
+    },
+  },
+  {
+    name: 'conta_prezziario',
+    description: 'Verifica quali prezziari regionali sono disponibili e quante voci hanno.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        regione: { type: 'string', description: 'Regione specifica, o vuoto per vedere tutte le regioni disponibili' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'importa_prezziario_da_url',
+    description: 'Scarica e importa un prezziario regionale da un URL pubblico. Supporta file .ods, .csv, .xlsx. Usa questo tool quando serve un prezziario di una regione non ancora caricata. Cerca prima l\'URL con web_search, poi chiama questo tool.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL diretto al file del prezziario (.ods, .csv, .xlsx)' },
+        regione: { type: 'string', description: 'Nome regione (es: lazio, campania, puglia)' },
+        anno: { type: 'number', description: 'Anno del prezziario (es: 2025, 2026)' },
+      },
+      required: ['url', 'regione'],
+    },
+  },
+  {
+    name: 'cerca_documenti',
+    description: 'Cerca documenti generati in passato: preventivi, computi, relazioni, lettere. Cerca per titolo, tipo o data.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Testo da cercare nel titolo (es. "Rossi", "ponteggio", "preventivo")' },
+        data_da: { type: 'string', description: 'Data inizio ricerca (YYYY-MM-DD)' },
+        data_a: { type: 'string', description: 'Data fine ricerca (YYYY-MM-DD)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'scarica_file_da_url',
+    description: 'Scarica qualsiasi file da un URL pubblico (PDF, Word, Excel, ODS, immagini, CSV, ecc.) e restituisce il contenuto come testo o lo salva in memoria. Usa questo per scaricare documenti dal web.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL diretto al file da scaricare' },
+        filename: { type: 'string', description: 'Nome descrittivo del file (es: "relazione_strutturale.pdf")' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'genera_preventivo_completo',
+    description: 'Genera PREVENTIVO + CME + QUADRO ECONOMICO in una sola chiamata. Cerca automaticamente le voci nel prezziario regionale con scoring di rilevanza, calcola tutto, produce 3 documenti HTML separati e li salva nel database. Se gia generati per questa conversazione, restituisce i documenti salvati (IMMUTABILI). IMPORTANTE: ogni lavorazione deve corrispondere a una voce reale del prezziario — NON spezzare in sotto-voci (fornitura+posa separati) se esiste una voce unica.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        committente: { type: 'string', description: 'Nome committente' },
+        indirizzo_cantiere: { type: 'string', description: 'Indirizzo del cantiere' },
+        comune: { type: 'string', description: 'Comune del cantiere' },
+        descrizione_lavoro: { type: 'string', description: 'Descrizione generale del lavoro' },
+        lavorazioni: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              descrizione: { type: 'string', description: 'Descrizione lavorazione (es: "demolizione pavimento esistente")' },
+              quantita: { type: 'number' },
+              um: { type: 'string', description: 'Unita di misura: mq, ml, mc, kg, cad, corpo' },
+              prezzo_mercato: { type: 'number', description: 'Prezzo unitario di mercato stimato (per il preventivo)' },
+            },
+            required: ['descrizione', 'quantita', 'um'],
+          },
+        },
+        regione: { type: 'string', description: 'Regione per prezziario (default: basilicata)' },
+        spese_generali_perc: { type: 'number', description: 'Default 0.15 (15%)' },
+        utile_impresa_perc: { type: 'number', description: 'Default 0.10 (10%)' },
+        iva_perc: { type: 'number', description: 'Default 0.10 (10%)' },
+      },
+      required: ['committente', 'comune', 'descrizione_lavoro', 'lavorazioni'],
+    },
+  },
+]
+
+// ── EXECUTORS ──
+
+async function executeStudioTecnico(name: string, input: Record<string, unknown>, conversationId?: string): Promise<string | null> {
+  switch (name) {
+    case 'cerca_prezziario': {
+      const query = input.query as string
+      const regione = (input.regione as string) || 'basilicata'
+      const limit = Math.min((input.limit as number) || 10, 20)
+
+      const isCode = /^[A-Z]{2,5}\d{2}[_-]/.test(query)
+
+      let data: any[] | null = null
+
+      if (isCode) {
+        const { data: d } = await supabase
+          .from('prezziario')
+          .select('codice_voce, descrizione, unita_misura, prezzo, fonte')
+          .eq('regione', regione)
+          .ilike('codice_voce', `${query}%`)
+          .order('codice_voce')
+          .limit(limit)
+        data = d
+      }
+
+      if (!data?.length) {
+        const { data: d } = await supabase
+          .from('prezziario')
+          .select('codice_voce, descrizione, unita_misura, prezzo, fonte')
+          .eq('regione', regione)
+          .ilike('descrizione', `%${query}%`)
+          .order('descrizione')
+          .limit(limit)
+        data = d
+      }
+
+      if (!data?.length) {
+        const words = query.split(/\s+/).filter(w => w.length > 3)
+        for (const word of words.slice(0, 2)) {
+          const { data: d } = await supabase
+            .from('prezziario')
+            .select('codice_voce, descrizione, unita_misura, prezzo, fonte')
+            .eq('regione', regione)
+            .ilike('descrizione', `%${word}%`)
+            .limit(5)
+          if (d?.length) {
+            data = [...(data || []), ...d]
+          }
+        }
+        if (data) {
+          const seen = new Set<string>()
+          data = data.filter(v => {
+            if (seen.has(v.codice_voce)) return false
+            seen.add(v.codice_voce)
+            return true
+          }).slice(0, limit)
+        }
+      }
+
+      if (!data?.length) {
+        const { count } = await supabase
+          .from('prezziario')
+          .select('*', { count: 'exact', head: true })
+          .eq('regione', regione)
+        if (!count) {
+          return `Prezziario ${regione} non disponibile nel database. Usa importa_prezziario_da_url per scaricarlo, oppure chiedi all'Ingegnere di caricare il file ODS.`
+        }
+        return `Nessuna voce trovata per "${query}" nel prezziario ${regione} (${count} voci totali). Prova con parole chiave diverse.`
+      }
+
+      const lines = data.map(v =>
+        `${v.codice_voce} | ${v.descrizione.slice(0, 80)} | ${v.unita_misura} | EUR${v.prezzo}`
+      )
+      return `Trovate ${data.length} voci per "${query}" (${regione}):\n\n${lines.join('\n')}`
+    }
+
+    case 'cerca_prezziario_batch': {
+      const voci = input.voci as string[]
+      const regione = (input.regione as string) || 'basilicata'
+      const results: string[] = []
+
+      for (const voce of voci.slice(0, 20)) {
+        const { data } = await supabase
+          .from('prezziario')
+          .select('codice_voce, descrizione, unita_misura, prezzo')
+          .eq('regione', regione)
+          .ilike('descrizione', `%${voce}%`)
+          .limit(3)
+
+        if (data?.length) {
+          results.push(`"${voce}":\n${data.map(v =>
+            `  ${v.codice_voce} | ${v.descrizione.slice(0, 60)} | ${v.unita_misura} | EUR${v.prezzo}`
+          ).join('\n')}`)
+        } else {
+          results.push(`"${voce}": nessuna voce trovata`)
+        }
+      }
+
+      return results.join('\n\n')
+    }
+
+    case 'conta_prezziario': {
+      const regione = input.regione as string
+
+      if (regione) {
+        const { count } = await supabase
+          .from('prezziario')
+          .select('*', { count: 'exact', head: true })
+          .eq('regione', regione)
+        if (count && count > 0) {
+          return `Prezziario ${regione}: ${count} voci disponibili.`
+        }
+        return `Nessun prezziario caricato per ${regione}. Puoi importarlo con importa_prezziario_da_url.`
+      }
+
+      const { data } = await supabase.rpc('get_distinct_regioni')
+      if (!data?.length) return 'Nessun prezziario caricato.'
+
+      const lines = (data as Array<{ regione: string; voci_count: number }>).map(r => `${r.regione}: ${r.voci_count} voci`)
+      return `Prezziari disponibili:\n${lines.join('\n')}`
+    }
+
+    // ... importa_prezziario_da_url, cerca_documenti, scarica_file_da_url invariati ...
+    // (vedi file originale righe 264-462)
+
+    case 'genera_preventivo_completo': {
+      // CACHE CHECK
+      if (conversationId) {
+        const { data: allDocs } = await supabase
+          .from('documents')
+          .select('name, content, metadata')
+          .eq('conversation_id', conversationId)
+          .order('created_at', { ascending: true })
+
+        const cached = (allDocs || []).filter((d: any) =>
+          ['preventivo', 'cme', 'quadro_economico'].includes(d.metadata?.doc_type)
+        )
+
+        if (cached.length >= 2) {
+          const prevDoc = cached.find((d: any) => d.metadata?.doc_type === 'preventivo')
+          const cmeDoc = cached.find((d: any) => d.metadata?.doc_type === 'cme')
+          const qeDoc = cached.find((d: any) => d.metadata?.doc_type === 'quadro_economico')
+
+          if (prevDoc && cmeDoc) {
+            let result = `DOCUMENTI GIA GENERATI PER QUESTA CONVERSAZIONE (risultati invariati).\n\nPREVENTIVO:\n~~~document\n${prevDoc.content}\n~~~\n\nCME:\n~~~document\n${cmeDoc.content}\n~~~`
+            if (qeDoc) {
+              result += `\n\nQUADRO ECONOMICO:\n~~~document\n${qeDoc.content}\n~~~`
+            }
+            result += `\n\nI documenti sono identici a quelli generati in precedenza. Il CME e una misurazione ufficiale e non puo cambiare.`
+            return result
+          }
+        }
+      }
+
+      // ... genera preventivo (righe 499-697 invariate) ...
+
+      // SALVATAGGIO CACHE (FIX: { error } invece di try/catch)
+      if (conversationId) {
+        const docsToSave = [
+          { name: `Preventivo - ${committente}`, content: prevHtml, doc_type: 'preventivo' },
+          { name: `CME - ${committente}`, content: cmeHtml, doc_type: 'cme' },
+          { name: `Quadro Economico - ${committente}`, content: qeHtml, doc_type: 'quadro_economico' },
+        ]
+        for (const doc of docsToSave) {
+          const { error } = await supabase.from('documents').insert({
+            name: doc.name,
+            content: doc.content,
+            conversation_id: conversationId,
+            type: 'html',
+            metadata: { source: 'genera_preventivo_completo', doc_type: doc.doc_type, committente, comune, numero },
+          })
+          if (error) console.error(`Cache save failed (${doc.doc_type}):`, error.message)
+        }
+      }
+
+      // ... return con 3 documenti (righe 880-911 invariate) ...
+    }
+
+    default:
+      return null
+  }
+}
+
+// ... parsers e registry invariati (righe 918-984) ...
+
+export async function executeTool(name: string, input: Record<string, unknown>, conversationId?: string): Promise<string> {
+  for (const executor of EXECUTORS) {
+    const result = await executor(name, input, conversationId)
+    if (result !== null) return result
+  }
+  return `Tool "${name}" non riconosciuto.`
+}

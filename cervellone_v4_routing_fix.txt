@@ -1,0 +1,596 @@
+================================================================================
+CERVELLONE V4 — ROUTING FIX (6 aprile 2026)
+================================================================================
+Fix critico: task detection PRIMA del check lunghezza nel model routing.
+Messaggi Telegram corti come "Fammi il CME" ora ricevono thinking 10K + 16K output
+invece di 1K/4K.
+================================================================================
+
+
+================================================================================
+FILE 1: src/lib/claude.ts
+================================================================================
+
+/**
+ * lib/claude.ts — Motore Cervellone v2
+ *
+ * Fix integrati: REL-003 (retry), PER-004 (max iterations 10),
+ * sanitization, safe logging, fault tolerance.
+ */
+
+import Anthropic from '@anthropic-ai/sdk'
+import { getToolDefinitions, executeTool } from './tools'
+import { searchMemory, saveMessageWithEmbedding } from './memory'
+import { sanitizeForStorage } from './sanitize'
+import { logInfo, logWarn, logError } from './sanitize'
+import { withRetry, safeSupabase } from './resilience'
+import { supabase } from './supabase'
+
+const client = new Anthropic()
+
+// ── Routing intelligente basato sulla complessità ──
+
+interface ModelConfig {
+  model: string
+  thinkingBudget: number
+  maxTokens: number
+}
+
+function selectModel(userQuery: string, hasFiles: boolean): ModelConfig {
+  const len = userQuery.length
+
+  // ── TASK-DETECTION: prima di tutto, cerca indicatori di task strutturati ──
+  // Questi richiedono SEMPRE almeno thinking medio, indipendentemente dalla lunghezza
+  const isStructuredTask =
+    /(?:preventiv|computo|cme|cmE|c\.m\.e)/i.test(userQuery) ||
+    /(?:redigi|scrivi|prepara|elabora|genera)\b/i.test(userQuery) ||
+    /(?:relazione|perizia|parere|report|documento|lettera)\b/i.test(userQuery) ||
+    /(?:calcol[oa]|dimension[ai]|verifica\s+struttur)/i.test(userQuery)
+
+  // Se è un task strutturato, NON dare mai thinking=1024 — minimo 10K
+  if (isStructuredTask) {
+    const complexitySignals = countComplexitySignals(userQuery, hasFiles)
+    if (complexitySignals >= 4) {
+      return { model: 'claude-opus-4-6', thinkingBudget: 100_000, maxTokens: 16000 }
+    }
+    if (complexitySignals >= 2) {
+      return { model: 'claude-opus-4-6', thinkingBudget: 32_000, maxTokens: 16000 }
+    }
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 10_000, maxTokens: 16000 }
+  }
+
+  // ── MESSAGGI BREVI conversazionali (niente task strutturato) ──
+  if (len < 100 && !hasFiles) {
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 1024, maxTokens: 4096 }
+  }
+
+  // ── SEGNALI DI COMPLESSITÀ (per tutto il resto) ──
+  const complexitySignals = countComplexitySignals(userQuery, hasFiles)
+
+  if (complexitySignals >= 4) {
+    return { model: 'claude-opus-4-6', thinkingBudget: 100_000, maxTokens: 16000 }
+  }
+  if (complexitySignals >= 2) {
+    return { model: 'claude-opus-4-6', thinkingBudget: 32_000, maxTokens: 16000 }
+  }
+  if (complexitySignals >= 1 || len > 300 || hasFiles) {
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 10_000, maxTokens: 16000 }
+  }
+  return { model: 'claude-sonnet-4-6', thinkingBudget: 4000, maxTokens: 8000 }
+}
+
+function countComplexitySignals(userQuery: string, hasFiles: boolean): number {
+  const len = userQuery.length
+  return [
+    /(?:approfond|dettagliat|(?:analisi|indagine|studio)\s+complet|esaustiv|accurata|minuziosa)/i.test(userQuery),
+    /(?:opus|massima\s*potenza|ragionamento\s*profondo|analisi\s*complessa)/i.test(userQuery),
+    (userQuery.match(/(?:analizza|confronta|verifica|valuta|esamina|studia|indaga|investiga|redigi|prepara|elabora)/gi) || []).length >= 2,
+    /(?:redigi|scrivi|prepara|elabora)\s+(?:un[ao']?\s+)?(?:relazione|perizia|parere|report|analisi|studio|indagine|piano|strategia|documento)/i.test(userQuery),
+    /(?:norma|legge|decreto|regolament|codice|testo unico|direttiva|circolare|D\.?M\.?|D\.?Lgs|NTC|GDPR|CCNL)/i.test(userQuery),
+    len > 500,
+    hasFiles && /(?:analizza|verifica|confronta|controlla|esamina|valuta)/i.test(userQuery),
+    /(?:calcol[oa]|verifica|dimension[ai]|stima|quantific)/i.test(userQuery) && len > 150,
+    /(?:confronta|compara|paragona|differenz[ae]|vs\.?|rispetto a)/i.test(userQuery) && len > 100,
+    /(?:strategia|piano\s+(?:di|per)|business\s*plan|marketing|posizionament|analisi\s+(?:di\s+)?mercato|target|competitor)/i.test(userQuery),
+  ].filter(Boolean).length
+}
+
+export interface ClaudeRequest {
+  messages: Anthropic.MessageParam[]
+  systemPrompt: string
+  userQuery: string
+  conversationId?: string
+  hasFiles?: boolean
+}
+
+export interface ClaudeStreamCallbacks {
+  onText: (text: string) => void
+  onToolStart?: (toolName: string) => void
+}
+
+// ── Streaming (chat web) ──
+
+export async function callClaudeStream(
+  request: ClaudeRequest,
+  callbacks: ClaudeStreamCallbacks,
+): Promise<string> {
+  const { systemPrompt, userQuery, conversationId } = request
+
+  const memoryContext = await searchMemory(userQuery).catch(() => '')
+  const fullSystemPrompt = systemPrompt + memoryContext
+
+  if (conversationId && userQuery) {
+    saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: any[] = getToolDefinitions()
+  let currentMessages = [...request.messages]
+  let fullResponse = ''
+  const MAX_ITERATIONS = 10 // PER-004 fix
+
+  const modelConfig = selectModel(userQuery, request.hasFiles || false)
+  console.log(`MODEL: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    // REL-003: retry su errori transitori
+    const stream = await withRetry(() =>
+      Promise.resolve(client.messages.stream({
+        model: modelConfig.model,
+        max_tokens: modelConfig.maxTokens,
+        system: fullSystemPrompt,
+        messages: currentMessages,
+        tools,
+        thinking: { type: 'enabled', budget_tokens: modelConfig.thinkingBudget },
+      }))
+    )
+
+    let iterationHasText = false
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text
+        callbacks.onText(event.delta.text)
+        iterationHasText = true
+      }
+      if (event.type === 'content_block_start' && (event as any).content_block?.type === 'server_tool_use') {
+        callbacks.onToolStart?.('web_search')
+      }
+    }
+
+    const final = await stream.finalMessage()
+    const toolBlocks = final.content.filter(b => b.type === 'tool_use')
+
+    if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
+    if (!iterationHasText && i > 0) break
+
+    const toolResults = await executeToolBlocks(toolBlocks)
+    if (toolResults.length === 0) break
+
+    currentMessages = [
+      ...currentMessages,
+      { role: 'assistant' as const, content: final.content },
+      { role: 'user' as const, content: toolResults },
+    ]
+  }
+
+  if (conversationId && fullResponse) {
+    saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+  }
+
+  return fullResponse
+}
+
+// ── Non-streaming (Telegram) ──
+
+export async function callClaude(request: ClaudeRequest): Promise<string> {
+  const { systemPrompt, userQuery, conversationId } = request
+
+  const memoryContext = await searchMemory(userQuery).catch(() => '')
+  const fullSystemPrompt = systemPrompt + memoryContext
+
+  if (conversationId && userQuery) {
+    saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: any[] = getToolDefinitions()
+  let currentMessages = [...request.messages]
+  let fullResponse = ''
+  const MAX_ITERATIONS = 10
+
+  const modelConfig = selectModel(userQuery, request.hasFiles || false)
+  console.log(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    const response = await withRetry(() =>
+      client.messages.create({
+        model: modelConfig.model,
+        max_tokens: modelConfig.maxTokens,
+        system: fullSystemPrompt,
+        messages: currentMessages,
+        tools,
+        thinking: { type: 'enabled', budget_tokens: modelConfig.thinkingBudget },
+      })
+    )
+
+    let hasText = false
+    for (const block of response.content) {
+      if (block.type === 'text') { fullResponse += block.text; hasText = true }
+    }
+
+    const toolBlocks = response.content.filter(b => b.type === 'tool_use')
+    if (toolBlocks.length === 0 || response.stop_reason === 'end_turn') break
+    if (!hasText && i > 0) break
+
+    const toolResults = await executeToolBlocks(toolBlocks)
+    if (toolResults.length === 0) break
+
+    currentMessages = [
+      ...currentMessages,
+      { role: 'assistant' as const, content: response.content },
+      { role: 'user' as const, content: toolResults },
+    ]
+  }
+
+  if (conversationId && fullResponse) {
+    saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+  }
+
+  return fullResponse
+}
+
+// ── Helpers ──
+
+async function executeToolBlocks(toolBlocks: any[]): Promise<any[]> {
+  const results: any[] = []
+  for (const block of toolBlocks) {
+    if (block.type !== 'tool_use') continue
+    if (block.name === 'web_search') continue // server-side
+
+    try {
+      const result = await executeTool(block.name, block.input as Record<string, unknown>)
+      results.push({ type: 'tool_result', tool_use_id: block.id, content: result })
+    } catch (err) {
+      logError(`Tool ${block.name} error`, err)
+      results.push({ type: 'tool_result', tool_use_id: block.id, content: `Errore: ${(err as Error).message}` })
+    }
+  }
+  return results
+}
+
+const MAX_CONTEXT_CHARS = 500_000
+
+export function trimMessages(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  if (messages.length <= 1) return messages
+  let totalChars = charCount(messages[messages.length - 1].content)
+  let startIdx = messages.length - 1
+
+  for (let i = messages.length - 2; i >= 0; i--) {
+    const chars = charCount(messages[i].content)
+    if (totalChars + chars > MAX_CONTEXT_CHARS) break
+    totalChars += chars
+    startIdx = i
+  }
+
+  if (startIdx > 0) {
+    const trimmed = messages.slice(startIdx)
+    if (trimmed[0]?.role !== 'user') {
+      trimmed.unshift({ role: 'user', content: '(conversazione precedente omessa)' })
+    }
+    return trimmed
+  }
+  return messages
+}
+
+function charCount(content: Anthropic.MessageParam['content']): number {
+  if (typeof content === 'string') return content.length
+  if (Array.isArray(content)) return JSON.stringify(content).length
+  return 0
+}
+
+
+================================================================================
+FILE 2: src/app/api/telegram/route.ts
+================================================================================
+
+/**
+ * app/api/telegram/route.ts — All fixes integrated
+ * SEC-002: webhook secret, SEC-003: rate limit, FUN-002: video,
+ * FUN-003: sticker/location, /nuova: clears embeddings, UX-002: thinking msg
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
+import crypto from 'crypto'
+import { callClaude } from '@/lib/claude'
+import { supabase } from '@/lib/supabase'
+import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
+import { TELEGRAM_SYSTEM_PROMPT } from '@/lib/prompts'
+import { saveMessageWithEmbedding, saveFileKnowledge } from '@/lib/memory'
+import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
+import { validateWebhookSecret } from '@/lib/auth'
+import { rateLimit } from '@/lib/rate-limiter'
+import { safeSupabase } from '@/lib/resilience'
+
+export const maxDuration = 300
+
+function chatIdToUuid(chatId: number): string {
+  const hash = crypto.createHash('md5').update(`telegram_${chatId}`).digest('hex')
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`
+}
+
+function isAuthorized(chatId: number): boolean {
+  return (process.env.TELEGRAM_ALLOWED_IDS || '').split(',').map(Number).includes(chatId)
+}
+
+export async function POST(request: NextRequest) {
+  // SEC-002: Validate webhook secret
+  if (!validateWebhookSecret(request.headers.get('x-telegram-bot-api-secret-token'))) {
+    return new Response('Unauthorized', { status: 401 })
+  }
+
+  let errorChatId: number | null = null
+  let typingInterval: NodeJS.Timeout | null = null
+
+  try {
+    const body = await request.json()
+    const message = body.message
+    if (!message) return NextResponse.json({ ok: true })
+
+    const chatId: number = message.chat.id
+    errorChatId = chatId
+
+    // SEC-003: Rate limiting
+    if (!rateLimit(`tg_${chatId}`, 60_000, 5)) {
+      await sendTelegramMessage(chatId, '⚠️ Troppi messaggi. Attenda un momento.')
+      return NextResponse.json({ ok: true })
+    }
+
+    // REL-001: Dedup con fallback se Supabase è down
+    const msgId = message.message_id
+    if (msgId) {
+      const existing = await safeSupabase(
+        () => supabase.from('telegram_dedup').select('message_id')
+          .eq('chat_id', chatId).eq('message_id', msgId).limit(1),
+        []
+      )
+      if (existing && (existing as any[]).length > 0) return NextResponse.json({ ok: true })
+      await safeSupabase(() => supabase.from('telegram_dedup').insert({ chat_id: chatId, message_id: msgId }))
+    }
+
+    let userText = message.text || message.caption || ''
+    let fileBlocks: any[] = []
+    let fileDescription = ''
+
+    // ── Voice ──
+    if (!userText && (message.voice || message.audio)) {
+      const fileId = message.voice?.file_id || message.audio?.file_id
+      if (fileId) {
+        await sendTyping(chatId)
+        userText = await transcribeAudio(fileId)
+        if (!userText) {
+          await sendTelegramMessage(chatId, 'Non sono riuscito a trascrivere il vocale.')
+          return NextResponse.json({ ok: true })
+        }
+      }
+    }
+
+    // ── Document ──
+    if (message.document) {
+      await sendTyping(chatId)
+      if ((message.document.file_size || 0) > 20 * 1024 * 1024) {
+        await sendTelegramMessage(chatId, '⚠️ File troppo pesante (max 20 MB).')
+        return NextResponse.json({ ok: true })
+      }
+      const ext = (message.document.file_name || '').split('.').pop()?.toLowerCase()
+      if (!ext) {
+        await sendTelegramMessage(chatId, '⚠️ File senza estensione.')
+        return NextResponse.json({ ok: true })
+      }
+      const fileData = await downloadTelegramFile(message.document.file_id)
+      if (!fileData) {
+        await sendTelegramMessage(chatId, '⚠️ Non riesco a scaricare il file.')
+        return NextResponse.json({ ok: true })
+      }
+      fileBlocks = await buildContentBlocks(fileData)
+      fileDescription = message.document.file_name || fileData.fileName
+    }
+
+    // ── Photo ──
+    if (message.photo?.length > 0) {
+      await sendTyping(chatId)
+      const largest = message.photo[message.photo.length - 1]
+      const fileData = await downloadTelegramFile(largest.file_id)
+      if (fileData) {
+        fileBlocks = await buildContentBlocks(fileData)
+        fileDescription = fileData.fileName
+      }
+    }
+
+    // ── FUN-002: Video (extract thumbnail) ──
+    if (message.video && fileBlocks.length === 0) {
+      await sendTyping(chatId)
+      const thumb = message.video.thumb || message.video.thumbnail
+      if (thumb) {
+        const fileData = await downloadTelegramFile(thumb.file_id)
+        if (fileData) {
+          fileBlocks = await buildContentBlocks({ ...fileData, mimeType: 'image/jpeg', fileName: 'video_frame.jpg' })
+          fileDescription = 'frame dal video'
+        }
+      }
+      if (!userText && fileBlocks.length === 0) {
+        userText = 'Ho ricevuto un video ma non riesco a estrarre il frame. Può rimandarlo come foto?'
+      }
+    }
+
+    // ── FUN-003: Sticker, Location, Contact ──
+    if (!userText && fileBlocks.length === 0) {
+      if (message.sticker || message.animation) {
+        userText = "(L'utente ha inviato uno sticker/GIF)"
+      } else if (message.location) {
+        userText = `L'utente ha condiviso una posizione GPS: lat ${message.location.latitude}, lon ${message.location.longitude}`
+      } else if (message.contact) {
+        userText = `L'utente ha condiviso un contatto: ${message.contact.first_name} ${message.contact.phone_number || ''}`
+      } else {
+        return NextResponse.json({ ok: true })
+      }
+    }
+
+    if (!userText && fileBlocks.length > 0) userText = `Analizza questo file: ${fileDescription}`
+
+    if (!isAuthorized(chatId)) {
+      await sendTelegramMessage(chatId, '⛔ Non autorizzato.')
+      return NextResponse.json({ ok: true })
+    }
+
+    // ── Comandi ──
+    if (userText === '/start') {
+      await sendTelegramMessage(chatId, '🧠 *Cervellone attivo.* Come posso aiutarLa?')
+      return NextResponse.json({ ok: true })
+    }
+    if (userText === '/id') {
+      await sendTelegramMessage(chatId, `Chat ID: ${chatId}`)
+      return NextResponse.json({ ok: true })
+    }
+    if (userText === '/nuova') {
+      const convId = chatIdToUuid(chatId)
+      // Cancella solo i messaggi della chat, NON la memoria (embeddings)
+      // La memoria deve persistere SEMPRE — contiene documenti, analisi, regole
+      await safeSupabase(() => supabase.from('messages').delete().eq('conversation_id', convId))
+      await sendTelegramMessage(chatId, 'Conversazione azzerata. La memoria permanente è intatta.')
+      return NextResponse.json({ ok: true })
+    }
+
+    // ── Typing + thinking timeout ──
+    typingInterval = setInterval(() => sendTyping(chatId), 4000)
+    await sendTyping(chatId)
+
+    // UX-002: Timeout adattivo — più tempo per task strutturati e messaggi complessi
+    const isStructuredTask =
+      /(?:preventiv|computo|cme|cmE|c\.m\.e)/i.test(userText) ||
+      /(?:redigi|scrivi|prepara|elabora|genera)\b/i.test(userText) ||
+      /(?:relazione|perizia|parere|report|documento|lettera)\b/i.test(userText) ||
+      /(?:calcol[oa]|dimension[ai]|verifica\s+struttur)/i.test(userText)
+    const isLikelyComplex = isStructuredTask || userText.length > 300 ||
+      (userText.match(/(?:analizza|confronta|verifica|valuta|redigi|prepara|elabora)/gi) || []).length >= 2 ||
+      fileBlocks.length > 0
+    const thinkingDelay = isLikelyComplex ? 25_000 : 12_000
+    const thinkingTimeout = setTimeout(async () => {
+      const msg = isLikelyComplex
+        ? '🧠🔥 Sto ragionando a fondo... ci vuole un attimo in più.'
+        : '🧠 Sto elaborando una risposta dettagliata...'
+      await sendTelegramMessage(chatId, msg)
+    }, thinkingDelay)
+
+    // ── Conversazione ──
+    const conversationId = chatIdToUuid(chatId)
+    const existingConv = await safeSupabase(
+      () => supabase.from('conversations').select('id').eq('id', conversationId).single()
+    )
+    if (!existingConv) {
+      await safeSupabase(() => supabase.from('conversations').insert({ id: conversationId, title: '💬 Telegram' }))
+    }
+
+    // ── Storia ──
+    const recentMessages = await safeSupabase(
+      () => supabase.from('messages').select('role, content')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: true }).limit(20),
+      []
+    )
+
+    const history: any[] = ((recentMessages as any[]) || [])
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => ({ role: m.role, content: m.content }))
+
+    if (fileBlocks.length > 0) {
+      history.push({ role: 'user', content: [...fileBlocks, { type: 'text', text: userText }] })
+    } else {
+      history.push({ role: 'user', content: userText })
+    }
+    if (history.length > 0 && history[0].role !== 'user') history.shift()
+
+    // ── Claude (ASINCRONO) — risponde subito, elabora in background ──
+    const bgProcess = async () => {
+      try {
+        const fullResponse = await callClaude({
+          messages: history,
+          systemPrompt: TELEGRAM_SYSTEM_PROMPT,
+          userQuery: userText,
+          conversationId,
+          hasFiles: fileBlocks.length > 0,
+        })
+
+        clearTimeout(thinkingTimeout)
+        if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
+
+        // Salva in memoria
+        if (fileBlocks.length > 0 && fullResponse.length > 200) {
+          const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
+          saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
+        }
+
+        // Detect tabelle
+        const hasTable = /\|[\s-]+\|/.test(fullResponse) && fullResponse.length > 3500
+
+        // Manda risposta
+        const responseBlocks = parseDocumentBlocks(fullResponse)
+        let sentSomething = false
+
+        for (const block of responseBlocks) {
+          if (block.type === 'document' || (hasTable && block.content.length > 3500)) {
+            const content = block.type === 'document' ? block.content : `<pre>${block.content}</pre>`
+            const titleMatch = content.match(/<h1[^>]*>(.*?)<\/h1>/i)
+            const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
+
+            const savedDoc = await safeSupabase(
+              () => supabase.from('documents')
+                .insert({ name: title, content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
+                .select('id').single()
+            )
+            const docUrl = (savedDoc as any)?.id
+              ? `https://cervellone-5poc.vercel.app/doc/${(savedDoc as any).id}`
+              : 'https://cervellone-5poc.vercel.app'
+
+            await sendTelegramMessage(chatId, `📄 *${title}*\n\n👉 ${docUrl}`)
+            sentSomething = true
+          } else if (block.content.trim()) {
+            await sendTelegramMessage(chatId, block.content)
+            sentSomething = true
+          }
+        }
+
+        if (!sentSomething) {
+          await sendTelegramMessage(chatId, fullResponse || 'Non sono riuscito a elaborare una risposta.')
+        }
+      } catch (err) {
+        console.error('TELEGRAM BG error:', err)
+        const msg = err instanceof Error ? err.message : String(err)
+        let userMsg = `⚠️ ${msg.slice(0, 300)}`
+        if (msg.includes('credit') || msg.includes('billing')) userMsg = '⚠️ Crediti API esauriti.'
+        if (msg.includes('too large') || msg.includes('payload')) userMsg = '⚠️ File troppo pesante.'
+        await sendTelegramMessage(chatId, userMsg).catch(() => {})
+      } finally {
+        if (typingInterval) clearInterval(typingInterval)
+      }
+    }
+
+    // Lancia in background — NON aspettare
+    waitUntil(bgProcess())
+
+    // Rispondi SUBITO al webhook — niente più timeout
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    if (typingInterval) clearInterval(typingInterval)
+    console.error('TELEGRAM error:', err)
+    if (errorChatId) {
+      const msg = err instanceof Error ? err.message : String(err)
+      await sendTelegramMessage(errorChatId, `⚠️ ${msg.slice(0, 300)}`).catch(() => {})
+    }
+    return NextResponse.json({ ok: true })
+  }
+}
+
+export async function GET() {
+  return NextResponse.json({ status: 'Cervellone Telegram webhook attivo' })
+}

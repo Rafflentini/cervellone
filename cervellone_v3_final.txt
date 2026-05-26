@@ -1,0 +1,2082 @@
+// System prompt centralizzato — UNA sola fonte di verità
+
+const BASE_PROMPT = `Sei il Cervellone — il coordinatore digitale di Restruktura SRL e dell'Ing. Raffaele Lentini, Villa d'Agri (PZ).
+Restruktura: ingegneria strutturale, direzione lavori, collaudi, impresa edile, PonteggioSicuro.it (noleggio ponteggi). Sede operativa in Basilicata.
+Il tuo ruolo è coordinare TUTTO: studio tecnico, cantieri, segreteria, marketing, clienti. Sei il braccio destro dell'Ingegnere.
+
+REGOLA FONDAMENTALE: Sei Claude al 100% delle tue capacità. Puoi fare TUTTO quello che fai su claude.ai — leggere PDF (anche scansionati, con vision), analizzare immagini, cercare sul web, generare documenti, fare calcoli, ragionare. NON dire MAI "non posso", "non riesco", "limite tecnico", "non ho accesso", "non ho memoria". FALLO E BASTA. Ogni capacità che Claude AI ha oggi o avrà in futuro, tu ce l'hai.
+
+HAI MEMORIA PERSISTENTE — i dati dei progetti e conversazioni passate sono caricati in fondo a questo messaggio. USALI.
+
+Per documenti strutturati (tabelle, preventivi, computi, relazioni), usa ~~~document con HTML professionale.
+Intestazione: RESTRUKTURA S.r.l. — Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762, Villa d'Agri (PZ), Ing. Raffaele Lentini.
+Quando fai un preventivo, genera SEMPRE anche un computo metrico con prezziario regionale ufficiale di confronto.
+
+Per preventivi e computi metrico estimativi: usa SEMPRE il tool genera_preventivo_completo con la lista completa delle lavorazioni. NON cercare le voci singolarmente — il tool cerca tutto automaticamente nel prezziario ed è molto più veloce.
+
+Dai del Lei all'Ingegnere. Rispondi in italiano. Non menzionare mai il funzionamento interno.`
+
+export const CHAT_SYSTEM_PROMPT = BASE_PROMPT
+
+export const TELEGRAM_SYSTEM_PROMPT = BASE_PROMPT + `\nStai comunicando via Telegram. Rispondi conciso, usa *grassetto* e _corsivo_.`
+/**
+ * lib/claude.ts — Motore Cervellone v2
+ * 
+ * Fix integrati: REL-003 (retry), PER-004 (max iterations 10),
+ * sanitization, safe logging, fault tolerance.
+ */
+
+import Anthropic from '@anthropic-ai/sdk'
+import { getToolDefinitions, executeTool } from './tools'
+import { searchMemory, saveMessageWithEmbedding } from './memory'
+import { sanitizeForStorage } from './sanitize'
+import { logInfo, logWarn, logError } from './sanitize'
+import { withRetry, safeSupabase } from './resilience'
+import { supabase } from './supabase'
+
+const client = new Anthropic()
+
+// ── Routing intelligente basato sulla complessità ──
+
+interface ModelConfig {
+  model: string
+  thinkingBudget: number
+  maxTokens: number
+}
+
+function selectModel(userQuery: string, hasFiles: boolean): ModelConfig {
+  const len = userQuery.length
+
+  // Messaggi brevi/conversazionali: Sonnet veloce, thinking minimo
+  if (len < 100 && !hasFiles) {
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 1024, maxTokens: 4096 }
+  }
+
+  // ── SEGNALI DI COMPLESSITÀ (indipendenti dal dominio) ──
+  const complexitySignals = [
+    /(?:approfond|dettagliat|(?:analisi|indagine|studio)\s+complet|esaustiv|accurata|minuziosa)/i.test(userQuery),
+    /(?:opus|massima\s*potenza|ragionamento\s*profondo|analisi\s*complessa)/i.test(userQuery),
+    (userQuery.match(/(?:analizza|confronta|verifica|valuta|esamina|studia|indaga|investiga|redigi|prepara|elabora)/gi) || []).length >= 2,
+    /(?:redigi|scrivi|prepara|elabora)\s+(?:un[ao']?\s+)?(?:relazione|perizia|parere|report|analisi|studio|indagine|piano|strategia|documento)/i.test(userQuery),
+    /(?:norma|legge|decreto|regolament|codice|testo unico|direttiva|circolare|D\.?M\.?|D\.?Lgs|NTC|GDPR|CCNL)/i.test(userQuery),
+    len > 500,
+    hasFiles && /(?:analizza|verifica|confronta|controlla|esamina|valuta)/i.test(userQuery),
+    /(?:calcol[oa]|verifica|dimension[ai]|stima|quantific)/i.test(userQuery) && len > 150,
+    /(?:confronta|compara|paragona|differenz[ae]|vs\.?|rispetto a)/i.test(userQuery) && len > 100,
+    /(?:strategia|piano\s+(?:di|per)|business\s*plan|marketing|posizionament|analisi\s+(?:di\s+)?mercato|target|competitor)/i.test(userQuery),
+  ].filter(Boolean).length
+
+  // Opus Extended (100K thinking): task davvero complessi (4+ segnali)
+  if (complexitySignals >= 4) {
+    return { model: 'claude-opus-4-6', thinkingBudget: 100_000, maxTokens: 16000 }
+  }
+  // Opus (32K thinking): task complessi (2-3 segnali)
+  if (complexitySignals >= 2) {
+    return { model: 'claude-opus-4-6', thinkingBudget: 32_000, maxTokens: 16000 }
+  }
+  // Sonnet con thinking alto: task medio (1 segnale, file, msg lungo)
+  if (complexitySignals >= 1 || len > 300 || hasFiles) {
+    return { model: 'claude-sonnet-4-6', thinkingBudget: 10000, maxTokens: 16000 }
+  }
+  // Sonnet standard: tutto il resto
+  return { model: 'claude-sonnet-4-6', thinkingBudget: 4000, maxTokens: 8000 }
+}
+
+export interface ClaudeRequest {
+  messages: Anthropic.MessageParam[]
+  systemPrompt: string
+  userQuery: string
+  conversationId?: string
+  hasFiles?: boolean
+}
+
+export interface ClaudeStreamCallbacks {
+  onText: (text: string) => void
+  onToolStart?: (toolName: string) => void
+}
+
+// ── Streaming (chat web) ──
+
+export async function callClaudeStream(
+  request: ClaudeRequest,
+  callbacks: ClaudeStreamCallbacks,
+): Promise<string> {
+  const { systemPrompt, userQuery, conversationId } = request
+
+  const memoryContext = await searchMemory(userQuery).catch(() => '')
+  const fullSystemPrompt = systemPrompt + memoryContext
+
+  if (conversationId && userQuery) {
+    saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: any[] = getToolDefinitions()
+  let currentMessages = [...request.messages]
+  let fullResponse = ''
+  const MAX_ITERATIONS = 10 // PER-004 fix
+
+  const modelConfig = selectModel(userQuery, request.hasFiles || false)
+  logInfo(`MODEL: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    // REL-003: retry su errori transitori
+    const stream = await withRetry(() =>
+      Promise.resolve(client.messages.stream({
+        model: modelConfig.model,
+        max_tokens: modelConfig.maxTokens,
+        system: fullSystemPrompt,
+        messages: currentMessages,
+        tools,
+        thinking: { type: 'enabled', budget_tokens: modelConfig.thinkingBudget },
+      }))
+    )
+
+    let iterationHasText = false
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text
+        callbacks.onText(event.delta.text)
+        iterationHasText = true
+      }
+      if (event.type === 'content_block_start' && (event as any).content_block?.type === 'server_tool_use') {
+        callbacks.onToolStart?.('web_search')
+      }
+    }
+
+    const final = await stream.finalMessage()
+    const toolBlocks = final.content.filter(b => b.type === 'tool_use')
+
+    if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
+    if (!iterationHasText && i > 0) break
+
+    const toolResults = await executeToolBlocks(toolBlocks)
+    if (toolResults.length === 0) break
+
+    currentMessages = [
+      ...currentMessages,
+      { role: 'assistant' as const, content: final.content },
+      { role: 'user' as const, content: toolResults },
+    ]
+  }
+
+  if (conversationId && fullResponse) {
+    saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+  }
+
+  return fullResponse
+}
+
+// ── Non-streaming (Telegram) ──
+
+export async function callClaude(request: ClaudeRequest): Promise<string> {
+  const { systemPrompt, userQuery, conversationId } = request
+
+  const memoryContext = await searchMemory(userQuery).catch(() => '')
+  const fullSystemPrompt = systemPrompt + memoryContext
+
+  if (conversationId && userQuery) {
+    saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: any[] = getToolDefinitions()
+  let currentMessages = [...request.messages]
+  let fullResponse = ''
+  const MAX_ITERATIONS = 10
+
+  const modelConfig = selectModel(userQuery, request.hasFiles || false)
+  logInfo(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    const response = await withRetry(() =>
+      client.messages.create({
+        model: modelConfig.model,
+        max_tokens: modelConfig.maxTokens,
+        system: fullSystemPrompt,
+        messages: currentMessages,
+        tools,
+        thinking: { type: 'enabled', budget_tokens: modelConfig.thinkingBudget },
+      })
+    )
+
+    let hasText = false
+    for (const block of response.content) {
+      if (block.type === 'text') { fullResponse += block.text; hasText = true }
+    }
+
+    const toolBlocks = response.content.filter(b => b.type === 'tool_use')
+    if (toolBlocks.length === 0 || response.stop_reason === 'end_turn') break
+    if (!hasText && i > 0) break
+
+    const toolResults = await executeToolBlocks(toolBlocks)
+    if (toolResults.length === 0) break
+
+    currentMessages = [
+      ...currentMessages,
+      { role: 'assistant' as const, content: response.content },
+      { role: 'user' as const, content: toolResults },
+    ]
+  }
+
+  if (conversationId && fullResponse) {
+    saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+  }
+
+  return fullResponse
+}
+
+// ── Helpers ──
+
+async function executeToolBlocks(toolBlocks: any[]): Promise<any[]> {
+  const results: any[] = []
+  for (const block of toolBlocks) {
+    if (block.type !== 'tool_use') continue
+    if (block.name === 'web_search') continue // server-side
+
+    try {
+      const result = await executeTool(block.name, block.input as Record<string, unknown>)
+      results.push({ type: 'tool_result', tool_use_id: block.id, content: result })
+    } catch (err) {
+      logError(`Tool ${block.name} error`, err)
+      results.push({ type: 'tool_result', tool_use_id: block.id, content: `Errore: ${(err as Error).message}` })
+    }
+  }
+  return results
+}
+
+const MAX_CONTEXT_CHARS = 500_000
+
+export function trimMessages(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  if (messages.length <= 1) return messages
+  let totalChars = charCount(messages[messages.length - 1].content)
+  let startIdx = messages.length - 1
+
+  for (let i = messages.length - 2; i >= 0; i--) {
+    const chars = charCount(messages[i].content)
+    if (totalChars + chars > MAX_CONTEXT_CHARS) break
+    totalChars += chars
+    startIdx = i
+  }
+
+  if (startIdx > 0) {
+    const trimmed = messages.slice(startIdx)
+    if (trimmed[0]?.role !== 'user') {
+      trimmed.unshift({ role: 'user', content: '(conversazione precedente omessa)' })
+    }
+    return trimmed
+  }
+  return messages
+}
+
+function charCount(content: Anthropic.MessageParam['content']): number {
+  if (typeof content === 'string') return content.length
+  if (Array.isArray(content)) return JSON.stringify(content).length
+  return 0
+}
+/**
+ * lib/tools.ts — Registry tool completo con tutti i fix
+ * 
+ * Fix applicati:
+ * - PER-003: cerca_prezziario multi-risultato
+ * - FUN-004: ricerca per codice_voce
+ * - PER-004: cerca_prezziario_batch per preventivi grandi
+ * - NEW: importa_da_url (Opzione B — scarica prezziario da URL)
+ * - NEW: cerca_documenti (preventivi/relazioni passate)
+ */
+
+import { executeCalcolaPreventivo, PreventivoInput } from './tools/preventivo'
+import { supabase } from './supabase'
+
+// ── Interfaccia ──
+
+interface ToolDefinition {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+}
+
+// ── STUDIO TECNICO ──
+
+const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
+  {
+    name: 'calcola_preventivo',
+    description: 'Genera un preventivo estimativo professionale con calcoli e output HTML.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        titolo: { type: 'string' },
+        numero: { type: 'string' },
+        data: { type: 'string' },
+        committente: {
+          type: 'object',
+          properties: { nome: { type: 'string' }, indirizzo: { type: 'string' }, cf_piva: { type: 'string' }, telefono: { type: 'string' }, email: { type: 'string' } },
+          required: ['nome'],
+        },
+        cantiere: {
+          type: 'object',
+          properties: { indirizzo: { type: 'string' }, comune: { type: 'string' }, descrizione: { type: 'string' } },
+          required: ['indirizzo', 'comune', 'descrizione'],
+        },
+        voci: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { descrizione: { type: 'string' }, um: { type: 'string' }, quantita: { type: 'number' }, prezzo_unitario: { type: 'number' }, categoria: { type: 'string' } },
+            required: ['descrizione', 'um', 'quantita', 'prezzo_unitario'],
+          },
+        },
+        coefficienti: {
+          type: 'object',
+          properties: { spese_generali: { type: 'number' }, utile_impresa: { type: 'number' }, oneri_sicurezza: { type: 'number' }, iva: { type: 'number' } },
+        },
+        regione: { type: 'string' },
+        note: { type: 'array', items: { type: 'string' } },
+        esclusioni: { type: 'array', items: { type: 'string' } },
+        condizioni_pagamento: { type: 'string' },
+        validita_offerta: { type: 'string' },
+      },
+      required: ['committente', 'cantiere', 'voci'],
+    },
+  },
+  {
+    name: 'cerca_prezziario',
+    description: 'Cerca voci nel prezziario regionale. Restituisce MULTIPLI risultati (fino a 15). Cerca per descrizione O per codice voce (es. BAS25_E03.015). Regioni disponibili: verificare con conta_prezziario.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Descrizione lavorazione o codice voce (es. "demolizione pavimento" o "BAS25_E03")' },
+        regione: { type: 'string', description: 'Regione del prezziario (default: basilicata). Es: basilicata, lazio, campania' },
+        limit: { type: 'number', description: 'Numero massimo risultati (default: 10, max: 20)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'cerca_prezziario_batch',
+    description: 'Cerca MULTIPLE voci nel prezziario in una sola chiamata. Efficiente per preventivi con molte voci.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        voci: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array di descrizioni da cercare (es. ["demolizione pavimento", "massetto", "piastrelle"])',
+        },
+        regione: { type: 'string' },
+      },
+      required: ['voci'],
+    },
+  },
+  {
+    name: 'conta_prezziario',
+    description: 'Verifica quali prezziari regionali sono disponibili e quante voci hanno.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        regione: { type: 'string', description: 'Regione specifica, o vuoto per vedere tutte le regioni disponibili' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'importa_prezziario_da_url',
+    description: 'Scarica e importa un prezziario regionale da un URL pubblico. Supporta file .ods, .csv, .xlsx. Usa questo tool quando serve un prezziario di una regione non ancora caricata. Cerca prima l\'URL con web_search, poi chiama questo tool.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL diretto al file del prezziario (.ods, .csv, .xlsx)' },
+        regione: { type: 'string', description: 'Nome regione (es: lazio, campania, puglia)' },
+        anno: { type: 'number', description: 'Anno del prezziario (es: 2025, 2026)' },
+      },
+      required: ['url', 'regione'],
+    },
+  },
+  {
+    name: 'cerca_documenti',
+    description: 'Cerca documenti generati in passato: preventivi, computi, relazioni, lettere. Cerca per titolo, tipo o data.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Testo da cercare nel titolo (es. "Rossi", "ponteggio", "preventivo")' },
+        data_da: { type: 'string', description: 'Data inizio ricerca (YYYY-MM-DD)' },
+        data_a: { type: 'string', description: 'Data fine ricerca (YYYY-MM-DD)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'scarica_file_da_url',
+    description: 'Scarica qualsiasi file da un URL pubblico (PDF, Word, Excel, ODS, immagini, CSV, ecc.) e restituisce il contenuto come testo o lo salva in memoria. Usa questo per scaricare documenti dal web.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL diretto al file da scaricare' },
+        filename: { type: 'string', description: 'Nome descrittivo del file (es: "relazione_strutturale.pdf")' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'genera_preventivo_completo',
+    description: 'Genera PREVENTIVO + CME in una sola chiamata. Cerca automaticamente le voci nel prezziario regionale, calcola tutto, produce 2 documenti HTML separati. Usa SEMPRE questo tool per preventivi — è molto più veloce di cercare le voci una per una.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        committente: { type: 'string', description: 'Nome committente' },
+        indirizzo_cantiere: { type: 'string', description: 'Indirizzo del cantiere' },
+        comune: { type: 'string', description: 'Comune del cantiere' },
+        descrizione_lavoro: { type: 'string', description: 'Descrizione generale del lavoro' },
+        lavorazioni: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              descrizione: { type: 'string', description: 'Descrizione lavorazione (es: "demolizione pavimento esistente")' },
+              quantita: { type: 'number' },
+              um: { type: 'string', description: 'Unità di misura: mq, ml, mc, kg, cad, corpo' },
+              prezzo_mercato: { type: 'number', description: 'Prezzo unitario di mercato stimato (per il preventivo)' },
+            },
+            required: ['descrizione', 'quantita', 'um'],
+          },
+        },
+        regione: { type: 'string', description: 'Regione per prezziario (default: basilicata)' },
+        spese_generali_perc: { type: 'number', description: 'Default 0.15 (15%)' },
+        utile_impresa_perc: { type: 'number', description: 'Default 0.10 (10%)' },
+        iva_perc: { type: 'number', description: 'Default 0.10 (10%)' },
+      },
+      required: ['committente', 'comune', 'descrizione_lavoro', 'lavorazioni'],
+    },
+  },
+]
+
+// ── EXECUTORS ──
+
+async function executeStudioTecnico(name: string, input: Record<string, unknown>): Promise<string | null> {
+  switch (name) {
+    case 'calcola_preventivo':
+      return executeCalcolaPreventivo(input as unknown as PreventivoInput)
+
+    case 'cerca_prezziario': {
+      const query = input.query as string
+      const regione = (input.regione as string) || 'basilicata'
+      const limit = Math.min((input.limit as number) || 10, 20)
+
+      // FIX FUN-004: Controlla se è un codice voce
+      const isCode = /^[A-Z]{2,5}\d{2}[_-]/.test(query)
+
+      let data: any[] | null = null
+
+      if (isCode) {
+        // Ricerca per codice voce (prefix match)
+        const { data: d } = await supabase
+          .from('prezziario')
+          .select('codice_voce, descrizione, unita_misura, prezzo, fonte')
+          .eq('regione', regione)
+          .ilike('codice_voce', `${query}%`)
+          .order('codice_voce')
+          .limit(limit)
+        data = d
+      }
+
+      if (!data?.length) {
+        // Ricerca per descrizione (ILIKE)
+        const { data: d } = await supabase
+          .from('prezziario')
+          .select('codice_voce, descrizione, unita_misura, prezzo, fonte')
+          .eq('regione', regione)
+          .ilike('descrizione', `%${query}%`)
+          .order('descrizione')
+          .limit(limit)
+        data = d
+      }
+
+      // Se ancora niente, prova parole singole
+      if (!data?.length) {
+        const words = query.split(/\s+/).filter(w => w.length > 3)
+        for (const word of words.slice(0, 2)) {
+          const { data: d } = await supabase
+            .from('prezziario')
+            .select('codice_voce, descrizione, unita_misura, prezzo, fonte')
+            .eq('regione', regione)
+            .ilike('descrizione', `%${word}%`)
+            .limit(5)
+          if (d?.length) {
+            data = [...(data || []), ...d]
+          }
+        }
+        // Deduplica
+        if (data) {
+          const seen = new Set<string>()
+          data = data.filter(v => {
+            if (seen.has(v.codice_voce)) return false
+            seen.add(v.codice_voce)
+            return true
+          }).slice(0, limit)
+        }
+      }
+
+      if (!data?.length) {
+        // Check se il prezziario per quella regione esiste
+        const { count } = await supabase
+          .from('prezziario')
+          .select('*', { count: 'exact', head: true })
+          .eq('regione', regione)
+        if (!count) {
+          return `Prezziario ${regione} non disponibile nel database. Usa importa_prezziario_da_url per scaricarlo, oppure chiedi all'Ingegnere di caricare il file ODS.`
+        }
+        return `Nessuna voce trovata per "${query}" nel prezziario ${regione} (${count} voci totali). Prova con parole chiave diverse.`
+      }
+
+      const lines = data.map(v =>
+        `${v.codice_voce} | ${v.descrizione.slice(0, 80)} | ${v.unita_misura} | €${v.prezzo}`
+      )
+      return `Trovate ${data.length} voci per "${query}" (${regione}):\n\n${lines.join('\n')}`
+    }
+
+    case 'cerca_prezziario_batch': {
+      const voci = input.voci as string[]
+      const regione = (input.regione as string) || 'basilicata'
+      const results: string[] = []
+
+      for (const voce of voci.slice(0, 20)) {
+        const { data } = await supabase
+          .from('prezziario')
+          .select('codice_voce, descrizione, unita_misura, prezzo')
+          .eq('regione', regione)
+          .ilike('descrizione', `%${voce}%`)
+          .limit(3)
+
+        if (data?.length) {
+          results.push(`📌 "${voce}":\n${data.map(v =>
+            `  ${v.codice_voce} | ${v.descrizione.slice(0, 60)} | ${v.unita_misura} | €${v.prezzo}`
+          ).join('\n')}`)
+        } else {
+          results.push(`📌 "${voce}": nessuna voce trovata`)
+        }
+      }
+
+      return results.join('\n\n')
+    }
+
+    case 'conta_prezziario': {
+      const regione = input.regione as string
+
+      if (regione) {
+        const { count } = await supabase
+          .from('prezziario')
+          .select('*', { count: 'exact', head: true })
+          .eq('regione', regione)
+        if (count && count > 0) {
+          return `Prezziario ${regione}: ${count} voci disponibili.`
+        }
+        return `Nessun prezziario caricato per ${regione}. Puoi importarlo con importa_prezziario_da_url.`
+      }
+
+      // Tutte le regioni — usa RPC efficiente (1 query, zero download massivi)
+      const { data } = await supabase.rpc('get_distinct_regioni')
+      if (!data?.length) return 'Nessun prezziario caricato.'
+
+      const lines = (data as Array<{ regione: string; voci_count: number }>).map(r => `${r.regione}: ${r.voci_count} voci`)
+      return `Prezziari disponibili:\n${lines.join('\n')}`
+    }
+
+    case 'importa_prezziario_da_url': {
+      const url = input.url as string
+      const regione = (input.regione as string).toLowerCase()
+      const anno = (input.anno as number) || new Date().getFullYear()
+
+      try {
+        // Scarica il file
+        const response = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept': 'application/octet-stream,application/vnd.oasis.opendocument.spreadsheet,text/csv,*/*',
+            'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8',
+          },
+          redirect: 'follow',
+        })
+        if (!response.ok) {
+          return `Errore download: HTTP ${response.status}. Verificare che l'URL sia corretto e il file sia pubblicamente accessibile.`
+        }
+
+        const contentType = response.headers.get('content-type') || ''
+        const buffer = Buffer.from(await response.arrayBuffer())
+        const sizeMB = (buffer.length / 1024 / 1024).toFixed(1)
+
+        if (buffer.length > 50 * 1024 * 1024) {
+          return `File troppo grande (${sizeMB}MB). Limite: 50MB.`
+        }
+
+        // Determina formato dall'URL o content-type
+        const isOds = url.endsWith('.ods') || contentType.includes('opendocument')
+        const isCsv = url.endsWith('.csv') || contentType.includes('csv')
+        const isXlsx = url.endsWith('.xlsx') || contentType.includes('spreadsheet')
+
+        let rows: string[] = []
+
+        if (isOds) {
+          rows = await parseOdsToRows(buffer)
+        } else if (isCsv) {
+          rows = buffer.toString('utf-8').split('\n').filter(r => r.trim().length > 0)
+        } else if (isXlsx) {
+          rows = await parseXlsxToRows(buffer)
+        } else {
+          return `Formato file non riconosciuto. Supportati: .ods, .csv, .xlsx. URL: ${url}`
+        }
+
+        if (rows.length < 10) {
+          return `File scaricato ma contiene solo ${rows.length} righe. Non sembra un prezziario.`
+        }
+
+        // Parsa voci
+        const voci: { codice_voce: string; descrizione: string; unita_misura: string; prezzo: number }[] = []
+
+        for (const row of rows) {
+          const cells = row.split(/[|\t;]/).map(c => c.trim())
+          if (cells.length < 3) continue
+
+          // Cerca codice voce (pattern: LETTERE + NUMERI + _ o .)
+          const codice = cells.find(c => /^[A-Z]{1,6}\d{2}[_.\-]/.test(c)) || cells[0]
+          if (!/[A-Z]/.test(codice) || codice.length < 5) continue
+
+          // Cerca descrizione (cella più lunga)
+          const descrizione = cells.reduce((a, b) => b.length > a.length ? b : a, '')
+          if (descrizione.length < 5) continue
+
+          // Cerca prezzo (ultimo numero valido)
+          let prezzo = 0
+          for (let i = cells.length - 1; i >= 0; i--) {
+            if (cells[i].includes('%')) continue
+            const num = parseFloat(cells[i].replace(/\./g, '').replace(',', '.'))
+            if (!isNaN(num) && num > 0 && num < 999999) { prezzo = num; break }
+          }
+          if (prezzo === 0) continue
+
+          // Cerca unità di misura
+          const umCandidates = ['mq', 'mc', 'ml', 'kg', 'q', 't', 'nr', 'cad', 'corpo', 'ora', 'giorno', 'm2', 'm3', 'lt']
+          let um = ''
+          for (const cell of cells) {
+            const lower = cell.toLowerCase().trim()
+            if (umCandidates.includes(lower) || lower.length <= 5 && /^[a-z/²³]+$/.test(lower)) {
+              um = lower
+              break
+            }
+          }
+
+          voci.push({
+            codice_voce: codice.trim(),
+            descrizione: descrizione.slice(0, 500),
+            unita_misura: um,
+            prezzo: Math.round(prezzo * 100) / 100,
+          })
+        }
+
+        if (voci.length < 50) {
+          return `File scaricato (${sizeMB}MB, ${rows.length} righe) ma solo ${voci.length} voci valide riconosciute. Il formato potrebbe essere diverso dal previsto. Suggerimento: chiedere all'Ingegnere di caricare manualmente il file ODS via Telegram.`
+        }
+
+        // Elimina vecchie voci e importa
+        await supabase.from('prezziario').delete().eq('regione', regione).eq('anno', anno)
+
+        let salvate = 0
+        for (let i = 0; i < voci.length; i += 500) {
+          const batch = voci.slice(i, i + 500).map(v => ({
+            regione,
+            anno,
+            ...v,
+            fonte: `Prezziario ${regione} ${anno} (importato da URL)`,
+          }))
+          const { error } = await supabase.from('prezziario').insert(batch)
+          if (!error) salvate += batch.length
+        }
+
+        return `✅ PREZZIARIO ${regione.toUpperCase()} ${anno} IMPORTATO\n\n` +
+          `File: ${sizeMB}MB, ${rows.length} righe analizzate\n` +
+          `Voci importate: ${salvate}/${voci.length}\n\n` +
+          `Ora puoi cercare con: cerca_prezziario(query, regione="${regione}")`
+
+      } catch (err) {
+        return `Errore durante l'importazione: ${(err as Error).message}. Verificare URL e connessione.`
+      }
+    }
+
+    case 'cerca_documenti': {
+      const query = input.query as string
+      let q = supabase
+        .from('documents')
+        .select('id, name, type, created_at')
+        .ilike('name', `%${query}%`)
+
+      if (input.data_da) q = q.gte('created_at', input.data_da as string)
+      if (input.data_a) q = q.lte('created_at', input.data_a as string)
+
+      const { data } = await q.order('created_at', { ascending: false }).limit(10)
+
+      if (!data?.length) return `Nessun documento trovato per "${query}".`
+
+      return data.map(d => {
+        const date = new Date(d.created_at).toLocaleDateString('it')
+        const url = `https://cervellone-5poc.vercel.app/doc/${d.id}`
+        return `📄 ${d.name} — ${date} — ${url}`
+      }).join('\n')
+    }
+
+    case 'scarica_file_da_url': {
+      const dlUrl = input.url as string
+      const filename = (input.filename as string) || dlUrl.split('/').pop() || 'file'
+
+      try {
+        const response = await fetch(dlUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+          },
+          redirect: 'follow',
+        })
+        if (!response.ok) return `Errore download: HTTP ${response.status}`
+
+        const buffer = Buffer.from(await response.arrayBuffer())
+        const sizeMB = (buffer.length / 1024 / 1024).toFixed(1)
+        if (buffer.length > 25 * 1024 * 1024) return `File troppo grande (${sizeMB}MB). Limite: 25MB.`
+
+        const ext = filename.split('.').pop()?.toLowerCase() || ''
+
+        // CSV/TXT/JSON/XML/HTML
+        if (['csv', 'txt', 'md', 'json', 'xml', 'html'].includes(ext)) {
+          const text = buffer.toString('utf-8')
+          return `[File ${filename}, ${sizeMB}MB]\n\n${text.slice(0, 100000)}`
+        }
+
+        // ODS
+        if (ext === 'ods') {
+          const rows = await parseOdsToRows(buffer)
+          if (rows.length > 0) {
+            return `[File ODS: ${filename}, ${rows.length} righe]\n\n${rows.slice(0, 2000).join('\n').slice(0, 100000)}`
+          }
+        }
+
+        // XLSX
+        if (ext === 'xlsx' || ext === 'xls') {
+          const rows = await parseXlsxToRows(buffer)
+          if (rows.length > 0) {
+            return `[File Excel: ${filename}, ${rows.length} righe]\n\n${rows.slice(0, 2000).join('\n').slice(0, 100000)}`
+          }
+        }
+
+        // Word
+        if (ext === 'docx' || ext === 'doc') {
+          try {
+            const mammoth = await import('mammoth')
+            const result = await mammoth.extractRawText({ buffer })
+            if (result.value && result.value.length > 50) {
+              return `[File Word: ${filename}, ${sizeMB}MB]\n\n${result.value.slice(0, 100000)}`
+            }
+          } catch { /* fallback */ }
+        }
+
+        return `[File scaricato: ${filename}, ${sizeMB}MB, formato ${ext}] — contenuto binario non leggibile come testo.`
+      } catch (err) {
+        return `Errore download: ${(err as Error).message}`
+      }
+    }
+
+    case 'genera_preventivo_completo': {
+      const committente = input.committente as string
+      const indirizzo = (input.indirizzo_cantiere as string) || ''
+      const comune = input.comune as string
+      const descrizione = input.descrizione_lavoro as string
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const lavorazioni = input.lavorazioni as any[]
+      const regione = ((input.regione as string) || 'basilicata').toLowerCase()
+      const sgPerc = (input.spese_generali_perc as number) || 0.15
+      const uiPerc = (input.utile_impresa_perc as number) || 0.10
+      const ivaPerc = (input.iva_perc as number) || 0.10
+      const oggi = new Date().toISOString().slice(0, 10)
+      const numero = `PREV-${new Date().getFullYear()}-${Math.floor(Math.random() * 9000) + 1000}`
+
+      // ── Cerca TUTTE le voci nel prezziario in batch (query dirette, no Claude) ──
+      const vociConPrezzi: Array<{
+        descrizione: string; quantita: number; um: string;
+        prezzo_mercato: number; prezzo_prezziario: number | null;
+        codice_prezziario: string | null; desc_prezziario: string | null;
+        importo_mercato: number; importo_prezziario: number | null;
+      }> = []
+
+      for (const lav of lavorazioni) {
+        const desc = lav.descrizione as string
+        const qty = lav.quantita as number
+        const um = lav.um as string
+        const prezzoMercato = (lav.prezzo_mercato as number) || 0
+
+        // Cerca nel prezziario con ILIKE
+        let prezziarioMatch: { codice_voce: string; descrizione: string; prezzo: number } | null = null
+        const words = desc.split(/\s+/).filter((w: string) => w.length > 3)
+
+        // Prova prima con la descrizione completa
+        const { data: d1 } = await supabase.from('prezziario')
+          .select('codice_voce, descrizione, prezzo')
+          .eq('regione', regione)
+          .ilike('descrizione', `%${desc}%`)
+          .limit(1)
+        if (d1?.length) prezziarioMatch = d1[0]
+
+        // Se non trova, prova parole singole
+        if (!prezziarioMatch && words.length > 0) {
+          for (const word of words.slice(0, 3)) {
+            const { data: d2 } = await supabase.from('prezziario')
+              .select('codice_voce, descrizione, prezzo')
+              .eq('regione', regione)
+              .ilike('descrizione', `%${word}%`)
+              .limit(1)
+            if (d2?.length) { prezziarioMatch = d2[0]; break }
+          }
+        }
+
+        const importoMercato = Math.round(qty * prezzoMercato * 100) / 100
+        const importoPrezziario = prezziarioMatch ? Math.round(qty * Number(prezziarioMatch.prezzo) * 100) / 100 : null
+
+        vociConPrezzi.push({
+          descrizione: desc, quantita: qty, um,
+          prezzo_mercato: prezzoMercato,
+          prezzo_prezziario: prezziarioMatch ? Number(prezziarioMatch.prezzo) : null,
+          codice_prezziario: prezziarioMatch?.codice_voce || null,
+          desc_prezziario: prezziarioMatch?.descrizione?.slice(0, 100) || null,
+          importo_mercato: importoMercato,
+          importo_prezziario: importoPrezziario,
+        })
+      }
+
+      // ── Calcoli ──
+      const subtMercato = vociConPrezzi.reduce((s, v) => s + v.importo_mercato, 0)
+      const subtPrezziario = vociConPrezzi.reduce((s, v) => s + (v.importo_prezziario || 0), 0)
+      const sgMercato = Math.round(subtMercato * sgPerc * 100) / 100
+      const uiMercato = Math.round(subtMercato * uiPerc * 100) / 100
+      const impMercato = subtMercato + sgMercato + uiMercato
+      const ivaMercato = Math.round(impMercato * ivaPerc * 100) / 100
+      const totMercato = Math.round((impMercato + ivaMercato) * 100) / 100
+
+      const fmt = (n: number) => n.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+      // ── PREVENTIVO HTML ──
+      const prevVociHtml = vociConPrezzi.map((v, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td>${v.descrizione}</td>
+          <td class="center">${v.um}</td>
+          <td class="right">${v.quantita}</td>
+          <td class="right">€ ${fmt(v.prezzo_mercato)}</td>
+          <td class="right"><strong>€ ${fmt(v.importo_mercato)}</strong></td>
+        </tr>`).join('')
+
+      const prevHtml = `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>
+        *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
+        .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
+        .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
+        h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
+        table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
+        th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
+        tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
+        .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
+        .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
+        .info-box{background:#f8f9fa;padding:10px;border-radius:6px;border-left:3px solid #1e3a5f}
+        .info-box strong{display:block;font-size:10px;color:#666;margin-bottom:2px}
+      </style></head><body>
+        <div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>
+        <h2>PREVENTIVO ESTIMATIVO N. ${numero}</h2>
+        <div class="info-grid">
+          <div class="info-box"><strong>Committente</strong>${committente}</div>
+          <div class="info-box"><strong>Cantiere</strong>${indirizzo || comune}</div>
+          <div class="info-box"><strong>Comune</strong>${comune}</div>
+          <div class="info-box"><strong>Data</strong>${oggi}</div>
+        </div>
+        <p style="margin:10px 0"><strong>Oggetto:</strong> ${descrizione}</p>
+        <table><thead><tr><th>N.</th><th>Lavorazione</th><th>U.M.</th><th>Q.tà</th><th>P.U.</th><th>Importo</th></tr></thead>
+        <tbody>${prevVociHtml}
+          <tr class="total-row"><td colspan="5">Subtotale lavori</td><td class="right">€ ${fmt(subtMercato)}</td></tr>
+          <tr><td colspan="5">Spese generali (${(sgPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(sgMercato)}</td></tr>
+          <tr><td colspan="5">Utile impresa (${(uiPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(uiMercato)}</td></tr>
+          <tr class="total-row"><td colspan="5">Imponibile</td><td class="right">€ ${fmt(impMercato)}</td></tr>
+          <tr><td colspan="5">IVA (${(ivaPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(ivaMercato)}</td></tr>
+          <tr class="total-row" style="font-size:14px"><td colspan="5">TOTALE COMPLESSIVO</td><td class="right">€ ${fmt(totMercato)}</td></tr>
+        </tbody></table>
+        <div class="footer">Restruktura S.r.l. — Validità offerta: 60 giorni — Condizioni: 30% firma, 40% SAL, 30% collaudo</div>
+      </body></html>`
+
+      // ── CME HTML ──
+      const cmeVociHtml = vociConPrezzi.map((v, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td>${v.codice_prezziario || '—'}</td>
+          <td>${v.desc_prezziario || v.descrizione}</td>
+          <td class="center">${v.um}</td>
+          <td class="right">${v.quantita}</td>
+          <td class="right">${v.prezzo_prezziario !== null ? '€ ' + fmt(v.prezzo_prezziario) : '—'}</td>
+          <td class="right">${v.importo_prezziario !== null ? '€ ' + fmt(v.importo_prezziario) : '—'}</td>
+        </tr>`).join('')
+
+      const cmeHtml = `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>
+        *{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
+        .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
+        .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
+        h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
+        table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
+        th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
+        tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
+        .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
+        .alert{background:#fff3cd;border:1px solid #ffc107;padding:8px;border-radius:4px;margin:10px 0;font-size:11px}
+      </style></head><body>
+        <div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>
+        <h2>COMPUTO METRICO ESTIMATIVO — Prezziario ${regione.toUpperCase()} 2025</h2>
+        <p><strong>Committente:</strong> ${committente} | <strong>Comune:</strong> ${comune} | <strong>Data:</strong> ${oggi}</p>
+        <p style="margin:5px 0"><strong>Oggetto:</strong> ${descrizione}</p>
+        <table><thead><tr><th>N.</th><th>Codice</th><th>Descrizione (da prezziario)</th><th>U.M.</th><th>Q.tà</th><th>P.U. Prezziario</th><th>Importo</th></tr></thead>
+        <tbody>${cmeVociHtml}
+          <tr class="total-row"><td colspan="6">TOTALE CME (prezzi prezziario)</td><td class="right">€ ${fmt(subtPrezziario)}</td></tr>
+        </tbody></table>
+        <div class="alert">⚠️ Prezzi dal Prezziario Regionale ${regione.toUpperCase()} 2025 (DGR 208/2025). Le voci senza codice non sono state trovate nel prezziario.</div>
+        <div class="footer">Restruktura S.r.l. — Documento tecnico ad uso interno</div>
+      </body></html>`
+
+      // ── Confronto ──
+      const diff = subtMercato - subtPrezziario
+      const diffPerc = subtPrezziario > 0 ? ((diff / subtPrezziario) * 100).toFixed(1) : '—'
+
+      return `PREVENTIVO E CME GENERATI CON SUCCESSO.
+
+PREVENTIVO (prezzi di mercato):
+~~~document
+${prevHtml}
+~~~
+
+CME (prezziario ufficiale ${regione} 2025):
+~~~document
+${cmeHtml}
+~~~
+
+CONFRONTO:
+- Totale preventivo (mercato): € ${fmt(subtMercato)}
+- Totale CME (prezziario): € ${fmt(subtPrezziario)}
+- Differenza: € ${fmt(diff)} (${diffPerc}%)
+- Voci trovate nel prezziario: ${vociConPrezzi.filter(v => v.codice_prezziario).length}/${vociConPrezzi.length}
+
+Le voci senza codice prezziario non sono state trovate — verificare con termini diversi.`
+    }
+
+    default:
+      return null
+  }
+}
+
+// ── ODS Parser ──
+async function parseOdsToRows(buffer: Buffer): Promise<string[]> {
+  const JSZip = (await import('jszip')).default
+  const zip = await JSZip.loadAsync(buffer)
+  const xml = await zip.file('content.xml')?.async('string')
+  if (!xml) return []
+
+  const rows: string[] = []
+  const rowRe = /<table:table-row[^>]*>([\s\S]*?)<\/table:table-row>/g
+  let rm
+  while ((rm = rowRe.exec(xml)) !== null) {
+    const cells: string[] = []
+    const cellRe = /<table:table-cell([^>]*)>([\s\S]*?)<\/table:table-cell>/g
+    let cm
+    while ((cm = cellRe.exec(rm[1])) !== null) {
+      const txt = (cm[2] || '').replace(/<[^>]+>/g, '')
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&').replace(/&apos;/g, "'").trim()
+      if (txt) cells.push(txt)
+    }
+    if (cells.length >= 2) rows.push(cells.join(' | '))
+  }
+  return rows
+}
+
+// ── XLSX Parser (basic) ──
+async function parseXlsxToRows(buffer: Buffer): Promise<string[]> {
+  try {
+    const JSZip = (await import('jszip')).default
+    const zip = await JSZip.loadAsync(buffer)
+    const shared = await zip.file('xl/sharedStrings.xml')?.async('string')
+    if (!shared) return []
+    const texts: string[] = []
+    const re = /<t[^>]*>([\s\S]*?)<\/t>/g
+    let m
+    while ((m = re.exec(shared)) !== null) texts.push(m[1].trim())
+    // Raggruppamento approssimativo in righe (ogni 5-10 celle)
+    const rows: string[] = []
+    for (let i = 0; i < texts.length; i += 6) {
+      rows.push(texts.slice(i, i + 6).join(' | '))
+    }
+    return rows
+  } catch {
+    return []
+  }
+}
+
+// ── Registry ──
+
+const ALL_TOOLS: ToolDefinition[] = [...STUDIO_TECNICO_TOOLS]
+const EXECUTORS = [executeStudioTecnico]
+
+export function getToolDefinitions() {
+  return [
+    { type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 },
+    ...ALL_TOOLS.map(({ name, description, input_schema }) => ({ name, description, input_schema })),
+  ]
+}
+
+export async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
+  for (const executor of EXECUTORS) {
+    const result = await executor(name, input)
+    if (result !== null) return result
+  }
+  return `Tool "${name}" non riconosciuto.`
+}
+/**
+ * lib/memory.ts — PER-001, FUN-search, DAT-003 fixes
+ * 
+ * Memoria intelligente:
+ * - Non genera embedding per messaggi brevi
+ * - Ricerca ibrida: embedding + keyword
+ * - Chunk con overlap per file grandi
+ * - Sanitizzazione prima del salvataggio
+ */
+
+import { supabase } from './supabase'
+import { generateEmbedding } from './embeddings'
+import { sanitizeForStorage } from './sanitize'
+import { logInfo, logWarn } from './sanitize'
+import { trackEmbeddingFailure, resetEmbeddingFailure } from './resilience'
+import { sendTelegramMessage } from './telegram-helpers'
+
+const TRIVIAL_PATTERN = /^(ok|sì|no|grazie|perfetto|va bene|capito|ciao|buongiorno|buonasera|arrivederci|salve)[.!\s]*$/i
+const MIN_EMBEDDING_LENGTH = 50
+
+/**
+ * Salva un messaggio. Genera embedding solo se il contenuto è sostanziale.
+ */
+export async function saveMessageWithEmbedding(
+  conversationId: string,
+  role: string,
+  content: string,
+  projectId?: string | null,
+) {
+  const sanitized = sanitizeForStorage(content)
+
+  // Sempre salva in messages (per history Telegram)
+  try {
+    await supabase.from('messages').insert({
+      conversation_id: conversationId,
+      role,
+      content: sanitized,
+    })
+  } catch (err) {
+    logWarn(`Messages insert failed: ${(err as Error).message}`)
+  }
+
+  // Skip embedding per messaggi brevi o triviali
+  if (sanitized.length < MIN_EMBEDDING_LENGTH) return
+  if (TRIVIAL_PATTERN.test(sanitized.trim())) return
+
+  // Genera embedding
+  try {
+    const embedding = await generateEmbedding(sanitized)
+    if (embedding.length === 0) return
+
+    resetEmbeddingFailure()
+
+    const { error } = await supabase.from('embeddings').insert({
+      content: sanitized,
+      conversation_id: conversationId,
+      message_role: role,
+      project_id: projectId || null,
+      embedding: JSON.stringify(embedding),
+      metadata: { type: 'message' },
+    })
+    if (error) logWarn(`Embedding insert error: ${error.message}`)
+    else logInfo(`MEMORY salvato: ${role} len=${sanitized.length}`)
+  } catch (err) {
+    trackEmbeddingFailure((msg) =>
+      sendTelegramMessage(Number(process.env.ADMIN_CHAT_ID), msg)
+    )
+    logWarn(`Embedding generation failed: ${(err as Error).message}`)
+  }
+}
+
+/**
+ * Ricerca ibrida: embedding (semantica) + keyword (ILIKE).
+ * Cattura sia significato simile che nomi propri/codici esatti.
+ */
+export async function searchMemory(query: string, limit = 15): Promise<string> {
+  const results: Array<{ content: string; message_role: string; similarity: number }> = []
+  const seenContent = new Set<string>()
+
+  // 1. Ricerca semantica via embedding
+  try {
+    const embedding = await generateEmbedding(query)
+    if (embedding.length > 0) {
+      const { data } = await supabase.rpc('search_memory', {
+        query_embedding: JSON.stringify(embedding),
+        match_threshold: 0.55,
+        match_count: Math.ceil(limit * 0.7),
+      })
+      if (data) {
+        for (const item of data) {
+          seenContent.add(item.content.slice(0, 100))
+          results.push(item)
+        }
+      }
+    }
+  } catch (err) {
+    logWarn(`Memory semantic search failed: ${(err as Error).message}`)
+  }
+
+  // 2. Ricerca keyword per nomi propri, codici, date
+  try {
+    const keywords = query.match(/\b[A-Z][a-zà-ú]{2,}\b|\b\d{4}\b|\b[A-Z]{2,}\b/g)
+    if (keywords?.length) {
+      for (const kw of keywords.slice(0, 3)) {
+        const { data } = await supabase
+          .from('embeddings')
+          .select('content, message_role')
+          .ilike('content', `%${kw}%`)
+          .limit(3)
+        if (data) {
+          for (const item of data) {
+            const key = item.content.slice(0, 100)
+            if (!seenContent.has(key)) {
+              seenContent.add(key)
+              results.push({ ...item, similarity: 0.5 })
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    logWarn(`Memory keyword search failed: ${(err as Error).message}`)
+  }
+
+  if (results.length === 0) return ''
+
+  const memories = results.slice(0, limit).map((item, idx) => {
+    const label =
+      item.message_role === 'knowledge' ? '📄 Documento'
+      : item.message_role === 'summary' ? '📋 Riepilogo'
+      : item.message_role === 'assistant' ? '🧠 Risposta precedente'
+      : item.message_role === 'user' ? '💬 Domanda precedente'
+      : '📋 Dato'
+    return `[${label} ${idx + 1}]\n${item.content}`
+  })
+
+  return `\n\n# Contesto dalla memoria\n${memories.join('\n\n---\n\n')}`
+}
+
+/**
+ * Salva conoscenza da file con chunk overlap (DAT-003 fix).
+ */
+export async function saveFileKnowledge(
+  conversationId: string,
+  content: string,
+  fileName: string,
+) {
+  const CHUNK_SIZE = 30_000
+  const OVERLAP = 500
+
+  for (let i = 0; i < content.length; i += CHUNK_SIZE - OVERLAP) {
+    const chunk = content.slice(i, i + CHUNK_SIZE)
+    // Cerca di tagliare a fine paragrafo
+    const breakPoint = chunk.lastIndexOf('\n\n', CHUNK_SIZE)
+    const cleanChunk = breakPoint > CHUNK_SIZE * 0.8
+      ? chunk.slice(0, breakPoint)
+      : chunk
+    const partLabel = content.length > CHUNK_SIZE
+      ? ` — parte ${Math.floor(i / (CHUNK_SIZE - OVERLAP)) + 1}`
+      : ''
+    const label = `[File: ${fileName}${partLabel}]`
+    await saveMessageWithEmbedding(conversationId, 'knowledge', `${label}\n\n${cleanChunk}`)
+  }
+}
+
+// Alias per compatibilità con projects/route.ts
+export async function saveProjectKnowledge(
+  projectId: string,
+  content: string,
+  fileName: string,
+) {
+  await saveFileKnowledge(projectId, content, fileName)
+}
+/**
+ * lib/auth.ts — SEC-001, SEC-002 fix
+ * 
+ * Validazione autenticazione per web app e webhook Telegram.
+ */
+
+import crypto from 'crypto'
+
+/**
+ * Valida il cookie cervellone_auth.
+ * Il valore valido è un HMAC-SHA256 di 'cervellone_v2' con AUTH_SECRET.
+ * 
+ * Per generare il cookie valido (una volta):
+ *   node -e "console.log(require('crypto').createHmac('sha256','YOUR_SECRET').update('cervellone_v2').digest('hex'))"
+ * Poi impostalo come cookie nel browser.
+ */
+export function validateAuth(cookieValue: string | undefined): boolean {
+  if (!cookieValue || !process.env.AUTH_SECRET) return false
+
+  try {
+    const expected = crypto
+      .createHmac('sha256', process.env.AUTH_SECRET)
+      .update('cervellone_v2')
+      .digest('hex')
+
+    // timingSafeEqual previene timing attacks
+    if (cookieValue.length !== expected.length) return false
+    return crypto.timingSafeEqual(
+      Buffer.from(cookieValue),
+      Buffer.from(expected)
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Valida il secret token del webhook Telegram.
+ * Telegram invia l'header X-Telegram-Bot-Api-Secret-Token ad ogni webhook call.
+ * 
+ * Setup:
+ *   POST https://api.telegram.org/bot{TOKEN}/setWebhook
+ *   Body: { "url": "https://...", "secret_token": "RANDOM_64_CHARS" }
+ *   Salva lo stesso valore in TELEGRAM_WEBHOOK_SECRET env var.
+ */
+export function validateWebhookSecret(headerValue: string | null): boolean {
+  const expected = process.env.TELEGRAM_WEBHOOK_SECRET
+  if (!expected || !headerValue) return false
+
+  if (headerValue.length !== expected.length) return false
+  return crypto.timingSafeEqual(
+    Buffer.from(headerValue),
+    Buffer.from(expected)
+  )
+}
+/**
+ * lib/rate-limiter.ts — SEC-003 fix
+ * Sliding window rate limiter. In-memory, no external deps.
+ */
+
+const buckets = new Map<string, number[]>()
+
+export function rateLimit(key: string, windowMs = 60_000, max = 5): boolean {
+  const now = Date.now()
+  const timestamps = buckets.get(key)?.filter(t => now - t < windowMs) || []
+  if (timestamps.length >= max) return false
+  timestamps.push(now)
+  buckets.set(key, timestamps)
+  return true
+}
+
+// Cleanup ogni 5 minuti per evitare memory leak
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, ts] of buckets) {
+    const valid = ts.filter(t => now - t < 120_000)
+    if (valid.length === 0) buckets.delete(key)
+    else buckets.set(key, valid)
+  }
+}, 300_000)
+/**
+ * lib/sanitize.ts — SEC-004 fix
+ * Rimuove dati sensibili prima del salvataggio in database.
+ */
+
+const SENSITIVE_PATTERNS = [
+  /sk-[a-zA-Z0-9_-]{20,}/g,              // OpenAI/Anthropic API keys
+  /sk-proj-[a-zA-Z0-9_-]{20,}/g,         // Project-scoped keys
+  /ghp_[a-zA-Z0-9]{36,}/g,               // GitHub tokens
+  /glpat-[a-zA-Z0-9_-]{20,}/g,           // GitLab tokens
+  /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, // Credit card numbers
+  /(?:password|pwd|pass|secret|token)\s*[:=]\s*\S+/gi,
+]
+
+export function sanitizeForStorage(text: string): string {
+  let sanitized = text
+  for (const pattern of SENSITIVE_PATTERNS) {
+    sanitized = sanitized.replace(pattern, '[REDACTED]')
+  }
+  return sanitized
+}
+
+/**
+ * lib/logger.ts — SEC-005 fix
+ * Safe logging: mai loggare contenuto messaggi utente in produzione.
+ */
+
+const IS_PROD = process.env.NODE_ENV === 'production'
+
+export function logInfo(msg: string) {
+  if (!IS_PROD) console.log(msg)
+}
+
+export function logWarn(msg: string) {
+  console.warn(msg)
+}
+
+export function logError(msg: string, err?: unknown) {
+  console.error(msg, err instanceof Error ? err.message : '')
+}
+/**
+ * lib/resilience.ts — REL-001, REL-002, REL-003 fix
+ * Fault tolerance per Supabase, retry per Anthropic, health tracking.
+ */
+
+import { supabase } from './supabase'
+import { logWarn } from './sanitize'
+
+// ── REL-001: Safe Supabase wrapper ──
+
+export async function safeSupabase<T>(
+  operation: () => PromiseLike<{ data: T | null; error: any }>,
+  fallback: T | null = null
+): Promise<T | null> {
+  try {
+    const { data, error } = await operation()
+    if (error) {
+      logWarn(`Supabase error (non-fatal): ${error.message}`)
+      return fallback
+    }
+    return data
+  } catch (err) {
+    logWarn(`Supabase unreachable (non-fatal): ${(err as Error).message}`)
+    return fallback
+  }
+}
+
+// ── REL-003: Retry con exponential backoff ──
+
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  baseDelayMs = 1000
+): Promise<T> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (err: any) {
+      const status = err?.status || err?.error?.status
+      const isRetryable = [429, 503, 529].includes(status)
+      if (!isRetryable || attempt === maxRetries) throw err
+      const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 500
+      logWarn(`API ${status}, retry ${attempt + 1}/${maxRetries} in ${Math.round(delay)}ms`)
+      await new Promise(r => setTimeout(r, delay))
+    }
+  }
+  throw new Error('Unreachable')
+}
+
+// ── REL-002: Health tracking per embedding service ──
+
+let embeddingFailCount = 0
+let lastAlertSent = 0
+
+export function trackEmbeddingFailure(sendAlert: (msg: string) => Promise<void>) {
+  embeddingFailCount++
+  const now = Date.now()
+  if (embeddingFailCount >= 3 && now - lastAlertSent > 3600_000) {
+    lastAlertSent = now
+    sendAlert('🚨 Embedding service fallito 3+ volte. RAG degradato. Verificare OpenAI API key.').catch(() => {})
+  }
+}
+
+export function resetEmbeddingFailure() {
+  embeddingFailCount = 0
+}
+
+// ── MNT-002: Health check data ──
+
+export async function getHealthStatus(): Promise<Record<string, string>> {
+  const checks: Record<string, string> = {
+    status: 'ok',
+    version: 'v2.0',
+    timestamp: new Date().toISOString(),
+  }
+
+  try {
+    const { count } = await supabase
+      .from('prezziario')
+      .select('*', { count: 'exact', head: true })
+    checks.supabase = 'ok'
+    checks.prezziario_count = String(count || 0)
+  } catch {
+    checks.supabase = 'error'
+    checks.status = 'degraded'
+  }
+
+  checks.anthropic_key = process.env.ANTHROPIC_API_KEY ? 'configured' : 'MISSING'
+  checks.openai_key = process.env.OPENAI_API_KEY ? 'configured' : 'MISSING'
+  checks.auth_secret = process.env.AUTH_SECRET ? 'configured' : 'MISSING'
+  checks.webhook_secret = process.env.TELEGRAM_WEBHOOK_SECRET ? 'configured' : 'MISSING'
+
+  if (checks.anthropic_key === 'MISSING') checks.status = 'critical'
+
+  return checks
+}
+/**
+ * lib/telegram-helpers.ts — Funzioni helper per Telegram
+ * Estratte dalla route per riuso in altri moduli.
+ */
+
+const TELEGRAM_API = 'https://api.telegram.org/bot'
+
+export async function sendTelegramMessage(chatId: number, text: string) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return
+  const MAX_LEN = 4000
+  const chunks: string[] = []
+  if (text.length <= MAX_LEN) {
+    chunks.push(text)
+  } else {
+    let remaining = text
+    while (remaining.length > 0) {
+      if (remaining.length <= MAX_LEN) { chunks.push(remaining); break }
+      let cutAt = remaining.lastIndexOf('\n\n', MAX_LEN)
+      if (cutAt < 500) cutAt = remaining.lastIndexOf('\n', MAX_LEN)
+      if (cutAt < 500) cutAt = MAX_LEN
+      chunks.push(remaining.slice(0, cutAt))
+      remaining = remaining.slice(cutAt).trimStart()
+    }
+  }
+  for (const chunk of chunks) {
+    await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: chunk, parse_mode: 'Markdown' }),
+    }).catch(async () => {
+      // Fallback senza parse_mode se Markdown fallisce (caratteri speciali)
+      await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text: chunk }),
+      }).catch(() => {})
+    })
+  }
+}
+
+export async function sendTyping(chatId: number) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return
+  await fetch(`${TELEGRAM_API}${token}/sendChatAction`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
+  }).catch(() => {})
+}
+
+export async function downloadTelegramFile(fileId: string): Promise<{ buffer: ArrayBuffer; fileName: string; mimeType: string } | null> {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return null
+  const fileRes = await fetch(`${TELEGRAM_API}${token}/getFile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId }),
+  })
+  const fileData = await fileRes.json()
+  const filePath = fileData.result?.file_path
+  if (!filePath) return null
+  const fileName = filePath.split('/').pop() || 'file'
+  const ext = fileName.split('.').pop()?.toLowerCase() || ''
+  const mimeMap: Record<string, string> = {
+    pdf: 'application/pdf', doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    odt: 'application/vnd.oasis.opendocument.text', rtf: 'application/rtf',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ods: 'application/vnd.oasis.opendocument.spreadsheet', csv: 'text/csv',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+    webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml',
+    tiff: 'image/tiff', tif: 'image/tiff', heic: 'image/heic',
+    dwg: 'application/acad', dxf: 'application/dxf',
+    txt: 'text/plain', md: 'text/markdown', json: 'application/json',
+    xml: 'application/xml', html: 'text/html',
+    zip: 'application/zip',
+  }
+  const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
+  if (!res.ok) return null
+  return { buffer: await res.arrayBuffer(), fileName, mimeType: mimeMap[ext] || 'application/octet-stream' }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function buildContentBlocks(fileData: { buffer: ArrayBuffer; fileName: string; mimeType: string }): Promise<any[]> {
+  const { buffer, fileName, mimeType } = fileData
+  const base64 = Buffer.from(buffer).toString('base64')
+
+  if (mimeType === 'application/pdf') {
+    return [{ type: 'document', source: { type: 'base64', media_type: mimeType, data: base64 } }]
+  }
+  if (mimeType.startsWith('image/')) {
+    return [{ type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } }]
+  }
+  if (mimeType.includes('word') || mimeType === 'application/msword') {
+    try {
+      const mammoth = await import('mammoth')
+      const result = await mammoth.extractRawText({ arrayBuffer: buffer })
+      if (result.value && result.value.length > 50) {
+        return [{ type: 'text', text: `[File Word: ${fileName}]\n\n${result.value}` }]
+      }
+    } catch { /* ignore */ }
+  }
+  // ODS
+  if (fileName.endsWith('.ods')) {
+    try {
+      const JSZip = (await import('jszip')).default
+      const zip = await JSZip.loadAsync(Buffer.from(buffer))
+      const xml = await zip.file('content.xml')?.async('string')
+      if (xml) {
+        const rows: string[] = []
+        const rowRe = /<table:table-row[^>]*>([\s\S]*?)<\/table:table-row>/g
+        let rm
+        while ((rm = rowRe.exec(xml)) !== null) {
+          const cells: string[] = []
+          const cellRe = /<table:table-cell([^>]*)>([\s\S]*?)<\/table:table-cell>/g
+          let cm
+          while ((cm = cellRe.exec(rm[1])) !== null) {
+            const txt = (cm[2] || '').replace(/<[^>]+>/g, '').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&apos;/g,"'").trim()
+            if (txt) cells.push(txt)
+          }
+          if (cells.length >= 2) rows.push(cells.join(' | '))
+        }
+        const text = rows.slice(0, 3000).join('\n')
+        if (text.length > 50) {
+          return [{ type: 'text', text: `[File ODS: ${fileName} — ${rows.length} righe]\n\n${text.slice(0, 100000)}` }]
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  // CSV/TXT
+  if (fileName.endsWith('.csv') || fileName.endsWith('.txt')) {
+    const text = Buffer.from(buffer).toString('utf-8')
+    if (text.length > 50) {
+      return [{ type: 'text', text: `[File ${fileName}]\n\n${text.slice(0, 100000)}` }]
+    }
+  }
+  // Excel
+  if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
+    try {
+      const JSZip = (await import('jszip')).default
+      const zip = await JSZip.loadAsync(Buffer.from(buffer))
+      const shared = await zip.file('xl/sharedStrings.xml')?.async('string')
+      if (shared) {
+        const texts: string[] = []
+        const re = /<t[^>]*>([\s\S]*?)<\/t>/g
+        let m
+        while ((m = re.exec(shared)) !== null) texts.push(m[1].trim())
+        if (texts.length > 0) {
+          return [{ type: 'text', text: `[File Excel: ${fileName}]\n\n${texts.join(' | ').slice(0, 100000)}` }]
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  // Fallback: prova come testo
+  try {
+    const text = Buffer.from(buffer).toString('utf-8')
+    const printable = text.replace(/[^\x20-\x7E\r\n\t\xC0-\xFF]/g, '')
+    if (printable.length > text.length * 0.5 && text.length > 50) {
+      return [{ type: 'text', text: `[File: ${fileName}]\n\n${text.slice(0, 100000)}` }]
+    }
+  } catch { /* ignore */ }
+  return [{ type: 'text', text: `[File binario: ${fileName}, ${(buffer.byteLength / 1024).toFixed(0)} KB]` }]
+}
+
+export async function transcribeAudio(fileId: string): Promise<string> {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return ''
+  const fileRes = await fetch(`${TELEGRAM_API}${token}/getFile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId }),
+  })
+  const fileData = await fileRes.json()
+  const filePath = fileData.result?.file_path
+  if (!filePath) return ''
+  const audioRes = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
+  const audioBuffer = await audioRes.arrayBuffer()
+  const formData = new FormData()
+  formData.append('file', new Blob([audioBuffer], { type: 'audio/ogg' }), 'voice.ogg')
+  formData.append('model', 'whisper-1')
+  formData.append('language', 'it')
+  const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
+    body: formData,
+  })
+  if (!whisperRes.ok) return ''
+  const data = await whisperRes.json()
+  return data.text || ''
+}
+/**
+ * app/api/chat/route.ts — SEC-001, SEC-003, REL-004 fixes
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { callClaudeStream, trimMessages } from '@/lib/claude'
+import { CHAT_SYSTEM_PROMPT } from '@/lib/prompts'
+import { validateAuth } from '@/lib/auth'
+import { rateLimit } from '@/lib/rate-limiter'
+
+export const maxDuration = 300
+
+export async function POST(request: NextRequest) {
+  // SEC-001: Validate cookie content, not just existence
+  const authCookie = request.cookies.get('cervellone_auth')
+  if (!validateAuth(authCookie?.value)) {
+    return NextResponse.json({ error: 'Non autorizzato' }, { status: 401 })
+  }
+
+  // SEC-003: Rate limiting
+  const sessionId = authCookie!.value.slice(0, 16)
+  if (!rateLimit(`chat_${sessionId}`, 60_000, 10)) {
+    return new Response('Troppe richieste. Attenda un momento.', { status: 429 })
+  }
+
+  // REL-004: Safe JSON parsing
+  let body: any
+  try {
+    body = await request.json()
+  } catch {
+    return NextResponse.json({ error: 'Body JSON non valido' }, { status: 400 })
+  }
+
+  const { messages: rawMessages, conversationId } = body
+  if (!rawMessages || !Array.isArray(rawMessages)) {
+    return NextResponse.json({ error: '"messages" deve essere un array' }, { status: 400 })
+  }
+
+  const messages = filterEmptyMessages(rawMessages)
+  if (messages.length === 0) {
+    return new Response('Non ho ricevuto messaggi validi.', {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  }
+
+  if (messages[0]?.role !== 'user') {
+    messages.unshift({ role: 'user', content: '(continua la conversazione)' })
+  }
+
+  await resolveFileUrls(messages)
+  const trimmedMessages = trimMessages(messages)
+
+  const lastUserMsg = [...trimmedMessages].reverse().find(m => m.role === 'user')
+  const userQuery = extractText(lastUserMsg)
+
+  const encoder = new TextEncoder()
+  const readable = new ReadableStream({
+    async start(controller) {
+      try {
+        await callClaudeStream(
+          { messages: trimmedMessages, systemPrompt: CHAT_SYSTEM_PROMPT, userQuery, conversationId },
+          {
+            onText: (text) => controller.enqueue(encoder.encode(text)),
+            onToolStart: () => controller.enqueue(encoder.encode('\n\n🔍 *Cerco informazioni...*\n\n')),
+          },
+        )
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error('CHAT error:', msg)
+        controller.enqueue(encoder.encode(`\n\n⚠️ ${msg.slice(0, 300)}`))
+      } finally {
+        controller.close()
+      }
+    },
+  })
+
+  return new Response(readable, {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache' },
+  })
+}
+
+// ── Helpers ──
+
+function filterEmptyMessages(raw: any[]): any[] {
+  return (raw || []).filter(m => {
+    if (!m?.role || !m?.content) return false
+    if (typeof m.content === 'string') return m.content.trim().length > 0
+    if (Array.isArray(m.content)) {
+      m.content = m.content.filter((b: any) => {
+        if (!b?.type) return false
+        if (b.type === 'text') return b.text?.trim().length > 0
+        return true
+      })
+      return m.content.length > 0
+    }
+    return false
+  })
+}
+
+async function resolveFileUrls(messages: any[]) {
+  const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
+  if (!Array.isArray(lastUserMsg?.content)) return
+
+  for (let i = 0; i < lastUserMsg.content.length; i++) {
+    const block = lastUserMsg.content[i]
+    if (block.type !== 'text' || !block.text?.startsWith('[FILE_URL:')) continue
+    const match = block.text.match(/\[FILE_URL:(.*?):(.*?):(.*?)\]/)
+    if (!match) continue
+    const [, url, , mediaType] = match
+    try {
+      const res = await fetch(url)
+      if (!res.ok) continue
+      const buffer = Buffer.from(await res.arrayBuffer())
+      // PER-002: Check file size
+      if (buffer.length > 25 * 1024 * 1024) continue
+      const base64 = buffer.toString('base64')
+      if (mediaType === 'application/pdf') {
+        lastUserMsg.content[i] = { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } }
+      } else if (mediaType.startsWith('image/')) {
+        lastUserMsg.content[i] = { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } }
+      }
+    } catch { /* skip */ }
+  }
+}
+
+function extractText(msg: any): string {
+  if (!msg) return ''
+  if (typeof msg.content === 'string') return msg.content
+  if (Array.isArray(msg.content)) return msg.content.find((b: any) => b.type === 'text')?.text || ''
+  return ''
+}
+/**
+ * app/api/telegram/route.ts — All fixes integrated
+ * SEC-002: webhook secret, SEC-003: rate limit, FUN-002: video,
+ * FUN-003: sticker/location, /nuova: clears embeddings, UX-002: thinking msg
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
+import crypto from 'crypto'
+import { callClaude } from '@/lib/claude'
+import { supabase } from '@/lib/supabase'
+import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
+import { TELEGRAM_SYSTEM_PROMPT } from '@/lib/prompts'
+import { saveMessageWithEmbedding, saveFileKnowledge } from '@/lib/memory'
+import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
+import { validateWebhookSecret } from '@/lib/auth'
+import { rateLimit } from '@/lib/rate-limiter'
+import { safeSupabase } from '@/lib/resilience'
+
+export const maxDuration = 300
+
+function chatIdToUuid(chatId: number): string {
+  const hash = crypto.createHash('md5').update(`telegram_${chatId}`).digest('hex')
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`
+}
+
+function isAuthorized(chatId: number): boolean {
+  return (process.env.TELEGRAM_ALLOWED_IDS || '').split(',').map(Number).includes(chatId)
+}
+
+export async function POST(request: NextRequest) {
+  // SEC-002: Validate webhook secret
+  if (!validateWebhookSecret(request.headers.get('x-telegram-bot-api-secret-token'))) {
+    return new Response('Unauthorized', { status: 401 })
+  }
+
+  let errorChatId: number | null = null
+  let typingInterval: NodeJS.Timeout | null = null
+
+  try {
+    const body = await request.json()
+    const message = body.message
+    if (!message) return NextResponse.json({ ok: true })
+
+    const chatId: number = message.chat.id
+    errorChatId = chatId
+
+    // SEC-003: Rate limiting
+    if (!rateLimit(`tg_${chatId}`, 60_000, 5)) {
+      await sendTelegramMessage(chatId, '⚠️ Troppi messaggi. Attenda un momento.')
+      return NextResponse.json({ ok: true })
+    }
+
+    // REL-001: Dedup con fallback se Supabase è down
+    const msgId = message.message_id
+    if (msgId) {
+      const existing = await safeSupabase(
+        () => supabase.from('telegram_dedup').select('message_id')
+          .eq('chat_id', chatId).eq('message_id', msgId).limit(1),
+        []
+      )
+      if (existing && (existing as any[]).length > 0) return NextResponse.json({ ok: true })
+      await safeSupabase(() => supabase.from('telegram_dedup').insert({ chat_id: chatId, message_id: msgId }))
+    }
+
+    let userText = message.text || message.caption || ''
+    let fileBlocks: any[] = []
+    let fileDescription = ''
+
+    // ── Voice ──
+    if (!userText && (message.voice || message.audio)) {
+      const fileId = message.voice?.file_id || message.audio?.file_id
+      if (fileId) {
+        await sendTyping(chatId)
+        userText = await transcribeAudio(fileId)
+        if (!userText) {
+          await sendTelegramMessage(chatId, 'Non sono riuscito a trascrivere il vocale.')
+          return NextResponse.json({ ok: true })
+        }
+      }
+    }
+
+    // ── Document ──
+    if (message.document) {
+      await sendTyping(chatId)
+      if ((message.document.file_size || 0) > 20 * 1024 * 1024) {
+        await sendTelegramMessage(chatId, '⚠️ File troppo pesante (max 20 MB).')
+        return NextResponse.json({ ok: true })
+      }
+      const ext = (message.document.file_name || '').split('.').pop()?.toLowerCase()
+      if (!ext) {
+        await sendTelegramMessage(chatId, '⚠️ File senza estensione.')
+        return NextResponse.json({ ok: true })
+      }
+      const fileData = await downloadTelegramFile(message.document.file_id)
+      if (!fileData) {
+        await sendTelegramMessage(chatId, '⚠️ Non riesco a scaricare il file.')
+        return NextResponse.json({ ok: true })
+      }
+      fileBlocks = await buildContentBlocks(fileData)
+      fileDescription = message.document.file_name || fileData.fileName
+    }
+
+    // ── Photo ──
+    if (message.photo?.length > 0) {
+      await sendTyping(chatId)
+      const largest = message.photo[message.photo.length - 1]
+      const fileData = await downloadTelegramFile(largest.file_id)
+      if (fileData) {
+        fileBlocks = await buildContentBlocks(fileData)
+        fileDescription = fileData.fileName
+      }
+    }
+
+    // ── FUN-002: Video (extract thumbnail) ──
+    if (message.video && fileBlocks.length === 0) {
+      await sendTyping(chatId)
+      const thumb = message.video.thumb || message.video.thumbnail
+      if (thumb) {
+        const fileData = await downloadTelegramFile(thumb.file_id)
+        if (fileData) {
+          fileBlocks = await buildContentBlocks({ ...fileData, mimeType: 'image/jpeg', fileName: 'video_frame.jpg' })
+          fileDescription = 'frame dal video'
+        }
+      }
+      if (!userText && fileBlocks.length === 0) {
+        userText = 'Ho ricevuto un video ma non riesco a estrarre il frame. Può rimandarlo come foto?'
+      }
+    }
+
+    // ── FUN-003: Sticker, Location, Contact ──
+    if (!userText && fileBlocks.length === 0) {
+      if (message.sticker || message.animation) {
+        userText = "(L'utente ha inviato uno sticker/GIF)"
+      } else if (message.location) {
+        userText = `L'utente ha condiviso una posizione GPS: lat ${message.location.latitude}, lon ${message.location.longitude}`
+      } else if (message.contact) {
+        userText = `L'utente ha condiviso un contatto: ${message.contact.first_name} ${message.contact.phone_number || ''}`
+      } else {
+        return NextResponse.json({ ok: true })
+      }
+    }
+
+    if (!userText && fileBlocks.length > 0) userText = `Analizza questo file: ${fileDescription}`
+
+    if (!isAuthorized(chatId)) {
+      await sendTelegramMessage(chatId, '⛔ Non autorizzato.')
+      return NextResponse.json({ ok: true })
+    }
+
+    // ── Comandi ──
+    if (userText === '/start') {
+      await sendTelegramMessage(chatId, '🧠 *Cervellone attivo.* Come posso aiutarLa?')
+      return NextResponse.json({ ok: true })
+    }
+    if (userText === '/id') {
+      await sendTelegramMessage(chatId, `Chat ID: ${chatId}`)
+      return NextResponse.json({ ok: true })
+    }
+    if (userText === '/nuova') {
+      const convId = chatIdToUuid(chatId)
+      // Cancella solo i messaggi della chat, NON la memoria (embeddings)
+      // La memoria deve persistere SEMPRE — contiene documenti, analisi, regole
+      await safeSupabase(() => supabase.from('messages').delete().eq('conversation_id', convId))
+      await sendTelegramMessage(chatId, 'Conversazione azzerata. La memoria permanente è intatta.')
+      return NextResponse.json({ ok: true })
+    }
+
+    // ── Typing + thinking timeout ──
+    typingInterval = setInterval(() => sendTyping(chatId), 4000)
+    await sendTyping(chatId)
+
+    // UX-002: Messaggio dopo 12 secondi di attesa
+    const thinkingTimeout = setTimeout(async () => {
+      await sendTelegramMessage(chatId, '🧠 Sto elaborando una risposta dettagliata...')
+    }, 12_000)
+
+    // ── Conversazione ──
+    const conversationId = chatIdToUuid(chatId)
+    const existingConv = await safeSupabase(
+      () => supabase.from('conversations').select('id').eq('id', conversationId).single()
+    )
+    if (!existingConv) {
+      await safeSupabase(() => supabase.from('conversations').insert({ id: conversationId, title: '💬 Telegram' }))
+    }
+
+    // ── Storia ──
+    const recentMessages = await safeSupabase(
+      () => supabase.from('messages').select('role, content')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: true }).limit(20),
+      []
+    )
+
+    const history: any[] = ((recentMessages as any[]) || [])
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => ({ role: m.role, content: m.content }))
+
+    if (fileBlocks.length > 0) {
+      history.push({ role: 'user', content: [...fileBlocks, { type: 'text', text: userText }] })
+    } else {
+      history.push({ role: 'user', content: userText })
+    }
+    if (history.length > 0 && history[0].role !== 'user') history.shift()
+
+    // ── Claude (ASINCRONO) — risponde subito, elabora in background ──
+    const bgProcess = async () => {
+      try {
+        const fullResponse = await callClaude({
+          messages: history,
+          systemPrompt: TELEGRAM_SYSTEM_PROMPT,
+          userQuery: userText,
+          conversationId,
+        })
+
+        clearTimeout(thinkingTimeout)
+        if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
+
+        // Salva in memoria
+        if (fileBlocks.length > 0 && fullResponse.length > 200) {
+          const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
+          saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
+        }
+
+        // Detect tabelle
+        const hasTable = /\|[\s-]+\|/.test(fullResponse) && fullResponse.length > 3500
+
+        // Manda risposta
+        const responseBlocks = parseDocumentBlocks(fullResponse)
+        let sentSomething = false
+
+        for (const block of responseBlocks) {
+          if (block.type === 'document' || (hasTable && block.content.length > 3500)) {
+            const content = block.type === 'document' ? block.content : `<pre>${block.content}</pre>`
+            const titleMatch = content.match(/<h1[^>]*>(.*?)<\/h1>/i)
+            const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
+
+            const savedDoc = await safeSupabase(
+              () => supabase.from('documents')
+                .insert({ name: title, content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
+                .select('id').single()
+            )
+            const docUrl = (savedDoc as any)?.id
+              ? `https://cervellone-5poc.vercel.app/doc/${(savedDoc as any).id}`
+              : 'https://cervellone-5poc.vercel.app'
+
+            await sendTelegramMessage(chatId, `📄 *${title}*\n\n👉 ${docUrl}`)
+            sentSomething = true
+          } else if (block.content.trim()) {
+            await sendTelegramMessage(chatId, block.content)
+            sentSomething = true
+          }
+        }
+
+        if (!sentSomething) {
+          await sendTelegramMessage(chatId, fullResponse || 'Non sono riuscito a elaborare una risposta.')
+        }
+      } catch (err) {
+        console.error('TELEGRAM BG error:', err)
+        const msg = err instanceof Error ? err.message : String(err)
+        let userMsg = `⚠️ ${msg.slice(0, 300)}`
+        if (msg.includes('credit') || msg.includes('billing')) userMsg = '⚠️ Crediti API esauriti.'
+        if (msg.includes('too large') || msg.includes('payload')) userMsg = '⚠️ File troppo pesante.'
+        await sendTelegramMessage(chatId, userMsg).catch(() => {})
+      } finally {
+        if (typingInterval) clearInterval(typingInterval)
+      }
+    }
+
+    // Lancia in background — NON aspettare
+    waitUntil(bgProcess())
+
+    // Rispondi SUBITO al webhook — niente più timeout
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    console.error('TELEGRAM error:', err)
+    if (errorChatId) {
+      const msg = err instanceof Error ? err.message : String(err)
+      await sendTelegramMessage(errorChatId, `⚠️ ${msg.slice(0, 300)}`).catch(() => {})
+    }
+    return NextResponse.json({ ok: true })
+  }
+}
+
+export async function GET() {
+  return NextResponse.json({ status: 'Cervellone Telegram webhook attivo' })
+}
+/**
+ * app/api/health/route.ts — MNT-002 fix
+ */
+import { NextResponse } from 'next/server'
+import { getHealthStatus } from '@/lib/resilience'
+
+export async function GET() {
+  const status = await getHealthStatus()
+  const httpStatus = status.status === 'critical' ? 503 : 200
+  return NextResponse.json(status, { status: httpStatus })
+}
+import { NextRequest, NextResponse } from 'next/server'
+import crypto from 'crypto'
+
+function getAuthToken(): string {
+  const password = process.env.APP_PASSWORD || ''
+  // V2: usa AUTH_SECRET per generare il token — compatibile con validateAuth
+  const secret = process.env.AUTH_SECRET || 'cervellone'
+  return crypto.createHmac('sha256', secret).update('cervellone_v2').digest('hex')
+}
+
+export async function POST(request: NextRequest) {
+  const { password } = await request.json()
+
+  if (password !== process.env.APP_PASSWORD) {
+    return NextResponse.json({ error: 'Password errata' }, { status: 401 })
+  }
+
+  const token = getAuthToken()
+  const response = NextResponse.json({ ok: true })
+  response.cookies.set('cervellone_auth', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 60 * 60 * 24 * 30, // 30 giorni
+  })
+
+  return response
+}
+
+export async function DELETE() {
+  const response = NextResponse.json({ ok: true })
+  response.cookies.delete('cervellone_auth')
+  return response
+}
