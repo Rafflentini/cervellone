@@ -9,6 +9,7 @@ import type { AccountKey } from '@/v19/tools/email/config'
 
 // Modello economico: l'estrazione strutturata non richiede Opus.
 const EXTRACT_MODEL = 'claude-haiku-4-5'
+const client = new Anthropic()
 
 interface ToolDefinition {
   name: string
@@ -35,7 +36,7 @@ Analizza il documento allegato ed estrai SOLO questi campi. Rispondi con UN SOLO
   "confidenza": numero tra 0 e 1 su quanto sei sicuro dell'estrazione,
   "note": breve nota utile oppure null
 }
-Regole: non inventare date. Se non leggi una scadenza chiara, data_scadenza=null. Le date in formato GG/MM/AAAA convertile in AAAA-MM-GG.`
+Regole: non inventare date. Se non leggi una scadenza chiara, data_scadenza=null. Le date in formato GG/MM/AAAA convertile in YYYY-MM-DD (anno-mese-giorno).`
 
 function buildBlock(base64: string, mimeType: string): Anthropic.ContentBlockParam | null {
   if (mimeType === 'application/pdf') {
@@ -59,13 +60,14 @@ function parseJsonLoose(text: string): ScadenzaEstratta | null {
   if (start === -1 || end === -1) return null
   try {
     const o = JSON.parse(t.slice(start, end + 1)) as Record<string, unknown>
+    const confidence = Number(o.confidenza)
     return {
-      tipo_documento: (o.tipo_documento as string) ?? null,
-      soggetto: (o.soggetto as string) ?? null,
-      data_scadenza: (o.data_scadenza as string) ?? null,
-      emittente: (o.emittente as string) ?? null,
-      confidenza: typeof o.confidenza === 'number' ? o.confidenza : 0,
-      note: (o.note as string) ?? null,
+      tipo_documento: typeof o.tipo_documento === 'string' ? o.tipo_documento : null,
+      soggetto: typeof o.soggetto === 'string' ? o.soggetto : null,
+      data_scadenza: typeof o.data_scadenza === 'string' ? o.data_scadenza : null,
+      emittente: typeof o.emittente === 'string' ? o.emittente : null,
+      confidenza: Number.isNaN(confidence) ? 0 : Math.max(0, Math.min(1, confidence)),
+      note: typeof o.note === 'string' ? o.note : null,
     }
   } catch {
     return null
@@ -83,12 +85,14 @@ export async function estraiScadenzaDaAllegato(
   const block = buildBlock(base64, mimeType)
   if (!block) return { ok: false, error: `Tipo allegato non supportato: ${mimeType} (${filename})` }
   try {
-    const client = new Anthropic()
     const resp = await client.messages.create({
       model: EXTRACT_MODEL,
-      max_tokens: 500,
+      max_tokens: 900,
       messages: [{ role: 'user', content: [block, { type: 'text', text: EXTRACT_PROMPT }] }],
     })
+    if (resp.stop_reason === 'max_tokens') {
+      return { ok: false, error: 'risposta troncata (documento troppo lungo)' }
+    }
     const textBlock = resp.content.find((b): b is Anthropic.TextBlock => b.type === 'text')
     const parsed = textBlock ? parseJsonLoose(textBlock.text) : null
     if (!parsed) return { ok: false, error: 'Estrazione non riuscita (risposta non in JSON leggibile)' }
@@ -128,8 +132,11 @@ export async function executeLeggiAllegatoTool(
     const uid = Number(input.uid)
     const indice = input.indice != null ? Number(input.indice) : 0
     const folder = input.folder ? String(input.folder) : undefined
-    if (!account || !Number.isFinite(uid)) {
-      return JSON.stringify({ ok: false, error: 'account e uid obbligatori' })
+    if (account !== 'info' && account !== 'raffaele') {
+      return JSON.stringify({ ok: false, error: 'account deve essere info o raffaele' })
+    }
+    if (!Number.isInteger(uid) || uid < 1) {
+      return JSON.stringify({ ok: false, error: 'uid deve essere un intero >= 1' })
     }
     const mail = await getEmailBody({ account, uid, folder, include_attachments: true })
     const atts = mail.attachments || []
