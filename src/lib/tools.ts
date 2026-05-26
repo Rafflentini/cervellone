@@ -22,6 +22,7 @@ import { FIC_READ_TOOLS, executeFicTool } from './fatture-in-cloud'
 import { MOVIMENTI_TOOLS, executeMovimentiTool } from './movimenti-extract'
 import { RICONCILIAZIONE_TOOLS, executeRiconciliazioneTool } from './riconciliazione-tools'
 import { PRIMA_NOTA_TOOLS, executePrimaNotaTool } from './prima-nota-tools'
+import { FIC_WRITE_TOOLS, executeFicWriteTool } from './fic-write-tools'
 import { MAIL_TOOL_DEFINITIONS, MAIL_TOOL_EXECUTORS } from '@/v19/tools/email'
 import { promoteModel } from './circuit-breaker'
 import {
@@ -1987,12 +1988,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...MOVIMENTI_TOOLS, // 2026-05-26 Contabilità B: ingest estratti conto
   ...RICONCILIAZIONE_TOOLS, // 2026-05-26 Contabilita C: riconciliazione incassi/fatture
   ...PRIMA_NOTA_TOOLS, // 2026-05-26 Contabilita D: Prima Nota Google Sheet
+  ...FIC_WRITE_TOOLS, // 2026-05-26 Contabilita F: compilazione bozze FIC con doppia conferma
   ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool (account restruktura.drive@gmail.com via Google API)
   ...MEMORIA_TOOLS, // 2026-05-07 Memoria persistente sub-progetto B: 4 tool
   ...PDF_TOOLS, // 2026-05-07 Pipeline PDF: genera_pdf
   ...(MAIL_TOOL_DEFINITIONS as unknown as ToolDefinition[]), // 2026-05-24 V19 Mail TopHost IMAP/SMTP: 5 tool (info@/raffaele.lentini@)
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeGmailWrapper, executeMemoriaWrapper, executeMailWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeMemoriaWrapper, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [

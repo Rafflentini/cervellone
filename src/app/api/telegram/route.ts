@@ -18,6 +18,7 @@ import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegram
 import { validateWebhookSecret } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { safeSupabase } from '@/lib/resilience'
+import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
 // Trigger.dev imports temporaneamente non usati (Task #10 backlog)
 // import { tasks } from '@trigger.dev/sdk/v3'
 // import type { cervelloneLongTask } from '../../../../trigger/cervellone-long-task'
@@ -376,6 +377,21 @@ export async function POST(request: NextRequest) {
     // creare hallucination ("Trovato!" senza tool eseguito) e streaming sovrapposti.
     // Stale lock cleanup a 5 min = Vercel function max duration.
     // Se Supabase down → fallback degradato (lockClaimed=true), lascia passare.
+    // FIC bozze documenti - doppia conferma (parita con web)
+    const mFicOk2 = userText.match(/^\/fic_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    const mFicOk = userText.match(/^\/fic_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    const mFicNo = userText.match(/^\/fic_no_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    if (mFicOk2 || mFicOk || mFicNo) {
+      const uuid = (mFicOk2 ?? mFicOk ?? mFicNo)![1]
+      const message = mFicOk2
+        ? await confirmFicStep2(uuid)
+        : mFicOk
+          ? await confirmFicStep1(uuid)
+          : await cancelFic(uuid)
+      await sendTelegramMessage(chatId, message)
+      return NextResponse.json({ ok: true })
+    }
+
     const STALE_LOCK_MS = 5 * 60 * 1000
     const requestId = `${chatId}-${msgId || Date.now()}-${Date.now()}`
     let lockClaimed = true

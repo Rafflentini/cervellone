@@ -9,6 +9,7 @@ import { validateAuth } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { supabase } from '@/lib/supabase'
+import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
 
 export const maxDuration = 300
 
@@ -154,6 +155,28 @@ export async function POST(request: NextRequest) {
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(r.message))
+        controller.close()
+      },
+    })
+    return new Response(stream, {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  }
+
+  // FIC bozze documenti - doppia conferma (parita con Telegram)
+  const mFicOk2 = userQuery.match(/^\/fic_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  const mFicOk = userQuery.match(/^\/fic_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  const mFicNo = userQuery.match(/^\/fic_no_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  if (mFicOk2 || mFicOk || mFicNo) {
+    const uuid = (mFicOk2 ?? mFicOk ?? mFicNo)![1]
+    const message = mFicOk2
+      ? await confirmFicStep2(uuid)
+      : mFicOk
+        ? await confirmFicStep1(uuid)
+        : await cancelFic(uuid)
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(message))
         controller.close()
       },
     })
