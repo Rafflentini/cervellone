@@ -47,6 +47,7 @@ function statusMessage(stato: string, driveUrl: string | null): ActionResult {
     return { ok: true, message: driveUrl ? `Proposta gia confermata: ${driveUrl}` : 'Proposta gia confermata.' }
   }
   if (stato === 'ignorata') return { ok: true, message: 'Proposta gia ignorata.' }
+  if (stato === 'auto_memorizzata') return { ok: true, message: 'Proposta gia auto-memorizzata dal sistema.' }
   return { ok: false, message: `Proposta non gestibile: stato attuale "${stato}".` }
 }
 
@@ -149,13 +150,17 @@ export async function confirmProposta(id: string): Promise<ActionResult> {
 
     await ensureScadenza(proposta, categoria, driveUrl)
 
-    const { error: updateError } = await supabase
+    const { data: updatedRows, error: updateError } = await supabase
       .from('cervellone_doc_proposte')
       .update({ stato: 'confermata', drive_url: driveUrl, updated_at: new Date().toISOString() })
       .eq('id', proposta.id)
       .eq('stato', 'in_attesa')
+      .select('id')
 
     if (updateError) throw new Error(`Errore conferma proposta: ${updateError.message}`)
+    if (!updatedRows || updatedRows.length === 0) {
+      return { ok: false, message: 'Proposta gia elaborata da un altro canale.' }
+    }
 
     return {
       ok: true,
@@ -172,13 +177,17 @@ export async function ignoraProposta(id: string): Promise<ActionResult> {
     if (!proposta) return { ok: false, message: 'Proposta non trovata.' }
     if (proposta.stato !== 'in_attesa') return statusMessage(proposta.stato, proposta.drive_url)
 
-    const { error } = await supabase
+    const { data: updatedRows, error } = await supabase
       .from('cervellone_doc_proposte')
       .update({ stato: 'ignorata', updated_at: new Date().toISOString() })
       .eq('id', proposta.id)
       .eq('stato', 'in_attesa')
+      .select('id')
 
     if (error) throw new Error(`Errore aggiornamento proposta: ${error.message}`)
+    if (!updatedRows || updatedRows.length === 0) {
+      return { ok: false, message: 'Proposta gia elaborata da un altro canale.' }
+    }
     return { ok: true, message: 'Proposta ignorata.' }
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) }

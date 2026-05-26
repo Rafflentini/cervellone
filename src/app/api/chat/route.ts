@@ -95,8 +95,8 @@ export async function POST(request: NextRequest) {
     })
   }
 
-  const mConferma = userQuery.match(/^\/conferma_([0-9a-fA-F-]{36})\b/i)
-  const mIgnora = userQuery.match(/^\/ignora_([0-9a-fA-F-]{36})\b/i)
+  const mConferma = userQuery.match(/^\/conferma_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  const mIgnora = userQuery.match(/^\/ignora_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
   if (mConferma || mIgnora) {
     const uuid = (mConferma ?? mIgnora)![1]
     const mod = await import('@/lib/doc-proposte-actions')
@@ -115,9 +115,9 @@ export async function POST(request: NextRequest) {
   }
 
   // Governance accesso cartelle Drive — doppia conferma (parità con Telegram)
-  const mAccOk2 = userQuery.match(/^\/accesso_ok2_([0-9a-fA-F-]{36})\b/i)
-  const mAccOk = userQuery.match(/^\/accesso_ok_([0-9a-fA-F-]{36})\b/i)
-  const mAccNo = userQuery.match(/^\/accesso_no_([0-9a-fA-F-]{36})\b/i)
+  const mAccOk2 = userQuery.match(/^\/accesso_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  const mAccOk = userQuery.match(/^\/accesso_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  const mAccNo = userQuery.match(/^\/accesso_no_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
   if (mAccOk2 || mAccOk || mAccNo) {
     const uuid = (mAccOk2 ?? mAccOk ?? mAccNo)![1]
     const mod = await import('@/lib/drive-policy-actions')
