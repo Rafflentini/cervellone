@@ -152,6 +152,13 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   if (!ambito) return fail({ need: 'ambito' })
   if (!nome) return fail({ error: 'nome richiesto' })
 
+  // Niente foto in attesa → non creare cartelle a vuoto, segnala chiaramente.
+  const { rows: pendingRows, error: pendingError } = await fetchOpenPending(conversationId)
+  if (pendingError) return fail({ error: pendingError })
+  if (pendingRows.length === 0) {
+    return fail({ stato: 'nessuna_foto_pending', message: 'Nessuna foto in attesa di archiviazione per questa conversazione.' })
+  }
+
   const rootId = ambito === 'cantiere' ? DRIVE_FOLDERS.CANTIERI_ATTIVI : DRIVE_FOLDERS.STUDIO_ATTIVI
   const rootSubfolders = await listSubfolders(rootId)
   const matches = matchNamedFolder(rootSubfolders, nome)
@@ -185,13 +192,10 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     return fail({ error: err instanceof Error ? err.message : String(err) })
   }
 
-  const { rows, error } = await fetchOpenPending(conversationId)
-  if (error) return fail({ error })
-
   let archiviate = 0
   let errori = 0
 
-  for (const row of rows) {
+  for (const row of pendingRows) {
     const moveResult = await moveFile(row.drive_file_id, targetId)
     if (isMoveSuccess(moveResult)) {
       const { error: updateError } = await supabase
