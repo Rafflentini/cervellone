@@ -623,6 +623,7 @@ export async function getOrCreatePathFolders(baseFolderId: string, segments: str
   for (const rawSegment of segments) {
     const segment = rawSegment.trim()
     if (!segment) continue
+    if (segment === '.' || segment === '..') continue
 
     const cacheKey = `path:${parentId}:${segment}`
     if (_folderIdCache.has(cacheKey)) {
@@ -630,7 +631,7 @@ export async function getOrCreatePathFolders(baseFolderId: string, segments: str
       continue
     }
 
-    const safeName = segment.replace(/'/g, "\\'")
+    const safeName = segment.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
     const existing = await drive.files.list({
       q: `name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`,
       fields: 'files(id)',

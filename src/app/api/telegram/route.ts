@@ -166,6 +166,7 @@ export async function POST(request: NextRequest) {
             archivedDriveLink = webViewLink
             console.log(`[TG-ARCHIVE] file=${fileData.fileName} → ${archivedDriveLink}`)
           } catch (err) {
+            console.error('[TG-AUTOARCHIVE] photo archive failed:', err instanceof Error ? err.message : err)
             console.warn(`[TG-ARCHIVE] failed, continuing without archive:`, err instanceof Error ? err.message : err)
           }
         }
@@ -465,7 +466,7 @@ export async function POST(request: NextRequest) {
     // FIX multi-foto (Approccio 2): allega gli upload recenti NON ancora processati di questa chat
     // (es. 2ª foto di un album scartata dal mutex), escludendo quello del messaggio corrente.
     try {
-      const cutoffIso = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+      const cutoffIso = new Date(Date.now() - 10 * 60 * 1000).toISOString()
       const pending = await safeSupabase(
         () => supabase.from('telegram_recent_uploads')
           .select('id, telegram_file_id')
