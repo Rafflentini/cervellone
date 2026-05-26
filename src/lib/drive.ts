@@ -556,6 +556,40 @@ export async function appendSheet(spreadsheetId: string, range: string, values: 
   }
 }
 
+export async function createSpreadsheetInFolder(
+  name: string,
+  folderId: string,
+  rows: string[][],
+): Promise<{ id: string; webViewLink: string }> {
+  await assertWriteAllowed(folderId)
+  const drive = await getDrive()
+  const created = await drive.files.create({
+    requestBody: {
+      name,
+      mimeType: 'application/vnd.google-apps.spreadsheet',
+      parents: [folderId],
+    },
+    fields: 'id, webViewLink',
+    supportsAllDrives: true,
+  })
+
+  const id = created.data.id
+  const webViewLink = created.data.webViewLink
+  if (!id || !webViewLink) throw new Error(`Creazione spreadsheet non riuscita: ${name}`)
+
+  if (rows.length > 0) {
+    const sheets = await getSheets()
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: id,
+      range: 'A1',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: rows },
+    })
+  }
+
+  return { id, webViewLink }
+}
+
 // --- UPLOAD BINARIO + FOLDER HELPERS ---
 
 /** Converte un Buffer Node.js in uno stream Readable per l'API Google Drive */
