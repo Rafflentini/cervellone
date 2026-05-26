@@ -233,17 +233,34 @@ async function riconciliaAutomatico(input: Record<string, unknown>): Promise<str
     matchedFatture.add(fattura.id)
   }
 
+  const movimentiResidui = movimentiResult.movimenti.filter(row => !matchedMovimenti.has(row.id))
+  const fattureResidueList = fattureResidue(fattureResult.fatture, matchedFatture)
+
   return ok({
     abbinati_auto: abbinatiAuto,
     residui: {
-      movimenti: movimentiResult.movimenti.filter(row => !matchedMovimenti.has(row.id)).length,
-      fatture_aperte: fattureResidue(fattureResult.fatture, matchedFatture),
+      movimenti: movimentiResidui.slice(0, 50).map(row => ({
+        id: row.id,
+        data: row.data,
+        importo: row.importo,
+        descrizione: row.descrizione,
+        controparte: row.controparte,
+      })),
+      fatture_aperte: fattureResidueList.slice(0, 50).map(row => ({
+        id: row.id,
+        numero: row.numero,
+        cliente: row.cliente,
+        totale: row.totale,
+        data: row.data,
+      })),
+      movimenti_totali: movimentiResidui.length,
+      fatture_totali: fattureResidueList.length,
     },
   })
 }
 
-function fattureResidue(fatture: FatturaAperta[], matched: Set<string>): number {
-  return fatture.filter(row => !matched.has(row.id)).length
+function fattureResidue(fatture: FatturaAperta[], matched: Set<string>): FatturaAperta[] {
+  return fatture.filter(row => !matched.has(row.id))
 }
 
 async function proponiRiconciliazione(input: Record<string, unknown>): Promise<string> {
