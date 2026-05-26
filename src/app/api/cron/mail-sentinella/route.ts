@@ -249,6 +249,17 @@ async function autoMemorizePendingProposals(adminChat: number, errors: string[])
       continue
     }
 
+    const memory = await ricorda({
+      testo: autoMemoryText(proposal),
+      tag: 'scadenza:auto',
+      source: 'cron',
+    })
+    if (!memory.ok) {
+      errors.push(`Errore memoria proposta ${proposal.id}: ${memory.error ?? 'errore sconosciuto'}`)
+      console.error(`[CRON mail-sentinella] auto-memory ricorda failed for ${proposal.id}:`, memory.error)
+      continue
+    }
+
     const { error: updateError } = await supabase
       .from('cervellone_doc_proposte')
       .update({ stato: 'auto_memorizzata', updated_at: new Date().toISOString() })
@@ -257,15 +268,6 @@ async function autoMemorizePendingProposals(adminChat: number, errors: string[])
     if (updateError) {
       errors.push(`Errore stato auto_memorizzata proposta ${proposal.id}: ${updateError.message}`)
       continue
-    }
-
-    const memory = await ricorda({
-      testo: autoMemoryText(proposal),
-      tag: 'scadenza:auto',
-      source: 'cron',
-    })
-    if (!memory.ok) {
-      errors.push(`Errore memoria proposta ${proposal.id}: ${memory.error ?? 'errore sconosciuto'}`)
     }
 
     if (adminChat) {
@@ -312,12 +314,13 @@ export async function GET(req: NextRequest) {
         if (!message.has_attachments) continue
         if (extractionCount >= MAX_EXTRACTIONS) break
 
-        const subjectMatches = hasKeyword(message.subject)
+        const metadataMatches = hasKeyword(message.subject) || hasKeyword(message.from)
+        if (!metadataMatches) continue
+
         const mail = await getEmailBody({ account, uid: message.uid, folder: FOLDER, include_attachments: true })
         const attachments = (mail.attachments ?? []) as AttachmentWithContent[]
         const candidateAttachments = attachments
           .map((attachment, index) => ({ attachment, filename: attachmentName(attachment, index) }))
-          .filter(({ filename }) => subjectMatches || hasKeyword(filename))
 
         for (const { attachment, filename } of candidateAttachments) {
           if (extractionCount >= MAX_EXTRACTIONS) break
