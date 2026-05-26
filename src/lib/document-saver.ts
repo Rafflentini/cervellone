@@ -280,6 +280,11 @@ async function appendToRegistro(
   userPrompt: string,
 ): Promise<boolean> {
   // POS/SCIA/CILA → REGISTRO_CANTIERI; preventivi/perizie/relazioni → REGISTRO_PROGETTI
+  if (docType === 'altro') {
+    console.log('[DRIVE-SAVER] appendToRegistro skipped for docType=altro')
+    return false
+  }
+
   const isCantiere = ['pos', 'scia', 'cila'].includes(docType)
   const spreadsheetId = isCantiere ? SHEETS.REGISTRO_CANTIERI : SHEETS.REGISTRO_PROGETTI
   const range = 'A:H' // append finale, sheet stesso

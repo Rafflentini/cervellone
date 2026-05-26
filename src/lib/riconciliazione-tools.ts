@@ -14,6 +14,7 @@ interface MovimentoRow {
   id: string
   data: string
   importo: number
+  residuo?: number
   direzione: 'entrata' | 'uscita'
   descrizione: string | null
   controparte: string | null
@@ -27,6 +28,7 @@ interface FatturaAperta {
   numero: string | null
   cliente: string | null
   totale: number | null
+  residuo?: number
   data: string | null
 }
 
@@ -57,6 +59,11 @@ function cleanString(value: unknown): string | undefined {
   return trimmed ? trimmed : undefined
 }
 
+function cleanId(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return cleanString(value)
+}
+
 function parseNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value !== 'string') return null
@@ -76,6 +83,10 @@ function normalize(value: unknown): string {
 
 function tokens(value: unknown): string[] {
   return normalize(value).split(' ').filter(token => token.length >= 3)
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100
 }
 
 function isPaid(d: Record<string, unknown>): boolean | null {
@@ -106,19 +117,25 @@ function mapInvoice(d: Record<string, unknown>): FatturaAperta {
 function invoiceMatchesMovement(movimento: MovimentoRow, fattura: FatturaAperta): boolean {
   if (fattura.totale === null || Math.abs(Number(movimento.importo) - fattura.totale) > 0.01) return false
 
-  const movementText = normalize(`${movimento.descrizione ?? ''} ${movimento.controparte ?? ''}`)
+  const movementDescription = normalize(movimento.descrizione)
   const invoiceNumber = normalize(fattura.numero)
-  if (invoiceNumber && movementText.includes(invoiceNumber)) return true
+  if (invoiceNumber && movementDescription.includes(invoiceNumber)) return true
 
-  const customerTokens = tokens(fattura.cliente)
+  const customerTokens = tokens(fattura.cliente).filter(token => token.length >= 4)
   if (!customerTokens.length) return false
   const movementTokens = new Set(tokens(`${movimento.controparte ?? ''} ${movimento.descrizione ?? ''}`))
-  return customerTokens.some(token => token.length >= 4 && movementTokens.has(token))
+  return customerTokens.filter(token => movementTokens.has(token)).length >= 2
 }
 
 async function getOpenInvoices(): Promise<{ ok: true; fatture: FatturaAperta[] } | { ok: false; error: string }> {
   const company = await getCompanyId()
   if (!company.ok) return { ok: false, error: company.error }
+  let allocazioni: Awaited<ReturnType<typeof getAllocazioni>>
+  try {
+    allocazioni = await getAllocazioni()
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
   const r = await ficGet(`/c/${company.id}/issued_documents`, { type: 'invoice', per_page: 100, sort: '-date' })
   if (!r.ok) return { ok: false, error: r.error }
   const rows = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
@@ -127,8 +144,47 @@ async function getOpenInvoices(): Promise<{ ok: true; fatture: FatturaAperta[] }
     fatture: rows
       .filter(row => isPaid(row) !== true)
       .map(mapInvoice)
-      .filter(fattura => fattura.id && fattura.totale !== null),
+      .map(fattura => ({
+        ...fattura,
+        residuo: fattura.totale === null ? 0 : roundMoney(fattura.totale - (allocazioni.allocatoFattura.get(fattura.id) ?? 0)),
+      }))
+      .filter(fattura => fattura.id && fattura.totale !== null && (fattura.residuo ?? 0) > 0.01),
   }
+}
+
+async function getInvoiceDetail(fatturaId: string): Promise<{ ok: true; fattura: FatturaAperta } | { ok: false; error: string }> {
+  const company = await getCompanyId()
+  if (!company.ok) return { ok: false, error: company.error }
+  const r = await ficGet(`/c/${company.id}/issued_documents/${fatturaId}`, { type: 'invoice', fieldset: 'detailed' })
+  if (!r.ok && r.error.includes('404')) return { ok: false, error: 'fattura non trovata su Fatture in Cloud' }
+  if (!r.ok) return { ok: false, error: r.error }
+  const raw = (r.data?.data ?? r.data) as Record<string, unknown> | null
+  if (!raw?.id) return { ok: false, error: 'fattura non trovata su Fatture in Cloud' }
+  const fattura = mapInvoice(raw)
+  if (fattura.totale === null) return { ok: false, error: 'totale fattura non leggibile su Fatture in Cloud' }
+  return { ok: true, fattura }
+}
+
+async function getAllocazioni(exclude?: { movimentoId: string; fatturaId: string }): Promise<{
+  allocatoMovimento: Map<string, number>
+  allocatoFattura: Map<string, number>
+}> {
+  const { data, error } = await supabase
+    .from('cervellone_riconciliazioni')
+    .select('movimento_id, fattura_id, importo_abbinato')
+    .in('stato', ['proposta', 'confermata'])
+
+  if (error) throw new Error(error.message)
+
+  const allocatoMovimento = new Map<string, number>()
+  const allocatoFattura = new Map<string, number>()
+  for (const row of data ?? []) {
+    if (exclude && row.movimento_id === exclude.movimentoId && row.fattura_id === exclude.fatturaId) continue
+    const importo = Number(row.importo_abbinato || 0)
+    allocatoMovimento.set(row.movimento_id, (allocatoMovimento.get(row.movimento_id) ?? 0) + importo)
+    allocatoFattura.set(row.fattura_id, (allocatoFattura.get(row.fattura_id) ?? 0) + importo)
+  }
+  return { allocatoMovimento, allocatoFattura }
 }
 
 async function getMovimentiEntrata(periodo?: string): Promise<{ ok: true; movimenti: MovimentoRow[] } | { ok: false; error: string }> {
@@ -145,14 +201,19 @@ async function getMovimentiEntrata(periodo?: string): Promise<{ ok: true; movime
   const { data, error } = await query
   if (error) return { ok: false, error: error.message }
 
-  const rec = await supabase
-    .from('cervellone_riconciliazioni')
-    .select('movimento_id')
-    .in('stato', ['proposta', 'confermata'])
-
-  if (rec.error) return { ok: false, error: rec.error.message }
-  const used = new Set((rec.data ?? []).map(row => row.movimento_id))
-  return { ok: true, movimenti: ((data ?? []) as MovimentoRow[]).filter(row => !used.has(row.id)) }
+  try {
+    const allocazioni = await getAllocazioni()
+    const movimenti = ((data ?? []) as MovimentoRow[])
+      .map(row => ({
+        ...row,
+        importo: Number(row.importo),
+        residuo: roundMoney(Number(row.importo) - (allocazioni.allocatoMovimento.get(row.id) ?? 0)),
+      }))
+      .filter(row => (row.residuo ?? 0) > 0.01)
+    return { ok: true, movimenti }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 async function insertReconciliation(input: {
@@ -160,6 +221,8 @@ async function insertReconciliation(input: {
   fatturaId: string
   fatturaNumero?: string | null
   importoAbbinato: number
+  importoMovimento: number
+  totaleFattura: number
   periodo?: string | null
   stato: StatoRiconciliazione
   tipoMatch: TipoMatch
@@ -175,6 +238,14 @@ async function insertReconciliation(input: {
 
   if (existing.data?.id) return { inserted: false, id: existing.data.id }
   if (existing.error) throw new Error(existing.error.message)
+
+  await validateAllocazione({
+    movimentoId: input.movimentoId,
+    fatturaId: input.fatturaId,
+    importoAbbinato: input.importoAbbinato,
+    importoMovimento: input.importoMovimento,
+    totaleFattura: input.totaleFattura,
+  })
 
   const { data, error } = await supabase
     .from('cervellone_riconciliazioni')
@@ -199,6 +270,28 @@ async function insertReconciliation(input: {
   return { inserted: true, id: data?.id }
 }
 
+async function validateAllocazione(input: {
+  movimentoId: string
+  fatturaId: string
+  importoAbbinato: number
+  importoMovimento: number
+  totaleFattura: number
+}): Promise<void> {
+  if (input.importoAbbinato <= 0) throw new Error('importo_abbinato deve essere positivo')
+  const allocazioni = await getAllocazioni({ movimentoId: input.movimentoId, fatturaId: input.fatturaId })
+  const allocatoFattura = allocazioni.allocatoFattura.get(input.fatturaId) ?? 0
+  const allocatoMovimento = allocazioni.allocatoMovimento.get(input.movimentoId) ?? 0
+  const residuoFattura = roundMoney(input.totaleFattura - allocatoFattura)
+  const residuoMovimento = roundMoney(input.importoMovimento - allocatoMovimento)
+
+  if (allocatoFattura + input.importoAbbinato > input.totaleFattura + 0.01) {
+    throw new Error(`supera il residuo della fattura (residuo ${residuoFattura})`)
+  }
+  if (allocatoMovimento + input.importoAbbinato > input.importoMovimento + 0.01) {
+    throw new Error(`supera il residuo del movimento (residuo ${residuoMovimento})`)
+  }
+}
+
 async function riconciliaAutomatico(input: Record<string, unknown>): Promise<string> {
   const periodo = cleanString(input.periodo)
   if (!periodo) return fail('periodo richiesto')
@@ -213,20 +306,33 @@ async function riconciliaAutomatico(input: Record<string, unknown>): Promise<str
   const matchedFatture = new Set<string>()
 
   for (const movimento of movimentiResult.movimenti) {
-    const fattura = fattureResult.fatture.find(candidate => !matchedFatture.has(candidate.id) && invoiceMatchesMovement(movimento, candidate))
+    if (Math.abs((movimento.residuo ?? 0) - Number(movimento.importo)) > 0.01) continue
+    const fattura = fattureResult.fatture.find(candidate =>
+      !matchedFatture.has(candidate.id) &&
+      candidate.totale !== null &&
+      Math.abs((candidate.residuo ?? 0) - candidate.totale) <= 0.01 &&
+      invoiceMatchesMovement(movimento, candidate)
+    )
     if (!fattura || fattura.totale === null) continue
 
-    const rec = await insertReconciliation({
-      movimentoId: movimento.id,
-      fatturaId: fattura.id,
-      fatturaNumero: fattura.numero,
-      importoAbbinato: Number(movimento.importo),
-      periodo,
-      stato: 'proposta',
-      tipoMatch: 'deterministico',
-      confidenza: 0.95,
-      note: 'Match automatico per importo e numero fattura/cliente.',
-    })
+    let rec: { inserted: boolean; id?: string }
+    try {
+      rec = await insertReconciliation({
+        movimentoId: movimento.id,
+        fatturaId: fattura.id,
+        fatturaNumero: fattura.numero,
+        importoAbbinato: Number(movimento.importo),
+        importoMovimento: Number(movimento.importo),
+        totaleFattura: fattura.totale,
+        periodo,
+        stato: 'proposta',
+        tipoMatch: 'deterministico',
+        confidenza: 0.95,
+        note: 'Match automatico per importo e numero fattura/cliente.',
+      })
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err))
+    }
     if (!rec.inserted) continue
     abbinatiAuto += 1
     matchedMovimenti.add(movimento.id)
@@ -243,6 +349,7 @@ async function riconciliaAutomatico(input: Record<string, unknown>): Promise<str
         id: row.id,
         data: row.data,
         importo: row.importo,
+        residuo: row.residuo,
         descrizione: row.descrizione,
         controparte: row.controparte,
       })),
@@ -251,6 +358,7 @@ async function riconciliaAutomatico(input: Record<string, unknown>): Promise<str
         numero: row.numero,
         cliente: row.cliente,
         totale: row.totale,
+        residuo: row.residuo,
         data: row.data,
       })),
       movimenti_totali: movimentiResidui.length,
@@ -265,7 +373,7 @@ function fattureResidue(fatture: FatturaAperta[], matched: Set<string>): Fattura
 
 async function proponiRiconciliazione(input: Record<string, unknown>): Promise<string> {
   const movimentoId = cleanString(input.movimento_id)
-  const fatturaId = cleanString(input.fattura_id)
+  const fatturaId = cleanId(input.fattura_id)
   if (!movimentoId || !fatturaId) return fail('movimento_id e fattura_id richiesti')
 
   const { data: movimento, error } = await supabase
@@ -277,15 +385,29 @@ async function proponiRiconciliazione(input: Record<string, unknown>): Promise<s
   if (error) return fail(error.message)
   if (!movimento) return fail('movimento non trovato')
 
+  const fatturaResult = await getInvoiceDetail(fatturaId)
+  if (!fatturaResult.ok) return fail(fatturaResult.error)
+
   const importoAbbinato = parseNumber(input.importo_abbinato) ?? Number(movimento.importo)
   const confidenza = Math.max(0, Math.min(1, parseNumber(input.confidenza) ?? 0.7))
+  try {
+    await validateAllocazione({
+      movimentoId,
+      fatturaId,
+      importoAbbinato,
+      importoMovimento: Number(movimento.importo),
+      totaleFattura: fatturaResult.fattura.totale ?? 0,
+    })
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err))
+  }
 
   const { data, error: upsertError } = await supabase
     .from('cervellone_riconciliazioni')
     .upsert({
       movimento_id: movimentoId,
       fattura_id: fatturaId,
-      fattura_numero: cleanString(input.fattura_numero) ?? null,
+      fattura_numero: cleanString(input.fattura_numero) ?? fatturaResult.fattura.numero,
       importo_abbinato: importoAbbinato,
       periodo: cleanString(input.periodo) ?? movimento.periodo ?? null,
       stato: 'proposta',
@@ -349,7 +471,9 @@ async function listaRiconciliazioni(input: Record<string, unknown>): Promise<str
     }
   })
 
-  const totale = rows.reduce((sum, row) => sum + Number(row.importo_abbinato || 0), 0)
+  const totale = rows
+    .filter(row => row.stato !== 'scartata')
+    .reduce((sum, row) => sum + Number(row.importo_abbinato || 0), 0)
   return ok({ count: rows.length, totale_abbinato: totale, riconciliazioni: elenco })
 }
 
