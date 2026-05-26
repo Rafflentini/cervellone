@@ -48,6 +48,7 @@ function statusMessage(stato: string, driveUrl: string | null): ActionResult {
   }
   if (stato === 'ignorata') return { ok: true, message: 'Proposta gia ignorata.' }
   if (stato === 'auto_memorizzata') return { ok: true, message: 'Proposta gia auto-memorizzata dal sistema.' }
+  if (stato === 'in_lavorazione') return { ok: false, message: 'Proposta in elaborazione, riprova tra poco.' }
   return { ok: false, message: `Proposta non gestibile: stato attuale "${stato}".` }
 }
 
@@ -112,6 +113,17 @@ export async function confirmProposta(id: string): Promise<ActionResult> {
     if (!proposta) return { ok: false, message: 'Proposta non trovata.' }
     if (proposta.stato !== 'in_attesa') return statusMessage(proposta.stato, proposta.drive_url)
 
+    const { data: claimedRows, error: claimError } = await supabase
+      .from('cervellone_doc_proposte')
+      .update({ stato: 'in_lavorazione', updated_at: new Date().toISOString() })
+      .eq('id', proposta.id)
+      .eq('stato', 'in_attesa')
+      .select('id')
+    if (claimError) throw new Error(`Errore claim proposta: ${claimError.message}`)
+    if (!claimedRows || claimedRows.length === 0) {
+      return { ok: false, message: 'Proposta gia in elaborazione o elaborata.' }
+    }
+
     const account = parseAccount(proposta.account)
     if (!account) return { ok: false, message: `Account proposta non valido: ${proposta.account}` }
     if (!proposta.data_scadenza) return { ok: false, message: 'La proposta non contiene una data di scadenza.' }
@@ -154,7 +166,7 @@ export async function confirmProposta(id: string): Promise<ActionResult> {
       .from('cervellone_doc_proposte')
       .update({ stato: 'confermata', drive_url: driveUrl, updated_at: new Date().toISOString() })
       .eq('id', proposta.id)
-      .eq('stato', 'in_attesa')
+      .eq('stato', 'in_lavorazione')
       .select('id')
 
     if (updateError) throw new Error(`Errore conferma proposta: ${updateError.message}`)
