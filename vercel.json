@@ -8,6 +8,7 @@
     { "path": "/api/cron/monthly-foreign-invoices", "schedule": "0 8 1 * *" },
     { "path": "/api/cron/expire-pending", "schedule": "0 */6 * * *" },
     { "path": "/api/cron/scadenze", "schedule": "0 5 * * *" },
-    { "path": "/api/cron/mail-sentinella", "schedule": "0 6 * * *" }
+    { "path": "/api/cron/mail-sentinella", "schedule": "0 6 * * *" },
+    { "path": "/api/cron/contabilita-mensile", "schedule": "0 7 1 * *" }
   ]
 }
