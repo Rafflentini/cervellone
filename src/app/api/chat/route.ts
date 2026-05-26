@@ -72,6 +72,31 @@ export async function POST(request: NextRequest) {
     )
   )
 
+  // Parità con Telegram: salva SUBITO su Drive (Inbox) + record foto_pending le foto caricate da web.
+  if (lastUserMsg && Array.isArray(lastUserMsg.content)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const imgs = (lastUserMsg.content as any[]).filter((b: any) =>
+      b?.type === 'image' && b?.source?.type === 'base64' && typeof b.source.data === 'string'
+    )
+    if (imgs.length > 0) {
+      try {
+        const { ingestPhotoUpload } = await import('@/lib/foto-ingest')
+        await ingestPhotoUpload({
+          canale: 'web',
+          chatId: conversationId ?? null,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          items: imgs.map((b: any, i: number) => ({
+            buffer: Buffer.from(b.source.data, 'base64'),
+            mimeType: b.source.media_type || 'image/jpeg',
+            filename: `web-${Date.now()}-${i}.jpg`,
+          })),
+        })
+      } catch (err) {
+        console.error('[FOTO-INGEST web] errore:', err instanceof Error ? err.message : err)
+      }
+    }
+  }
+
   // ─── Dispatcher /invia_<uuid> + /annulla_<uuid> per mail subagent V19 ───
   // Stesso pattern di src/app/api/telegram/route.ts:283-296. PRIMA di chiamare LLM
   // (altrimenti il modello vede il comando come msg normale e risponde "non posso

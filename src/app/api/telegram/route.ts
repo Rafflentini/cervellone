@@ -151,23 +151,20 @@ export async function POST(request: NextRequest) {
       const largest = message.photo[message.photo.length - 1]
       const fileData = await downloadTelegramFile(largest.file_id)
       if (fileData) {
-        // AUTO-ARCHIVE: salva sempre la foto originale su Drive prima di passarla al LLM
+        // AUTO-ARCHIVE + record persistente foto_pending (parità con web): la foto è SUBITO su Drive.
         let archivedDriveLink: string | null = null
         if (!largest.file_size || largest.file_size < 32 * 1024 * 1024) {
           try {
-            const { uploadBinaryToDrive, getTelegramInboxFolderId } = await import('@/lib/drive')
-            const folderId = await getTelegramInboxFolderId()
-            const { webViewLink } = await uploadBinaryToDrive(
-              Buffer.from(fileData.buffer),
-              fileData.fileName,
-              fileData.mimeType,
-              folderId,
-            )
-            archivedDriveLink = webViewLink
-            console.log(`[TG-ARCHIVE] file=${fileData.fileName} → ${archivedDriveLink}`)
+            const { ingestPhotoUpload } = await import('@/lib/foto-ingest')
+            const [rec] = await ingestPhotoUpload({
+              canale: 'telegram',
+              chatId: chatIdToUuid(chatId),
+              items: [{ buffer: Buffer.from(fileData.buffer), mimeType: fileData.mimeType, filename: fileData.fileName }],
+            })
+            archivedDriveLink = rec?.driveUrl ?? null
+            if (archivedDriveLink) console.log(`[TG-ARCHIVE] file=${fileData.fileName} → ${archivedDriveLink}`)
           } catch (err) {
             console.error('[TG-AUTOARCHIVE] photo archive failed:', err instanceof Error ? err.message : err)
-            console.warn(`[TG-ARCHIVE] failed, continuing without archive:`, err instanceof Error ? err.message : err)
           }
         }
 
