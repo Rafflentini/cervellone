@@ -9,6 +9,7 @@ import type { AccountKey } from '@/v19/tools/email/config'
 
 // Modello economico: l'estrazione strutturata non richiede Opus.
 const EXTRACT_MODEL = 'claude-haiku-4-5'
+const MAX_BASE64_LENGTH = 14 * 1024 * 1024
 const client = new Anthropic()
 
 interface ToolDefinition {
@@ -82,8 +83,19 @@ export async function estraiScadenzaDaAllegato(
   mimeType: string,
   filename: string,
 ): Promise<{ ok: true; data: ScadenzaEstratta } | { ok: false; error: string }> {
+  console.log(`[SCAD-EXTRACT] start filename="${filename}" mimeType="${mimeType}" base64Length=${base64.length}`)
+  if (base64.length > MAX_BASE64_LENGTH) {
+    const error = "Allegato troppo grande per l'estrazione (>~10MB)"
+    console.log(`[SCAD-EXTRACT] error filename="${filename}" error="${error}"`)
+    return { ok: false, error }
+  }
+
   const block = buildBlock(base64, mimeType)
-  if (!block) return { ok: false, error: `Tipo allegato non supportato: ${mimeType} (${filename})` }
+  if (!block) {
+    const error = `Tipo allegato non supportato: ${mimeType} (${filename})`
+    console.log(`[SCAD-EXTRACT] error filename="${filename}" error="${error}"`)
+    return { ok: false, error }
+  }
   try {
     const resp = await client.messages.create({
       model: EXTRACT_MODEL,
@@ -91,14 +103,23 @@ export async function estraiScadenzaDaAllegato(
       messages: [{ role: 'user', content: [block, { type: 'text', text: EXTRACT_PROMPT }] }],
     })
     if (resp.stop_reason === 'max_tokens') {
-      return { ok: false, error: 'risposta troncata (documento troppo lungo)' }
+      const error = 'risposta troncata (documento troppo lungo)'
+      console.log(`[SCAD-EXTRACT] error filename="${filename}" error="${error}"`)
+      return { ok: false, error }
     }
     const textBlock = resp.content.find((b): b is Anthropic.TextBlock => b.type === 'text')
     const parsed = textBlock ? parseJsonLoose(textBlock.text) : null
-    if (!parsed) return { ok: false, error: 'Estrazione non riuscita (risposta non in JSON leggibile)' }
+    if (!parsed) {
+      const error = 'Estrazione non riuscita (risposta non in JSON leggibile)'
+      console.log(`[SCAD-EXTRACT] error filename="${filename}" error="${error}"`)
+      return { ok: false, error }
+    }
+    console.log(`[SCAD-EXTRACT] ok filename="${filename}" confidenza=${parsed.confidenza}`)
     return { ok: true, data: parsed }
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    const error = err instanceof Error ? err.message : String(err)
+    console.log(`[SCAD-EXTRACT] error filename="${filename}" error="${error}"`)
+    return { ok: false, error }
   }
 }
 
