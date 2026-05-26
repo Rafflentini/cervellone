@@ -288,6 +288,11 @@ async function downloadFile(fileId: string): Promise<{ buffer: Buffer; mimeType:
   }
 }
 
+export async function downloadFileBase64(fileId: string): Promise<{ base64: string; mimeType: string; name: string }> {
+  const f = await downloadFile(fileId)
+  return { base64: f.buffer.toString('base64'), mimeType: f.mimeType, name: f.name }
+}
+
 export async function readPdfFromDrive(fileId: string): Promise<string> {
   console.log(`[DRIVE] readPdfFromDrive id=${fileId}`)
   try {
