@@ -222,6 +222,22 @@ export async function findFoldersByName(query: string): Promise<Array<{ id: stri
     .map(f => ({ id: f.id, name: f.name }))
 }
 
+// Elenca SOLO le sottocartelle dirette di una cartella (ritorno strutturato).
+export async function listSubfolders(folderId: string): Promise<Array<{ id: string; name: string }>> {
+  const drive = await getDrive()
+  const res = await drive.files.list({
+    q: `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+    fields: 'files(id, name)',
+    orderBy: 'name',
+    pageSize: 200,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  })
+  return (res.data.files || [])
+    .filter((f): f is { id: string; name: string } => Boolean(f.id && f.name))
+    .map(f => ({ id: f.id, name: f.name }))
+}
+
 // FIX W1.3 Task 2: ricerca per CONTENUTO testuale (full-text indexed da Drive)
 export async function searchFilesFullText(query: string, folderId?: string): Promise<string> {
   console.log(`[DRIVE] searchFilesFullText query="${query}" folder="${folderId || 'root'}"`)
