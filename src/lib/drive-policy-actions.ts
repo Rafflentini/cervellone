@@ -204,6 +204,7 @@ export async function confirmStep2(id: string): Promise<ActionResult> {
         .eq('folder_id', p.folder_id)
       if (error) throw new Error(`Errore revoca policy: ${error.message}`)
     }
+    invalidateDrivePolicyCache()
 
     // Chiudi la richiesta (guard anti doppio-apply)
     const { data, error: closeErr } = await supabase
@@ -214,8 +215,6 @@ export async function confirmStep2(id: string): Promise<ActionResult> {
       .select('id')
     if (closeErr) throw new Error(closeErr.message)
     if (!data || data.length === 0) return { ok: true, message: 'Richiesta già applicata da un altro canale.' }
-
-    invalidateDrivePolicyCache()
 
     const verbo = p.azione === 'consenti'
       ? `Cervellone ora PUÒ scrivere in «${p.folder_name}» e nelle sue sottocartelle.`
