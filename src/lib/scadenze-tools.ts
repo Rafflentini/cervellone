@@ -58,6 +58,10 @@ function cleanString(value: unknown): string | undefined {
   return trimmed ? trimmed : undefined
 }
 
+function normalizeSubject(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
 function nullableString(value: unknown): string | null | undefined {
   if (value === null) return null
   if (typeof value !== 'string') return undefined
@@ -127,7 +131,7 @@ function addDaysISO(days: number): string {
 }
 
 function sameSubject(left: string, right: string): boolean {
-  return left.trim().toLocaleLowerCase('it-IT') === right.trim().toLocaleLowerCase('it-IT')
+  return normalizeSubject(left).toLocaleLowerCase('it-IT') === normalizeSubject(right).toLocaleLowerCase('it-IT')
 }
 
 function summarize(row: ScadenzaRow): Record<string, unknown> {
@@ -154,7 +158,7 @@ function parseWriteFields(input: Record<string, unknown>, allowStato: boolean): 
   const fields: ScadenzaWrite = {}
 
   const soggetto = cleanString(source.soggetto)
-  if (soggetto !== undefined) fields.soggetto = soggetto
+  if (soggetto !== undefined) fields.soggetto = normalizeSubject(soggetto)
 
   if ('categoria' in source) fields.categoria = nullableString(source.categoria) ?? null
   if ('tipo_documento' in source) fields.tipo_documento = nullableString(source.tipo_documento) ?? null
@@ -171,6 +175,7 @@ function parseWriteFields(input: Record<string, unknown>, allowStato: boolean): 
   if ('reminder_days' in source) {
     const parsed = parseInteger(source.reminder_days, 'reminder_days')
     if (parsed.error) return { error: parsed.error }
+    if (parsed.value !== undefined && parsed.value < 0) return { error: 'reminder_days deve essere >= 0.' }
     if (parsed.value !== undefined) fields.reminder_days = parsed.value
   }
 
@@ -190,8 +195,9 @@ function parseWriteFields(input: Record<string, unknown>, allowStato: boolean): 
 }
 
 async function registraScadenza(input: Record<string, unknown>): Promise<string> {
-  const soggetto = cleanString(input.soggetto)
-  if (!soggetto) return fail('soggetto obbligatorio.')
+  const rawSoggetto = cleanString(input.soggetto)
+  if (!rawSoggetto) return fail('soggetto obbligatorio.')
+  const soggetto = normalizeSubject(rawSoggetto)
 
   const parsedDate = parseDate(input.data_scadenza, 'data_scadenza')
   if (parsedDate.error) return fail(parsedDate.error)
@@ -254,7 +260,8 @@ async function listaScadenze(input: Record<string, unknown>): Promise<string> {
     .eq('stato', statoParsed.value ?? DEFAULT_STATO)
     .order('data_scadenza', { ascending: true })
 
-  const soggetto = cleanString(input.soggetto)
+  const rawSoggetto = cleanString(input.soggetto)
+  const soggetto = rawSoggetto ? normalizeSubject(rawSoggetto) : undefined
   if (soggetto) query = query.ilike('soggetto', `%${soggetto}%`)
 
   const categoria = cleanString(input.categoria)
@@ -262,6 +269,7 @@ async function listaScadenze(input: Record<string, unknown>): Promise<string> {
 
   const entroGiorni = parseInteger(input.entro_giorni, 'entro_giorni')
   if (entroGiorni.error) return fail(entroGiorni.error)
+  if (entroGiorni.value !== undefined && entroGiorni.value < 0) return fail('entro_giorni deve essere >= 0.')
   if (entroGiorni.value !== undefined) query = query.lte('data_scadenza', addDaysISO(entroGiorni.value))
 
   const { data, error } = await query
@@ -307,11 +315,21 @@ async function chiudiScadenza(input: Record<string, unknown>): Promise<string> {
     .from('cervellone_scadenze')
     .update({ stato: 'archiviato', updated_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('stato', 'attivo')
     .select('id, soggetto, categoria, tipo_documento, data_scadenza, reminder_days, recipients, drive_file_id, drive_url, note, stato, updated_at')
     .maybeSingle()
 
   if (error) return fail(`Errore chiusura scadenza: ${error.message}`, { id })
-  if (!data) return fail('Scadenza non trovata.', { id })
+  if (!data) {
+    const { data: existing, error: existingError } = await supabase
+      .from('cervellone_scadenze')
+      .select('id, stato')
+      .eq('id', id)
+      .maybeSingle()
+    if (existingError) return fail(`Errore verifica scadenza: ${existingError.message}`, { id })
+    if (existing) return fail('Scadenza gia chiusa.', { id, stato: existing.stato })
+    return fail('Scadenza non trovata.', { id })
+  }
 
   return ok({ scadenza: summarize(data as ScadenzaRow) })
 }
