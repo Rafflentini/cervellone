@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import crypto from 'crypto'
 import { listFiles, downloadFileBase64 } from './drive'
 import { supabase } from './supabase'
+import { getConfig } from './claude'
 
 interface ToolDefinition {
   name: string
@@ -24,7 +25,6 @@ export interface MovimentoEstratto {
 
 type EstraiResult = { ok: true; movimenti: MovimentoEstratto[] } | { ok: false; error: string }
 
-const MODEL = 'claude-haiku-4-5'
 const MAX_BASE64_LENGTH = 28 * 1024 * 1024
 const client = new Anthropic()
 
@@ -164,8 +164,9 @@ export async function estraiMovimentiDaPdf(
   if (!block) return { ok: false, error: `tipo file non supportato: ${mimeType} (${filename})` }
 
   try {
+    const { modelExtractFast } = await getConfig()
     const resp = await client.messages.create({
-      model: MODEL,
+      model: modelExtractFast,
       max_tokens: 4000,
       messages: [{ role: 'user', content: [block, { type: 'text', text: EXTRACT_PROMPT }] }],
     })

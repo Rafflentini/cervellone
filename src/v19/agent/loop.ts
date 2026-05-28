@@ -9,6 +9,7 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk'
+import { getConfig } from '@/lib/claude'
 import { getAnthropicClient } from './anthropic-client'
 import {
   loadContainerId,
@@ -48,13 +49,12 @@ export type AgentRunOptions = {
   noPersist?: boolean
 }
 
-const MODEL = 'claude-opus-4-7'
-
 export async function runAgent(
   req: AgentRequest,
   opts: AgentRunOptions = {},
 ): Promise<AgentResponse> {
   const client = opts.client ?? getAnthropicClient()
+  const { modelSubagentMail } = await getConfig()
   const maxIterations = req.maxIterations ?? MAX_ITERATIONS_DEFAULT
   const noTextLimit = req.noTextLimit ?? NO_TEXT_LIMIT_DEFAULT
   const tools = opts.toolDefinitions ?? []
@@ -88,7 +88,7 @@ export async function runAgent(
       iterations = i + 1
 
       const apiArgs = buildCreateArgs({
-        model: MODEL,
+        model: modelSubagentMail,
         intent: req.intent,
         system: req.system,
         messages,
@@ -189,7 +189,7 @@ export async function runAgent(
     // NO_TEXT_LIMIT force-text synthesis
     if (consecutiveNoText >= noTextLimit && fullResponse.trim().length === 0) {
       const synth = await client.messages.create({
-        model: MODEL,
+        model: modelSubagentMail,
         max_tokens: 8_000,
         system: req.system,
         messages: [

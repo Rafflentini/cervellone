@@ -115,26 +115,44 @@ interface ModelConfig {
 }
 
 // Cache config per 60 secondi
-let configCache: { model: string } | null = null
+let configCache: {
+  model: string
+  modelSubagentMail: string
+  modelExtractFast: string
+  modelAudit: string
+} | null = null
 let configCacheTime = 0
 const CONFIG_TTL = 60_000
 
-export async function getConfig(): Promise<{ model: string }> {
+export async function getConfig(): Promise<{
+  model: string
+  modelSubagentMail: string
+  modelExtractFast: string
+  modelAudit: string
+}> {
   if (configCache && Date.now() - configCacheTime < CONFIG_TTL) return configCache
 
   const { data } = await supabase
     .from('cervellone_config')
     .select('key, value')
-    .in('key', ['model_default'])
+    .in('key', ['model_default', 'model_subagent_mail', 'model_extract_fast', 'model_audit'])
 
   let model = 'claude-opus-4-7'
+  let modelSubagentMail = 'claude-opus-4-7'
+  let modelExtractFast = 'claude-haiku-4-5'
+  let modelAudit = 'claude-sonnet-4-6'
+
   if (data) {
     for (const row of data) {
-      if (row.key === 'model_default') model = String(row.value).replace(/"/g, '')
+      const v = String(row.value).replace(/"/g, '')
+      if (row.key === 'model_default') model = v
+      else if (row.key === 'model_subagent_mail') modelSubagentMail = v
+      else if (row.key === 'model_extract_fast') modelExtractFast = v
+      else if (row.key === 'model_audit') modelAudit = v
     }
   }
 
-  configCache = { model }
+  configCache = { model, modelSubagentMail, modelExtractFast, modelAudit }
   configCacheTime = Date.now()
   return configCache
 }
