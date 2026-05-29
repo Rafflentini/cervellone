@@ -46,6 +46,13 @@ Regole:
 - Converti date italiane GG/MM/AAAA o GG-MM-AAAA in YYYY-MM-DD.
 - Converti numeri italiani come 1.234,56 in number 1234.56.
 - L'importo deve essere sempre positivo; usa direzione per distinguere entrata e uscita.
+- DIREZIONE entrata vs uscita:
+  - "entrata" = accredito, bonifico ricevuto, versamento, incasso, dividendo, storno positivo, "AVERE", segno +
+  - "uscita" = addebito, bonifico inviato, pagamento, prelievo, commissione, spesa, "DARE", segno -
+  - Su estratti conto bancari italiani: colonna "Dare" o "Addebito" o "-" = uscita; colonna "Avere" o "Accredito" o "+" = entrata.
+  - Su estratti carte di credito: tipicamente TUTTI uscita (sono spese). Rimborsi/storni accreditati = entrata.
+  - Su PayPal: pagamento inviato = uscita; pagamento ricevuto / addebito storno = entrata.
+  - NON dedurre la direzione dal solo segno aritmetico se la colonna e ambigua: leggi le intestazioni delle colonne.
 - Se non distingui fonte o conto, usa null.
 - Non inventare movimenti, controparti o saldi. Non includere subtotali, saldi iniziali/finali o righe descrittive.`
 
@@ -188,6 +195,7 @@ async function insertMovement(
   meta: { driveFileId: string; driveUrl: string; periodo: string | null; fonteOverride: Fonte | null },
 ): Promise<boolean> {
   const fonte = meta.fonteOverride ?? movimento.fonte
+  const periodoEff = meta.periodo ?? movimento.data.slice(0, 7)
   const hash = movementHash({ ...movimento, fonte })
 
   const existing = await supabase
@@ -207,7 +215,7 @@ async function insertMovement(
     controparte: movimento.controparte,
     fonte,
     conto: movimento.conto,
-    periodo: meta.periodo,
+    periodo: periodoEff,
     drive_file_id: meta.driveFileId,
     drive_url: meta.driveUrl,
     hash,
@@ -287,7 +295,13 @@ async function executeEstraiMovimenti(input: Record<string, unknown>): Promise<s
 
 async function executeListaMovimenti(input: Record<string, unknown>): Promise<string> {
   const periodo = cleanString(input.periodo)
+  const dataDal = cleanString(input.data_dal)
+  const dataAl = cleanString(input.data_al)
   const fonte = parseFonte(input.fonte)
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/
+
+  if (dataDal && !dateRe.test(dataDal)) return fail('data_dal deve essere in formato YYYY-MM-DD')
+  if (dataAl && !dateRe.test(dataAl)) return fail('data_al deve essere in formato YYYY-MM-DD')
 
   let query = supabase
     .from('cervellone_movimenti')
@@ -296,6 +310,8 @@ async function executeListaMovimenti(input: Record<string, unknown>): Promise<st
     .order('data', { ascending: false })
     .limit(100)
 
+  if (dataDal) query = query.gte('data', dataDal)
+  if (dataAl) query = query.lte('data', dataAl)
   if (periodo) query = query.eq('periodo', periodo)
   if (fonte) query = query.eq('fonte', fonte)
 
@@ -333,11 +349,13 @@ export const MOVIMENTI_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'lista_movimenti',
-    description: 'Lista i movimenti contabili salvati e calcola entrate, uscite e saldo.',
+    description: 'Lista movimenti contabili salvati. Filtra per range data (preferito) o periodo (testo) o fonte. Calcola entrate/uscite/saldo.',
     input_schema: {
       type: 'object',
       properties: {
-        periodo: { type: 'string', description: 'Filtro periodo, es. 2026-05.' },
+        data_dal: { type: 'string', description: 'Data inizio inclusiva YYYY-MM-DD (preferito a periodo).' },
+        data_al: { type: 'string', description: 'Data fine inclusiva YYYY-MM-DD.' },
+        periodo: { type: 'string', description: 'Filtro periodo testuale es. 2026-05 (alternativa al range data).' },
         fonte: { type: 'string', enum: ['banca', 'carta', 'paypal', 'altro'] },
       },
     },
