@@ -40,6 +40,8 @@ Schema di ogni elemento:
   "conto": string oppure null
 }
 Regole:
+- ESTRAI OGNI riga che ha una data + un importo. NON saltare righe perche "sembrano simili" alla precedente, perche "non sei sicuro della direzione" o perche "il layout e strano". Su estratti scalari/multi-pagina includi righe di accredito anche se sono compresse o su piu colonne.
+- Su un estratto conto bancario di azienda attiva ti aspetti DECINE di movimenti per mese, non poche unita. Se ti sembra di trovarne pochi, controlla di non aver saltato pagine, sezioni "Accrediti" / "Bonifici in entrata", o pagine successive del documento.
 - Una riga per ogni movimento reale.
 - Salta righe senza data o senza importo.
 - Converti date italiane GG/MM/AAAA o GG-MM-AAAA in YYYY-MM-DD.
@@ -174,11 +176,14 @@ export async function estraiMovimentiDaPdf(
     const { modelExtractFast } = await getConfig()
     const resp = await client.messages.create({
       model: modelExtractFast,
-      max_tokens: 4000,
+      max_tokens: 16000,
       messages: [{ role: 'user', content: [block, { type: 'text', text: EXTRACT_PROMPT }] }],
     })
 
-    if (resp.stop_reason === 'max_tokens') return { ok: false, error: 'estratto troppo lungo, dividilo' }
+    if (resp.stop_reason === 'max_tokens') {
+      console.warn(`[movimenti-extract] max_tokens 16000 raggiunto su ${filename} - PDF troppo lungo, dividilo`)
+      return { ok: false, error: 'estratto troppo lungo, dividilo' }
+    }
 
     const textBlock = resp.content.find((b): b is Anthropic.TextBlock => b.type === 'text')
     const movimenti = textBlock ? parseMovimentiJson(textBlock.text) : null
