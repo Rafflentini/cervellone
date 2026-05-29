@@ -2,7 +2,6 @@ import Anthropic from '@anthropic-ai/sdk'
 import crypto from 'crypto'
 import { listFiles, downloadFileBase64 } from './drive'
 import { supabase } from './supabase'
-import { getConfig } from './claude'
 
 interface ToolDefinition {
   name: string
@@ -171,6 +170,7 @@ export async function estraiMovimentiDaPdf(
   if (!block) return { ok: false, error: `tipo file non supportato: ${mimeType} (${filename})` }
 
   try {
+    const { getConfig } = await import('./claude')
     const { modelExtractFast } = await getConfig()
     const resp = await client.messages.create({
       model: modelExtractFast,

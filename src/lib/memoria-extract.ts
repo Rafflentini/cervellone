@@ -5,7 +5,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
 import { getActiveModel } from '@/lib/circuit-breaker'
-import { getConfig } from './claude'
 
 // ── Prompt extraction conservativa (letterale da spec) ────────────────────────
 
@@ -159,6 +158,7 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
 
     // Step 6: determina modello — Sonnet 4.6 per default, fallback via Circuit Breaker
     const circuitModel = await getActiveModel()
+    const { getConfig } = await import('./claude')
     const { modelAudit } = await getConfig()
     // Per extraction usiamo sempre Sonnet (costo) ma rispettiamo fallback a stable
     // se il Circuit Breaker è in ROLLED_BACK e il modello stable è < Opus, usiamo Sonnet comunque.

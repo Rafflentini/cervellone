@@ -9,7 +9,6 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk'
-import { getConfig } from '@/lib/claude'
 import { getAnthropicClient } from './anthropic-client'
 import {
   loadContainerId,
@@ -54,6 +53,7 @@ export async function runAgent(
   opts: AgentRunOptions = {},
 ): Promise<AgentResponse> {
   const client = opts.client ?? getAnthropicClient()
+  const { getConfig } = await import('@/lib/claude')
   const { modelSubagentMail } = await getConfig()
   const maxIterations = req.maxIterations ?? MAX_ITERATIONS_DEFAULT
   const noTextLimit = req.noTextLimit ?? NO_TEXT_LIMIT_DEFAULT
