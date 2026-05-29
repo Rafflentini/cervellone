@@ -137,17 +137,25 @@ function buildDateQuery(anno?: number, mese?: number): string | undefined {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapDoc(d: any) {
+  const payments = d?.payments_list ?? d?.paymentsList
+  const amountDue = d?.amount_due ?? d?.amountDue
+  const amountGross = d?.amount_gross ?? d?.amountGross
+  const pagata = typeof d?.is_marked === 'boolean'
+    ? d.is_marked
+    : (Array.isArray(payments)
+        ? payments.every((p: { status?: unknown }) => p?.status === 'paid')
+        : (amountDue === 0 && typeof amountGross === 'number' && amountGross > 0 ? true : null))
+
   return {
     id: d?.id,
     numero: d?.number ?? d?.numeration ?? null,
     data: d?.date ?? null,
     soggetto: d?.entity?.name ?? null,
-    totale: d?.amount_gross ?? d?.amountGross ?? d?.amount_net ?? d?.amountNet ?? null,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    pagata: typeof d?.is_marked === 'boolean'
-      ? d.is_marked
-      : (Array.isArray(d?.payments_list ?? d?.paymentsList) ? (d.payments_list ?? d.paymentsList).every((p: any) => p?.status === 'paid') : null),
+    totale: amountGross ?? d?.amount_net ?? d?.amountNet ?? null,
+    pagata,
     scadenza: d?.next_due_date ?? d?.nextDueDate ?? d?.due_date ?? d?.dueDate ?? null,
+    residuo: amountDue ?? null,
+    pagamenti_count: Array.isArray(payments) ? payments.length : 0,
   }
 }
 
@@ -159,7 +167,7 @@ function intParam(v: unknown): number | undefined {
 export const FIC_READ_TOOLS: ToolDefinition[] = [
   {
     name: 'fic_fatture_emesse',
-    description: 'Elenca le fatture EMESSE da Fatture in Cloud (sola lettura). Filtri opzionali: anno, mese (1-12), cliente (nome), stato ("pagata"|"non_pagata"|"tutte"). Usa per "quali fatture ho emesso a maggio", "chi non mi ha pagato".',
+    description: 'Elenca le fatture EMESSE da Fatture in Cloud (sola lettura). Filtri opzionali: anno, mese (1-12), cliente (nome), stato ("pagata"|"non_pagata"|"tutte"). Usa per "quali fatture ho emesso a maggio", "chi non mi ha pagato". Ritorna anche residuo (importo ancora dovuto) e pagamenti_count.',
     input_schema: {
       type: 'object',
       properties: {
@@ -172,7 +180,7 @@ export const FIC_READ_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'fic_fatture_ricevute',
-    description: 'Elenca le fatture RICEVUTE (spese/fornitori) da Fatture in Cloud (sola lettura). Filtri: anno, mese, fornitore. Usa per "fatture ricevute da registrare", "spese di aprile".',
+    description: 'Elenca le fatture RICEVUTE (spese/fornitori) da Fatture in Cloud (sola lettura). Filtri: anno, mese, fornitore. Usa per "fatture ricevute da registrare", "spese di aprile". Ritorna anche residuo (importo ancora dovuto) e pagamenti_count.',
     input_schema: {
       type: 'object',
       properties: { anno: { type: 'integer' }, mese: { type: 'integer' }, fornitore: { type: 'string' } },
@@ -210,7 +218,7 @@ export async function executeFicTool(
   try {
     if (name === 'fic_fatture_emesse') {
       const q = buildDateQuery(intParam(input.anno), intParam(input.mese))
-      const r = await ficGet(`/c/${cid}/issued_documents`, { type: 'invoice', q, per_page: 50, sort: '-date' })
+      const r = await ficGet(`/c/${cid}/issued_documents`, { type: 'invoice', q, per_page: 50, sort: '-date', fieldset: 'detailed' })
       if (!r.ok) return JSON.stringify({ ok: false, error: r.error })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let docs = (r.data?.data ?? []).map(mapDoc)
@@ -226,7 +234,7 @@ export async function executeFicTool(
     }
     if (name === 'fic_fatture_ricevute') {
       const q = buildDateQuery(intParam(input.anno), intParam(input.mese))
-      const r = await ficGet(`/c/${cid}/received_documents`, { type: 'expense', q, per_page: 50, sort: '-date' })
+      const r = await ficGet(`/c/${cid}/received_documents`, { type: 'expense', q, per_page: 50, sort: '-date', fieldset: 'detailed' })
       if (!r.ok) return JSON.stringify({ ok: false, error: r.error })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let docs = (r.data?.data ?? []).map(mapDoc)
