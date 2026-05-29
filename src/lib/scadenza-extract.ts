@@ -6,7 +6,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getEmailBody } from '@/v19/tools/email/get-email-body'
 import type { AccountKey } from '@/v19/tools/email/config'
-import { getConfig } from './claude'
 
 // Modello economico: l'estrazione strutturata non richiede Opus.
 const MAX_BASE64_LENGTH = 14 * 1024 * 1024
@@ -97,6 +96,7 @@ export async function estraiScadenzaDaAllegato(
     return { ok: false, error }
   }
   try {
+    const { getConfig } = await import('./claude')
     const { modelExtractFast } = await getConfig()
     const resp = await client.messages.create({
       model: modelExtractFast,

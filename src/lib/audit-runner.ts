@@ -4,7 +4,6 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
-import { getConfig } from './claude'
 import {
   collectModelHealth,
   collectBreakerEvents,
@@ -65,6 +64,7 @@ export async function runAudit(): Promise<RunAuditResult> {
   const isoWeek = getISOWeek(new Date())
 
   // Step 1: leggi audit_model da config (default da model_audit)
+  const { getConfig } = await import('./claude')
   let auditModel = (await getConfig()).modelAudit
   try {
     const { data: configRow } = await supabase
