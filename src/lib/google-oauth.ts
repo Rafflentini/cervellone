@@ -166,6 +166,11 @@ export async function exchangeCodeAndStore(code: string): Promise<{ email: strin
   )
   if (error) throw new Error(`Supabase upsert failed: ${error.message}`)
 
+  await getSupabaseServer().from('cervellone_config').upsert(
+    { key: 'google_token_dead', value: 'false' },
+    { onConflict: 'key' },
+  )
+
   console.log(`[OAUTH] credentials saved for ${email}`)
   return { email, refresh_token_present: true }
 }
