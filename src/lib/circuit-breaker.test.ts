@@ -22,6 +22,12 @@ describe('detectHallucination', () => {
       'Adesso cerco nelle cartelle.',
       'Ora verifico.',
       'Lo trovo io.',
+      'Glielo cerco.',
+      'Le invio il documento.',
+      'Creo il file adesso.',
+      'Archivio subito il PDF.',
+      'Cercherò il contratto.',
+      'Vado a controllare.',
     ]
     cases.forEach(text => {
       it(`"${text.slice(0, 30)}..." → true`, () => {
@@ -44,6 +50,8 @@ describe('detectHallucination', () => {
       'Buongiorno Ingegnere.',
       'Il preventivo è pronto.',
       'Ho elaborato la richiesta.',
+      'Glielo dico subito.',
+      'Le faccio sapere.',
     ]
     cases.forEach(text => {
       it(`"${text.slice(0, 30)}..." → false`, () => {

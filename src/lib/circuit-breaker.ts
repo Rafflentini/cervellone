@@ -53,6 +53,11 @@ const PROMISE_PATTERNS: RegExp[] = [
   /\bfaccio\s+(subito|adesso|ora)\b/i,
   /\bvado\s+a\s+(leggere|scaricare|cercare|guardare|verificare)\b/i,
   /\b(cerco|leggo|verifico)\s+subito\b/i,
+  /\b(glielo|gliela|glieli|gliele)\s+(cerco|controllo|leggo|scarico|guardo|verifico|trovo|mando|invio|preparo|archivio|salvo|sposto|aggiorno)\b/i,
+  /\ble\s+(cerco|controllo|leggo|scarico|guardo|verifico|trovo|mando|invio|preparo|archivio|salvo|sposto|aggiorno)\b/i,
+  /\b(creo|archivio|salvo|invio|preparo|sposto|aggiorno|mando)\s+(il|lo|la|i|gli|le|un|uno|una|questo|questa|subito|adesso|ora)\b/i,
+  /\b(cercher|verificher|controller|legger|scaricher|preparer|creer|archivier|salver|invier|sposter|mander|aggiorner)[oò]\b/i,
+  /\bvado\s+a\s+(controllare|inviare|creare|spostare|archiviare|salvare|mandare|preparare|aggiornare)\b/i,
 ]
 
 // ── Cache stato breaker ──
