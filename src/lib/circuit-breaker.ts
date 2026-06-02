@@ -3,7 +3,7 @@
  *
  * Spec: docs/superpowers/specs/2026-05-04-cervellone-circuit-breaker-design.md
  *
- * In stato NORMAL il bot usa model_default (alias claude-opus-latest).
+ * In stato NORMAL il bot usa model_default (default reale claude-opus-4-8).
  * Quando 3+ outcome falliti su ultimi 5 → trip a model_stable (config manuale).
  * Cron canary ogni 30 min ritenta latest, dopo 3 OK consecutive resetta.
  */
@@ -86,7 +86,7 @@ async function loadConfig(): Promise<{ activeModel: string; state: CircuitState 
     .select('key, value')
     .in('key', ['model_active', 'circuit_state'])
   if (error || !data) return null
-  let activeModel = 'claude-opus-latest'
+  let activeModel = 'claude-opus-4-8'
   let state: CircuitState = { state: 'NORMAL', tripped_at: null, reason: null, canary_consecutive_ok: 0 }
   for (const row of data) {
     if (row.key === 'model_active') {
@@ -262,7 +262,7 @@ export async function tripBreaker(reason: string): Promise<void> {
     .maybeSingle()
   const defaultModel = defaultRow?.value
     ? String(defaultRow.value).replace(/"/g, '')
-    : 'claude-opus-latest'
+    : 'claude-opus-4-8'
 
   const newState: CircuitState = {
     state: 'ROLLED_BACK',
@@ -310,7 +310,7 @@ export async function resetBreaker(): Promise<void> {
     .maybeSingle()
   const defaultModel = defaultRow?.value
     ? String(defaultRow.value).replace(/"/g, '')
-    : 'claude-opus-latest'
+    : 'claude-opus-4-8'
 
   const newState: CircuitState = {
     state: 'NORMAL',
@@ -358,7 +358,7 @@ export async function promoteModel(newDefault: string): Promise<{
   for (const r of data || []) {
     map[r.key] = String(r.value).replace(/"/g, '')
   }
-  const oldDefault = map.model_default || 'claude-opus-latest'
+  const oldDefault = map.model_default || 'claude-opus-4-8'
   const oldStable = map.model_stable || 'claude-opus-4-7'
   const newStable = oldDefault
 
