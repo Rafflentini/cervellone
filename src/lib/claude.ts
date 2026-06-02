@@ -12,8 +12,10 @@ import { logError } from './sanitize'
 import { withRetry } from './resilience'
 import { supabase } from './supabase'
 import { recordOutcome, getActiveModel, detectHallucination, type ModelOutcome } from './circuit-breaker'
+import { sendTelegramMessage } from './telegram-helpers'
 
 const client = new Anthropic()
+const ANTHROPIC_BILLING_ALERT_KEY = 'anthropic_billing_alerted'
 
 /**
  * FIX W1.1: capability detection runtime per i parametri thinking/effort.
@@ -89,6 +91,96 @@ async function detectModelCapabilities(model: string): Promise<ModelCaps> {
 
 export function invalidateModelCapsCache(): void {
   capsCache.clear()
+}
+
+function isBillingError(msg: string): boolean {
+  const normalized = msg.toLowerCase()
+  return normalized.includes('credit balance is too low') ||
+    (normalized.includes('invalid_request_error') && normalized.includes('credit'))
+}
+
+function resolveAdminChatId(): number {
+  let adminChat = parseInt(process.env.ADMIN_CHAT_ID || '0', 10)
+  if (!adminChat) {
+    const firstAllowed = (process.env.TELEGRAM_ALLOWED_IDS || '').split(',')[0]?.trim()
+    adminChat = parseInt(firstAllowed || '0', 10)
+  }
+  return adminChat
+}
+
+function errorDetails(err: unknown): { message: string; details: string } {
+  const message = err instanceof Error ? err.message : String(err)
+  if (!err || typeof err !== 'object') return { message, details: message }
+
+  const obj = err as Record<string, unknown>
+  const status = typeof obj.status === 'number' || typeof obj.status === 'string'
+    ? String(obj.status)
+    : ''
+  const nestedError = obj.error && typeof obj.error === 'object'
+    ? obj.error as Record<string, unknown>
+    : undefined
+  const errorType = typeof nestedError?.type === 'string' ? nestedError.type : ''
+  const details = [
+    message,
+    status ? `status=${status}` : '',
+    errorType ? `type=${errorType}` : '',
+  ].filter(Boolean).join(' ')
+
+  return { message, details }
+}
+
+function notifyAnthropicBillingIfNeeded(details: string): void {
+  void (async () => {
+    const { data } = await supabase
+      .from('cervellone_config')
+      .select('value')
+      .eq('key', ANTHROPIC_BILLING_ALERT_KEY)
+      .maybeSingle()
+
+    if (String(data?.value ?? '').replace(/"/g, '') === 'true') return
+
+    const adminChat = resolveAdminChatId()
+    if (adminChat) {
+      sendTelegramMessage(
+        adminChat,
+        '⚠️ *Credito Anthropic esaurito* — l\'API rifiuta le richieste ("credit balance too low"). Il bot è di fatto fermo finché non ricarichi il credito su console.anthropic.com → Billing.'
+      ).catch(err => console.error('[Anthropic billing] Telegram alert failed:', err))
+    } else {
+      console.warn('[Anthropic billing] alert skipped: no admin chat configured')
+    }
+
+    await supabase.from('cervellone_config').upsert(
+      { key: ANTHROPIC_BILLING_ALERT_KEY, value: 'true' },
+      { onConflict: 'key' }
+    )
+
+    console.warn(`[Anthropic billing] alerted admin for billing error: ${details.slice(0, 200)}`)
+  })().catch(err => console.error('[Anthropic billing] alert flow failed:', err))
+}
+
+function resetAnthropicBillingAlertIfNeeded(): void {
+  void (async () => {
+    const { data } = await supabase
+      .from('cervellone_config')
+      .select('value')
+      .eq('key', ANTHROPIC_BILLING_ALERT_KEY)
+      .maybeSingle()
+
+    if (String(data?.value ?? '').replace(/"/g, '') !== 'true') return
+
+    await supabase.from('cervellone_config').upsert(
+      { key: ANTHROPIC_BILLING_ALERT_KEY, value: 'false' },
+      { onConflict: 'key' }
+    )
+
+    const adminChat = resolveAdminChatId()
+    if (adminChat) {
+      sendTelegramMessage(
+        adminChat,
+        '✅ Credito Anthropic ripristinato, bot di nuovo operativo.'
+      ).catch(err => console.error('[Anthropic billing] recovery Telegram failed:', err))
+    }
+  })().catch(err => console.error('[Anthropic billing] reset flow failed:', err))
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -398,6 +490,7 @@ export async function callClaudeStreamTelegram(
   let totalToolCalls = 0
   let apiErrorOccurred = false
   let apiErrorMsg = ''
+  let apiErrorRecordDetails = ''
   try {
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const stream = await withRetry(() =>
@@ -518,8 +611,14 @@ export async function callClaudeStreamTelegram(
     // timeout) per (a) tracciare outcome=api_error sul circuit breaker e (b)
     // mostrare messaggio user-friendly invece dell'errore tecnico raw.
     apiErrorOccurred = true
-    apiErrorMsg = err instanceof Error ? err.message : String(err)
+    const apiError = errorDetails(err)
+    apiErrorMsg = apiError.message
+    apiErrorRecordDetails = apiError.details
     console.warn(`[STREAM API ERROR] model=${modelConfig.model}: ${apiErrorMsg.slice(0, 200)}`)
+
+    if (isBillingError(apiErrorRecordDetails)) {
+      notifyAnthropicBillingIfNeeded(apiErrorRecordDetails)
+    }
 
     // Mappa errori comuni a messaggi user-friendly
     let errMsg: string
@@ -527,7 +626,7 @@ export async function callClaudeStreamTelegram(
       errMsg = '⚠️ Modello AI temporaneamente non disponibile. Il sistema sta cercando di recuperare automaticamente, riprovi tra un momento.'
     } else if (/overloaded|529/i.test(apiErrorMsg)) {
       errMsg = '⚠️ Servizio AI sovraccarico. Riprovi tra qualche secondo.'
-    } else if (/credit|billing/i.test(apiErrorMsg)) {
+    } else if (isBillingError(apiErrorRecordDetails)) {
       errMsg = '⚠️ Crediti API esauriti. L\'Ingegnere è stato avvisato.'
     } else if (/rate.?limit|429/i.test(apiErrorMsg)) {
       errMsg = '⚠️ Troppe richieste al servizio AI. Attenda un momento.'
@@ -574,11 +673,15 @@ export async function callClaudeStreamTelegram(
     outcome = 'hallucination'
   }
 
+  if (outcome === 'success') {
+    resetAnthropicBillingAlertIfNeeded()
+  }
+
   recordOutcome(modelConfig.model, outcome, {
     fullLen: fullResponse.length,
     consecutiveNoText,
     requestId: conversationId,
-    details: apiErrorOccurred ? apiErrorMsg.slice(0, 500) : undefined,
+    details: apiErrorOccurred ? apiErrorRecordDetails.slice(0, 500) : undefined,
   }).catch(err => console.error('[CB] recordOutcome failed:', err))
 
   return fullResponse
