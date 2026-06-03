@@ -606,7 +606,7 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const doc = d as any
         const date = new Date(doc.created_at).toLocaleDateString('it')
-        const url = `https://cervellone-5poc.vercel.app/doc/${doc.id}`
+        const url = `https://cervellone-five.vercel.app/doc/${doc.id}`
         const header = `📄 ${doc.name} — ${date} — ${url}`
         if (!includeContent) return header
         const content = String(doc.content ?? '')

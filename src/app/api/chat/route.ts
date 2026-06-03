@@ -218,7 +218,7 @@ export async function POST(request: NextRequest) {
               .single()
 
             if (savedDoc?.id) {
-              docLinks.push(`\n\n📄 **${title}**\n👉 [Apri documento](https://cervellone-5poc.vercel.app/doc/${savedDoc.id})`)
+              docLinks.push(`\n\n📄 **${title}**\n👉 [Apri documento](https://cervellone-five.vercel.app/doc/${savedDoc.id})`)
             }
           }
         }
