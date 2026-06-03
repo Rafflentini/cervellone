@@ -8,13 +8,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
 import type Anthropic from '@anthropic-ai/sdk'
 import crypto from 'crypto'
-import { callClaudeStreamTelegram } from '@/lib/claude'
 import { supabase } from '@/lib/supabase'
 import { getSupabaseServer } from '@/lib/supabase-server'
-import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
-import { getTelegramSystemPrompt } from '@/lib/prompts'
-import { saveMessageWithEmbedding } from '@/lib/memory'
-import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping, editTelegramMessage, sendTelegramMessageWithId } from '@/lib/telegram-helpers'
+import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
+import { runAgentJob, type AgentJobInput } from '@/lib/agent-job'
+import { shouldUseDurable } from '@/lib/workflow/should-use-durable'
+import { createRun } from '@/lib/workflow/runs'
+import { start } from 'workflow/api'
+import { runAgentTask } from '@/workflows/agent-task'
 import { validateWebhookSecret } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { safeSupabase } from '@/lib/resilience'
@@ -22,7 +23,6 @@ import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-too
 // Trigger.dev imports temporaneamente non usati (Task #10 backlog)
 // import { tasks } from '@trigger.dev/sdk/v3'
 // import type { cervelloneLongTask } from '../../../../trigger/cervellone-long-task'
-import { classifyTask } from '@/lib/task-classifier'
 
 export const maxDuration = 800
 
@@ -591,82 +591,28 @@ export async function POST(request: NextRequest) {
       }, 20_000)
 
       try {
-        const placeholderMsgId = await sendTelegramMessageWithId(chatId, '🧠 Sto elaborando...')
-        const currentMsgId = placeholderMsgId
-        let lastEditText = ''
-
-        const fullResponse = await callClaudeStreamTelegram(
+        // FASE 1b: lavoro core estratto in runAgentJob (condiviso con il path
+        // durable). L'hook onStreamSettled riproduce ESATTAMENTE il punto in cui
+        // l'originale clear-ava heartbeat + typing (subito dopo lo stream Claude
+        // + mark uploads, prima del parsing documenti).
+        await runAgentJob(
           {
-            messages: history,
-            systemPrompt: await getTelegramSystemPrompt(userText),
-            userQuery: userText,
+            chatId,
+            userText,
             conversationId,
-            hasFiles: fileBlocks.length > 0,
+            history,
+            fileBlocks,
+            fileDescription,
+            attachedRecentUploadIds,
+            requestId,
           },
-          async (accumulated) => {
-            if (!currentMsgId) return
-            const preview = accumulated.slice(0, 4000)
-            if (preview === lastEditText) return
-            lastEditText = preview
-            await editTelegramMessage(chatId, currentMsgId, preview)
-          }
+          {
+            onStreamSettled: () => {
+              if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null }
+              if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
+            },
+          },
         )
-
-        if (attachedRecentUploadIds.length > 0) {
-          await safeSupabase(() => supabase.from('telegram_recent_uploads')
-            .update({ processed: true, processed_at: new Date().toISOString() })
-            .in('id', attachedRecentUploadIds))
-        }
-
-        if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null }
-        if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
-
-        // Gestisci documenti e risposta finale
-        const responseBlocks = parseDocumentBlocks(fullResponse)
-        const textParts: string[] = []
-
-        for (const block of responseBlocks) {
-          if (block.type === 'document') {
-            const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i)
-            const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
-
-            const savedDoc = await safeSupabase(
-              () => supabase.from('documents')
-                .insert({ name: title, content: block.content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
-                .select('id').single()
-            )
-            const docUrl = (savedDoc as any)?.id
-              ? `https://cervellone-5poc.vercel.app/doc/${(savedDoc as any).id}`
-              : 'https://cervellone-5poc.vercel.app'
-
-            // FIX W1.3 (utente 2/5): NO auto-save su Drive di default.
-            // Il documento resta nella memoria permanente Cervellone (Supabase + URL /doc/[id]).
-            // Per salvare su Drive, l'utente deve chiederlo esplicitamente — Cervellone
-            // chiama il tool salva_su_drive che fa la mappatura Y+X.
-            textParts.push(`📄 *${title}*\n👉 ${docUrl}`)
-          } else if (block.content.trim()) {
-            textParts.push(block.content)
-          }
-        }
-
-        const finalText = textParts.join('\n\n') || fullResponse
-        if (placeholderMsgId) {
-          if (finalText.length <= 4000) {
-            await editTelegramMessage(chatId, placeholderMsgId, finalText)
-          } else {
-            await editTelegramMessage(chatId, placeholderMsgId, finalText.slice(0, 4000))
-            const remaining = finalText.slice(4000)
-            if (remaining.trim()) await sendTelegramMessage(chatId, remaining)
-          }
-        } else {
-          await sendTelegramMessage(chatId, finalText)
-        }
-
-        // Salva conoscenza file
-        if (fileBlocks.length > 0 && fullResponse.length > 200) {
-          const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
-          saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
-        }
       } catch (err) {
         console.error('TELEGRAM BG error:', err)
         const msg = err instanceof Error ? err.message : String(err)
@@ -684,18 +630,47 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ── Classifica task: veloce vs durable ──
-    // FIX W1.3 BUG-1: path Trigger.dev DISABILITATO temporaneamente.
-    // Il dispatch nativo fallisce silenziosamente (Task #10 backlog). Finché non
-    // funziona, ogni messaggio long-task entrava nel path durable, falliva,
-    // mandava "Modalità degradata" e si bloccava. Adesso TUTTI i messaggi vanno
-    // direttamente in waitUntil 300s che funziona perfettamente (testato in W1).
-    // Riabilitare quando Task #10 è risolto.
-    const isLongTask = classifyTask(userText, fileBlocks)
-    console.log(`CLASSIFY: long=${isLongTask} userText="${userText.slice(0, 80)}"`)
+    // ── Classifica task: veloce vs durable (FASE 1b) ──
+    // shouldUseDurable = flag `durable_workflows_enabled` ON **E** task lungo.
+    // FLAG OFF (prod): ritorna sempre false → ramo else → comportamento IDENTICO
+    // a oggi (waitUntil(bgProcess()), path in-process 300s).
+    if (await shouldUseDurable(userText, fileBlocks)) {
+      // ── Path DURABLE (flag ON + long task) ──
+      const input: AgentJobInput = {
+        chatId,
+        userText,
+        conversationId,
+        history,
+        fileBlocks,
+        fileDescription,
+        attachedRecentUploadIds,
+        requestId,
+      }
+      const run = await start(runAgentTask, [input])
+      await createRun({
+        id: run.runId,
+        channel: 'telegram',
+        chatId: String(chatId),
+        conversationId,
+      })
 
-    // Path veloce in-process (max 300s Vercel) — copre tutti i casi finché Task #10
-    waitUntil(bgProcess())
+      // Mutex/heartbeat: nel path durable bgProcess NON viene eseguito, quindi
+      // il suo finally (che rilasciava il lock) non gira e non c'è heartbeat.
+      // Il workflow possiede ora il job in modo durevole/crash-safe: il mutex
+      // in-process (serializzazione bgProcess paralleli) non serve più per
+      // questa request. Lo rilascio QUI per non lasciare la chat bloccata fino
+      // allo stale-cleanup a 90s. Fermo anche il typingInterval avviato prima
+      // del dispatch (il workflow invia il proprio placeholder/stream).
+      if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
+      await safeSupabase(() =>
+        supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId)
+      )
+    } else {
+      // ── Path FLAG-OFF (default prod) — INVARIATO ──
+      // Path veloce in-process (max 300s Vercel). bgProcess gestisce
+      // heartbeat + release mutex nel proprio finally, come sempre.
+      waitUntil(bgProcess())
+    }
 
     // Rispondi SUBITO al webhook — niente più timeout
     return NextResponse.json({ ok: true })
