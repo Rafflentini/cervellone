@@ -18,8 +18,7 @@ function resolveAdminChatId(): number {
   return adminChat
 }
 
-function notifyGoogleTokenDeadIfNeeded(): void {
-  void (async () => {
+async function notifyGoogleTokenDeadIfNeeded(): Promise<void> {
     const { data } = await supabase
       .from('cervellone_config')
       .select('value')
@@ -29,19 +28,25 @@ function notifyGoogleTokenDeadIfNeeded(): void {
     if (String(data?.value ?? '').replace(/"/g, '') === 'true') return
 
     const adminChat = resolveAdminChatId()
-    if (adminChat) {
-      sendTelegramMessage(adminChat, GOOGLE_TOKEN_DEAD_ALERT).catch(err =>
-        console.error('[CRON gmail-alerts] google token alert failed:', err)
-      )
-    } else {
+    if (!adminChat) {
       console.warn('[CRON gmail-alerts] google token alert skipped: no admin chat configured')
+      return
     }
 
-    await supabase.from('cervellone_config').upsert(
+    try {
+      await sendTelegramMessage(adminChat, GOOGLE_TOKEN_DEAD_ALERT)
+    } catch (err) {
+      console.error('[CRON gmail-alerts] google token alert send failed:', err instanceof Error ? err.message : String(err))
+      return
+    }
+
+    const { error } = await supabase.from('cervellone_config').upsert(
       { key: GOOGLE_TOKEN_DEAD_KEY, value: 'true' },
       { onConflict: 'key' }
     )
-  })().catch(err => console.error('[CRON gmail-alerts] google token alert flow failed:', err))
+    if (error) {
+      console.error('[CRON gmail-alerts] google token alert flag upsert failed:', error.message)
+    }
 }
 
 export async function GET(req: NextRequest) {
@@ -80,7 +85,7 @@ export async function GET(req: NextRequest) {
     console.error('[CRON gmail-alerts] checkCriticalAlerts failed:', err instanceof Error ? err.message : String(err))
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.toLowerCase().includes('invalid_grant')) {
-      notifyGoogleTokenDeadIfNeeded()
+      await notifyGoogleTokenDeadIfNeeded()
     }
     return NextResponse.json({ ok: false, error: 'check_failed' }, { status: 500 })
   }
