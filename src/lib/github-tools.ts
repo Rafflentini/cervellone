@@ -21,16 +21,23 @@ const VERCEL_PROJECT_ID = 'prj_82oAdncoRjfm5LulvBgzWbel5Pva'
 const VERCEL_TEAM_ID = 'team_QOxzPu6kcaxY8Jdc45arGmgL'
 
 // File che il bot NON può modificare via PR (sicurezza)
+// Il bot può AGGIUNGERE/ESTENDERE tool, ma MAI toccare secrets, CI, migration, auth.
 const PROTECTED_PATHS = [
   '.env',
   '.env.local',
   '.env.production',
-  '.github/workflows/',
+  '.github/', // tutto CI/workflows
   'package.json', // troppo critico, modifiche manuali
+  'package-lock.json',
+  'supabase/migrations/', // schema DB, mai automatico
+  'src/lib/auth', // auth (file o cartella)
+  'src/proxy.ts', // middleware/proxy
 ]
 
 function isProtectedPath(path: string): boolean {
-  return PROTECTED_PATHS.some(p => path.startsWith(p))
+  // Normalizza eventuale "./" o slash iniziale
+  const p = path.replace(/^\.?\//, '')
+  return PROTECTED_PATHS.some(protectedPath => p.startsWith(protectedPath))
 }
 
 function ghHeaders(): Record<string, string> {
@@ -74,16 +81,24 @@ async function readFile(path: string, ref?: string): Promise<string> {
 // ── github_propose_fix ──
 
 async function proposeFix(
-  path: string,
-  content: string,
+  files: Array<{ path: string; content: string }>,
   branchName: string,
   prTitle: string,
   prBody: string,
 ): Promise<string> {
-  console.log(`[GH] proposeFix path="${path}" branch="${branchName}" title="${prTitle.slice(0, 50)}"`)
+  console.log(`[GH] proposeFix files=${files.length} (${files.map(f => f.path).join(', ').slice(0, 120)}) branch="${branchName}" title="${prTitle.slice(0, 50)}"`)
 
-  if (isProtectedPath(path)) {
-    return `⛔ File "${path}" è protetto. Non posso proporre modifiche automatiche su file sensibili (.env, workflows, package.json). L'Ingegnere deve modificarlo manualmente.`
+  // 1. Fence: tutti i file devono essere validi e non protetti PRIMA di aprire qualsiasi PR
+  if (!Array.isArray(files) || files.length === 0) {
+    return `⛔ Nessun file fornito. Passa almeno un { path, content }.`
+  }
+  for (const f of files) {
+    if (!f || typeof f.path !== 'string' || !f.path.trim() || typeof f.content !== 'string') {
+      return `⛔ File invalido: ogni elemento deve avere { path: string (non vuoto), content: string }.`
+    }
+    if (isProtectedPath(f.path)) {
+      return `⛔ File "${f.path}" è protetto. Non posso proporre modifiche automatiche su file sensibili (.env, .github/CI, package.json, supabase/migrations, auth, proxy). L'Ingegnere deve modificarlo manualmente. PR NON aperta.`
+    }
   }
 
   if (!/^[a-z0-9/_-]+$/i.test(branchName) || branchName.length > 100) {
@@ -91,38 +106,93 @@ async function proposeFix(
   }
 
   try {
-    // 1. Get current file SHA on main
-    const fileRes = await fetch(
-      `${GITHUB_API}/repos/${REPO_FULL}/contents/${path}?ref=main`,
-      { headers: ghHeaders() },
-    )
-    if (!fileRes.ok) {
-      return `Errore: file "${path}" non trovato su main (HTTP ${fileRes.status}). Crearlo via PR senza sha non ancora supportato — modifica manuale.`
-    }
-    const fileMeta = await fileRes.json() as { sha?: string }
-    const fileSha = fileMeta.sha
-    if (!fileSha) return `Errore: SHA del file non recuperato.`
-
     // 2. Get main HEAD SHA
     const mainRefRes = await fetch(
       `${GITHUB_API}/repos/${REPO_FULL}/git/refs/heads/main`,
       { headers: ghHeaders() },
     )
-    if (!mainRefRes.ok) return `Errore lettura main HEAD: HTTP ${mainRefRes.status}`
+    if (!mainRefRes.ok) {
+      const b = await mainRefRes.text()
+      return `Errore lettura main HEAD: HTTP ${mainRefRes.status} — ${b.slice(0, 200)}`
+    }
     const mainRef = await mainRefRes.json() as { object?: { sha?: string } }
     const mainSha = mainRef.object?.sha
     if (!mainSha) return `Errore: SHA main HEAD non recuperato.`
 
-    // 3. Create branch from main
+    // 3. Get base tree SHA dal commit di main
+    const mainCommitRes = await fetch(
+      `${GITHUB_API}/repos/${REPO_FULL}/git/commits/${mainSha}`,
+      { headers: ghHeaders() },
+    )
+    if (!mainCommitRes.ok) {
+      const b = await mainCommitRes.text()
+      return `Errore lettura commit main: HTTP ${mainCommitRes.status} — ${b.slice(0, 200)}`
+    }
+    const mainCommit = await mainCommitRes.json() as { tree?: { sha?: string } }
+    const baseTreeSha = mainCommit.tree?.sha
+    if (!baseTreeSha) return `Errore: base tree SHA non recuperato.`
+
+    // 4. Crea un blob per ogni file (Git Data API — gestisce nuovi + esistenti uniformemente)
+    const treeEntries: Array<{ path: string; mode: '100644'; type: 'blob'; sha: string }> = []
+    for (const f of files) {
+      const blobRes = await fetch(
+        `${GITHUB_API}/repos/${REPO_FULL}/git/blobs`,
+        {
+          method: 'POST',
+          headers: ghHeaders(),
+          body: JSON.stringify({ content: f.content, encoding: 'utf-8' }),
+        },
+      )
+      if (!blobRes.ok) {
+        const b = await blobRes.text()
+        return `Errore creando blob per "${f.path}": HTTP ${blobRes.status} — ${b.slice(0, 200)}`
+      }
+      const blob = await blobRes.json() as { sha?: string }
+      if (!blob.sha) return `Errore: blob SHA non recuperato per "${f.path}".`
+      treeEntries.push({ path: f.path, mode: '100644', type: 'blob', sha: blob.sha })
+    }
+
+    // 5. Crea il tree basato su quello di main
+    const treeRes = await fetch(
+      `${GITHUB_API}/repos/${REPO_FULL}/git/trees`,
+      {
+        method: 'POST',
+        headers: ghHeaders(),
+        body: JSON.stringify({ base_tree: baseTreeSha, tree: treeEntries }),
+      },
+    )
+    if (!treeRes.ok) {
+      const b = await treeRes.text()
+      return `Errore creando tree: HTTP ${treeRes.status} — ${b.slice(0, 200)}`
+    }
+    const tree = await treeRes.json() as { sha?: string }
+    const newTreeSha = tree.sha
+    if (!newTreeSha) return `Errore: tree SHA non recuperato.`
+
+    // 6. Crea il commit
+    const commitRes = await fetch(
+      `${GITHUB_API}/repos/${REPO_FULL}/git/commits`,
+      {
+        method: 'POST',
+        headers: ghHeaders(),
+        body: JSON.stringify({ message: prTitle, tree: newTreeSha, parents: [mainSha] }),
+      },
+    )
+    if (!commitRes.ok) {
+      const b = await commitRes.text()
+      return `Errore creando commit: HTTP ${commitRes.status} — ${b.slice(0, 200)}`
+    }
+    const commit = await commitRes.json() as { sha?: string }
+    const commitSha = commit.sha
+    if (!commitSha) return `Errore: commit SHA non recuperato.`
+
+    // 7. Crea il branch ref puntando al commit
     const createBranchRes = await fetch(
       `${GITHUB_API}/repos/${REPO_FULL}/git/refs`,
       {
         method: 'POST',
         headers: ghHeaders(),
-        body: JSON.stringify({
-          ref: `refs/heads/${branchName}`,
-          sha: mainSha,
-        }),
+        body: JSON.stringify({ ref: `refs/heads/${branchName}`, sha: commitSha }),
       },
     )
     if (!createBranchRes.ok) {
@@ -133,26 +203,7 @@ async function proposeFix(
       return `Errore creando branch: HTTP ${createBranchRes.status} — ${errBody.slice(0, 200)}`
     }
 
-    // 4. Commit file on new branch
-    const commitRes = await fetch(
-      `${GITHUB_API}/repos/${REPO_FULL}/contents/${path}`,
-      {
-        method: 'PUT',
-        headers: ghHeaders(),
-        body: JSON.stringify({
-          message: prTitle,
-          content: Buffer.from(content, 'utf-8').toString('base64'),
-          sha: fileSha,
-          branch: branchName,
-        }),
-      },
-    )
-    if (!commitRes.ok) {
-      const errBody = await commitRes.text()
-      return `Errore commit su branch: HTTP ${commitRes.status} — ${errBody.slice(0, 200)}`
-    }
-
-    // 5. Open PR
+    // 8. Apri la PR
     const prRes = await fetch(
       `${GITHUB_API}/repos/${REPO_FULL}/pulls`,
       {
@@ -160,7 +211,7 @@ async function proposeFix(
         headers: ghHeaders(),
         body: JSON.stringify({
           title: prTitle.slice(0, 100),
-          body: `${prBody}\n\n---\n_PR proposta automaticamente da Cervellone (suggested fix). Da revisionare e approvare prima del merge._`,
+          body: `${prBody}\n\n---\n_PR automatica proposta da Cervellone (suggested fix, ${files.length} file). Da revisionare e approvare prima del merge._`,
           head: branchName,
           base: 'main',
         }),
@@ -171,8 +222,8 @@ async function proposeFix(
       return `Errore aprendo PR: HTTP ${prRes.status} — ${errBody.slice(0, 200)}`
     }
     const pr = await prRes.json() as { html_url?: string; number?: number }
-    console.log(`[GH] proposeFix PR #${pr.number} created: ${pr.html_url}`)
-    return `✅ PR #${pr.number} aperta su ${REPO_FULL}\n👉 ${pr.html_url}\n\nL'Ingegnere deve revisionare e mergiare manualmente. Niente push diretto su main.`
+    console.log(`[GH] proposeFix PR #${pr.number} created: ${pr.html_url} (${files.length} file)`)
+    return `✅ PR #${pr.number} aperta su ${REPO_FULL} (${files.length} file: ${files.map(f => f.path).join(', ')})\n👉 ${pr.html_url}\n\nL'Ingegnere deve revisionare e mergiare manualmente. Niente push diretto su main.`
   } catch (err) {
     console.error('[GH] proposeFix ERROR:', err)
     return `Errore proponendo fix: ${err instanceof Error ? err.message : err}`
@@ -318,17 +369,27 @@ export const GITHUB_TOOLS = [
   },
   {
     name: 'github_propose_fix',
-    description: `Propone una modifica al codice creando branch + commit + PR su GitHub. NON pusha mai su main direttamente — l'Ingegnere deve approvare la PR. Usa SOLO per fix concreti con motivazione tecnica chiara basata su log d'errore o bug riprodotto. File protetti (.env, workflows, package.json) esclusi per sicurezza.`,
+    description: `Propone una modifica al codice creando branch + commit + PR su GitHub. Può CREARE nuovi file e MODIFICARE più file in un solo PR (es. aggiungere un nuovo tool = nuovo file + modifica del registry che lo importa). NON pusha mai su main direttamente — l'Ingegnere deve approvare la PR. Usa SOLO per fix/feature concreti con motivazione tecnica chiara basata su log d'errore o bug riprodotto. File protetti (.env, .github/CI, package.json, supabase/migrations, auth, proxy) esclusi per sicurezza.`,
     input_schema: {
       type: 'object' as const,
       properties: {
-        path: { type: 'string', description: 'Path del file da modificare (deve esistere su main)' },
-        content: { type: 'string', description: 'Contenuto NUOVO completo del file (non diff)' },
+        files: {
+          type: 'array',
+          description: 'Uno o più file da creare/modificare in un solo PR. Ogni elemento: { path, content } con il contenuto COMPLETO del file (non diff). Per i file esistenti passa il contenuto intero aggiornato.',
+          items: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'Path relativo al root del repo, es. "src/lib/foo-tools.ts"' },
+              content: { type: 'string', description: 'Contenuto NUOVO completo del file (non diff)' },
+            },
+            required: ['path', 'content'],
+          },
+        },
         branch_name: { type: 'string', description: 'Nome del branch, es. "fix/bug-7-streaming". Solo a-z, 0-9, _, -, /. Max 100 char.' },
         pr_title: { type: 'string', description: 'Titolo PR, max 100 char, formato "fix(area): cosa"' },
         pr_body: { type: 'string', description: 'Markdown strutturato: ## Problema (cosa) + ## Causa (perché) + ## Fix (come) + ## Test (come verificare). Cita log Vercel se disponibili.' },
       },
-      required: ['path', 'content', 'branch_name', 'pr_title', 'pr_body'],
+      required: ['files', 'branch_name', 'pr_title', 'pr_body'],
     },
   },
   {
@@ -360,19 +421,33 @@ export const GITHUB_TOOLS = [
 
 export async function executeGithubTool(
   name: string,
-  input: Record<string, string>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  input: Record<string, any>,
 ): Promise<string> {
   switch (name) {
     case 'github_read_file':
       return readFile(input.path, input.ref)
-    case 'github_propose_fix':
+    case 'github_propose_fix': {
+      // input.files può arrivare come array (chiamata diretta) o come stringa JSON
+      // (alcuni wrapper stringificano i valori non-string prima del dispatch).
+      let files: unknown = input.files
+      if (typeof files === 'string') {
+        try {
+          files = JSON.parse(files)
+        } catch {
+          return `⛔ "files" è una stringa non-JSON valida. Atteso array di { path, content }.`
+        }
+      }
+      if (!Array.isArray(files) || files.length === 0) {
+        return `⛔ "files" deve essere un array non vuoto di { path, content }.`
+      }
       return proposeFix(
-        input.path,
-        input.content,
+        files as Array<{ path: string; content: string }>,
         input.branch_name,
         input.pr_title,
         input.pr_body,
       )
+    }
     case 'vercel_deploy_status':
       return deployStatus(input.commit_sha)
     case 'github_merge_pr':
