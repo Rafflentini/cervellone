@@ -7,6 +7,7 @@ const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/calendar.events',  // 2026-06-03: scope per creazione eventi Google Calendar (tool crea_evento_calendar)
   'openid',  // FIX W1.3.5: richiesto per ottenere id_token con email
   'email',
   'profile',
