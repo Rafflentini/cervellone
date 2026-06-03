@@ -82,6 +82,33 @@ function matchNamedFolder(folders: FolderMatch[], query: string): FolderMatch[] 
   })
 }
 
+// Punteggio per scegliere la sottocartella foto quando piu candidate matchano
+// la FOTO_FOLDER_RE (frequente nella struttura numerata 00-12 dei cantieri).
+// Toglie la numerazione iniziale (es. "08_", "08 -", "08.") prima di valutare.
+function scoreFotoFolder(name: string): number {
+  const n = normalizeName(name)
+  const stripped = n.replace(/^\d+\s*[_\-.)]*\s*/, '')
+  if (stripped === 'foto') return 100
+  if (/documentazione fotografica/.test(n)) return 90
+  if (/fotografic/.test(n)) return 80
+  if (/\bfoto\b/.test(n)) return 70
+  if (/foto/.test(n)) return 60
+  return 0
+}
+
+// Sceglie la cartella foto fra le sottocartelle. In caso di piu candidate usa
+// un ranking deterministico; disambigua solo se c'e un vero pareggio di punteggio.
+function pickFotoFolder(subfolders: FolderMatch[]): { match?: FolderMatch; candidates: FolderMatch[] } {
+  const candidates = subfolders.filter(f => FOTO_FOLDER_RE.test(f.name))
+  if (candidates.length === 0) return { candidates: [] }
+  if (candidates.length === 1) return { match: candidates[0], candidates }
+  const ranked = [...candidates].sort((a, b) => scoreFotoFolder(b.name) - scoreFotoFolder(a.name))
+  const topScore = scoreFotoFolder(ranked[0].name)
+  const topTied = ranked.filter(f => scoreFotoFolder(f.name) === topScore)
+  if (topTied.length === 1) return { match: ranked[0], candidates }
+  return { candidates: topTied }
+}
+
 function sanitizeFolderSegment(value: string): string {
   return value.replace(INVALID_FOLDER_CHARS_RE, ' ').replace(/\s+/g, ' ').trim()
 }
@@ -97,8 +124,8 @@ function isMoveSuccess(result: string): boolean {
 }
 
 function parseHeaderColumns(sheetText: string): string[] {
-  // Il Registro ha header su più righe (es. 3, dati dalla riga 4): scegli la riga "Riga N:"
-  // con PIÙ celle — è quella coi nomi colonna reali (titolo/merge hanno poche celle).
+  // Il Registro ha header su piu righe (es. 3, dati dalla riga 4): scegli la riga "Riga N:"
+  // con PIU celle — e quella coi nomi colonna reali (titolo/merge hanno poche celle).
   const candidates = sheetText
     .split('\n')
     .map(line => line.trim())
@@ -148,6 +175,7 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   const nome = cleanString(input.nome)
   const lavorazione = cleanString(input.lavorazione)
   const data = cleanString(input.data)
+  const cartellaFotoHint = cleanString(input.cartella_foto)
 
   if (!ambito) return fail({ need: 'ambito' })
   if (!nome) return fail({ error: 'nome richiesto' })
@@ -168,16 +196,29 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
 
   const subjectFolder = matches[0]
   const subjectSubfolders = await listSubfolders(subjectFolder.id)
-  const fotoMatches = subjectSubfolders.filter(folder => FOTO_FOLDER_RE.test(folder.name))
 
-  if (fotoMatches.length === 0) {
-    return fail({ need: 'cartella_foto', candidati: subjectSubfolders.map(({ id, name }) => ({ id, name })) })
-  }
-  if (fotoMatches.length > 1) {
-    return fail({ need: 'cartella_foto', candidati: fotoMatches.map(({ id, name }) => ({ id, name })) })
+  // 1) Override esplicito: il bot/Ingegnere ha indicato quale sottocartella usare.
+  let fotoFolder: FolderMatch | undefined
+  if (cartellaFotoHint) {
+    const hintMatches = matchNamedFolder(subjectSubfolders, cartellaFotoHint)
+    if (hintMatches.length === 1) {
+      fotoFolder = hintMatches[0]
+    } else if (hintMatches.length > 1) {
+      return fail({ need: 'cartella_foto', candidati: hintMatches.map(({ id, name }) => ({ id, name })) })
+    }
+    // se 0 match, prosegue con l'auto-detection sotto
   }
 
-  const fotoFolder = fotoMatches[0]
+  // 2) Auto-detection con ranking deterministico.
+  if (!fotoFolder) {
+    const picked = pickFotoFolder(subjectSubfolders)
+    if (!picked.match) {
+      const candidati = (picked.candidates.length ? picked.candidates : subjectSubfolders).map(({ id, name }) => ({ id, name }))
+      return fail({ need: 'cartella_foto', candidati })
+    }
+    fotoFolder = picked.match
+  }
+
   const giorno = data && ISO_DATE_RE.test(data) ? data : todayRomeISO()
   const cleanLavorazione = lavorazione ? sanitizeFolderSegment(lavorazione) : undefined
   const segment = cleanLavorazione ? `${giorno} - ${cleanLavorazione}` : giorno
@@ -279,6 +320,7 @@ export const FOTO_ARCHIVE_TOOLS: ToolDefinition[] = [
         nome: { type: 'string', description: 'Nome o parte del nome del cantiere/progetto.' },
         lavorazione: { type: 'string', description: 'Lavorazione o descrizione breve della sessione foto.' },
         data: { type: 'string', description: 'Data lavorazione in formato YYYY-MM-DD.' },
+        cartella_foto: { type: 'string', description: 'OPZIONALE — nome (anche parziale) della sottocartella foto da usare, es. "Documentazione Fotografica". Se omesso, viene rilevata automaticamente.' },
       },
       required: ['nome'],
     },
