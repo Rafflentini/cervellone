@@ -129,8 +129,7 @@ function errorDetails(err: unknown): { message: string; details: string } {
   return { message, details }
 }
 
-function notifyAnthropicBillingIfNeeded(details: string): void {
-  void (async () => {
+async function notifyAnthropicBillingIfNeeded(details: string): Promise<void> {
     const { data } = await supabase
       .from('cervellone_config')
       .select('value')
@@ -140,22 +139,30 @@ function notifyAnthropicBillingIfNeeded(details: string): void {
     if (String(data?.value ?? '').replace(/"/g, '') === 'true') return
 
     const adminChat = resolveAdminChatId()
-    if (adminChat) {
-      sendTelegramMessage(
+    if (!adminChat) {
+      console.warn('[Anthropic billing] alert skipped: no admin chat configured')
+      return
+    }
+    try {
+      await sendTelegramMessage(
         adminChat,
         '⚠️ *Credito Anthropic esaurito* — l\'API rifiuta le richieste ("credit balance too low"). Il bot è di fatto fermo finché non ricarichi il credito su console.anthropic.com → Billing.'
-      ).catch(err => console.error('[Anthropic billing] Telegram alert failed:', err))
-    } else {
-      console.warn('[Anthropic billing] alert skipped: no admin chat configured')
+      )
+    } catch (err) {
+      console.error('[Anthropic billing] Telegram alert failed:', err instanceof Error ? err.message : String(err))
+      return
     }
 
-    await supabase.from('cervellone_config').upsert(
+    const { error } = await supabase.from('cervellone_config').upsert(
       { key: ANTHROPIC_BILLING_ALERT_KEY, value: 'true' },
       { onConflict: 'key' }
     )
+    if (error) {
+      console.error('[Anthropic billing] alert flag upsert failed:', error.message)
+      return
+    }
 
     console.warn(`[Anthropic billing] alerted admin for billing error: ${details.slice(0, 200)}`)
-  })().catch(err => console.error('[Anthropic billing] alert flow failed:', err))
 }
 
 function resetAnthropicBillingAlertIfNeeded(): void {
@@ -617,7 +624,7 @@ export async function callClaudeStreamTelegram(
     console.warn(`[STREAM API ERROR] model=${modelConfig.model}: ${apiErrorMsg.slice(0, 200)}`)
 
     if (isBillingError(apiErrorRecordDetails)) {
-      notifyAnthropicBillingIfNeeded(apiErrorRecordDetails)
+      await notifyAnthropicBillingIfNeeded(apiErrorRecordDetails)
     }
 
     // Mappa errori comuni a messaggi user-friendly
