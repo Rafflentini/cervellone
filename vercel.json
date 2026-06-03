@@ -1,4 +1,9 @@
 {
+  "fluid": true,
+  "functions": {
+    "src/app/api/telegram/route.ts": { "maxDuration": 800 },
+    "src/app/api/chat/route.ts": { "maxDuration": 800 }
+  },
   "crons": [
     { "path": "/api/cron/canary", "schedule": "*/30 * * * *" },
     { "path": "/api/cron/gmail-morning", "schedule": "0 6 * * 1-5" },

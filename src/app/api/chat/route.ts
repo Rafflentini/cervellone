@@ -11,7 +11,7 @@ import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { supabase } from '@/lib/supabase'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
 
-export const maxDuration = 300
+export const maxDuration = 800
 
 export async function POST(request: NextRequest) {
   // SEC-001: Validate cookie content, not just existence

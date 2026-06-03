@@ -24,7 +24,7 @@ import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-too
 // import type { cervelloneLongTask } from '../../../../trigger/cervellone-long-task'
 import { classifyTask } from '@/lib/task-classifier'
 
-export const maxDuration = 300
+export const maxDuration = 800
 
 function chatIdToUuid(chatId: number): string {
   const hash = crypto.createHash('md5').update(`telegram_${chatId}`).digest('hex')
@@ -371,11 +371,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    // ── /reset — sblocca manualmente il mutex se il bot è bloccato ──
+    if (userText.trim().toLowerCase() === '/reset') {
+      await safeSupabase(() => supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId))
+      await sendTelegramMessage(chatId, '✅ Sbloccato. Puoi rimandare il messaggio.')
+      return NextResponse.json({ ok: true })
+    }
+
     // ── Bug 1: mutex per chat ──
     // Evita bgProcess paralleli sulla stessa chat: se l'utente manda un messaggio
     // mentre il bot sta elaborando il precedente, droppiamo il nuovo per non
     // creare hallucination ("Trovato!" senza tool eseguito) e streaming sovrapposti.
-    // Stale lock cleanup a 5 min = Vercel function max duration.
+    // Stale lock cleanup a 90s (heartbeat-based): task live aggiorna started_at ogni 20s.
     // Se Supabase down → fallback degradato (lockClaimed=true), lascia passare.
     // FIC bozze documenti - doppia conferma (parita con web)
     const mFicOk2 = userText.match(/^\/fic_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
@@ -392,7 +399,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    const STALE_LOCK_MS = 5 * 60 * 1000
+    const STALE_LOCK_MS = 90 * 1000
     const requestId = `${chatId}-${msgId || Date.now()}-${Date.now()}`
     let lockClaimed = true
     let lockReason = 'fresh'  // diagnostica: motivo dell'esito
@@ -570,6 +577,19 @@ export async function POST(request: NextRequest) {
 
     // ── Claude (ASINCRONO) — risponde subito, elabora in background ──
     const bgProcess = async () => {
+      // Heartbeat: aggiorna started_at ogni 20s per mantenere il lock "fresco".
+      // Se Vercel hard-kills la funzione, il heartbeat si ferma e il lock diventa
+      // stale dopo STALE_LOCK_MS (90s), permettendo al messaggio successivo di reclamarlo.
+      let heartbeatInterval: NodeJS.Timeout | null = setInterval(() => {
+        safeSupabase(() =>
+          supabase
+            .from('telegram_active_jobs')
+            .update({ started_at: new Date().toISOString() })
+            .eq('chat_id', chatId)
+            .eq('request_id', requestId)
+        ).catch(() => {})
+      }, 20_000)
+
       try {
         const placeholderMsgId = await sendTelegramMessageWithId(chatId, '🧠 Sto elaborando...')
         const currentMsgId = placeholderMsgId
@@ -598,6 +618,7 @@ export async function POST(request: NextRequest) {
             .in('id', attachedRecentUploadIds))
         }
 
+        if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null }
         if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
 
         // Gestisci documenti e risposta finale
@@ -654,6 +675,7 @@ export async function POST(request: NextRequest) {
         if (msg.includes('too large') || msg.includes('payload')) userMsg = '⚠️ File troppo pesante.'
         await sendTelegramMessage(chatId, userMsg).catch(() => {})
       } finally {
+        if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null }
         if (typingInterval) clearInterval(typingInterval)
         // Bug 1: release del mutex chat (sempre, anche su errore)
         await safeSupabase(() =>
