@@ -11,6 +11,7 @@ export default async function proxy(request: NextRequest) {
     || pathname.startsWith('/api/doc/')
     || pathname.startsWith('/doc/')
     || pathname.startsWith('/api/cron/')
+    || pathname.startsWith('/api/workflow-test')
 
   if (isPublic) return NextResponse.next()
 

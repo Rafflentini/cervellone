@@ -1,4 +1,6 @@
-export async function helloStep(name: string): Promise<string> {
+export async function helloStep(ms: number): Promise<string> {
   'use step'
-  return `ciao ${name} dal workflow durable`
+  const start = Date.now()
+  await new Promise((r) => setTimeout(r, ms))
+  return `step ok: atteso ${ms}ms (reale ${Date.now() - start}ms)`
 }
