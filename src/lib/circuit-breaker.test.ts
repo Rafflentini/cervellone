@@ -23,10 +23,10 @@ describe('detectHallucination', () => {
       'Ora verifico.',
       'Lo trovo io.',
       'Glielo cerco.',
-      'Le invio il documento.',
-      'Creo il file adesso.',
+      // RIMOSSO: 'Le invio il documento.' — "le" è articolo plurale, ora falso positivo con pattern rimosso
+      'Creo subito una copia.',
       'Archivio subito il PDF.',
-      'Cercherò il contratto.',
+      // RIMOSSO: 'Cercherò il contratto.' — futuro non più rilevato via regex (gestito a livello prompt)
       'Vado a controllare.',
     ]
     cases.forEach(text => {
@@ -52,9 +52,15 @@ describe('detectHallucination', () => {
       'Ho elaborato la richiesta.',
       'Glielo dico subito.',
       'Le faccio sapere.',
+      // Regressioni: pattern rimossi — devono restare false
+      'Il ponteggio è leggero.',             // "leggero" non deve triggerare futuro rimosso
+      'Di solito salvo il file nella cartella.', // "salvo" senza avverbio d'immediatezza
+      'Le fatture sono arrivate.',           // "le" articolo plurale
+      // Futuro rimosso — non più rilevato
+      'Cercherò il contratto.',
     ]
     cases.forEach(text => {
-      it(`"${text.slice(0, 30)}..." → false`, () => {
+      it(`"${text.slice(0, 40)}..." → false`, () => {
         expect(detectHallucination(text, 0)).toBe(false)
       })
     })

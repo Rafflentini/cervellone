@@ -96,7 +96,7 @@ export function invalidateModelCapsCache(): void {
 function isBillingError(msg: string): boolean {
   const normalized = msg.toLowerCase()
   return normalized.includes('credit balance is too low') ||
-    (normalized.includes('invalid_request_error') && normalized.includes('credit'))
+    (normalized.includes('invalid_request_error') && normalized.includes('credit balance'))
 }
 
 function resolveAdminChatId(): number {

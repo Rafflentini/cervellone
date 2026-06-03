@@ -84,7 +84,7 @@ export async function GET(req: NextRequest) {
   try {
     summary = await buildDailySummary(1)
   } catch (err) {
-    console.error('[CRON gmail-morning] buildDailySummary failed:', err)
+    console.error('[CRON gmail-morning] buildDailySummary failed:', err instanceof Error ? err.message : String(err))
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.toLowerCase().includes('invalid_grant')) {
       notifyGoogleTokenDeadIfNeeded()

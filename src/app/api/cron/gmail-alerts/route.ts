@@ -77,7 +77,7 @@ export async function GET(req: NextRequest) {
   try {
     critical = await checkCriticalAlerts(sinceTs)
   } catch (err) {
-    console.error('[CRON gmail-alerts] checkCriticalAlerts failed:', err)
+    console.error('[CRON gmail-alerts] checkCriticalAlerts failed:', err instanceof Error ? err.message : String(err))
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.toLowerCase().includes('invalid_grant')) {
       notifyGoogleTokenDeadIfNeeded()

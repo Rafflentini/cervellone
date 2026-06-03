@@ -166,10 +166,15 @@ export async function exchangeCodeAndStore(code: string): Promise<{ email: strin
   )
   if (error) throw new Error(`Supabase upsert failed: ${error.message}`)
 
-  await getSupabaseServer().from('cervellone_config').upsert(
-    { key: 'google_token_dead', value: 'false' },
-    { onConflict: 'key' },
-  )
+  try {
+    const { error: flagErr } = await getSupabaseServer().from('cervellone_config').upsert(
+      { key: 'google_token_dead', value: 'false' },
+      { onConflict: 'key' },
+    )
+    if (flagErr) console.warn('[OAUTH] reset google_token_dead flag failed:', flagErr.message)
+  } catch (e) {
+    console.warn('[OAUTH] reset google_token_dead flag failed:', e instanceof Error ? e.message : e)
+  }
 
   console.log(`[OAUTH] credentials saved for ${email}`)
   return { email, refresh_token_present: true }
@@ -216,7 +221,7 @@ export async function getAuthorizedClient(): Promise<OAuth2Client | null> {
 
     return oauth2Client
   } catch (err) {
-    console.error('[OAUTH] getAuthorizedClient error:', err)
+    console.error('[OAUTH] getAuthorizedClient error:', err instanceof Error ? err.message : String(err))
     return null
   }
 }
