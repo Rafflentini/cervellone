@@ -116,7 +116,7 @@ REGOLA TOOL MAIL TOPHOST V19 (read_email, get_email_body, send_email, forward_em
 - Per "che mail nuove ho su info@?" → read_email(account=info, unread_only=true, limit=20) → eventualmente get_email_body(...) per leggere le interessanti.
 - Per "leggimi la mail di [persona] su raffaele.lentini@" → read_email(account=raffaele, from="persona") → get_email_body(...).
 - Per "invia mail" → send_email(from_account=info|raffaele, to=[...], subject, body_text).
-- Verso destinatari ESTERNI (non @restruktura.it): il tool ritorna status="pending" + uuid. Dì subito all'utente: "Bozza pronta, conferma con /invia_<uuid> o annulla con /annulla_<uuid>".
+- Verso destinatari ESTERNI (non @restruktura.it): il tool ritorna status="pending" + uuid. Dì subito all'utente: "Bozza pronta — scrivi o di' 'invia pure mail' per inviare (oppure /invia_<uuid>), oppure /annulla_<uuid> per annullare". (La frase naturale 'invia pure mail' conferma da sola l'ultimo pending — non serve il codice.)
 - Verso destinatari INTERNI @restruktura.it (es. da info@ a raffaele.lentini@): puoi passare auto_send_if_internal=true per inviare subito senza conferma. Per default mantieni conferma (più sicuro).
 - DOPO send_email: la response include append_failed (true/false) + sent_folder. Se append_failed=true, segnala all'utente: "Mail inviata via SMTP ma copia NON salvata in Sent IMAP — l'Ingegnere non la vedrà su Outlook/iPhone. Mando notifica per investigazione." (E logga problema in memoria con tool ricorda se ricorrente).
 - Per inoltrare → forward_email(from_account, source_uid, source_folder, to, new_subject_prefix, extra_body_text).

@@ -10,6 +10,7 @@
  */
 import {
   fetchPending,
+  getLatestPendingSend,
   markPendingSent,
   markPendingCancelled,
   updatePendingMessageId,
@@ -39,7 +40,8 @@ export async function buildPendingTelegramMessage(uuid: string): Promise<string 
     '─────────────────',
     attachmentsLine,
     '',
-    `Conferma con /invia_${uuid}  oppure  /annulla_${uuid}`,
+    `✅ Per inviare: scrivi o di’ "invia pure mail"  (oppure /invia_${uuid})`,
+    `❌ Per annullare: /annulla_${uuid}`,
   ]
     .filter((line) => line !== '')
     .join('\n')
@@ -115,6 +117,20 @@ export async function confirmPendingSend(
   }
 
   return { ok: false, message: `Errore: status inatteso ${result.status}` }
+}
+
+/**
+ * Conferma l'ULTIMO pending non scaduto senza uuid — per la conferma a
+ * linguaggio naturale ("invia pure mail"). Single-user. Mantiene il passo
+ * prepara→rivedi→conferma: invia solo un pending già preparato da send_email.
+ */
+export async function confirmLatestPendingSend(): Promise<{ ok: boolean; message: string }> {
+  const latest = await getLatestPendingSend()
+  if (!latest) {
+    return { ok: false, message: '📭 Non ho una mail pronta da inviare in questo momento.' }
+  }
+  const r = await confirmPendingSend(latest.uuid)
+  return { ok: r.ok, message: r.message }
 }
 
 export async function cancelPendingSend(uuid: string): Promise<{ ok: boolean; message: string }> {

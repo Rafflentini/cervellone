@@ -342,6 +342,15 @@ export async function POST(request: NextRequest) {
       await sendTelegramMessage(chatId, r.message)
       return NextResponse.json({ ok: true })
     }
+    // ─── Conferma invio mail a LINGUAGGIO NATURALE: "invia pure mail" ───
+    // Conferma l'ultimo pending non scaduto senza codice uuid. Match SOLO su
+    // frasi-conferma brevi (NON su "invia una mail a Mario ..." = composizione).
+    if (/^\s*(s[iì][,.\s]+)?(conferm[oai]\s+(l'?\s*)?invio|(invia|manda|spedisci)(la|lo|tela)?)(\s+pure)?(\s+(la\s+|quella\s+)?(mail|email|e-?mail|messaggio))?(\s+pure)?\s*[.!…]*\s*$/i.test(userText)) {
+      const { confirmLatestPendingSend } = await import('@/v19/tools/email/telegram-confirm')
+      const r = await confirmLatestPendingSend()
+      await sendTelegramMessage(chatId, r.message)
+      return NextResponse.json({ ok: true })
+    }
 
     const mConferma = userText.match(/^\/conferma_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
     const mIgnora = userText.match(/^\/ignora_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)

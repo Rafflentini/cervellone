@@ -79,6 +79,24 @@ export async function fetchPending(uuid: string): Promise<PendingRow | null> {
 }
 
 /**
+ * Ultimo pending non scaduto (status='pending'). Per la conferma a linguaggio
+ * naturale "invia pure mail" senza uuid. Single-user → l'ultimo è quello giusto.
+ */
+export async function getLatestPendingSend(): Promise<PendingRow | null> {
+  const supabase = getSupabaseServer()
+  const { data, error } = await supabase
+    .from('cervellone_email_pending_send')
+    .select('*')
+    .eq('status', 'pending')
+    .gt('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error || !data) return null
+  return data as PendingRow
+}
+
+/**
  * Transizione atomica pending → sent.
  *
  * **Race condition fix (P0):** se due webhook Telegram arrivano simultanei per lo

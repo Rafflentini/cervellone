@@ -121,6 +121,21 @@ export async function POST(request: NextRequest) {
     })
   }
 
+  // ─── Conferma invio mail a LINGUAGGIO NATURALE: "invia pure mail" (parità Telegram) ───
+  if (/^\s*(s[iì][,.\s]+)?(conferm[oai]\s+(l'?\s*)?invio|(invia|manda|spedisci)(la|lo|tela)?)(\s+pure)?(\s+(la\s+|quella\s+)?(mail|email|e-?mail|messaggio))?(\s+pure)?\s*[.!…]*\s*$/i.test(userQuery)) {
+    const { confirmLatestPendingSend } = await import('@/v19/tools/email/telegram-confirm')
+    const r = await confirmLatestPendingSend()
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(r.message))
+        controller.close()
+      },
+    })
+    return new Response(stream, {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  }
+
   const mConferma = userQuery.match(/^\/conferma_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
   const mIgnora = userQuery.match(/^\/ignora_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
   if (mConferma || mIgnora) {
