@@ -11,6 +11,8 @@
 import {
   fetchPending,
   getLatestPendingSend,
+  countValidPendingSends,
+  listValidPendingSends,
   markPendingSent,
   markPendingCancelled,
   updatePendingMessageId,
@@ -125,6 +127,29 @@ export async function confirmPendingSend(
  * prepara→rivedi→conferma: invia solo un pending già preparato da send_email.
  */
 export async function confirmLatestPendingSend(): Promise<{ ok: boolean; message: string }> {
+  // STOPGAP anti-ambiguità: la conferma a linguaggio naturale ("invia pure mail")
+  // non porta un uuid, quindi è sicura SOLO se esiste un singolo pending valido.
+  // Con 2+ pending invierebbe in silenzio il più recente (rischio invio sbagliato):
+  // in quel caso NON inviamo e chiediamo il codice esplicito /invia_<uuid>.
+  const count = await countValidPendingSends()
+  if (count === 0) {
+    return { ok: false, message: '📭 Non ho una mail pronta da inviare in questo momento.' }
+  }
+  if (count > 1) {
+    const pendings = await listValidPendingSends()
+    const lines = pendings.map(
+      (p) => `• A: ${p.to_addrs.join(', ')} — Oggetto: ${p.subject}\n  /invia_${p.uuid}`,
+    )
+    return {
+      ok: false,
+      message: [
+        `⚠️ Ho ${count} mail pronte da inviare. Per evitare di mandare quella sbagliata,`,
+        'usa il codice esplicito della bozza che vuoi inviare:',
+        '',
+        ...lines,
+      ].join('\n'),
+    }
+  }
   const latest = await getLatestPendingSend()
   if (!latest) {
     return { ok: false, message: '📭 Non ho una mail pronta da inviare in questo momento.' }
