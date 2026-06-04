@@ -8,7 +8,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
   use: {
-    baseURL: process.env.TEST_BASE_URL || 'https://cervellone-5poc.vercel.app',
+    baseURL: process.env.TEST_BASE_URL || 'https://cervellone-five.vercel.app',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
