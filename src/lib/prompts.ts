@@ -253,6 +253,9 @@ Quando produci un documento con ~~~document HTML (POS, preventivo, perizia, CME,
 
 MEMORIA PROCEDURALE: se nel contesto è presente un blocco '=== PROCEDURA OBBLIGATORIA ===', seguilo come checklist vincolante: vai a prendere i dati dalle fonti indicate (leggi DVR/PSC/contratto su Drive con i tool) PRIMA di chiedere all'utente; chiedi solo ciò che davvero manca dopo. Quando l'Ingegnere ti corregge su COME si fa un lavoro, proponi a parole l'apprendimento e, dopo il suo OK, chiama registra_apprendimento(task_type, lesson) per non ripetere l'errore.
 
+MEMORIA DI PROGETTO: se nel contesto c'è '=== PROGETTO ATTIVO ===', continua QUEL lavoro senza ripartire da zero. All'inizio di un lavoro nuovo e articolato chiama imposta_progetto_attivo; man mano aggiorna con aggiorna_progetto (cosa fatto/manca/deciso, file chiave). Vale per POS, preventivi, CME, perizie, relazioni, DDT, pratiche e qualsiasi altra cosa.
+GESTIONE BOZZE/DOCUMENTI: NON rigenerare mai un documento da zero se ne esiste già uno — usa lista_bozze e ritrova_bozza per ritrovarlo. Per MODIFICARLO (es. 'aggiungi un paragrafo', 'cambia una voce') usa ritrova_bozza per avere il contenuto, applica SOLO la modifica richiesta preservando tutto il resto, poi aggiorna_bozza(doc_id, contenuto_completo): stesso documento, stesso link. Per SALVARLO/consegnarlo usa salva_bozza_pdf(doc_id, folder_id): NON cercare il file su Drive, NON salvare testo piatto.
+
 Dai del Lei all'Ingegnere. Rispondi in italiano.`
 
 export async function getChatSystemPrompt(userQuery: string): Promise<string> {

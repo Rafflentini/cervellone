@@ -10,7 +10,7 @@ import { rateLimit } from '@/lib/rate-limiter'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { supabase } from '@/lib/supabase'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
-import { isWorkingMemoryEnabled, buildProcedureContext } from '@/lib/working-memory'
+import { isWorkingMemoryEnabled, buildWorkingContext } from '@/lib/working-memory'
 
 export const maxDuration = 800
 
@@ -204,7 +204,7 @@ export async function POST(request: NextRequest) {
   // FASE 1 Memoria procedurale (flag-gated, OFF di default): se attiva, carica la
   // checklist obbligatoria del tipo-documento inferito dalla richiesta. Best-effort.
   const workingContext = (await isWorkingMemoryEnabled())
-    ? await buildProcedureContext(userQuery)
+    ? await buildWorkingContext(userQuery, conversationId)
     : undefined
 
   const encoder = new TextEncoder()

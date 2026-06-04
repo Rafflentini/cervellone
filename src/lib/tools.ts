@@ -2020,6 +2020,173 @@ async function executeWorkingMemoryWrapper(
   }
 }
 
+// 2026-06-04 FASE 2 Memoria di progetto: tool per registrare il progetto/lavoro
+// attivo (vale per QUALSIASI documento o pratica), così il bot non perde il filo.
+const PROJECT_TOOLS: ToolDefinition[] = [
+  {
+    name: 'imposta_progetto_attivo',
+    description: "Memorizza il progetto/lavoro su cui stiamo lavorando ORA (vale per QUALSIASI documento o pratica), così non perdi il filo tra i messaggi. Chiamalo all'inizio di un lavoro.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        project_name: { type: 'string', description: 'Nome del progetto/lavoro (es. "POS cantiere Via Roma", "Preventivo ristrutturazione Bianchi").' },
+        cliente: { type: 'string', description: 'Cliente, se applicabile.' },
+        cantiere: { type: 'string', description: 'Cantiere/commessa, se applicabile.' },
+        task_type: { type: 'string', description: 'Tipo di documento/lavoro (pos, preventivo, cme, perizia, relazione, ddt, pratica, ...).' },
+        pending: { type: 'array', items: { type: 'string' }, description: 'Elenco di cosa manca / cosa resta da fare.' },
+      },
+      required: ['project_name'],
+    },
+  },
+  {
+    name: 'aggiorna_progetto',
+    description: 'Aggiorna lo stato del progetto attivo man mano che procedi.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        done: { type: 'array', items: { type: 'string' }, description: 'Cosa è stato completato.' },
+        pending: { type: 'array', items: { type: 'string' }, description: 'Cosa manca ancora.' },
+        decisions: { type: 'array', items: { type: 'string' }, description: 'Decisioni prese da ricordare.' },
+        key_files: { type: 'object', description: 'File chiave del progetto, es {dvr, psc, contratto} con link/id Drive.' },
+      },
+    },
+  },
+  {
+    name: 'chiudi_progetto',
+    description: 'Segna il progetto attivo come completato.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+]
+
+async function executeProjectWrapper(
+  name: string,
+  input: Record<string, unknown>,
+  conversationId?: string,
+): Promise<string | null> {
+  if (name !== 'imposta_progetto_attivo' && name !== 'aggiorna_progetto' && name !== 'chiudi_progetto') {
+    return null
+  }
+  try {
+    if (!conversationId) return 'Contesto conversazione non disponibile.'
+    const { setActiveProject, closeActiveProject } = await import('./working-memory')
+
+    if (name === 'imposta_progetto_attivo') {
+      const ok = await setActiveProject(conversationId, {
+        project_name: input.project_name !== undefined ? String(input.project_name) : undefined,
+        cliente: input.cliente !== undefined ? String(input.cliente) : undefined,
+        cantiere: input.cantiere !== undefined ? String(input.cantiere) : undefined,
+        task_type: input.task_type !== undefined ? String(input.task_type) : undefined,
+        pending: Array.isArray(input.pending) ? (input.pending as unknown[]).map((v) => String(v)) : undefined,
+      })
+      return ok
+        ? `✅ Progetto attivo memorizzato: "${String(input.project_name ?? '')}". Continuerò questo lavoro senza ripartire da zero.`
+        : '⚠️ Non sono riuscito a memorizzare il progetto attivo.'
+    }
+
+    if (name === 'aggiorna_progetto') {
+      const ok = await setActiveProject(conversationId, {
+        done: Array.isArray(input.done) ? (input.done as unknown[]).map((v) => String(v)) : undefined,
+        pending: Array.isArray(input.pending) ? (input.pending as unknown[]).map((v) => String(v)) : undefined,
+        decisions: Array.isArray(input.decisions) ? (input.decisions as unknown[]).map((v) => String(v)) : undefined,
+        key_files: input.key_files && typeof input.key_files === 'object' && !Array.isArray(input.key_files)
+          ? (input.key_files as Record<string, unknown>)
+          : undefined,
+      })
+      return ok ? '✅ Stato del progetto aggiornato.' : '⚠️ Non sono riuscito ad aggiornare il progetto.'
+    }
+
+    // chiudi_progetto
+    const ok = await closeActiveProject(conversationId)
+    return ok ? '✅ Progetto segnato come completato.' : '⚠️ Non sono riuscito a chiudere il progetto.'
+  } catch (err) {
+    return `Errore progetto: ${err instanceof Error ? err.message : err}`
+  }
+}
+
+// 2026-06-04 FASE 2 Gestione bozze/documenti: ritrovare, modificare in-place e
+// salvare su Drive un documento già generato (per QUALSIASI tipo), senza rigenerare.
+const DRAFT_TOOLS: ToolDefinition[] = [
+  {
+    name: 'lista_bozze',
+    description: 'Elenca i documenti/bozze già generati in questa conversazione (per QUALSIASI tipo: POS, preventivo, CME, perizia, relazione, DDT...). USALO per RITROVARE un documento invece di rigenerarlo da zero.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
+    name: 'ritrova_bozza',
+    description: "Recupera il CONTENUTO di un documento già generato (per id), così puoi modificarlo o salvarlo. Restituisce l'HTML del documento.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'id del documento (come mostrato da lista_bozze).' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'aggiorna_bozza',
+    description: "Modifica IN-PLACE un documento esistente (stesso documento, stesso link): passi il contenuto COMPLETO aggiornato. USALO quando l'Ingegnere chiede di aggiungere/cambiare una parte (es. 'aggiungi un paragrafo') SENZA rigenerare tutto: prima ritrova_bozza, applica SOLO la modifica richiesta preservando il resto, poi aggiorna_bozza col contenuto completo modificato.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        doc_id: { type: 'string', description: 'id del documento da modificare.' },
+        nuovo_contenuto: { type: 'string', description: 'Contenuto HTML COMPLETO aggiornato del documento.' },
+      },
+      required: ['doc_id', 'nuovo_contenuto'],
+    },
+  },
+  {
+    name: 'salva_bozza_pdf',
+    description: 'Genera il PDF di un documento esistente e lo salva nella cartella Drive indicata. USALO per archiviare/consegnare: NON cercare il file su Drive, NON salvare testo piatto.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        doc_id: { type: 'string', description: 'id del documento.' },
+        folder_id: { type: 'string', description: 'id della cartella Drive di destinazione.' },
+      },
+      required: ['doc_id', 'folder_id'],
+    },
+  },
+]
+
+async function executeDraftWrapper(
+  name: string,
+  input: Record<string, unknown>,
+  conversationId?: string,
+): Promise<string | null> {
+  if (name !== 'lista_bozze' && name !== 'ritrova_bozza' && name !== 'aggiorna_bozza' && name !== 'salva_bozza_pdf') {
+    return null
+  }
+  try {
+    const { listRecentDrafts, getDraft, updateDraft, saveDraftPdfToDrive } = await import('./draft-tools')
+
+    if (name === 'lista_bozze') {
+      if (!conversationId) return 'Contesto conversazione non disponibile.'
+      return await listRecentDrafts(conversationId)
+    }
+
+    if (name === 'ritrova_bozza') {
+      const d = await getDraft(String(input.id))
+      if (!d.ok) return `Documento non trovato: ${d.error ?? String(input.id)}`
+      return `Documento "${d.name}" (${d.url}):\n\n${d.content}`
+    }
+
+    if (name === 'aggiorna_bozza') {
+      return await updateDraft(String(input.doc_id), String(input.nuovo_contenuto))
+    }
+
+    // salva_bozza_pdf
+    return await saveDraftPdfToDrive(String(input.doc_id), String(input.folder_id))
+  } catch (err) {
+    return `Errore bozze: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 const ALL_TOOLS: ToolDefinition[] = [
   ...STUDIO_TECNICO_TOOLS,
   ...SELF_TOOLS,
@@ -2038,10 +2205,12 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool (account restruktura.drive@gmail.com via Google API)
   ...MEMORIA_TOOLS, // 2026-05-07 Memoria persistente sub-progetto B: 4 tool
   ...WORKING_MEMORY_TOOLS, // 2026-06-04 FASE 1 Memoria procedurale: registra_apprendimento
+  ...PROJECT_TOOLS, // 2026-06-04 FASE 2 Memoria di progetto: imposta/aggiorna/chiudi progetto attivo
+  ...DRAFT_TOOLS, // 2026-06-04 FASE 2 Gestione bozze: lista/ritrova/aggiorna/salva_pdf documenti
   ...PDF_TOOLS, // 2026-05-07 Pipeline PDF: genera_pdf
   ...(MAIL_TOOL_DEFINITIONS as unknown as ToolDefinition[]), // 2026-05-24 V19 Mail TopHost IMAP/SMTP: 5 tool (info@/raffaele.lentini@)
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeMailWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [
