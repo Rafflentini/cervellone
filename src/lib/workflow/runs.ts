@@ -62,26 +62,46 @@ export async function updateRunStatus(
     //    possibile race con createRun (markRunStep('running') prima dell'INSERT).
     if (count === 0) {
       if (fallback) {
-        // Recupero idempotente: INSERT minimale con i campi NOT NULL noti.
-        // onConflict: 'id' rende l'operazione safe anche se createRun arriva nel frattempo.
-        const { error: upsertError } = await getSupabaseServer()
+        // Recupero NON-clobbering: tentiamo un INSERT minimale con i campi NOT NULL noti.
+        // Se la riga è apparsa nel frattempo via createRun (race), l'INSERT viola la PK
+        // ('23505' / 'duplicate key'): in quel caso NON facciamo upsert (sovrascriverebbe
+        // channel/chat_id/conversation_id già scritti da createRun), ma un semplice UPDATE
+        // del solo status — così lo stato viene impostato senza toccare i campi immutabili.
+        const { error: insertError } = await getSupabaseServer()
           .from('agent_workflow_runs')
-          .upsert(
-            {
-              id,
-              status,
-              channel: fallback.channel,
-              chat_id: fallback.chatId ?? null,
-              conversation_id: fallback.conversationId ?? null,
-              updated_at: now,
-            },
-            { onConflict: 'id' },
-          )
+          .insert({
+            id,
+            status,
+            channel: fallback.channel,
+            chat_id: fallback.chatId ?? null,
+            conversation_id: fallback.conversationId ?? null,
+            updated_at: now,
+          })
 
-        if (upsertError) {
-          console.error('[workflow runs] updateRunStatus recovery upsert failed:', upsertError.message)
+        if (!insertError) {
+          console.warn(`[workflow] run ${id} update toccò 0 righe — riga ricreata via INSERT di recupero (race createRun)`)
         } else {
-          console.warn(`[workflow] run ${id} update toccò 0 righe — riga ricreata via upsert di recupero (race createRun)`)
+          const isDuplicate =
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (insertError as any).code === '23505' ||
+            /duplicate key/i.test(insertError.message)
+
+          if (isDuplicate) {
+            // La riga è comparsa via createRun tra l'UPDATE (count 0) e l'INSERT:
+            // aggiorniamo SOLO lo status, senza clobberare i campi immutabili.
+            const { error: statusError } = await getSupabaseServer()
+              .from('agent_workflow_runs')
+              .update({ status, updated_at: now })
+              .eq('id', id)
+
+            if (statusError) {
+              console.error('[workflow runs] updateRunStatus recovery status update failed:', statusError.message)
+            } else {
+              console.warn(`[workflow] run ${id} update toccò 0 righe — riga creata da createRun nel frattempo, aggiornato solo status (no clobber)`)
+            }
+          } else {
+            console.error('[workflow runs] updateRunStatus recovery insert failed:', insertError.message)
+          }
         }
       } else {
         console.warn(`[workflow] run ${id} update toccò 0 righe — possibile race createRun`)

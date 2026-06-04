@@ -19,12 +19,27 @@ const STRONG_DOC_NOUNS: RegExp[] = [
 ]
 
 // Verbi-azione larghi: da soli NON bastano (troppi falsi positivi colloquiali).
-// Diventano trigger solo se il messaggio contiene anche uno STRONG_DOC_NOUNS.
+// Diventano trigger solo se il messaggio contiene anche uno STRONG_DOC_NOUNS
+// oppure un sostantivo-documento "debole" (es. l'acronimo nudo POS).
 const ACTION_VERBS: RegExp[] = [
   /\bredig\w*/i,
   /\bprepar(?:a|are|ami|iamo|ate|erò|erai|erà|eremo|erete|eranno|ato|ata|ati|ate)\b/i,
   /\belabor(?:a|are|ami|iamo|ate|o|ato|ata|ati)\b/i,
   /\bgener(?:a|are|ami|iamo|ate|o|ato|ata|ati)\b/i,
+  /\bfai\b/i,
+  /\bfar(?:e|mi|gli|ci)\b/i,
+  /\bfamm[io]\b/i,
+  /\bpredispon\w*/i,
+  /\bcre(?:a|are|ami|iamo|ate|o|ato|ata|ati)\b/i,
+  /\bstil(?:a|are|ami|iamo|ate|o|ato|ata|ati)\b/i,
+  /\bcompil(?:a|are|ami|iamo|ate|o|ato|ata|ati)\b/i,
+]
+
+// Sostantivi-documento "deboli": acronimi nudi che da soli NON sono task
+// (potrebbero comparire in chat colloquiale, es. "il pos del bar"), ma che
+// diventano task SE accompagnati da un verbo-azione (es. "fai il POS").
+const WEAK_DOC_NOUNS: RegExp[] = [
+  /\bpos\b/i,
 ]
 
 // Keyword che sono già di per sé un task documentale (sostantivo forte presente):
@@ -57,13 +72,16 @@ export function classifyTask(userText: string, fileBlocks: any[]): boolean {
   // 1) Sostantivo-documento forte presente → è un task documentale a prescindere.
   if (STANDALONE_TASK_KEYWORDS.some((re) => re.test(userText))) return true
 
-  // 2) Verbo-azione largo (prepara/genera/elabora/redigi) → task SOLO se nel
-  //    messaggio compare anche un sostantivo-documento forte. Questo elimina i
-  //    falsi positivi colloquiali ("preparati", "genera confusione") senza
-  //    rompere i veri trigger ("prepara un preventivo", "genera la relazione tecnica").
+  // 2) Verbo-azione largo (prepara/genera/elabora/redigi/fai/...) → task SOLO se nel
+  //    messaggio compare anche un sostantivo-documento (forte O debole). Questo elimina
+  //    i falsi positivi colloquiali ("preparati", "genera confusione", "fai presto")
+  //    senza rompere i veri trigger ("prepara un preventivo", "fai il POS"). L'acronimo
+  //    nudo POS (sostantivo debole) triggera SOLO accoppiato a un verbo-azione, così
+  //    "il pos del bar" e "Smettila con il POS" (nessun verbo-task) restano FALSE.
   if (
     ACTION_VERBS.some((re) => re.test(userText)) &&
-    STRONG_DOC_NOUNS.some((re) => re.test(userText))
+    (STRONG_DOC_NOUNS.some((re) => re.test(userText)) ||
+      WEAK_DOC_NOUNS.some((re) => re.test(userText)))
   ) {
     return true
   }
