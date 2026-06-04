@@ -1,20 +1,36 @@
-const LONG_TASK_KEYWORDS: RegExp[] = [
-  /\bredig\w*/i,
-  /\bprepar\w*/i,
-  /\belabor\w*/i,
-  /\bgener\w*/i,
+// Sostantivi-documento "forti": ancore del dominio tecnico/amministrativo.
+// I verbi-azione larghi (prepara/genera/elabora/redigi) attivano un task SOLO
+// se accompagnati da uno di questi sostantivi, per evitare falsi positivi su
+// chat colloquiale ("preparati", "in relazione a", "genera confusione").
+const STRONG_DOC_NOUNS: RegExp[] = [
   /\bpreventiv\w*/i,
   /\bcomput\w*/i,
   /\bcme\b/i,
   /\bquadro\s+economic\w*/i,
-  /\bsal\b/i,
-  /\bpos\b/i,
   /\bperizi\w*/i,
-  /\brelazion\w*/i,
+  /\brelazione\s+(?:tecnic\w*|di\s+calcol\w*|geologic\w*|specialistic\w*|paesaggistic\w*)/i,
   /\bpratic\w*/i,
   /\bscia\b/i,
   /\bcila\b/i,
-  /\brelazione\s+di\s+calcol\w*/i,
+  /\bddt\b/i,
+  /\bsal\b/i, // Stato Avanzamento Lavori — acronimo di dominio, conserva veri match
+  /\bpiano\s+operativo(?:\s+di\s+sicurezza)?\b/i, // POS esteso (non l'acronimo nudo)
+  /\bp\.?o\.?s\.?\s+(?:di\s+)?sicurezz\w*/i, // "POS sicurezza"
+]
+
+// Verbi-azione larghi: da soli NON bastano (troppi falsi positivi colloquiali).
+// Diventano trigger solo se il messaggio contiene anche uno STRONG_DOC_NOUNS.
+const ACTION_VERBS: RegExp[] = [
+  /\bredig\w*/i,
+  /\bprepar(?:a|are|ami|iamo|ate|erò|erai|erà|eremo|erete|eranno|ato|ata|ati|ate)\b/i,
+  /\belabor(?:a|are|ami|iamo|ate|o|ato|ata|ati)\b/i,
+  /\bgener(?:a|are|ami|iamo|ate|o|ato|ata|ati)\b/i,
+]
+
+// Keyword che sono già di per sé un task documentale (sostantivo forte presente):
+// se compare uno di questi, è task a prescindere dal verbo.
+const STANDALONE_TASK_KEYWORDS: RegExp[] = [
+  ...STRONG_DOC_NOUNS,
 ]
 
 // Pattern che indicano "non è una richiesta di task ma una domanda/lamentela/conversazione"
@@ -23,6 +39,10 @@ const NOT_REQUEST_PATTERNS: RegExp[] = [
   /^\s*(?:perch[éè]|com'?è\s+che|come\s+mai|non\s+capisco|non\s+vol[lt]|ma\s+|smett|ferma|stop)/i,
   /\b(?:non\s+ti\s+ho\s+chiesto|non\s+volevo|non\s+serve|basta\s+con|dimentica)/i,
   /\b(?:cos'?è|che\s+cos'?è|chi\s+(?:sei|è)|come\s+(?:stai|va|mai))/i,
+  // Forme colloquiali che NON sono richieste di task:
+  // "preparati" (imperativo riflessivo), "in relazione a/al/alla" (preposizionale).
+  /\bpreparati\b/i,
+  /\bin\s+relazione\s+(?:a|al|alla|allo|ai|agli|alle)\b/i,
 ]
 
 const FILE_SIZE_THRESHOLD_BYTES = 100_000
@@ -34,7 +54,20 @@ export function classifyTask(userText: string, fileBlocks: any[]): boolean {
   // matcherebbe \bpos\b e finirebbe nel path durable (sbagliato).
   if (NOT_REQUEST_PATTERNS.some((re) => re.test(userText))) return false
 
-  if (LONG_TASK_KEYWORDS.some((re) => re.test(userText))) return true
+  // 1) Sostantivo-documento forte presente → è un task documentale a prescindere.
+  if (STANDALONE_TASK_KEYWORDS.some((re) => re.test(userText))) return true
+
+  // 2) Verbo-azione largo (prepara/genera/elabora/redigi) → task SOLO se nel
+  //    messaggio compare anche un sostantivo-documento forte. Questo elimina i
+  //    falsi positivi colloquiali ("preparati", "genera confusione") senza
+  //    rompere i veri trigger ("prepara un preventivo", "genera la relazione tecnica").
+  if (
+    ACTION_VERBS.some((re) => re.test(userText)) &&
+    STRONG_DOC_NOUNS.some((re) => re.test(userText))
+  ) {
+    return true
+  }
+
   if (fileBlocks.length > 0 && JSON.stringify(fileBlocks).length > FILE_SIZE_THRESHOLD_BYTES) {
     return true
   }

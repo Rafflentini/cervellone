@@ -9,7 +9,7 @@
     "lint": "eslint",
     "test": "npx playwright test",
     "test:ui": "npx playwright test --ui",
-    "test:live": "TEST_BASE_URL=https://cervellone-5poc.vercel.app npx playwright test",
+    "test:live": "TEST_BASE_URL=https://cervellone-five.vercel.app npx playwright test",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "smoke:pdf": "tsx scripts/smoke-pdf-puppeteer.ts"

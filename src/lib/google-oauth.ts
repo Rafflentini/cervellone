@@ -216,6 +216,19 @@ export async function getAuthorizedClient(): Promise<OAuth2Client | null> {
           })
           .eq('refresh_token', data.refresh_token)
         console.log('[OAUTH] access_token rotated')
+
+        // FIX P1: un refresh andato a buon fine prova che il token NON è morto.
+        // Resetta il flag latched 'google_token_dead' (best-effort, non-bloccante)
+        // così una eventuale morte token reale successiva può ri-allertare.
+        try {
+          const { error: flagErr } = await getSupabaseServer().from('cervellone_config').upsert(
+            { key: 'google_token_dead', value: 'false' },
+            { onConflict: 'key' },
+          )
+          if (flagErr) console.warn('[OAUTH] reset google_token_dead flag failed:', flagErr.message)
+        } catch (e) {
+          console.warn('[OAUTH] reset google_token_dead flag failed:', e instanceof Error ? e.message : e)
+        }
       }
     })
 
