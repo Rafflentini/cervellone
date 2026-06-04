@@ -122,7 +122,7 @@ export async function POST(request: NextRequest) {
   }
 
   // ─── Conferma invio mail a LINGUAGGIO NATURALE: "invia pure mail" (parità Telegram) ───
-  if (/^\s*(s[iì][,.\s]+)?(conferm[oai]\s+(l'?\s*)?invio|(invia|manda|spedisci)(la|lo|tela)?)(\s+pure)?(\s+(la\s+|quella\s+)?(mail|email|e-?mail|messaggio))?(\s+pure)?\s*[.!…]*\s*$/i.test(userQuery)) {
+  if (/^\s*(s[iì][,.\s]+)?(conferm[oai]\s+(l'?\s*)?invio|(invia|manda|spedisci)(la|lo|tela)?(\s+pure)?\s+(la\s+|quella\s+)?(mail|email|e-?mail|messaggio))(\s+pure)?\s*[.!…]*\s*$/i.test(userQuery)) {
     const { confirmLatestPendingSend } = await import('@/v19/tools/email/telegram-confirm')
     const r = await confirmLatestPendingSend()
     const stream = new ReadableStream({

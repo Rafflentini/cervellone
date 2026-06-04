@@ -97,6 +97,42 @@ export async function getLatestPendingSend(): Promise<PendingRow | null> {
 }
 
 /**
+ * Conta i pending validi (status='pending', non scaduti). Stessi filtri di
+ * `getLatestPendingSend`. Usato dalla conferma a linguaggio naturale per
+ * rilevare l'ambiguità multi-pending (più bozze pronte contemporaneamente).
+ */
+export async function countValidPendingSends(): Promise<number> {
+  const supabase = getSupabaseServer()
+  const { count, error } = await supabase
+    .from('cervellone_email_pending_send')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'pending')
+    .gt('expires_at', new Date().toISOString())
+  if (error) return 0
+  return count ?? 0
+}
+
+/**
+ * Elenco dei pending validi (status='pending', non scaduti), ordinati per
+ * created_at desc. Restituisce i campi minimi per costruire un messaggio di
+ * disambiguazione (uuid + destinatario + oggetto). Stessi filtri di
+ * `getLatestPendingSend`.
+ */
+export async function listValidPendingSends(): Promise<
+  Array<{ uuid: string; to_addrs: string[]; subject: string }>
+> {
+  const supabase = getSupabaseServer()
+  const { data, error } = await supabase
+    .from('cervellone_email_pending_send')
+    .select('uuid, to_addrs, subject')
+    .eq('status', 'pending')
+    .gt('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false })
+  if (error || !data) return []
+  return data as Array<{ uuid: string; to_addrs: string[]; subject: string }>
+}
+
+/**
  * Transizione atomica pending → sent.
  *
  * **Race condition fix (P0):** se due webhook Telegram arrivano simultanei per lo

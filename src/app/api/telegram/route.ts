@@ -345,7 +345,7 @@ export async function POST(request: NextRequest) {
     // ─── Conferma invio mail a LINGUAGGIO NATURALE: "invia pure mail" ───
     // Conferma l'ultimo pending non scaduto senza codice uuid. Match SOLO su
     // frasi-conferma brevi (NON su "invia una mail a Mario ..." = composizione).
-    if (/^\s*(s[iì][,.\s]+)?(conferm[oai]\s+(l'?\s*)?invio|(invia|manda|spedisci)(la|lo|tela)?)(\s+pure)?(\s+(la\s+|quella\s+)?(mail|email|e-?mail|messaggio))?(\s+pure)?\s*[.!…]*\s*$/i.test(userText)) {
+    if (/^\s*(s[iì][,.\s]+)?(conferm[oai]\s+(l'?\s*)?invio|(invia|manda|spedisci)(la|lo|tela)?(\s+pure)?\s+(la\s+|quella\s+)?(mail|email|e-?mail|messaggio))(\s+pure)?\s*[.!…]*\s*$/i.test(userText)) {
       const { confirmLatestPendingSend } = await import('@/v19/tools/email/telegram-confirm')
       const r = await confirmLatestPendingSend()
       await sendTelegramMessage(chatId, r.message)
@@ -382,6 +382,9 @@ export async function POST(request: NextRequest) {
 
     // ── /reset — sblocca manualmente il mutex se il bot è bloccato ──
     if (userText.trim().toLowerCase() === '/reset') {
+      // Azione MANUALE esplicita: delete per-chat (NON scoped per request_id) di
+      // proposito. Sblocca la chat anche se c'è un job vivo, interrompendone il
+      // mutex (il job, se ancora attivo, perde il lock e non potrà più rilasciarlo).
       await safeSupabase(() => supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId))
       await sendTelegramMessage(chatId, '✅ Sbloccato. Puoi rimandare il messaggio.')
       return NextResponse.json({ ok: true })
@@ -408,7 +411,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    const STALE_LOCK_MS = 90 * 1000
+    // STALE_LOCK_MS = 150s con heartbeat 20s → buffer ~7 battiti. Su Fluid compute
+    // i battiti persi possono falsamente marcare stale un lock ancora vivo; 150s
+    // riduce il rischio di falso-stale mantenendo l'heartbeat a 20s.
+    const STALE_LOCK_MS = 150 * 1000
     const requestId = `${chatId}-${msgId || Date.now()}-${Date.now()}`
     let lockClaimed = true
     let lockReason = 'fresh'  // diagnostica: motivo dell'esito
@@ -633,8 +639,10 @@ export async function POST(request: NextRequest) {
         if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null }
         if (typingInterval) clearInterval(typingInterval)
         // Bug 1: release del mutex chat (sempre, anche su errore)
+        // Scoped per request_id: rilascia SOLO il lock di QUESTO job, così non
+        // cancella per errore il lock di un job subentrato dopo lo stale-cleanup.
         await safeSupabase(() =>
-          supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId)
+          supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId).eq('request_id', requestId)
         )
       }
     }
@@ -671,8 +679,9 @@ export async function POST(request: NextRequest) {
       // allo stale-cleanup a 90s. Fermo anche il typingInterval avviato prima
       // del dispatch (il workflow invia il proprio placeholder/stream).
       if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
+      // Scoped per request_id: rilascia SOLO il lock di QUESTO job (vedi finally bgProcess).
       await safeSupabase(() =>
-        supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId)
+        supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId).eq('request_id', requestId)
       )
     } else {
       // ── Path FLAG-OFF (default prod) — INVARIATO ──
