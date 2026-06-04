@@ -70,7 +70,12 @@ function normalizeName(value: string): string {
 }
 
 function firstToken(value: string): string {
-  return normalizeName(value).split(/\s+/).find(Boolean) || ''
+  // Strippa il prefisso numerico (es. "08_", "08 -", "08.") come scoreFotoFolder
+  // e splitta anche su underscore, cosi "08_Documentazione Fotografica" -> "documentazione".
+  return normalizeName(value)
+    .replace(/^\d+\s*[_\-.)]*\s*/, '')
+    .split(/[\s_]+/)
+    .find(Boolean) || ''
 }
 
 function matchNamedFolder(folders: FolderMatch[], query: string): FolderMatch[] {
@@ -231,7 +236,10 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   // 1) Override esplicito: il bot/Ingegnere ha indicato quale sottocartella usare.
   let fotoFolder: FolderMatch | undefined
   if (cartellaFotoHint) {
+    // Tieni solo i match che sono davvero cartelle foto: l'hint ("documentazione
+    // fotografica") non deve poter puntare a una cartella "Documentazione" (documenti).
     const hintMatches = matchNamedFolder(subjectSubfolders, cartellaFotoHint)
+      .filter(folder => FOTO_FOLDER_RE.test(folder.name))
     if (hintMatches.length === 1) {
       fotoFolder = hintMatches[0]
     } else if (hintMatches.length > 1) {
