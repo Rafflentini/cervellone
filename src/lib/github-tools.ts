@@ -29,15 +29,31 @@ const PROTECTED_PATHS = [
   '.github/', // tutto CI/workflows
   'package.json', // troppo critico, modifiche manuali
   'package-lock.json',
+  'pnpm-lock.yaml', // lockfile alternativo
+  'yarn.lock', // lockfile alternativo
   'supabase/migrations/', // schema DB, mai automatico
   'src/lib/auth', // auth (file o cartella)
+  'src/app/api/auth', // route auth reali (route.ts, google/, google/callback/)
+  'src/lib/google-oauth.ts', // gestione OAuth
   'src/proxy.ts', // middleware/proxy
 ]
 
 function isProtectedPath(path: string): boolean {
   // Normalizza eventuale "./" o slash iniziale
   const p = path.replace(/^\.?\//, '')
-  return PROTECTED_PATHS.some(protectedPath => p.startsWith(protectedPath))
+  // BUG 2: tratta come protetto/invalido path con traversal, assoluti o segmenti vuoti
+  if (p.includes('..') || p.startsWith('/') || p.includes('//')) {
+    return true
+  }
+  // BUG 1: regola difensiva — qualsiasi segmento "auth" è protetto
+  if (/(^|\/)auth(\/|\.|$)/.test(p)) {
+    return true
+  }
+  // BUG 3: matching per SEGMENTI di path (non prefisso di stringa)
+  return PROTECTED_PATHS.some(protectedPath => {
+    const t = protectedPath.replace(/\/$/, '')
+    return p === t || p.startsWith(t + '/') || p.split('/').includes(t)
+  })
 }
 
 function ghHeaders(): Record<string, string> {
@@ -103,6 +119,10 @@ async function proposeFix(
 
   if (!/^[a-z0-9/_-]+$/i.test(branchName) || branchName.length > 100) {
     return `⛔ Branch name non valido: "${branchName}". Solo a-z, 0-9, _, -, /. Max 100 char. Esempio: "fix/bug-7-streaming"`
+  }
+  // BUG 5: rifiuta slash iniziale/finale, traversal, doppi slash, suffisso .lock
+  if (/(^\/|\/$|\.\.|\/\/|\.lock$)/.test(branchName)) {
+    return `⛔ Branch name non valido: "${branchName}". Niente slash iniziale/finale, "..", "//", o suffisso ".lock". Esempio: "fix/bug-7-streaming"`
   }
 
   try {
@@ -203,25 +223,44 @@ async function proposeFix(
       return `Errore creando branch: HTTP ${createBranchRes.status} — ${errBody.slice(0, 200)}`
     }
 
-    // 8. Apri la PR
-    const prRes = await fetch(
-      `${GITHUB_API}/repos/${REPO_FULL}/pulls`,
-      {
-        method: 'POST',
-        headers: ghHeaders(),
-        body: JSON.stringify({
-          title: prTitle.slice(0, 100),
-          body: `${prBody}\n\n---\n_PR automatica proposta da Cervellone (suggested fix, ${files.length} file). Da revisionare e approvare prima del merge._`,
-          head: branchName,
-          base: 'main',
-        }),
-      },
-    )
-    if (!prRes.ok) {
-      const errBody = await prRes.text()
-      return `Errore aprendo PR: HTTP ${prRes.status} — ${errBody.slice(0, 200)}`
+    // 8. Apri la PR (BUG 4: se fallisce, cleanup del branch orfano per permettere retry)
+    let pr: { html_url?: string; number?: number }
+    try {
+      const prRes = await fetch(
+        `${GITHUB_API}/repos/${REPO_FULL}/pulls`,
+        {
+          method: 'POST',
+          headers: ghHeaders(),
+          body: JSON.stringify({
+            title: prTitle.slice(0, 100),
+            body: `${prBody}\n\n---\n_PR automatica proposta da Cervellone (suggested fix, ${files.length} file). Da revisionare e approvare prima del merge._`,
+            head: branchName,
+            base: 'main',
+          }),
+        },
+      )
+      if (!prRes.ok) {
+        const errBody = await prRes.text()
+        // Cleanup best-effort del branch orfano (riusa il pattern di mergePr)
+        try {
+          await fetch(`${GITHUB_API}/repos/${REPO_FULL}/git/refs/heads/${branchName}`, {
+            method: 'DELETE',
+            headers: ghHeaders(),
+          })
+        } catch { /* ignore */ }
+        return `Errore aprendo PR: HTTP ${prRes.status} — ${errBody.slice(0, 200)}`
+      }
+      pr = await prRes.json() as { html_url?: string; number?: number }
+    } catch (prErr) {
+      // Cleanup best-effort del branch orfano anche su eccezione di rete
+      try {
+        await fetch(`${GITHUB_API}/repos/${REPO_FULL}/git/refs/heads/${branchName}`, {
+          method: 'DELETE',
+          headers: ghHeaders(),
+        })
+      } catch { /* ignore */ }
+      return `Errore aprendo PR: ${prErr instanceof Error ? prErr.message : prErr}`
     }
-    const pr = await prRes.json() as { html_url?: string; number?: number }
     console.log(`[GH] proposeFix PR #${pr.number} created: ${pr.html_url} (${files.length} file)`)
     return `✅ PR #${pr.number} aperta su ${REPO_FULL} (${files.length} file: ${files.map(f => f.path).join(', ')})\n👉 ${pr.html_url}\n\nL'Ingegnere deve revisionare e mergiare manualmente. Niente push diretto su main.`
   } catch (err) {
