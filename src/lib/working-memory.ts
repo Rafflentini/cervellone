@@ -205,3 +205,261 @@ export async function buildProcedureContext(userQuery: string): Promise<string> 
     return ''
   }
 }
+
+/* ===========================================================================
+ * FASE 2 — Memoria di PROGETTO ATTIVO (continuità conversazionale)
+ *
+ * Bug risolto: il bot "perde il filo" di cosa stiamo facendo tra un messaggio
+ * e l'altro. Teniamo UN progetto attivo per conversation_id nella tabella
+ * `project_state` (migration già pronta). Ogni turno iniettiamo nel system un
+ * promemoria di cosa è stato fatto / cosa manca / quali file usare.
+ *
+ * Tutto best-effort: qualsiasi errore → '' / null / false / no-op.
+ *
+ * Schema tabella `project_state` (già esistente):
+ *   conversation_id text, channel text, project_name, cliente, cantiere,
+ *   task_type, status ('active'|'done'), key_files jsonb {}, done jsonb [],
+ *   pending jsonb [], decisions jsonb [], updated_at.
+ *   Indice unico parziale: un solo status='active' per conversation_id.
+ * =========================================================================== */
+
+export interface ProjectState {
+  conversation_id: string
+  channel?: string | null
+  project_name?: string | null
+  cliente?: string | null
+  cantiere?: string | null
+  task_type?: string | null
+  status: string
+  key_files: Record<string, unknown>
+  done: string[]
+  pending: string[]
+  decisions: string[]
+  updated_at?: string
+}
+
+function toStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? (value as unknown[]).map((v) => String(v)) : []
+}
+
+function toObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+/**
+ * Ritorna il progetto attivo (status='active') per quella conversazione, o null.
+ * Best-effort: errore/assenza → null. Normalizza i campi jsonb.
+ */
+export async function getActiveProject(conversationId: string): Promise<ProjectState | null> {
+  try {
+    if (!conversationId) return null
+    const supabase = getSupabaseServer()
+    const { data, error } = await supabase
+      .from('project_state')
+      .select('*')
+      .eq('conversation_id', conversationId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (error) {
+      console.error('[working-memory] getActiveProject read failed:', error.message)
+      return null
+    }
+    if (!data) return null
+
+    return {
+      conversation_id: data.conversation_id,
+      channel: data.channel ?? null,
+      project_name: data.project_name ?? null,
+      cliente: data.cliente ?? null,
+      cantiere: data.cantiere ?? null,
+      task_type: data.task_type ?? null,
+      status: data.status ?? 'active',
+      key_files: toObject(data.key_files),
+      done: toStringArray(data.done),
+      pending: toStringArray(data.pending),
+      decisions: toStringArray(data.decisions),
+      updated_at: data.updated_at,
+    }
+  } catch (err) {
+    console.error('[working-memory] getActiveProject error:', err instanceof Error ? err.message : err)
+    return null
+  }
+}
+
+/**
+ * Crea o aggiorna il progetto attivo per la conversazione.
+ *
+ * - Se esiste già un progetto attivo → UPDATE in MERGE: i campi non passati NON
+ *   vengono azzerati. Per gli array (done/pending/decisions): se passati,
+ *   SOSTITUISCONO l'esistente; se assenti, restano invariati. Per key_files:
+ *   MERGE shallow con l'esistente. Aggiorna sempre updated_at.
+ * - Se non esiste → INSERT con conversation_id + fields (status default 'active').
+ *
+ * Best-effort: ritorna true/false, non lancia mai.
+ */
+export async function setActiveProject(
+  conversationId: string,
+  fields: Partial<{
+    project_name: string | null
+    cliente: string | null
+    cantiere: string | null
+    task_type: string | null
+    channel: string | null
+  }> & {
+    key_files?: Record<string, unknown>
+    done?: string[]
+    pending?: string[]
+    decisions?: string[]
+  },
+): Promise<boolean> {
+  try {
+    if (!conversationId) return false
+    const supabase = getSupabaseServer()
+    const existing = await getActiveProject(conversationId)
+    const now = new Date().toISOString()
+
+    if (existing) {
+      // MERGE: parti dai soli campi passati per non azzerare quelli omessi.
+      const patch: Record<string, unknown> = { updated_at: now }
+      if (fields.project_name !== undefined) patch.project_name = fields.project_name
+      if (fields.cliente !== undefined) patch.cliente = fields.cliente
+      if (fields.cantiere !== undefined) patch.cantiere = fields.cantiere
+      if (fields.task_type !== undefined) patch.task_type = fields.task_type
+      if (fields.channel !== undefined) patch.channel = fields.channel
+      // array: SOSTITUISCONO se passati
+      if (fields.done !== undefined) patch.done = fields.done
+      if (fields.pending !== undefined) patch.pending = fields.pending
+      if (fields.decisions !== undefined) patch.decisions = fields.decisions
+      // key_files: MERGE shallow con l'esistente
+      if (fields.key_files !== undefined) {
+        patch.key_files = { ...existing.key_files, ...fields.key_files }
+      }
+
+      const { error } = await supabase
+        .from('project_state')
+        .update(patch)
+        .eq('conversation_id', conversationId)
+        .eq('status', 'active')
+
+      if (error) {
+        console.error('[working-memory] setActiveProject update failed:', error.message)
+        return false
+      }
+      return true
+    }
+
+    // INSERT nuovo progetto attivo
+    const insertRow: Record<string, unknown> = {
+      conversation_id: conversationId,
+      status: 'active',
+      updated_at: now,
+    }
+    if (fields.project_name !== undefined) insertRow.project_name = fields.project_name
+    if (fields.cliente !== undefined) insertRow.cliente = fields.cliente
+    if (fields.cantiere !== undefined) insertRow.cantiere = fields.cantiere
+    if (fields.task_type !== undefined) insertRow.task_type = fields.task_type
+    if (fields.channel !== undefined) insertRow.channel = fields.channel
+    if (fields.key_files !== undefined) insertRow.key_files = fields.key_files
+    if (fields.done !== undefined) insertRow.done = fields.done
+    if (fields.pending !== undefined) insertRow.pending = fields.pending
+    if (fields.decisions !== undefined) insertRow.decisions = fields.decisions
+
+    const { error } = await supabase.from('project_state').insert(insertRow)
+    if (error) {
+      console.error('[working-memory] setActiveProject insert failed:', error.message)
+      return false
+    }
+    return true
+  } catch (err) {
+    console.error('[working-memory] setActiveProject error:', err instanceof Error ? err.message : err)
+    return false
+  }
+}
+
+/**
+ * Chiude il progetto attivo (status='active' → 'done') per la conversazione.
+ * Best-effort: ritorna true/false, non lancia mai.
+ */
+export async function closeActiveProject(conversationId: string): Promise<boolean> {
+  try {
+    if (!conversationId) return false
+    const supabase = getSupabaseServer()
+    const { error } = await supabase
+      .from('project_state')
+      .update({ status: 'done', updated_at: new Date().toISOString() })
+      .eq('conversation_id', conversationId)
+      .eq('status', 'active')
+
+    if (error) {
+      console.error('[working-memory] closeActiveProject update failed:', error.message)
+      return false
+    }
+    return true
+  } catch (err) {
+    console.error('[working-memory] closeActiveProject error:', err instanceof Error ? err.message : err)
+    return false
+  }
+}
+
+/**
+ * Costruisce il blocco "PROGETTO ATTIVO" da iniettare nel system (NON cachato).
+ * Best-effort: nessuna conversazione / nessun progetto attivo / errore → ''.
+ */
+export async function buildActiveProjectContext(conversationId?: string): Promise<string> {
+  try {
+    if (!conversationId) return ''
+    const proj = await getActiveProject(conversationId)
+    if (!proj) return ''
+
+    const lines: string[] = []
+    lines.push('=== PROGETTO ATTIVO (continua questo lavoro) ===')
+
+    const head: string[] = []
+    if (proj.project_name) head.push(`Progetto: ${proj.project_name}`)
+    if (proj.cliente) head.push(`Cliente: ${proj.cliente}`)
+    if (proj.cantiere) head.push(`Cantiere: ${proj.cantiere}`)
+    if (proj.task_type) head.push(`Tipo: ${proj.task_type}`)
+    if (head.length > 0) lines.push(head.join(' — '))
+
+    const fileEntries = Object.entries(proj.key_files)
+    if (fileEntries.length > 0) {
+      const filesStr = fileEntries.map(([k, v]) => `${k}=${String(v)}`).join(', ')
+      lines.push(`File chiave: ${filesStr}`)
+    }
+    if (proj.done.length > 0) lines.push(`Fatto: ${proj.done.join('; ')}`)
+    if (proj.pending.length > 0) lines.push(`Manca: ${proj.pending.join('; ')}`)
+    if (proj.decisions.length > 0) lines.push(`Decisioni: ${proj.decisions.join('; ')}`)
+
+    lines.push('Aggiorna lo stato con aggiorna_progetto man mano che procedi.')
+    lines.push('=== fine progetto attivo ===')
+
+    return lines.join('\n')
+  } catch (err) {
+    console.error('[working-memory] buildActiveProjectContext error:', err instanceof Error ? err.message : err)
+    return ''
+  }
+}
+
+/**
+ * Contesto completo di working-memory: progetto attivo + procedura obbligatoria.
+ * Concatena i blocchi non vuoti con doppio newline. Entrambi best-effort.
+ */
+export async function buildWorkingContext(userQuery: string, conversationId?: string): Promise<string> {
+  const blocks: string[] = []
+  try {
+    const projectBlock = await buildActiveProjectContext(conversationId)
+    if (projectBlock) blocks.push(projectBlock)
+  } catch (err) {
+    console.error('[working-memory] buildWorkingContext project error:', err instanceof Error ? err.message : err)
+  }
+  try {
+    const procedureBlock = await buildProcedureContext(userQuery)
+    if (procedureBlock) blocks.push(procedureBlock)
+  } catch (err) {
+    console.error('[working-memory] buildWorkingContext procedure error:', err instanceof Error ? err.message : err)
+  }
+  return blocks.join('\n\n')
+}
