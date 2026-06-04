@@ -374,6 +374,20 @@ export async function readXlsxFromDrive(fileId: string): Promise<string> {
   }
 }
 
+// FIX 2026-06-04: lettura file di testo semplice (text/plain, .txt/.csv/.md/.log).
+// Scarica i byte e li decodifica UTF-8. Riusa il limite 20MB di downloadFile.
+export async function readPlainTextFromDrive(fileId: string): Promise<string> {
+  console.log(`[DRIVE] readPlainTextFromDrive id=${fileId}`)
+  try {
+    const file = await downloadFile(fileId)
+    const text = file.buffer.toString('utf-8').slice(0, 50000)
+    return `📄 ${file.name}\n\n${text || '(file vuoto)'}`
+  } catch (err) {
+    console.error(`[DRIVE] readPlainTextFromDrive ERROR:`, err)
+    return `Errore lettura testo: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 // Crea una cartella
 export async function createFolder(name: string, parentId: string): Promise<string> {
   try {
@@ -466,7 +480,7 @@ export async function renameFile(fileId: string, newName: string): Promise<strin
   }
 }
 
-// Leggi contenuto di un Google Doc
+// Leggi contenuto di un Google Doc (o file di testo semplice via fallback)
 export async function readDocument(fileId: string): Promise<string> {
   try {
     const drive = await getDrive()
@@ -478,6 +492,13 @@ export async function readDocument(fileId: string): Promise<string> {
     const content = typeof res.data === 'string' ? res.data : JSON.stringify(res.data)
     return content.slice(0, 50000) || 'Documento vuoto.'
   } catch (err) {
+    // FIX 2026-06-04: files.export funziona solo sui Google Docs nativi.
+    // Per i file di testo semplice (.txt) ritorna "Export only supports Docs Editors files.":
+    // in tal caso si scarica il contenuto grezzo come UTF-8.
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/Docs Editors|fileNotExportable|not exportable|only supports/i.test(msg)) {
+      return readPlainTextFromDrive(fileId)
+    }
     return `Errore leggendo il documento: ${err}`
   }
 }
@@ -896,7 +917,7 @@ export async function executeDriveTool(name: string, input: Record<string, strin
     case 'drive_read_pdf':
       return readPdfFromDrive(input.file_id)
     case 'drive_read_office': {
-      // Auto-detect DOCX vs XLSX da metadata
+      // Auto-detect DOCX vs XLSX vs testo semplice da metadata
       try {
         const drive = await getDrive()
         const meta = await drive.files.get({ fileId: input.file_id, fields: 'name, mimeType' })
@@ -907,6 +928,13 @@ export async function executeDriveTool(name: string, input: Record<string, strin
         }
         if (fname.endsWith('.xlsx') || fmime.includes('spreadsheet')) {
           return readXlsxFromDrive(input.file_id)
+        }
+        // FIX 2026-06-04: file di testo semplice (.txt/.csv/.md/.log o mime text/*)
+        if (
+          fmime.startsWith('text/') ||
+          /\.(txt|csv|md|log|tsv|json|xml)$/.test(fname)
+        ) {
+          return readPlainTextFromDrive(input.file_id)
         }
         return `Formato non supportato: ${fmime}. Usa drive_read_pdf o drive_read_document.`
       } catch (err) {
@@ -1150,11 +1178,11 @@ Il tool sceglie automaticamente la cartella destinazione:
   },
   {
     name: 'drive_read_office',
-    description: 'Leggi un file Microsoft Office (DOCX o XLSX) dal Drive Restruktura. Auto-detect formato. Limite 20MB, contenuto troncato a 50K char.',
+    description: 'Leggi un file Microsoft Office (DOCX o XLSX) o un file di testo semplice (.txt/.csv/.md) dal Drive Restruktura. Auto-detect formato. Limite 20MB, contenuto troncato a 50K char.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        file_id: { type: 'string', description: 'ID del file DOCX o XLSX nel Drive' },
+        file_id: { type: 'string', description: 'ID del file DOCX, XLSX o di testo nel Drive' },
       },
       required: ['file_id'],
     },
