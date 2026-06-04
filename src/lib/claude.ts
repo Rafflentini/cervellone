@@ -271,6 +271,12 @@ export interface ClaudeRequest {
   hasFiles?: boolean
   /** Override entry_point per il logging consumi API (es. cron). Default: 'chat'/'telegram'. */
   entryPoint?: string
+  /**
+   * FASE 1 Memoria procedurale: blocco "PROCEDURA OBBLIGATORIA" NON cachato, iniettato
+   * nel system prima del memoryContext. Popolato dai due entry-point SOLO se il flag
+   * `working_memory_enabled` è ON. Undefined → buildCachedSystem invariato.
+   */
+  workingContext?: string
 }
 
 export interface ClaudeStreamCallbacks {
@@ -305,10 +311,13 @@ function extractLatestFileBlocks(messages: Anthropic.MessageParam[]): unknown[] 
 // messaggio) va in un blocco separato NON cachato dopo il breakpoint, così non invalida la cache.
 // Il breakpoint sul system cacha l'intera catena tools→system. Hit garantiti nei giri del tool-loop
 // e tra messaggi ravvicinati (TTL 5 min) → input ~‑80/90% sul prefisso fisso (~4-5K token).
-function buildCachedSystem(systemPrompt: string, memoryContext: string): Anthropic.TextBlockParam[] {
+function buildCachedSystem(systemPrompt: string, memoryContext: string, workingContext?: string): Anthropic.TextBlockParam[] {
   const blocks: Anthropic.TextBlockParam[] = [
     { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
   ]
+  // FASE 1 Memoria procedurale: blocco NON cachato, PRIMA di memoryContext (più prominente).
+  // Non aggiungiamo cache_control: è variabile per messaggio, non deve invalidare la cache.
+  if (workingContext && workingContext.trim()) blocks.push({ type: 'text', text: workingContext })
   if (memoryContext && memoryContext.trim()) blocks.push({ type: 'text', text: memoryContext })
   return blocks
 }
@@ -322,7 +331,7 @@ export async function callClaudeStream(
   const { systemPrompt, userQuery, conversationId } = request
 
   const memoryContext = await searchMemory(userQuery).catch(() => '')
-  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext)
+  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext, request.workingContext)
 
   if (conversationId && userQuery) {
     saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
@@ -415,7 +424,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
   const { systemPrompt, userQuery, conversationId } = request
 
   const memoryContext = await searchMemory(userQuery).catch(() => '')
-  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext)
+  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext, request.workingContext)
 
   if (conversationId && userQuery) {
     saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
@@ -505,7 +514,7 @@ export async function callClaudeStreamTelegram(
   const { systemPrompt, userQuery, conversationId } = request
 
   const memoryContext = await searchMemory(userQuery).catch(() => '')
-  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext)
+  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext, request.workingContext)
 
   if (conversationId && userQuery) {
     saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})

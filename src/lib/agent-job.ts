@@ -24,6 +24,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 
 import { callClaudeStreamTelegram } from '@/lib/claude'
+import { isWorkingMemoryEnabled, buildProcedureContext } from '@/lib/working-memory'
 import { supabase } from '@/lib/supabase'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { getTelegramSystemPrompt } from '@/lib/prompts'
@@ -83,6 +84,12 @@ export async function runAgentJob(
   const currentMsgId = placeholderMsgId
   let lastEditText = ''
 
+  // FASE 1 Memoria procedurale (flag-gated, OFF di default): se attiva, carica la
+  // checklist obbligatoria del tipo-documento inferito dalla richiesta. Best-effort.
+  const workingContext = (await isWorkingMemoryEnabled())
+    ? await buildProcedureContext(userText)
+    : undefined
+
   const fullResponse = await callClaudeStreamTelegram(
     {
       messages: history,
@@ -90,6 +97,7 @@ export async function runAgentJob(
       userQuery: userText,
       conversationId,
       hasFiles: fileBlocks.length > 0,
+      workingContext,
     },
     async (accumulated) => {
       if (!currentMsgId) return

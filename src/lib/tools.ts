@@ -1974,6 +1974,52 @@ async function executeMemoriaWrapper(
   }
 }
 
+// 2026-06-04 FASE 1 Memoria procedurale: tool per registrare apprendimenti permanenti
+// su COME si fa un certo tipo di documento (dopo correzione + conferma dell'Ingegnere).
+const WORKING_MEMORY_TOOLS: ToolDefinition[] = [
+  {
+    name: 'registra_apprendimento',
+    description: "Registra in modo PERMANENTE un apprendimento su COME si fa un certo tipo di documento, dopo che l'Ingegnere ti ha corretto e ha confermato. Es: per i POS i nomi RSPP/medico stanno nel DVR. Chiamalo SOLO dopo conferma esplicita dell'utente.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        task_type: {
+          type: 'string',
+          enum: ['pos', 'preventivo', 'cme', 'perizia', 'relazione', 'scia', 'cila'],
+          description: 'Tipo di documento a cui si riferisce l\'apprendimento.',
+        },
+        lesson: {
+          type: 'string',
+          description: 'L\'apprendimento da memorizzare, conciso e auto-contenuto (es: "I nomi RSPP, medico competente e RLS vanno letti dal DVR Restruktura su Drive, non chiesti all\'utente").',
+        },
+      },
+      required: ['task_type', 'lesson'],
+    },
+  },
+]
+
+async function executeWorkingMemoryWrapper(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<string | null> {
+  if (name !== 'registra_apprendimento') return null
+  try {
+    const taskType = String(input.task_type || '').trim()
+    const lesson = String(input.lesson || '').trim()
+    if (!taskType || !lesson) {
+      return 'Errore: task_type e lesson sono entrambi richiesti.'
+    }
+    const { addLesson } = await import('./working-memory')
+    const ok = await addLesson(taskType, lesson)
+    if (ok) {
+      return `✅ Apprendimento registrato per i "${taskType}". Da ora lo seguirò come regola: "${lesson}"`
+    }
+    return `⚠️ Non sono riuscito a registrare l'apprendimento per "${taskType}" (procedura non trovata o errore di salvataggio). L'Ingegnere può verificare la procedura.`
+  } catch (err) {
+    return `Errore registra_apprendimento: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 const ALL_TOOLS: ToolDefinition[] = [
   ...STUDIO_TECNICO_TOOLS,
   ...SELF_TOOLS,
@@ -1991,10 +2037,11 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...FIC_WRITE_TOOLS, // 2026-05-26 Contabilita F: compilazione bozze FIC con doppia conferma
   ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool (account restruktura.drive@gmail.com via Google API)
   ...MEMORIA_TOOLS, // 2026-05-07 Memoria persistente sub-progetto B: 4 tool
+  ...WORKING_MEMORY_TOOLS, // 2026-06-04 FASE 1 Memoria procedurale: registra_apprendimento
   ...PDF_TOOLS, // 2026-05-07 Pipeline PDF: genera_pdf
   ...(MAIL_TOOL_DEFINITIONS as unknown as ToolDefinition[]), // 2026-05-24 V19 Mail TopHost IMAP/SMTP: 5 tool (info@/raffaele.lentini@)
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeMemoriaWrapper, executeMailWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [
