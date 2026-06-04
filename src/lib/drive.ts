@@ -426,6 +426,31 @@ export async function moveFile(fileId: string, newParentId: string): Promise<str
   }
 }
 
+// Copia un file mantenendo l'originale al suo posto.
+// La copia viene creata nella cartella newParentId (soggetta a policy di scrittura).
+export async function copyFile(fileId: string, newParentId: string, newName?: string): Promise<string> {
+  try {
+    await assertWriteAllowed(newParentId)
+  } catch (err) {
+    if (err instanceof DrivePolicyError) return `🔒 ${err.message}`
+    return `Errore verifica permessi: ${err instanceof Error ? err.message : err}`
+  }
+  try {
+    const drive = await getDrive()
+    const orig = await drive.files.get({ fileId, fields: 'name', supportsAllDrives: true })
+    const copyName = (newName && newName.trim()) ? newName.trim() : (orig.data.name || 'Copia')
+    const res = await drive.files.copy({
+      fileId,
+      requestBody: { name: copyName, parents: [newParentId] },
+      fields: 'id, name, webViewLink',
+      supportsAllDrives: true,
+    })
+    return `"${copyName}" copiato nella cartella di destinazione.\nLink: ${res.data.webViewLink}\n[ID: ${res.data.id}]`
+  } catch (err) {
+    return `Errore copiando il file: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 // Rinomina un file/cartella
 export async function renameFile(fileId: string, newName: string): Promise<string> {
   try {
@@ -823,6 +848,9 @@ export async function executeDriveTool(name: string, input: Record<string, strin
     case 'drive_move_file':
       return moveFile(input.file_id, input.new_parent_id)
 
+    case 'drive_copy_file':
+      return copyFile(input.file_id, input.new_parent_id, input.new_name || undefined)
+
     case 'drive_rename':
       return renameFile(input.file_id, input.new_name)
 
@@ -964,6 +992,19 @@ Cartelle principali disponibili:
       properties: {
         file_id: { type: 'string', description: 'ID del file/cartella da spostare' },
         new_parent_id: { type: 'string', description: 'ID della cartella di destinazione' },
+      },
+      required: ['file_id', 'new_parent_id'],
+    },
+  },
+  {
+    name: 'drive_copy_file',
+    description: 'Copia un file nel Drive mantenendo l\'originale al suo posto. La copia viene messa nella cartella di destinazione. Usa quando serve duplicare un documento (es. mettere una copia di un DURC nel fascicolo di un cantiere senza spostarlo dalla cartella ufficiale).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        file_id: { type: 'string', description: 'ID del file da copiare' },
+        new_parent_id: { type: 'string', description: 'ID della cartella di destinazione della copia' },
+        new_name: { type: 'string', description: 'OPZIONALE — nuovo nome per la copia (se omesso mantiene il nome originale)' },
       },
       required: ['file_id', 'new_parent_id'],
     },
