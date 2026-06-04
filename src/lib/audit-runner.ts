@@ -14,6 +14,7 @@ import {
 import { analyze, formatReport } from './audit-analyzer'
 import type { AnalysisInput } from './audit-analyzer'
 import { sendTelegramMessage } from './telegram-helpers'
+import { logApiUsage } from './api-usage'
 
 // ── Helper: ISO Week string ───────────────────────────────────────────────────
 
@@ -159,6 +160,18 @@ Output: solo testo markdown-safe, no JSON, no code block.`,
 
       llmTokensUsed = (llmResponse.usage?.input_tokens ?? 0) + (llmResponse.usage?.output_tokens ?? 0)
       llmCostUsd = estimateCost(llmResponse.usage?.input_tokens ?? 0, llmResponse.usage?.output_tokens ?? 0)
+
+      await logApiUsage({
+        entryPoint: 'cron:audit',
+        model: auditModel,
+        usage: {
+          input_tokens: llmResponse.usage?.input_tokens ?? 0,
+          output_tokens: llmResponse.usage?.output_tokens ?? 0,
+          cache_read_input_tokens: (llmResponse.usage as any)?.cache_read_input_tokens ?? 0,
+          cache_creation_input_tokens: (llmResponse.usage as any)?.cache_creation_input_tokens ?? 0,
+        },
+        meta: { iso_week: isoWeek, run_id: runId },
+      })
     } catch (err) {
       console.warn('[audit-runner] LLM narrative fallita:', err instanceof Error ? err.message : err)
       narrative = anomalies.length > 0

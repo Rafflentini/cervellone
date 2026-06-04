@@ -29,6 +29,7 @@ import {
   type Intent,
   type StopReason,
 } from './types'
+import { logApiUsage } from '@/lib/api-usage'
 
 const MAX_ITERATIONS_DEFAULT = 30
 const NO_TEXT_LIMIT_DEFAULT = 8
@@ -81,6 +82,8 @@ export async function runAgent(
   let inputTokens = 0
   let outputTokens = 0
   let thinkingTokens = 0
+  let cacheReadTokens = 0
+  let cacheCreationTokens = 0
   const artifacts: AgentArtifact[] = []
 
   try {
@@ -119,6 +122,8 @@ export async function runAgent(
       // Token accounting
       inputTokens += final.usage?.input_tokens ?? 0
       outputTokens += final.usage?.output_tokens ?? 0
+      cacheReadTokens += (final.usage as any)?.cache_read_input_tokens ?? 0
+      cacheCreationTokens += (final.usage as any)?.cache_creation_input_tokens ?? 0
 
       // Container persistence
       const newContainer = (final as any).container?.id
@@ -198,6 +203,10 @@ export async function runAgent(
         ],
         tool_choice: { type: 'none' },
       })
+      inputTokens += synth.usage?.input_tokens ?? 0
+      outputTokens += synth.usage?.output_tokens ?? 0
+      cacheReadTokens += (synth.usage as any)?.cache_read_input_tokens ?? 0
+      cacheCreationTokens += (synth.usage as any)?.cache_creation_input_tokens ?? 0
       const synthText = synth.content
         .filter((b) => b.type === 'text')
         .map((b) => (b as any).text as string)
@@ -224,6 +233,18 @@ export async function runAgent(
       })
     }
 
+    await logApiUsage({
+      entryPoint: 'mail-subagent',
+      model: modelSubagentMail,
+      usage: {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_read_input_tokens: cacheReadTokens,
+        cache_creation_input_tokens: cacheCreationTokens,
+      },
+      meta: { iterations, intent: req.intent, nesting: req.nesting, stopReason },
+    })
+
     return {
       text: fullResponse,
       containerId,
@@ -235,6 +256,17 @@ export async function runAgent(
       thinkingTokens,
     }
   } catch (err) {
+    await logApiUsage({
+      entryPoint: 'mail-subagent',
+      model: modelSubagentMail,
+      usage: {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_read_input_tokens: cacheReadTokens,
+        cache_creation_input_tokens: cacheCreationTokens,
+      },
+      meta: { iterations, intent: req.intent, nesting: req.nesting, error: true },
+    })
     if (!opts.noPersist) {
       await completeAgentRun({
         runId,

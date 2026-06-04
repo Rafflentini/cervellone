@@ -13,6 +13,8 @@ import { withRetry } from './resilience'
 import { supabase } from './supabase'
 import { recordOutcome, getActiveModel, detectHallucination, type ModelOutcome } from './circuit-breaker'
 import { sendTelegramMessage } from './telegram-helpers'
+import { addUsage, logApiUsage, type UsageTokens } from './api-usage'
+import { shouldUseCheapModel, CHEAP_MODEL } from './cheap-routing'
 
 const client = new Anthropic()
 const ANTHROPIC_BILLING_ALERT_KEY = 'anthropic_billing_alerted'
@@ -267,6 +269,8 @@ export interface ClaudeRequest {
   userQuery: string
   conversationId?: string
   hasFiles?: boolean
+  /** Override entry_point per il logging consumi API (es. cron). Default: 'chat'/'telegram'. */
+  entryPoint?: string
 }
 
 export interface ClaudeStreamCallbacks {
@@ -281,6 +285,20 @@ const DEEP_THINK_RE = /(^|\s)(\/think|\/ragiona|ultrathink|pensa(?:ci)?\s+a\s+fo
 function resolveThinkingBudget(userQuery: string, isOpus: boolean): number {
   if (DEEP_THINK_RE.test(userQuery || '')) return isOpus ? 16_000 : 10_000 // massima potenza on-demand
   return isOpus ? 2_000 : 1_500 // default ridotto (era 8000/4000) — taglia output (il thinking è fatturato come output)
+}
+
+// Estrae i blocchi-allegato (document/image) dal messaggio utente più recente.
+// Usato dal cheap routing: se ci sono allegati resta Opus a prescindere.
+function extractLatestFileBlocks(messages: Anthropic.MessageParam[]): unknown[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role !== 'user') continue
+    if (!Array.isArray(m.content)) return []
+    return m.content.filter(
+      (b) => b && typeof b === 'object' && ((b as { type?: string }).type === 'document' || (b as { type?: string }).type === 'image')
+    )
+  }
+  return []
 }
 
 // Prompt caching: cache del prefisso STATICO (tools + system prompt). La memoria RAG (variabile per
@@ -314,19 +332,25 @@ export async function callClaudeStream(
   const tools: any[] = getToolDefinitions()
   let currentMessages = [...request.messages]
   let fullResponse = ''
+  let accUsage: UsageTokens = {}
+  let iterations = 0
   const MAX_ITERATIONS = 10 // PER-004 fix
 
   const cfg = await getConfig()
-  const isOpus = cfg.model.includes('opus')
+  const fileBlocks = extractLatestFileBlocks(request.messages)
+  const cheap = await shouldUseCheapModel(userQuery, fileBlocks)
+  const effectiveModel = cheap ? CHEAP_MODEL : cfg.model
+  const isOpus = effectiveModel.includes('opus')
   const modelConfig: ModelConfig = {
-    model: cfg.model,
+    model: effectiveModel,
     thinkingBudget: resolveThinkingBudget(userQuery, isOpus),
     maxTokens: isOpus ? 32_000 : 16_000,
   }
-  console.log(`MODEL: ${modelConfig.model} for "${userQuery.slice(0, 50)}"`)
+  console.log(`MODEL: ${effectiveModel} (cheap=${cheap}) for "${userQuery.slice(0, 50)}"`)
   const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget)
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
+    iterations = i + 1
     // REL-003: retry su errori transitori
     const stream = await withRetry(() =>
       Promise.resolve(client.messages.stream({
@@ -355,6 +379,7 @@ export async function callClaudeStream(
     }
 
     const final = await stream.finalMessage()
+    accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
 
     if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
@@ -369,6 +394,13 @@ export async function callClaudeStream(
       { role: 'user' as const, content: toolResults },
     ]
   }
+
+  await logApiUsage({
+    entryPoint: request.entryPoint ?? 'chat',
+    model: modelConfig.model,
+    usage: accUsage,
+    meta: { iterations },
+  })
 
   if (conversationId && fullResponse) {
     saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
@@ -393,19 +425,25 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
   const tools: any[] = getToolDefinitions()
   let currentMessages = [...request.messages]
   let fullResponse = ''
+  let accUsage: UsageTokens = {}
+  let iterations = 0
   const MAX_ITERATIONS = 10
 
   const cfg = await getConfig()
-  const isOpus = cfg.model.includes('opus')
+  const fileBlocks = extractLatestFileBlocks(request.messages)
+  const cheap = await shouldUseCheapModel(userQuery, fileBlocks)
+  const effectiveModel = cheap ? CHEAP_MODEL : cfg.model
+  const isOpus = effectiveModel.includes('opus')
   const modelConfig: ModelConfig = {
-    model: cfg.model,
+    model: effectiveModel,
     thinkingBudget: resolveThinkingBudget(userQuery, isOpus),
     maxTokens: isOpus ? 32_000 : 16_000,
   }
-  console.log(`MODEL TG: ${modelConfig.model} for "${userQuery.slice(0, 50)}"`)
+  console.log(`MODEL TG: ${effectiveModel} (cheap=${cheap}) for "${userQuery.slice(0, 50)}"`)
   const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget)
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
+    iterations = i + 1
     // FIX V8: usa stream() invece di create() — evita "Streaming is required for >10min"
     const stream = await withRetry(() =>
       Promise.resolve(client.messages.stream({
@@ -428,6 +466,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
     }
 
     const final = await stream.finalMessage()
+    accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
 
     if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
@@ -442,6 +481,13 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
       { role: 'user' as const, content: toolResults },
     ]
   }
+
+  await logApiUsage({
+    entryPoint: request.entryPoint ?? 'telegram',
+    model: modelConfig.model,
+    usage: accUsage,
+    meta: { iterations },
+  })
 
   if (conversationId && fullResponse) {
     saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
@@ -468,6 +514,8 @@ export async function callClaudeStreamTelegram(
   const tools: any[] = getToolDefinitions()
   let currentMessages = [...request.messages]
   let fullResponse = ''
+  let accUsage: UsageTokens = {}
+  let iterations = 0
   const MAX_ITERATIONS = 10
   // FIX Bug 5: counter di iter consecutivi senza text_delta. Opus 4.7 chiama
   // più tool_use legittimi in catena (es. fan-out drive_search dopo miss).
@@ -483,15 +531,20 @@ export async function callClaudeStreamTelegram(
   if (activeModel !== cfg.model) {
     console.log(`[CB] active=${activeModel} differs from default=${cfg.model}`)
   }
-  const isOpus = activeModel.includes('opus')
+  // Cheap routing: per le chat semplici (no allegati, no task documentale) e flag on,
+  // scala su Sonnet. Applicato sul modello attivo (post circuit-breaker) come base.
+  const fileBlocks = extractLatestFileBlocks(request.messages)
+  const cheap = await shouldUseCheapModel(userQuery, fileBlocks)
+  const effectiveModel = cheap ? CHEAP_MODEL : activeModel
+  const isOpus = effectiveModel.includes('opus')
   // FIX W1: budget thinking drasticamente ridotto. V10 lasciava 100_000 = il modello
   // pensava per minuti, function killata da Vercel a 300s prima del primo text_delta.
   const modelConfig: ModelConfig = {
-    model: activeModel,
+    model: effectiveModel,
     thinkingBudget: resolveThinkingBudget(userQuery, isOpus),
     maxTokens: isOpus ? 32_000 : 16_000,
   }
-  console.log(`MODEL TG: ${modelConfig.model} thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+  console.log(`MODEL TG: ${effectiveModel} (cheap=${cheap}) thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
   const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget)
 
   let totalToolCalls = 0
@@ -500,6 +553,7 @@ export async function callClaudeStreamTelegram(
   let apiErrorRecordDetails = ''
   try {
   for (let i = 0; i < MAX_ITERATIONS; i++) {
+    iterations = i + 1
     const stream = await withRetry(() =>
       Promise.resolve(client.messages.stream({
         model: modelConfig.model,
@@ -545,6 +599,7 @@ export async function callClaudeStreamTelegram(
     }
 
     const final = await stream.finalMessage()
+    accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
     totalToolCalls += toolBlocks.length
     const textBlocks = final.content.filter(b => b.type === 'text')
@@ -605,6 +660,7 @@ export async function callClaudeStreamTelegram(
           }
         }
         const synthFinal = await synthStream.finalMessage()
+        accUsage = addUsage(accUsage, synthFinal.usage as unknown as UsageTokens)
         const synthTexts = synthFinal.content.filter(b => b.type === 'text').length
         console.log(`STREAM force-text done texts=${synthTexts} fullLen=${fullResponse.length}`)
       } catch (err) {
@@ -690,6 +746,13 @@ export async function callClaudeStreamTelegram(
     requestId: conversationId,
     details: apiErrorOccurred ? apiErrorRecordDetails.slice(0, 500) : undefined,
   }).catch(err => console.error('[CB] recordOutcome failed:', err))
+
+  await logApiUsage({
+    entryPoint: request.entryPoint ?? 'telegram',
+    model: modelConfig.model,
+    usage: accUsage,
+    meta: { iterations, outcome, totalToolCalls, apiError: apiErrorOccurred },
+  })
 
   return fullResponse
 }

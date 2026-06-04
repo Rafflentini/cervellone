@@ -5,6 +5,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
 import { getActiveModel } from '@/lib/circuit-breaker'
+import { logApiUsage } from '@/lib/api-usage'
 
 // ── Prompt extraction conservativa (letterale da spec) ────────────────────────
 
@@ -170,6 +171,8 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
     const allSummaries: string[] = []
     let totalInputTokens = 0
     let totalOutputTokens = 0
+    let totalCacheReadTokens = 0
+    let totalCacheCreationTokens = 0
 
     // Step 6 (cont.): Per ogni gruppo → call Anthropic
     for (const [convId, convMsgs] of groups.entries()) {
@@ -192,6 +195,8 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
 
         totalInputTokens += resp.usage?.input_tokens ?? 0
         totalOutputTokens += resp.usage?.output_tokens ?? 0
+        totalCacheReadTokens += (resp.usage as any)?.cache_read_input_tokens ?? 0
+        totalCacheCreationTokens += (resp.usage as any)?.cache_creation_input_tokens ?? 0
 
         const textBlock = resp.content.find((b): b is AnthropicTextBlock => b.type === 'text')
         if (textBlock) {
@@ -209,6 +214,18 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
         throw err
       }
     }
+
+    await logApiUsage({
+      entryPoint: 'cron:memoria',
+      model,
+      usage: {
+        input_tokens: totalInputTokens,
+        output_tokens: totalOutputTokens,
+        cache_read_input_tokens: totalCacheReadTokens,
+        cache_creation_input_tokens: totalCacheCreationTokens,
+      },
+      meta: { date: target, run_id: runId, conversations: groups.size },
+    })
 
     // Step 7a: Aggrega summary
     const summaryAggregato = allSummaries.filter(Boolean).join(' | ') || 'Nessuna attività rilevante'
