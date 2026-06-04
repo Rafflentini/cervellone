@@ -109,6 +109,10 @@ function pickFotoFolder(subfolders: FolderMatch[]): { match?: FolderMatch; candi
   return { candidates: topTied }
 }
 
+function hasFotoFolder(folders: FolderMatch[]): boolean {
+  return folders.some(f => FOTO_FOLDER_RE.test(f.name))
+}
+
 function sanitizeFolderSegment(value: string): string {
   return value.replace(INVALID_FOLDER_CHARS_RE, ' ').replace(/\s+/g, ' ').trim()
 }
@@ -194,8 +198,35 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   if (matches.length === 0) return fail({ stato: 'non_trovata', ambito, nome })
   if (matches.length > 1) return fail({ need: 'disambigua', candidati: matches.map(({ id, name }) => ({ id, name })) })
 
-  const subjectFolder = matches[0]
-  const subjectSubfolders = await listSubfolders(subjectFolder.id)
+  const rootMatch = matches[0]
+
+  // La struttura cantieri/progetti puo' avere un livello di RAGGRUPPAMENTO
+  // intermedio (es. Cliente con piu' cantieri):
+  //   CANTIERI_ATTIVI / <Cliente> / <Cantiere> / <00..12 sottocartelle>.
+  // matchNamedFolder puo' quindi agganciare il livello cliente, che NON contiene
+  // direttamente la cartella foto. Se sotto il match non c'e' alcuna cartella foto,
+  // scendiamo di un livello fino a trovarne una. Disambiguiamo solo se il livello
+  // intermedio resta ambiguo (piu' cantieri selezionabili).
+  let subjectFolder = rootMatch
+  let subjectSubfolders = await listSubfolders(subjectFolder.id)
+  let pathPrefix = subjectFolder.name
+
+  if (!hasFotoFolder(subjectSubfolders) && subjectSubfolders.length > 0) {
+    const narrowed = matchNamedFolder(subjectSubfolders, nome)
+    const innerCandidates = narrowed.length > 0 ? narrowed : subjectSubfolders
+
+    if (innerCandidates.length === 1) {
+      const inner = innerCandidates[0]
+      const innerSubs = await listSubfolders(inner.id)
+      if (hasFotoFolder(innerSubs)) {
+        subjectFolder = inner
+        subjectSubfolders = innerSubs
+        pathPrefix = `${rootMatch.name}/${inner.name}`
+      }
+    } else if (innerCandidates.length > 1) {
+      return fail({ need: 'cantiere', candidati: innerCandidates.map(({ id, name }) => ({ id, name })) })
+    }
+  }
 
   // 1) Override esplicito: il bot/Ingegnere ha indicato quale sottocartella usare.
   let fotoFolder: FolderMatch | undefined
@@ -266,7 +297,7 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   return ok({
     archiviate,
     errori,
-    path: `${subjectFolder.name}/${fotoFolder.name}/${segment}`,
+    path: `${pathPrefix}/${fotoFolder.name}/${segment}`,
   })
 }
 
