@@ -16,11 +16,14 @@ create table if not exists procedures (
 );
 alter table procedures enable row level security;
 
--- ── Memoria di lavoro: stato del progetto ATTIVO per canale/chat ──
+-- ── Memoria di lavoro: stato del progetto ATTIVO per conversazione ──
+-- Chiave: conversation_id. Per Telegram è chatIdToUuid(chatId), DETERMINISTICO e stabile
+-- per chat tra sessioni (telegram/route.ts:474) → la memoria progetto persiste cross-sessione.
+-- Per il web è l'id del thread di conversazione.
 create table if not exists project_state (
   id bigint generated always as identity primary key,
-  channel text not null,                    -- 'telegram' | 'web'
-  chat_key text not null,                   -- chat_id (telegram) o conversation_id (web)
+  conversation_id text not null,
+  channel text,                             -- 'telegram' | 'web' (informativo)
   project_name text,
   cliente text,
   cantiere text,
@@ -34,11 +37,16 @@ create table if not exists project_state (
 );
 alter table project_state enable row level security;
 
--- Un solo progetto ATTIVO per chat (i 'done' storici non sono vincolati).
+-- Un solo progetto ATTIVO per conversazione (i 'done' storici non sono vincolati).
 create unique index if not exists project_state_active_uniq
-  on project_state (channel, chat_key) where status = 'active';
+  on project_state (conversation_id) where status = 'active';
 create index if not exists project_state_lookup_idx
-  on project_state (channel, chat_key, status);
+  on project_state (conversation_id, status);
+
+-- Flag di attivazione (OFF di default: con flag off il comportamento è invariato).
+insert into cervellone_config (key, value)
+values ('working_memory_enabled', 'false')
+on conflict (key) do nothing;
 
 -- ── Seed: procedura POS (appresa la sera del 4 giu 2026) ──
 insert into procedures (task_type, title, checklist, output_spec, save_location, lessons)
