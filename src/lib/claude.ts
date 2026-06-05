@@ -238,8 +238,9 @@ export async function getConfig(): Promise<{
     .select('key, value')
     .in('key', ['model_default', 'model_subagent_mail', 'model_extract_fast', 'model_audit'])
 
-  let model = 'claude-opus-4-7'
-  let modelSubagentMail = 'claude-opus-4-7'
+  // cost-control 5 giu 2026: default Sonnet, Opus solo on-demand via /opus
+  let model = 'claude-sonnet-4-6'
+  let modelSubagentMail = 'claude-sonnet-4-6'
   let modelExtractFast = 'claude-haiku-4-5'
   let modelAudit = 'claude-sonnet-4-6'
 

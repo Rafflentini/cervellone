@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
     .maybeSingle()
   const defaultModel = defaultRow?.value
     ? String(defaultRow.value).replace(/"/g, '')
-    : 'claude-opus-4-8'
+    : 'claude-sonnet-4-6'
 
   console.log(`[CRON canary] testing ${defaultModel}`)
 

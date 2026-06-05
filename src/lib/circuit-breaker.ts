@@ -97,7 +97,7 @@ async function loadConfig(): Promise<{ activeModel: string; state: CircuitState 
     .select('key, value')
     .in('key', ['model_active', 'circuit_state'])
   if (error || !data) return null
-  let activeModel = 'claude-opus-4-8'
+  let activeModel = 'claude-sonnet-4-6'
   let state: CircuitState = { state: 'NORMAL', tripped_at: null, reason: null, canary_consecutive_ok: 0 }
   for (const row of data) {
     if (row.key === 'model_active') {
@@ -129,7 +129,7 @@ export async function getActiveModel(): Promise<string> {
     cache = { ...loaded, cachedAt: Date.now() }
     return loaded.activeModel
   }
-  return 'claude-opus-4-7'
+  return 'claude-sonnet-4-6'
 }
 
 /**

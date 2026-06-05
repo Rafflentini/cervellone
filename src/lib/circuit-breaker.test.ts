@@ -103,7 +103,7 @@ describe('getActiveModel', () => {
     ;(supabase.from as any).mockImplementation(fromMock)
 
     const model = await getActiveModel()
-    expect(model).toBe('claude-opus-4-7')
+    expect(model).toBe('claude-sonnet-4-6')
   })
 
   it('cache la seconda chiamata entro 60s', async () => {
