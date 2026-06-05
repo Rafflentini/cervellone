@@ -16,6 +16,7 @@ import { sendTelegramMessage } from './telegram-helpers'
 import { addUsage, logApiUsage, type UsageTokens } from './api-usage'
 import { isRunOverBudget, runTokens, MAX_RUN_TOKENS } from './run-budget'
 import { shouldUseCheapModel, CHEAP_MODEL } from './cheap-routing'
+import { truncateToolResult } from './tool-result-utils'
 
 const client = new Anthropic()
 const ANTHROPIC_BILLING_ALERT_KEY = 'anthropic_billing_alerted'
@@ -796,7 +797,7 @@ async function executeToolBlocks(toolBlocks: any[], conversationId?: string): Pr
 
     try {
       const result = await executeTool(block.name, block.input as Record<string, unknown>, conversationId)
-      results.push({ type: 'tool_result', tool_use_id: block.id, content: result })
+      results.push({ type: 'tool_result', tool_use_id: block.id, content: truncateToolResult(result) })
     } catch (err) {
       logError(`Tool ${block.name} error`, err)
       results.push({ type: 'tool_result', tool_use_id: block.id, content: `Errore: ${(err as Error).message}` })

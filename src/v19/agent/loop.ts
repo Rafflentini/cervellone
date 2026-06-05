@@ -31,6 +31,7 @@ import {
 } from './types'
 import { logApiUsage } from '@/lib/api-usage'
 import { isRunOverBudget, MAX_RUN_TOKENS } from '@/lib/run-budget'
+import { truncateToolResult } from '@/lib/tool-result-utils'
 
 // cost-control 5 giu 2026: allineato a V18 (10 iter) + max_tokens 16K (Sonnet default)
 const MAX_ITERATIONS_DEFAULT = 10
@@ -179,6 +180,9 @@ export async function runAgent(
           req.telegramStream?.signal?.('tool_start', tu.name)
           try {
             const result = await toolExecutor(tu, req.conversationId)
+            if (typeof result.content === 'string') {
+              result.content = truncateToolResult(result.content) as string
+            }
             toolResults.push(result)
           } catch (err) {
             toolResults.push({
