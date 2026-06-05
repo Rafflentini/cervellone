@@ -16,6 +16,7 @@ import { sendTelegramMessage } from './telegram-helpers'
 import { addUsage, logApiUsage, type UsageTokens } from './api-usage'
 import { isRunOverBudget, runTokens, MAX_RUN_TOKENS } from './run-budget'
 import { shouldUseCheapModel, CHEAP_MODEL } from './cheap-routing'
+import { isOpusExpired, SONNET_MODEL } from './opus-ttl'
 import { truncateToolResult } from './tool-result-utils'
 import { applyIncrementalCacheBreakpoint } from './cache-breakpoints'
 
@@ -196,12 +197,13 @@ function resetAnthropicBillingAlertIfNeeded(): void {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function buildModelOptions(model: string, thinkingBudget: number): Promise<Record<string, any>> {
+async function buildModelOptions(model: string, thinkingBudget: number, deepThink = false): Promise<Record<string, any>> {
   const caps = await detectModelCapabilities(model)
   if (caps.supportsAdaptiveThinking) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const opts: Record<string, any> = { thinking: { type: 'adaptive' } }
-    if (caps.supportsEffort) opts.output_config = { effort: 'high' }
+    // cost-control — xhigh solo on-demand via /think|pensa a fondo|massima potenza
+    if (caps.supportsEffort) opts.output_config = { effort: deepThink ? 'xhigh' : 'high' }
     return opts
   }
   // Legacy: enabled + budget_tokens
@@ -239,13 +241,14 @@ export async function getConfig(): Promise<{
   const { data } = await supabase
     .from('cervellone_config')
     .select('key, value')
-    .in('key', ['model_default', 'model_subagent_mail', 'model_extract_fast', 'model_audit'])
+    .in('key', ['model_default', 'model_subagent_mail', 'model_extract_fast', 'model_audit', 'opus_until'])
 
   // cost-control 5 giu 2026: default Sonnet, Opus solo on-demand via /opus
   let model = 'claude-sonnet-4-6'
   let modelSubagentMail = 'claude-sonnet-4-6'
   let modelExtractFast = 'claude-haiku-4-5'
   let modelAudit = 'claude-sonnet-4-6'
+  let opusUntil: string | undefined
 
   if (data) {
     for (const row of data) {
@@ -254,7 +257,25 @@ export async function getConfig(): Promise<{
       else if (row.key === 'model_subagent_mail') modelSubagentMail = v
       else if (row.key === 'model_extract_fast') modelExtractFast = v
       else if (row.key === 'model_audit') modelAudit = v
+      else if (row.key === 'opus_until') opusUntil = v
     }
+  }
+
+  // /opus a tempo: se il TTL è scaduto e il default è ancora Opus, revert automatico a Sonnet.
+  // INVARIANTE: opus_until DEVE esistere ogni volta che model è Opus.
+  // Se manca (es. messo a mano via SQL), isOpusExpired(undefined)=true → revert.
+  // Questo è VOLUTO: Opus senza scadenza non deve mai esistere (fail-safe verso Sonnet).
+  if (model.includes('opus') && isOpusExpired(opusUntil, new Date())) {
+    model = SONNET_MODEL
+    // Best-effort: riallinea il DB (default + active) e pulisce il TTL. Non blocca la risposta.
+    void (async () => {
+      await supabase.from('cervellone_config').update({ value: SONNET_MODEL, updated_by: 'opus-ttl auto-revert' }).eq('key', 'model_default')
+      await supabase.from('cervellone_config').update({ value: SONNET_MODEL, updated_by: 'opus-ttl auto-revert' }).eq('key', 'model_active')
+      await supabase.from('cervellone_config').delete().eq('key', 'opus_until')
+      const { invalidateCache } = await import('./circuit-breaker')
+      invalidateCache()
+      console.log('[opus-ttl] scaduto → revert a Sonnet (default+active)')
+    })().catch(err => console.error('[opus-ttl] revert failed:', err))
   }
 
   configCache = { model, modelSubagentMail, modelExtractFast, modelAudit }
@@ -292,6 +313,12 @@ export interface ClaudeStreamCallbacks {
 // Thinking budget DINAMICO: default basso per i task di routine; "massima potenza" on-demand
 // se il messaggio contiene un trigger (/think, ultrathink, "pensa a fondo", "massima potenza", ...).
 const DEEP_THINK_RE = /(^|\s)(\/think|\/ragiona|ultrathink|pensa(?:ci)?\s+a\s+fondo|ragiona\s+(?:bene|a\s+fondo)|massim[ao]\s+(?:potenza|ragionamento))\b/i
+
+/** Restituisce true se il messaggio contiene un trigger "massima potenza" / deep-think. */
+export function isDeepThink(userQuery: string): boolean {
+  return DEEP_THINK_RE.test(userQuery || '')
+}
+
 function resolveThinkingBudget(userQuery: string, isOpus: boolean): number {
   if (DEEP_THINK_RE.test(userQuery || '')) return isOpus ? 16_000 : 10_000 // massima potenza on-demand
   return isOpus ? 2_000 : 1_500 // default ridotto (era 8000/4000) — taglia output (il thinking è fatturato come output)
@@ -360,7 +387,7 @@ export async function callClaudeStream(
     maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL: ${effectiveModel} (cheap=${cheap}) for "${userQuery.slice(0, 50)}"`)
-  const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget)
+  const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget, isDeepThink(userQuery))
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     iterations = i + 1
@@ -460,7 +487,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
     maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL TG: ${effectiveModel} (cheap=${cheap}) for "${userQuery.slice(0, 50)}"`)
-  const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget)
+  const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget, isDeepThink(userQuery))
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     iterations = i + 1
@@ -572,7 +599,7 @@ export async function callClaudeStreamTelegram(
     maxTokens: isOpus ? 32_000 : 16_000,
   }
   console.log(`MODEL TG: ${effectiveModel} (cheap=${cheap}) thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
-  const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget)
+  const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget, isDeepThink(userQuery))
 
   let totalToolCalls = 0
   let apiErrorOccurred = false

@@ -20,6 +20,7 @@ import { validateWebhookSecret } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { safeSupabase } from '@/lib/resilience'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
+import { parseOpusCommand, computeOpusUntil, OPUS_MODEL, SONNET_MODEL } from '@/lib/opus-ttl'
 // Trigger.dev imports temporaneamente non usati (Task #10 backlog)
 // import { tasks } from '@trigger.dev/sdk/v3'
 // import type { cervelloneLongTask } from '../../../../trigger/cervellone-long-task'
@@ -241,27 +242,52 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
     if (userText === '/help') {
-      await sendTelegramMessage(chatId, '🧠 *Comandi Cervellone*\n\n/nuova — Azzera conversazione\n/opus — Modello piu potente\n/sonnet — Modello standard\n/modello — Mostra modello attivo\n/aggiorna — Controlla aggiornamenti\n/skill — Lista skill disponibili\n/help — Questa lista')
+      await sendTelegramMessage(chatId, '🧠 *Comandi Cervellone*\n\n/nuova — Azzera conversazione\n/opus [minuti] — Opus a tempo (default 60 min)\n/sonnet — Modello standard\n/modello — Mostra modello attivo\n/aggiorna — Controlla aggiornamenti\n/skill — Lista skill disponibili\n/help — Questa lista')
       return NextResponse.json({ ok: true })
     }
-    if (userText === '/opus') {
-      await supabase.from('cervellone_config').update({ value: 'claude-opus-4-7', updated_by: 'telegram /opus' }).eq('key', 'model_default')
+    const opusMinutes = parseOpusCommand(userText)
+    if (opusMinutes !== null) {
+      const until = computeOpusUntil(new Date(), opusMinutes)
+      await supabase.from('cervellone_config').update({ value: OPUS_MODEL, updated_by: 'telegram /opus' }).eq('key', 'model_default')
+      await supabase.from('cervellone_config').update({ value: OPUS_MODEL, updated_by: 'telegram /opus' }).eq('key', 'model_active')
+      await supabase.from('cervellone_config').upsert({ key: 'opus_until', value: until, updated_by: 'telegram /opus' }, { onConflict: 'key' })
       const { invalidateConfigCache } = await import('@/lib/claude')
       invalidateConfigCache()
-      await sendTelegramMessage(chatId, '🧠 Modello: *Opus* (massima potenza)')
+      const { invalidateCache } = await import('@/lib/circuit-breaker')
+      invalidateCache()
+      const hhmm = new Date(until).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' })
+      await sendTelegramMessage(chatId, `🧠 Modello: *Opus* (massima potenza) per ${opusMinutes} min — fino alle ${hhmm}, poi torno su Sonnet da solo.\n(Per estendere: /opus 120. Per tornare subito: /sonnet)`)
       return NextResponse.json({ ok: true })
     }
     if (userText === '/sonnet') {
-      await supabase.from('cervellone_config').update({ value: 'claude-sonnet-4-6', updated_by: 'telegram /sonnet' }).eq('key', 'model_default')
+      await supabase.from('cervellone_config').update({ value: SONNET_MODEL, updated_by: 'telegram /sonnet' }).eq('key', 'model_default')
+      await supabase.from('cervellone_config').update({ value: SONNET_MODEL, updated_by: 'telegram /sonnet' }).eq('key', 'model_active')
+      await supabase.from('cervellone_config').delete().eq('key', 'opus_until')
       const { invalidateConfigCache } = await import('@/lib/claude')
       invalidateConfigCache()
+      const { invalidateCache } = await import('@/lib/circuit-breaker')
+      invalidateCache()
       await sendTelegramMessage(chatId, '⚡ Modello: *Sonnet* (veloce)')
       return NextResponse.json({ ok: true })
     }
     if (userText === '/modello') {
-      const { data } = await supabase.from('cervellone_config').select('value').eq('key', 'model_default').single()
-      const model = data?.value ? String(data.value).replace(/"/g, '') : 'sconosciuto'
-      await sendTelegramMessage(chatId, `🧠 Modello attivo: *${model}*`)
+      const { data: cfgRows } = await supabase.from('cervellone_config').select('key, value').in('key', ['model_default', 'opus_until'])
+      let model = 'sconosciuto'
+      let opusUntilVal: string | undefined
+      for (const row of cfgRows ?? []) {
+        const v = String(row.value).replace(/"/g, '')
+        if (row.key === 'model_default') model = v
+        else if (row.key === 'opus_until') opusUntilVal = v
+      }
+      let msg = `🧠 Modello attivo: *${model}*`
+      if (opusUntilVal && model.includes('opus')) {
+        const untilDate = new Date(opusUntilVal)
+        if (!isNaN(untilDate.getTime()) && untilDate > new Date()) {
+          const hhmm = untilDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' })
+          msg += ` (Opus fino alle ${hhmm})`
+        }
+      }
+      await sendTelegramMessage(chatId, msg)
       return NextResponse.json({ ok: true })
     }
     if (userText === '/aggiorna') {
