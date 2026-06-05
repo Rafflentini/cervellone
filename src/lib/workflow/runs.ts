@@ -112,6 +112,43 @@ export async function updateRunStatus(
   }
 }
 
+/** Cost-control 6 giu: contatore tentativi per run. Atomico via RPC.
+ *  Fail-open (ritorna 1) su errore: un problema DB non deve bloccare run legittime —
+ *  il vero guard anti-loop è il confronto col cap fatto dal chiamante. */
+export async function incrementRunAttempts(id: string): Promise<number> {
+  try {
+    const { data, error } = await getSupabaseServer()
+      .rpc('increment_workflow_run_attempts', { p_run_id: id })
+    if (error || data === null || data === undefined) {
+      console.warn('[workflow runs] incrementRunAttempts fallback=1:', error?.message ?? 'run non trovata')
+      return 1
+    }
+    return Number(data)
+  } catch (err) {
+    console.warn('[workflow runs] incrementRunAttempts unexpected, fallback=1:', err instanceof Error ? err.message : String(err))
+    return 1
+  }
+}
+
+const ACTIVE_RUN_WINDOW_MS = 30 * 60_000
+
+/** Guard anti-paralleli: run 'running' fresca (<30 min) sulla stessa chat. */
+export async function getActiveRunForChat(chatId: string): Promise<WorkflowRun | null> {
+  try {
+    const cutoff = new Date(Date.now() - ACTIVE_RUN_WINDOW_MS).toISOString()
+    const { data, error } = await getSupabaseServer()
+      .from('agent_workflow_runs')
+      .select('id, channel, chat_id, conversation_id, status')
+      .eq('status', 'running')
+      .eq('chat_id', chatId)
+      .gt('created_at', cutoff)
+      .limit(1)
+      .maybeSingle()
+    if (error) { console.error('[workflow runs] getActiveRunForChat failed:', error.message); return null }
+    return (data as WorkflowRun | null) ?? null
+  } catch { return null }
+}
+
 export async function getRun(id: string): Promise<WorkflowRun | null> {
   try {
     const { data, error } = await getSupabaseServer()
