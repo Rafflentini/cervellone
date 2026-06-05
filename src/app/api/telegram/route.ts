@@ -13,7 +13,7 @@ import { getSupabaseServer } from '@/lib/supabase-server'
 import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
 import { runAgentJob, type AgentJobInput } from '@/lib/agent-job'
 import { shouldUseDurable } from '@/lib/workflow/should-use-durable'
-import { createRun } from '@/lib/workflow/runs'
+import { createRun, getActiveRunForChat } from '@/lib/workflow/runs'
 import { start } from 'workflow/api'
 import { runAgentTask } from '@/workflows/agent-task'
 import { validateWebhookSecret } from '@/lib/auth'
@@ -680,6 +680,17 @@ export async function POST(request: NextRequest) {
     // a oggi (waitUntil(bgProcess()), path in-process 300s).
     if (await shouldUseDurable(userText, fileBlocks)) {
       // ── Path DURABLE (flag ON + long task) ──
+      // Guard anti-paralleli: il path durable rilascia subito il mutex per-chat,
+      // quindi serializziamo qui — una sola task lunga 'running' fresca per chat.
+      const activeRun = await getActiveRunForChat(String(chatId))
+      if (activeRun) {
+        await sendTelegramMessage(chatId, '⏳ Ho già una task lunga in corso per questa chat. Attenda che finisca (o usi /reset se è bloccata).')
+        if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
+        await safeSupabase(() =>
+          supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId).eq('request_id', requestId)
+        )
+        return NextResponse.json({ ok: true })
+      }
       const input: AgentJobInput = {
         chatId,
         userText,
