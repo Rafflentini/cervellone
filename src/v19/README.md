@@ -17,7 +17,7 @@ Vedi plan eseguibile: `docs/superpowers/plans/2026-05-09-cervellone-v19-foundati
 
 ## Struttura cartelle
 
-- `agent/` — loop reasoning V19 (adaptive thinking, MAX_ITER 30, NO_TEXT 8, pause_turn, code_execution capture)
+- `agent/` — loop reasoning V19 (adaptive thinking, MAX_ITER 10, NO_TEXT 5, pause_turn, code_execution capture)
 - `agent/orchestrator.ts` — pattern multi-agent (parent + sub-agent specialist)
 - `memory/` — handler `memory_20250818` Anthropic native + bootstrap user memory
 - `render/` — DOCX/XLSX/PDF semantici (input JSON, output deterministico, no HTML strip)

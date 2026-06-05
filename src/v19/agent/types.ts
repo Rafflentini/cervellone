@@ -35,9 +35,9 @@ export type AgentRequest = {
   parentRunId?: string | null
   /** Optional Telegram streaming sink. */
   telegramStream?: TelegramStreamSink
-  /** Optional override of MAX_ITERATIONS (default 30). */
+  /** Optional override of MAX_ITERATIONS (default 10). */
   maxIterations?: number
-  /** Optional override of NO_TEXT_LIMIT (default 8). */
+  /** Optional override of NO_TEXT_LIMIT (default 5). */
   noTextLimit?: number
 }
 
