@@ -3,7 +3,7 @@
  *
  * Spec: docs/superpowers/specs/2026-05-04-cervellone-circuit-breaker-design.md
  *
- * In stato NORMAL il bot usa model_default (default reale claude-opus-4-8).
+ * In stato NORMAL il bot usa model_default (default reale claude-sonnet-4-6).
  * Quando 3+ outcome falliti su ultimi 5 → trip a model_stable (config manuale).
  * Cron canary ogni 30 min ritenta latest, dopo 3 OK consecutive resetta.
  */
@@ -264,7 +264,7 @@ export async function tripBreaker(reason: string): Promise<void> {
     .maybeSingle()
   const stableModel = stableRow?.value
     ? String(stableRow.value).replace(/"/g, '')
-    : 'claude-opus-4-7'
+    : 'claude-sonnet-4-6'
 
   const { data: defaultRow } = await supabase
     .from('cervellone_config')
@@ -273,7 +273,7 @@ export async function tripBreaker(reason: string): Promise<void> {
     .maybeSingle()
   const defaultModel = defaultRow?.value
     ? String(defaultRow.value).replace(/"/g, '')
-    : 'claude-opus-4-8'
+    : 'claude-sonnet-4-6'
 
   const newState: CircuitState = {
     state: 'ROLLED_BACK',
@@ -321,7 +321,7 @@ export async function resetBreaker(): Promise<void> {
     .maybeSingle()
   const defaultModel = defaultRow?.value
     ? String(defaultRow.value).replace(/"/g, '')
-    : 'claude-opus-4-8'
+    : 'claude-sonnet-4-6'
 
   const newState: CircuitState = {
     state: 'NORMAL',
@@ -369,8 +369,8 @@ export async function promoteModel(newDefault: string): Promise<{
   for (const r of data || []) {
     map[r.key] = String(r.value).replace(/"/g, '')
   }
-  const oldDefault = map.model_default || 'claude-opus-4-8'
-  const oldStable = map.model_stable || 'claude-opus-4-7'
+  const oldDefault = map.model_default || 'claude-sonnet-4-6'
+  const oldStable = map.model_stable || 'claude-sonnet-4-6'
   const newStable = oldDefault
 
   await supabase
