@@ -14,6 +14,7 @@ import { supabase } from './supabase'
 import { recordOutcome, getActiveModel, detectHallucination, type ModelOutcome } from './circuit-breaker'
 import { sendTelegramMessage } from './telegram-helpers'
 import { addUsage, logApiUsage, type UsageTokens } from './api-usage'
+import { isRunOverBudget, runTokens, MAX_RUN_TOKENS } from './run-budget'
 import { shouldUseCheapModel, CHEAP_MODEL } from './cheap-routing'
 
 const client = new Anthropic()
@@ -390,6 +391,12 @@ export async function callClaudeStream(
 
     const final = await stream.finalMessage()
     accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
+    // Guard rail cost-control: stop se la run ha superato il budget token
+    if (isRunOverBudget(accUsage)) {
+      console.warn(`run_aborted_budget: ${runTokens(accUsage)} > ${MAX_RUN_TOKENS} tokens (iter=${iterations})`)
+      fullResponse += '\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._'
+      break
+    }
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
 
     if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
@@ -409,7 +416,7 @@ export async function callClaudeStream(
     entryPoint: request.entryPoint ?? 'chat',
     model: modelConfig.model,
     usage: accUsage,
-    meta: { iterations },
+    meta: { iterations, runAborted: isRunOverBudget(accUsage) },
   })
 
   if (conversationId && fullResponse) {
@@ -477,6 +484,12 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
 
     const final = await stream.finalMessage()
     accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
+    // Guard rail cost-control: stop se la run ha superato il budget token
+    if (isRunOverBudget(accUsage)) {
+      console.warn(`run_aborted_budget: ${runTokens(accUsage)} > ${MAX_RUN_TOKENS} tokens (iter=${iterations})`)
+      fullResponse += '\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._'
+      break
+    }
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
 
     if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
@@ -496,7 +509,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
     entryPoint: request.entryPoint ?? 'telegram',
     model: modelConfig.model,
     usage: accUsage,
-    meta: { iterations },
+    meta: { iterations, runAborted: isRunOverBudget(accUsage) },
   })
 
   if (conversationId && fullResponse) {
@@ -610,6 +623,12 @@ export async function callClaudeStreamTelegram(
 
     const final = await stream.finalMessage()
     accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
+    // Guard rail cost-control: stop se la run ha superato il budget token
+    if (isRunOverBudget(accUsage)) {
+      console.warn(`run_aborted_budget: ${runTokens(accUsage)} > ${MAX_RUN_TOKENS} tokens (iter=${iterations})`)
+      fullResponse += '\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._'
+      break
+    }
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
     totalToolCalls += toolBlocks.length
     const textBlocks = final.content.filter(b => b.type === 'text')
@@ -761,7 +780,7 @@ export async function callClaudeStreamTelegram(
     entryPoint: request.entryPoint ?? 'telegram',
     model: modelConfig.model,
     usage: accUsage,
-    meta: { iterations, outcome, totalToolCalls, apiError: apiErrorOccurred },
+    meta: { iterations, outcome, totalToolCalls, apiError: apiErrorOccurred, runAborted: isRunOverBudget(accUsage) },
   })
 
   return fullResponse
