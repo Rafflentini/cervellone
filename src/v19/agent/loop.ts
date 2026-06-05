@@ -211,7 +211,8 @@ export async function runAgent(
       const synth = await client.messages.create({
         model: modelSubagentMail,
         max_tokens: 8_000,
-        system: req.system,
+        // cost-control 5 giu 2026: system come blocco cachato (ephemeral), come V18.
+        system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
         messages: [
           ...messages,
           { role: 'user', content: 'Sintetizza ora una risposta finale per l\'utente in italiano (Lei).' },
@@ -319,7 +320,8 @@ function buildCreateArgs(input: CreateArgsInput): MessageStreamCreateArgs {
     output_config: {
       effort: 'high',
     },
-    system: input.system,
+    // cost-control 5 giu 2026: system come blocco cachato (ephemeral), come V18.
+    system: [{ type: 'text', text: input.system, cache_control: { type: 'ephemeral' } }],
     messages: input.messages,
     tools: input.tools,
   }
