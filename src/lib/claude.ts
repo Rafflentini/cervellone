@@ -17,6 +17,7 @@ import { addUsage, logApiUsage, type UsageTokens } from './api-usage'
 import { isRunOverBudget, runTokens, MAX_RUN_TOKENS } from './run-budget'
 import { shouldUseCheapModel, CHEAP_MODEL } from './cheap-routing'
 import { truncateToolResult } from './tool-result-utils'
+import { applyIncrementalCacheBreakpoint } from './cache-breakpoints'
 
 const client = new Anthropic()
 const ANTHROPIC_BILLING_ALERT_KEY = 'anthropic_billing_alerted'
@@ -411,6 +412,7 @@ export async function callClaudeStream(
       { role: 'assistant' as const, content: final.content },
       { role: 'user' as const, content: toolResults },
     ]
+    applyIncrementalCacheBreakpoint(currentMessages)
   }
 
   await logApiUsage({
@@ -504,6 +506,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
       { role: 'assistant' as const, content: final.content },
       { role: 'user' as const, content: toolResults },
     ]
+    applyIncrementalCacheBreakpoint(currentMessages)
   }
 
   await logApiUsage({
@@ -657,6 +660,7 @@ export async function callClaudeStreamTelegram(
       { role: 'assistant' as const, content: final.content },
       { role: 'user' as const, content: toolResults },
     ]
+    applyIncrementalCacheBreakpoint(currentMessages)
 
     // FIX Bug 5: dopo NO_TEXT_LIMIT iter consecutivi senza text, forza una
     // sintesi finale con tool_choice=none. Il modello DEVE rispondere con
