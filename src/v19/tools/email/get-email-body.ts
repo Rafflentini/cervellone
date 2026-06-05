@@ -4,6 +4,7 @@
  * Fetch RFC822 di una specifica mail per UID + parse a JSON (mailparser).
  */
 import type Anthropic from '@anthropic-ai/sdk'
+import { truncateToolResult } from '../../../lib/tool-result-utils'
 import { openImap, closeImap } from './connection'
 import { parseRfc822, type ParsedAttachment } from './parse-message'
 import { logEmail } from './audit'
@@ -62,8 +63,8 @@ export async function getEmailBody(input: GetEmailBodyInput): Promise<GetEmailBo
       cc: parsed.cc,
       subject: parsed.subject,
       date: parsed.date?.toISOString() ?? null,
-      text: parsed.text,
-      html: parsed.html,
+      text: truncateToolResult(parsed.text ?? '', 20_000) as string,
+      html: parsed.html != null ? (truncateToolResult(parsed.html, 20_000) as string) : null,
       attachments: input.include_attachments
         ? parsed.attachments
         : parsed.attachments.map((a) => ({
