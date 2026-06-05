@@ -49,6 +49,9 @@ export type AgentJobInput = {
   fileDescription: string
   attachedRecentUploadIds: string[]
   requestId: string
+  /** Serializzabile. Budget token per run; settato SOLO dal ramo durable (MAX_DURABLE_RUN_TOKENS).
+   *  Undefined → callClaudeStreamTelegram usa il default MAX_RUN_TOKENS (200K). */
+  maxRunTokens?: number
 }
 
 /**
@@ -98,6 +101,7 @@ export async function runAgentJob(
       conversationId,
       hasFiles: fileBlocks.length > 0,
       workingContext,
+      maxRunTokens: input.maxRunTokens,
     },
     async (accumulated) => {
       if (!currentMsgId) return

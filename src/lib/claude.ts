@@ -302,6 +302,13 @@ export interface ClaudeRequest {
    * `working_memory_enabled` è ON. Undefined → buildCachedSystem invariato.
    */
   workingContext?: string
+  /**
+   * Budget token per run (input non-cached + cache_creation + output).
+   * Default: MAX_RUN_TOKENS (200K). Il path durable passa MAX_DURABLE_RUN_TOKENS (1M)
+   * per consentire task legittime lunghe 30-60 min senza triggering prematuro del guard.
+   * Usato SOLO in callClaudeStreamTelegram; gli altri due loop usano il default fisso.
+   */
+  maxRunTokens?: number
 }
 
 export interface ClaudeStreamCallbacks {
@@ -601,6 +608,7 @@ export async function callClaudeStreamTelegram(
   console.log(`MODEL TG: ${effectiveModel} (cheap=${cheap}) thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
   const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget, isDeepThink(userQuery))
 
+  const runBudget = request.maxRunTokens ?? MAX_RUN_TOKENS
   let totalToolCalls = 0
   let apiErrorOccurred = false
   let apiErrorMsg = ''
@@ -655,8 +663,8 @@ export async function callClaudeStreamTelegram(
     const final = await stream.finalMessage()
     accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
     // Guard rail cost-control: stop se la run ha superato il budget token
-    if (isRunOverBudget(accUsage)) {
-      console.warn(`run_aborted_budget: ${runTokens(accUsage)} > ${MAX_RUN_TOKENS} tokens (iter=${iterations})`)
+    if (isRunOverBudget(accUsage, runBudget)) {
+      console.warn(`run_aborted_budget: ${runTokens(accUsage)} > ${runBudget} tokens (iter=${iterations})`)
       fullResponse += '\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._'
       break
     }
@@ -812,7 +820,7 @@ export async function callClaudeStreamTelegram(
     entryPoint: request.entryPoint ?? 'telegram',
     model: modelConfig.model,
     usage: accUsage,
-    meta: { iterations, outcome, totalToolCalls, apiError: apiErrorOccurred, runAborted: isRunOverBudget(accUsage) },
+    meta: { iterations, outcome, totalToolCalls, apiError: apiErrorOccurred, runAborted: isRunOverBudget(accUsage, runBudget) },
   })
 
   return fullResponse

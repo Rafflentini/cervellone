@@ -21,6 +21,7 @@ import { rateLimit } from '@/lib/rate-limiter'
 import { safeSupabase } from '@/lib/resilience'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
 import { parseOpusCommand, computeOpusUntil, OPUS_MODEL, SONNET_MODEL } from '@/lib/opus-ttl'
+import { MAX_DURABLE_RUN_TOKENS } from '@/lib/run-budget'
 // Trigger.dev imports temporaneamente non usati (Task #10 backlog)
 // import { tasks } from '@trigger.dev/sdk/v3'
 // import type { cervelloneLongTask } from '../../../../trigger/cervellone-long-task'
@@ -688,6 +689,7 @@ export async function POST(request: NextRequest) {
         fileDescription,
         attachedRecentUploadIds,
         requestId,
+        maxRunTokens: MAX_DURABLE_RUN_TOKENS,
       }
       const run = await start(runAgentTask, [input])
       await createRun({
