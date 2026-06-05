@@ -810,7 +810,9 @@ async function executeToolBlocks(toolBlocks: any[], conversationId?: string): Pr
   return results
 }
 
-const MAX_CONTEXT_CHARS = 500_000
+// cost-control 5 giu 2026: 500K char ≈ 125K token di input A OGNI messaggio web.
+// 120K char ≈ 30K token: ampiamente sufficiente (Telegram usa già solo 6 messaggi di history).
+const MAX_CONTEXT_CHARS = 120_000
 
 export function trimMessages(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
   if (messages.length <= 1) return messages
