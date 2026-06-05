@@ -1,8 +1,8 @@
 /**
  * Cervellone V19 — Agent reasoning loop
  *
- * Conforme a spec sez. 5: adaptive thinking, output_config xhigh/high,
- * MAX_ITER 30, NO_TEXT 8, gestione pause_turn, capture output code_execution,
+ * Conforme a spec sez. 5: adaptive thinking, output_config high,
+ * MAX_ITER 10, NO_TEXT 5, gestione pause_turn, capture output code_execution,
  * container persistence, hallucination validator runtime.
  *
  * Sostituisce src/lib/claude.ts (V18) per il dominio V19.
@@ -30,10 +30,12 @@ import {
   type StopReason,
 } from './types'
 import { logApiUsage } from '@/lib/api-usage'
+import { isRunOverBudget, MAX_RUN_TOKENS } from '@/lib/run-budget'
 
-const MAX_ITERATIONS_DEFAULT = 30
-const NO_TEXT_LIMIT_DEFAULT = 8
-const MAX_TOKENS_OPUS = 64_000
+// cost-control 5 giu 2026: allineato a V18 (10 iter) + max_tokens 16K (Sonnet default)
+const MAX_ITERATIONS_DEFAULT = 10
+const NO_TEXT_LIMIT_DEFAULT = 5
+const MAX_TOKENS_PER_CALL = 16_000
 
 export type ToolExecutor = (
   toolUse: Anthropic.ToolUseBlock,
@@ -139,6 +141,13 @@ export async function runAgent(
         artifacts,
         noPersist: opts.noPersist,
       })
+
+      // Guard rail cost-control: stop se la run ha superato il budget token
+      if (isRunOverBudget({ input_tokens: inputTokens, output_tokens: outputTokens, cache_creation_input_tokens: cacheCreationTokens })) {
+        console.warn(`[v19/loop] run_aborted_budget: oltre ${MAX_RUN_TOKENS} tokens (iter=${iterations})`)
+        stopReason = 'max_tokens'
+        break
+      }
 
       // pause_turn: continue without modifications
       if (stopReason === 'pause_turn') {
@@ -299,10 +308,10 @@ function buildCreateArgs(input: CreateArgsInput): MessageStreamCreateArgs {
   // Usa thinking adaptive + output_config.effort.
   const args: any = {
     model: input.model,
-    max_tokens: MAX_TOKENS_OPUS,
+    max_tokens: MAX_TOKENS_PER_CALL,
     thinking: { type: 'adaptive', display: 'summarized' },
     output_config: {
-      effort: input.intent === 'chat' ? 'high' : 'xhigh',
+      effort: 'high',
     },
     system: input.system,
     messages: input.messages,
