@@ -12,8 +12,8 @@ export const MAX_RUN_TOKENS = 200_000
 
 /** Path durable: task lunghe legittime (30-60 min) → budget dedicato. ~$3-4 max su Sonnet. */
 export const MAX_DURABLE_RUN_TOKENS = 1_000_000
-/** Anti crash-restart loop WDK: max esecuzioni dello step core per la stessa run. */
-export const MAX_RUN_ATTEMPTS = 2
+/** 1 = al secondo ingresso dello step la run viene abortita: paga al massimo UNA esecuzione completa. Scelta post-audit 6 giu (P1-C). */
+export const MAX_RUN_ATTEMPTS = 1
 
 export function runTokens(u: UsageTokens): number {
   return (

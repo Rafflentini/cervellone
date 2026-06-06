@@ -25,6 +25,7 @@ export async function createRun(input: {
         channel: input.channel,
         chat_id: input.chatId ?? null,
         conversation_id: input.conversationId ?? null,
+        status: 'running',
       })
 
     if (error) {

@@ -5,6 +5,7 @@
  * Telegram vive in uno step (mai nel body del workflow).
  */
 
+import { getStepMetadata } from 'workflow'
 import { runAgentJob, type AgentJobInput } from '@/lib/agent-job'
 import { updateRunStatus, incrementRunAttempts, type WorkflowRunStatus } from '@/lib/workflow/runs'
 import { MAX_RUN_ATTEMPTS } from '@/lib/run-budget'
@@ -34,16 +35,38 @@ export async function runAgentJobStep(runId: string, input: AgentJobInput): Prom
   // Anti crash-restart loop (incidente $118 del 4 giu): se WDK ri-esegue questo step
   // dopo un crash dell'esecutore (800s kill), il contatore in DB lo rileva.
   // Al tentativo > MAX_RUN_ATTEMPTS: stop SENZA chiamare Claude.
-  const attempts = await incrementRunAttempts(runId)
+  const dbAttempts = await incrementRunAttempts(runId)
+
+  // Doppio contatore: DB (sopravvive ai crash) + WDK nativo (sopravvive al DB down) — audit P1-D.
+  // getStepMetadata().attempt = quante volte questo step è stato eseguito (1 = prima volta).
+  let wdkAttempt = 1
+  try {
+    wdkAttempt = getStepMetadata().attempt
+  } catch {
+    // fuori dallo step-context (es. test) → fallback 1
+  }
+  const attempts = Math.max(dbAttempts, wdkAttempt)
+
   if (attempts > MAX_RUN_ATTEMPTS) {
     console.error(`[durable] run ${runId} attempt ${attempts} > ${MAX_RUN_ATTEMPTS} — abort anti-loop`)
     await sendTelegramMessage(
       input.chatId,
-      '⚠️ Ho interrotto la task: è stata riavviata troppe volte dall\'infrastruttura (probabile interruzione). Non ho riprovato per non consumare credito. La rilanci, magari spezzandola in passi più piccoli.'
+      '⚠️ Ho interrotto la task: l\'esecuzione è stata interrotta dall\'infrastruttura e non l\'ho riavviata per non consumare credito. Se la richiesta era molto lunga (>10 minuti di lavoro), la spezzi in passi più piccoli e la rilanci.'
     ).catch(() => {})
     await updateRunStatus(runId, 'error', telegramFallback(input))
     return
   }
+
+  // Se siamo in una ri-esecuzione (attempts > 1) ma sotto il cap: avvisa l'utente che stiamo
+  // riprendendo. Con MAX_RUN_ATTEMPTS=1 questo ramo non scatterà mai; è qui per robustezza
+  // nel caso il cap venga alzato in futuro.
+  if (attempts > 1) {
+    await sendTelegramMessage(
+      input.chatId,
+      '🔄 Riprendo la task interrotta (tentativo ' + attempts + ')...'
+    ).catch(() => {})
+  }
+
   await runAgentJob(input)
 }
 runAgentJobStep.maxRetries = 0

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { incrementRunAttempts, getActiveRunForChat } from './runs'
+import { incrementRunAttempts, getActiveRunForChat, createRun } from './runs'
 
 // Mock getSupabaseServer — stesso pattern di circuit-breaker.test.ts (mock './supabase')
 // ma qui mocchiamo '@/lib/supabase-server' che esporta getSupabaseServer().
@@ -12,6 +12,22 @@ vi.mock('@/lib/supabase-server', () => ({
     from: mockFrom,
   }),
 }))
+
+describe('createRun', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('inserisce status running esplicitamente (hardening P0-A)', async () => {
+    const insertMock = vi.fn().mockResolvedValue({ error: null })
+    mockFrom.mockReturnValue({ insert: insertMock })
+
+    await createRun({ id: 'run-1', channel: 'telegram', chatId: '42', conversationId: 'conv-1' })
+
+    expect(mockFrom).toHaveBeenCalledWith('agent_workflow_runs')
+    expect(insertMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'running' }))
+  })
+})
 
 describe('incrementRunAttempts', () => {
   beforeEach(() => {
