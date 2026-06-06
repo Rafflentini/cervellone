@@ -12,9 +12,10 @@
  *
  * Tutto è best-effort e non bloccante: qualsiasi errore → ritorna '' / null / no-op.
  *
- * Schema tabella `procedures` (già esistente, NON la tocchiamo):
+ * Schema tabella `procedures` (già esistente, con colonna keywords aggiunta da
+ * migration 2026-06-06-procedures-keywords.sql):
  *   id, task_type (unique), title, checklist jsonb [{step, source}], output_spec,
- *   save_location, lessons jsonb [], updated_at
+ *   save_location, lessons jsonb [], keywords jsonb [], updated_at
  */
 
 import { getSupabaseServer } from './supabase-server'
@@ -42,17 +43,33 @@ export interface Procedure {
   output_spec: string | null
   save_location: string | null
   lessons: string[]
+  keywords: string[]
   updated_at?: string
 }
 
+/* ─── Cache per il lookup data-driven di procedures (keyword matching) ─── */
+interface ProcedureCacheEntry {
+  rows: Array<{ task_type: string; keywords: string[] }>
+  cachedAt: number
+}
+
+const PROCEDURE_CACHE_TTL_MS = 5 * 60 * 1000 // 5 minuti
+let procedureCache: ProcedureCacheEntry | null = null
+
+/** Invalida la cache in-memory (chiamata dopo ogni write su procedures). */
+export function invalidateProcedureCache(): void {
+  procedureCache = null
+}
+
 /**
- * Inferenza tipo-task dalla richiesta utente.
+ * Fallback: inferenza tipo-task SOLO via regex hardcoded (7 tipi storici).
+ * Continua a funzionare anche se la tabella procedures non è raggiungibile.
  *
  * REPLICA della logica di `inferDocumentType` in document-saver.ts: NON importiamo
  * document-saver perché tira dentro googleapis (pesante) — qui ci serve solo la
  * piccola funzione regex, replicata 1:1.
  */
-export function inferTaskType(userQuery: string): ProcedureTaskType {
+export function inferTaskTypeRegex(userQuery: string): ProcedureTaskType {
   const text = (userQuery || '').toLowerCase()
   // Ordine importante: pattern più specifici prima (identico a inferDocumentType)
   if (/\bpiano\s+operativo\s+(?:di\s+)?sicurezza|\bp\.?o\.?s\.?\b/i.test(text)) return 'pos'
@@ -63,6 +80,133 @@ export function inferTaskType(userQuery: string): ProcedureTaskType {
   if (/\bcila\b|comunicazione\s+inizio\s+lavori/i.test(text)) return 'cila'
   if (/\bpreventiv|\bofferta\b/i.test(text)) return 'preventivo'
   return 'altro'
+}
+
+/**
+ * Inferenza tipo-task data-driven: prima prova il DB (task_type + keywords),
+ * con cache in-memory TTL 5 min; in caso di errore/tabella vuota cade sul
+ * fallback regex hardcoded (i 7 tipi storici restano sempre raggiungibili).
+ *
+ * La funzione è ASYNC per il lookup DB. buildProcedureContext è già async.
+ *
+ * @deprecated Il nome `inferTaskType` sincronico era usato solo nei test storici.
+ *   I test ora importano `inferTaskType` che è questa versione async.
+ */
+export async function inferTaskType(userQuery: string): Promise<string> {
+  const text = (userQuery || '').toLowerCase()
+  try {
+    // Usa la cache se ancora valida
+    if (!procedureCache || Date.now() - procedureCache.cachedAt > PROCEDURE_CACHE_TTL_MS) {
+      const supabase = getSupabaseServer()
+      const { data, error } = await supabase
+        .from('procedures')
+        .select('task_type, keywords')
+
+      if (error) {
+        console.error('[working-memory] inferTaskType load failed:', error.message)
+        // fallback regex
+        return inferTaskTypeRegex(userQuery)
+      }
+
+      procedureCache = {
+        rows: (data ?? []).map((r: { task_type: string; keywords?: unknown }) => ({
+          task_type: r.task_type,
+          keywords: Array.isArray(r.keywords) ? (r.keywords as string[]) : [],
+        })),
+        cachedAt: Date.now(),
+      }
+    }
+
+    // Match: task_type come parola o ognuna delle keywords
+    for (const row of procedureCache.rows) {
+      const type = row.task_type.toLowerCase()
+      const typeRegex = new RegExp(`\\b${type.replace(/[-]/g, '[-]')}\\b`, 'i')
+      if (typeRegex.test(text)) return row.task_type
+      for (const kw of row.keywords) {
+        if (!kw) continue
+        const kwLower = kw.toLowerCase()
+        const kwRegex = new RegExp(`\\b${kwLower.replace(/[-]/g, '[-]')}\\b`, 'i')
+        if (kwRegex.test(text)) return row.task_type
+      }
+    }
+  } catch (err) {
+    console.error('[working-memory] inferTaskType error:', err instanceof Error ? err.message : err)
+  }
+
+  // Fallback regex (7 tipi storici)
+  return inferTaskTypeRegex(userQuery)
+}
+
+/**
+ * Crea una procedura NUOVA (tipo-documento non ancora conosciuto).
+ * Ritorna false se esiste già (usa registra_apprendimento per aggiungere lezioni).
+ *
+ * Normalizza taskType: lowercase, trim, solo [a-z0-9_-].
+ * Non lancia mai: best-effort.
+ */
+export async function createProcedure(input: {
+  taskType: string
+  title: string
+  keywords?: string[]
+  checklist?: string[]
+  outputSpec?: string
+  saveLocation?: string
+}): Promise<boolean> {
+  try {
+    const taskType = (input.taskType || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '')
+    if (!taskType || !input.title?.trim()) {
+      console.warn('[working-memory] createProcedure: taskType o title mancante')
+      return false
+    }
+
+    const supabase = getSupabaseServer()
+
+    // Verifica esistenza
+    const { data: existing, error: selErr } = await supabase
+      .from('procedures')
+      .select('id')
+      .eq('task_type', taskType)
+      .maybeSingle()
+
+    if (selErr) {
+      console.error('[working-memory] createProcedure select failed:', selErr.message)
+      return false
+    }
+    if (existing) {
+      console.warn(`[working-memory] createProcedure: task_type="${taskType}" esiste già`)
+      return false
+    }
+
+    // Costruisci la checklist nel formato [{step, source?}]
+    const checklist: ChecklistStep[] = (input.checklist ?? []).map((s) => ({ step: s }))
+
+    const row: Record<string, unknown> = {
+      task_type: taskType,
+      title: input.title.trim(),
+      checklist,
+      lessons: [],
+      keywords: input.keywords ?? [],
+      updated_at: new Date().toISOString(),
+    }
+    if (input.outputSpec !== undefined) row.output_spec = input.outputSpec
+    if (input.saveLocation !== undefined) row.save_location = input.saveLocation
+
+    const { error: insErr } = await supabase.from('procedures').insert(row)
+    if (insErr) {
+      console.error('[working-memory] createProcedure insert failed:', insErr.message)
+      return false
+    }
+
+    // Invalida la cache così inferTaskType vede subito il nuovo tipo
+    invalidateProcedureCache()
+    return true
+  } catch (err) {
+    console.error('[working-memory] createProcedure error:', err instanceof Error ? err.message : err)
+    return false
+  }
 }
 
 /**
@@ -97,7 +241,7 @@ export async function getProcedure(taskType: string): Promise<Procedure | null> 
     const supabase = getSupabaseServer()
     const { data, error } = await supabase
       .from('procedures')
-      .select('id, task_type, title, checklist, output_spec, save_location, lessons, updated_at')
+      .select('id, task_type, title, checklist, output_spec, save_location, lessons, keywords, updated_at')
       .eq('task_type', taskType)
       .maybeSingle()
 
@@ -109,6 +253,7 @@ export async function getProcedure(taskType: string): Promise<Procedure | null> 
 
     const checklist = Array.isArray(data.checklist) ? (data.checklist as ChecklistStep[]) : []
     const lessons = Array.isArray(data.lessons) ? (data.lessons as string[]) : []
+    const keywords = Array.isArray(data.keywords) ? (data.keywords as string[]) : []
     return {
       id: data.id,
       task_type: data.task_type,
@@ -117,6 +262,7 @@ export async function getProcedure(taskType: string): Promise<Procedure | null> 
       output_spec: data.output_spec ?? null,
       save_location: data.save_location ?? null,
       lessons,
+      keywords,
       updated_at: data.updated_at,
     }
   } catch (err) {
@@ -162,6 +308,7 @@ export async function addLesson(taskType: string, lesson: string): Promise<boole
       console.error('[working-memory] addLesson update failed:', upErr.message)
       return false
     }
+    invalidateProcedureCache()
     return true
   } catch (err) {
     console.error('[working-memory] addLesson error:', err instanceof Error ? err.message : err)
@@ -175,7 +322,7 @@ export async function addLesson(taskType: string, lesson: string): Promise<boole
  */
 export async function buildProcedureContext(userQuery: string): Promise<string> {
   try {
-    const taskType = inferTaskType(userQuery)
+    const taskType = await inferTaskType(userQuery)
     if (taskType === 'altro') return ''
 
     const proc = await getProcedure(taskType)

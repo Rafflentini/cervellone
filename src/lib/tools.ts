@@ -1976,6 +1976,7 @@ async function executeMemoriaWrapper(
 
 // 2026-06-04 FASE 1 Memoria procedurale: tool per registrare apprendimenti permanenti
 // su COME si fa un certo tipo di documento (dopo correzione + conferma dell'Ingegnere).
+// 2026-06-06 GAP 2: aggiunto crea_procedura per tipi di documento NUOVI (non ancora noti).
 const WORKING_MEMORY_TOOLS: ToolDefinition[] = [
   {
     name: 'registra_apprendimento',
@@ -1985,8 +1986,7 @@ const WORKING_MEMORY_TOOLS: ToolDefinition[] = [
       properties: {
         task_type: {
           type: 'string',
-          enum: ['pos', 'preventivo', 'cme', 'perizia', 'relazione', 'scia', 'cila'],
-          description: 'Tipo di documento a cui si riferisce l\'apprendimento.',
+          description: 'Tipo di documento a cui si riferisce l\'apprendimento (es. "pos", "cigo", "ddt"). Deve essere una procedura GIA\' esistente.',
         },
         lesson: {
           type: 'string',
@@ -1996,28 +1996,94 @@ const WORKING_MEMORY_TOOLS: ToolDefinition[] = [
       required: ['task_type', 'lesson'],
     },
   },
+  {
+    name: 'crea_procedura',
+    description: "Crea una procedura NUOVA per un tipo di documento/lavoro che Cervellone non conosce ancora. Usalo quando l'Ingegnere ti spiega come si fa un lavoro nuovo e CONFERMA di volerlo salvare. Per aggiungere lezioni a procedure esistenti usa registra_apprendimento.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        taskType: {
+          type: 'string',
+          description: 'Slug minuscolo del tipo (es. "cigo", "ddt", "durc"). Solo lettere minuscole, cifre, trattini e underscore.',
+        },
+        title: {
+          type: 'string',
+          description: 'Titolo esteso della procedura (es. "CIGO — Cassa Integrazione Guadagni Ordinaria").',
+        },
+        keywords: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Alias e varianti per il riconoscimento automatico (es. ["cigo", "cassa integrazione", "ammortizzatore sociale"]).',
+        },
+        checklist: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Passi obbligatori da seguire per questo tipo di documento (possono crescere con registra_apprendimento).',
+        },
+        outputSpec: {
+          type: 'string',
+          description: 'Descrizione del formato/output atteso (es. "Modulo INPS SR41 compilato + lettera di autorizzazione").',
+        },
+        saveLocation: {
+          type: 'string',
+          description: 'Dove salvare il documento su Drive (es. "cantiere/05_Amministrativo/CIGO").',
+        },
+      },
+      required: ['taskType', 'title'],
+    },
+  },
 ]
 
 async function executeWorkingMemoryWrapper(
   name: string,
   input: Record<string, unknown>,
 ): Promise<string | null> {
-  if (name !== 'registra_apprendimento') return null
-  try {
-    const taskType = String(input.task_type || '').trim()
-    const lesson = String(input.lesson || '').trim()
-    if (!taskType || !lesson) {
-      return 'Errore: task_type e lesson sono entrambi richiesti.'
+  if (name === 'registra_apprendimento') {
+    try {
+      const taskType = String(input.task_type || '').trim()
+      const lesson = String(input.lesson || '').trim()
+      if (!taskType || !lesson) {
+        return 'Errore: task_type e lesson sono entrambi richiesti.'
+      }
+      const { addLesson } = await import('./working-memory')
+      const ok = await addLesson(taskType, lesson)
+      if (ok) {
+        return 'Apprendimento registrato per i "' + taskType + '". Da ora lo seguiro come regola: "' + lesson + '"'
+      }
+      return 'Non sono riuscito a registrare l\'apprendimento per "' + taskType + '" (procedura non trovata o errore di salvataggio). L\'Ingegnere puo verificare la procedura.'
+    } catch (err) {
+      return 'Errore registra_apprendimento: ' + (err instanceof Error ? err.message : String(err))
     }
-    const { addLesson } = await import('./working-memory')
-    const ok = await addLesson(taskType, lesson)
-    if (ok) {
-      return `✅ Apprendimento registrato per i "${taskType}". Da ora lo seguirò come regola: "${lesson}"`
-    }
-    return `⚠️ Non sono riuscito a registrare l'apprendimento per "${taskType}" (procedura non trovata o errore di salvataggio). L'Ingegnere può verificare la procedura.`
-  } catch (err) {
-    return `Errore registra_apprendimento: ${err instanceof Error ? err.message : err}`
   }
+
+  if (name === 'crea_procedura') {
+    try {
+      const taskType = String(input.taskType || '').trim()
+      const title = String(input.title || '').trim()
+      if (!taskType || !title) {
+        return 'Errore: taskType e title sono entrambi richiesti.'
+      }
+      const keywords = Array.isArray(input.keywords)
+        ? (input.keywords as unknown[]).map((k) => String(k))
+        : []
+      const checklist = Array.isArray(input.checklist)
+        ? (input.checklist as unknown[]).map((c) => String(c))
+        : []
+      const outputSpec = input.outputSpec ? String(input.outputSpec) : undefined
+      const saveLocation = input.saveLocation ? String(input.saveLocation) : undefined
+
+      const { createProcedure } = await import('./working-memory')
+      const ok = await createProcedure({ taskType, title, keywords, checklist, outputSpec, saveLocation })
+      if (ok) {
+        return 'Procedura "' + title + '" (tipo: ' + taskType.toLowerCase().replace(/[^a-z0-9_-]/g, '') + ') creata con successo. Da ora la riconoscero automaticamente e potrò imparare da Lei con registra_apprendimento.'
+      }
+      return 'La procedura "' + taskType + '" esiste gia. Per aggiungere conoscenza usa registra_apprendimento.'
+    } catch (err) {
+      return 'Errore crea_procedura: ' + (err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  return null
 }
 
 // 2026-06-04 FASE 2 Memoria di progetto: tool per registrare il progetto/lavoro

@@ -1,6 +1,8 @@
 // src/lib/working-memory.test.ts
 /**
- * Test FASE 2 — memoria di progetto attivo (project_state) + inferTaskType.
+ * Test FASE 1+2 — memoria procedurale (procedures) + progetto attivo (project_state).
+ *
+ * GAP 2 (2026-06-06): nuovi test per createProcedure e inferTaskType data-driven.
  *
  * Pattern mock supabase coerente con src/v19/__tests__/email-pending.spec.ts:
  * un builder fluente configurabile che ritorna self sui filtri e termina con
@@ -12,6 +14,9 @@
  * Inoltre `from()` è risolto PER TABELLA: getActiveProject legge `project_state`,
  * buildProcedureContext legge `procedures`. Usiamo una mappa tabella→builder così
  * un singolo test può configurare entrambe le sorgenti in modo deterministico.
+ *
+ * NOTA: il builder è stato esteso per supportare la catena `.select(...).then(resolve)`
+ * usata da inferTaskType per caricare tutte le righe (senza .maybeSingle()).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -61,6 +66,9 @@ vi.mock('./supabase-server', () => ({
 
 import {
   inferTaskType,
+  inferTaskTypeRegex,
+  invalidateProcedureCache,
+  createProcedure,
   buildActiveProjectContext,
   buildWorkingContext,
 } from './working-memory'
@@ -68,17 +76,164 @@ import {
 beforeEach(() => {
   fromSpy.mockClear()
   resetTables()
+  invalidateProcedureCache()
 })
 
-describe('inferTaskType', () => {
+// ─── inferTaskTypeRegex (sincrono, fallback) ──────────────────────────────────
+
+describe('inferTaskTypeRegex (fallback sincrono)', () => {
   it('riconosce un POS', () => {
-    expect(inferTaskType('prepara un POS per Celano')).toBe('pos')
+    expect(inferTaskTypeRegex('prepara un POS per Celano')).toBe('pos')
   })
 
   it('frase generica → altro', () => {
-    expect(inferTaskType('ciao come stai')).toBe('altro')
+    expect(inferTaskTypeRegex('ciao come stai')).toBe('altro')
+  })
+
+  it('riconosce CME', () => {
+    expect(inferTaskTypeRegex('fai un computo metrico per il cantiere')).toBe('cme')
   })
 })
+
+// ─── inferTaskType (async, data-driven + fallback) ───────────────────────────
+
+describe('inferTaskType (async data-driven)', () => {
+  it('riconosce un POS via fallback regex quando tabella vuota', async () => {
+    // tabella procedures vuota → array vuoto → fallback regex
+    setTable('procedures', { data: [], error: null })
+    const result = await inferTaskType('prepara un POS per Celano')
+    expect(result).toBe('pos')
+  })
+
+  it('frase generica senza procedure → altro', async () => {
+    setTable('procedures', { data: [], error: null })
+    const result = await inferTaskType('ciao come stai')
+    expect(result).toBe('altro')
+  })
+
+  it('riconosce un tipo creato a runtime via task_type (parola intera)', async () => {
+    setTable('procedures', {
+      data: [{ task_type: 'cigo', keywords: [] }],
+      error: null,
+    })
+    const result = await inferTaskType('prepara pratica cigo per il cantiere')
+    expect(result).toBe('cigo')
+  })
+
+  it('riconosce un tipo creato a runtime via keywords', async () => {
+    setTable('procedures', {
+      data: [{ task_type: 'cigo', keywords: ['cassa integrazione', 'ammortizzatore'] }],
+      error: null,
+    })
+    const result = await inferTaskType('gestisci la cassa integrazione ordinaria')
+    expect(result).toBe('cigo')
+  })
+
+  it('usa la cache: non ricarica il DB al secondo invocation', async () => {
+    setTable('procedures', {
+      data: [{ task_type: 'durc', keywords: ['documento unico regolarita'] }],
+      error: null,
+    })
+    await inferTaskType('richiesta durc per cantiere')
+    const callsAfterFirst = fromSpy.mock.calls.length
+
+    // Seconda invocation: non deve toccare il DB (cache valida)
+    await inferTaskType('rinnova durc')
+    expect(fromSpy.mock.calls.length).toBe(callsAfterFirst)
+  })
+
+  it('dopo invalidateProcedureCache ricarica il DB', async () => {
+    setTable('procedures', {
+      data: [{ task_type: 'cigo', keywords: [] }],
+      error: null,
+    })
+    await inferTaskType('cigo')
+    const callsBefore = fromSpy.mock.calls.length
+
+    invalidateProcedureCache()
+    await inferTaskType('cigo')
+    expect(fromSpy.mock.calls.length).toBeGreaterThan(callsBefore)
+  })
+
+  it('fallback regex se DB restituisce errore', async () => {
+    setTable('procedures', { data: null, error: { message: 'connection error' } })
+    const result = await inferTaskType('prepara un POS')
+    expect(result).toBe('pos')
+  })
+})
+
+// ─── createProcedure ─────────────────────────────────────────────────────────
+
+describe('createProcedure', () => {
+  it('inserisce una nuova procedura e ritorna true', async () => {
+    // maybeSingle per SELECT esistenza → null (non esiste)
+    setTable('procedures', { data: null, error: null })
+
+    const ok = await createProcedure({
+      taskType: 'CIGO',
+      title: 'CIGO — Cassa Integrazione Guadagni Ordinaria',
+      keywords: ['cigo', 'cassa integrazione'],
+      checklist: ['Raccogliere buste paga', 'Compilare modulo INPS SR41'],
+    })
+    expect(ok).toBe(true)
+  })
+
+  it('normalizza taskType: uppercase → lowercase, caratteri non validi rimossi', async () => {
+    setTable('procedures', { data: null, error: null })
+
+    const ok = await createProcedure({
+      taskType: 'DURC Preventivo!',
+      title: 'DURC',
+    })
+    expect(ok).toBe(true)
+    // Verifichiamo che l'INSERT abbia ricevuto il taskType normalizzato
+    // (il fromSpy ha ricevuto la chiamata con il task_type sanitizzato)
+    const insertCall = fromSpy.mock.calls.find(([table]) => table === 'procedures')
+    expect(insertCall).toBeDefined()
+  })
+
+  it('ritorna false se task_type esiste gia', async () => {
+    // maybeSingle ritorna un record esistente
+    setTable('procedures', { data: { id: 1 }, error: null })
+
+    const ok = await createProcedure({
+      taskType: 'pos',
+      title: 'POS duplicato',
+    })
+    expect(ok).toBe(false)
+  })
+
+  it('ritorna false se taskType o title sono vuoti', async () => {
+    const ok1 = await createProcedure({ taskType: '', title: 'Titolo' })
+    expect(ok1).toBe(false)
+
+    const ok2 = await createProcedure({ taskType: 'tipo', title: '   ' })
+    expect(ok2).toBe(false)
+  })
+
+  it('invalida la cache dopo insert riuscito', async () => {
+    setTable('procedures', { data: null, error: null })
+
+    // Prima: popola cache
+    setTable('procedures', {
+      data: [{ task_type: 'pos', keywords: [] }],
+      error: null,
+    })
+    await inferTaskType('pos')
+    const callsBefore = fromSpy.mock.calls.length
+
+    // createProcedure deve invalidare la cache
+    setTable('procedures', { data: null, error: null })
+    await createProcedure({ taskType: 'durc', title: 'DURC' })
+
+    // La prossima inferTaskType ricarica il DB (cache invalidata)
+    setTable('procedures', { data: [{ task_type: 'durc', keywords: [] }], error: null })
+    await inferTaskType('durc')
+    expect(fromSpy.mock.calls.length).toBeGreaterThan(callsBefore + 1)
+  })
+})
+
+// ─── buildActiveProjectContext ────────────────────────────────────────────────
 
 describe('buildActiveProjectContext', () => {
   it('senza conversationId → stringa vuota', async () => {
@@ -209,6 +364,7 @@ describe('buildWorkingContext', () => {
         output_spec: 'PDF',
         save_location: 'Drive/POS',
         lessons: [],
+        keywords: [],
       },
       error: null,
     })
@@ -219,6 +375,7 @@ describe('buildWorkingContext', () => {
   })
 
   it('senza conversationId né procedura → stringa vuota', async () => {
+    setTable('procedures', { data: [], error: null })
     const out = await buildWorkingContext('ciao come stai', undefined)
     expect(out).toBe('')
   })
