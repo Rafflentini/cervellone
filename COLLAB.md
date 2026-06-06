@@ -13,9 +13,90 @@ See `AGENTS.md` → "Multi-agent collaboration" for the full rules.
 ## In-flight work
 | Task | Owner | Branch | Files / area | Status |
 |------|-------|--------|--------------|--------|
-| Review audit-3giu | Codex | `fix/audit-3giu-batch` | 11 file (vedi diff) | REVIEW richiesta |
+| TASK S1 stress test durable | Codex | `codex/s1-stress-durable` | SOLO file *.test.ts nuovi (vedi spec) | ASSEGNATA |
+| TASK S2 stress test memoria + micro-fix | Codex | `codex/s2-stress-memoria` | test + draft-tools/working-memory (vedi spec) | IN CODA (dopo S1) |
 
 ## Task queue (assigned by Claude)
+
+### TASK S1 — Stress test durable anti-runaway (TEST-ONLY, vitest + mock, ZERO API vere)
+
+**Contesto.** Il 4 giu un crash-restart loop WDK ha bruciato $118. Il 6 giu sono stati deployati i fix
+(commit `1ef7a1f`..`c49fe31`): contatore `attempts` atomico (RPC `increment_workflow_run_attempts`) con
+`MAX_RUN_ATTEMPTS=1` + doppio guard `Math.max(dbAttempts, getStepMetadata().attempt)` in
+`src/workflows/agent-task-steps.ts`; budget `maxRunTokens` (1M durable / 200K default) in
+`callClaudeStreamTelegram`; guard anti-paralleli `getActiveRunForChat` (running &lt;30min) in
+`src/lib/workflow/runs.ts`; `/reset` chiude le run durable; cron `expire-pending` ripulisce
+le zombie (&gt;2h). Questa task scrive gli stress test che INCHIODANO questi comportamenti.
+
+**Regole.** Branch `codex/s1-stress-durable` da `origin/main` aggiornato. Crea SOLO file di test nuovi
+(+ eventuali micro-export se un simbolo non è importabile: segnala nel PR, non cambiare logica).
+Pattern mock: guarda `src/lib/workflow/runs.test.ts` e `src/lib/circuit-breaker.test.ts` (vi.mock dei
+moduli supabase). NIENTE chiamate API vere (Anthropic/Telegram/Supabase): tutto mockato.
+Se nel tuo ambiente mancano npx/node_modules: scrivi comunque i test con la massima cura, dichiara
+nel PR che non li hai eseguiti — li eseguirà Claude in review.
+
+**Test richiesti (file → casi):**
+1. `src/workflows/agent-task-steps.attempts.test.ts`
+   - mock `incrementRunAttempts` → 1: `runAgentJob` VIENE chiamato; → 2: `runAgentJob` NON chiamato,
+     `sendTelegramMessage` 1× (testo contiene "interrotta"), `updateRunStatus(runId,'error',fallback)` chiamato.
+   - caso doppio-guard P1-D: mock `incrementRunAttempts`→1 (fail-open DB) ma `getStepMetadata`→{attempt:2}
+     → DEVE abortire comunque (mocka il modulo 'workflow').
+   - caso entrambi=1 → passa.
+2. `src/lib/workflow/runs.getactive.test.ts` (o estendi runs.test.ts)
+   - `getActiveRunForChat`: run created_at −10min → trovata; −40min → null; errore DB → null;
+     verifica che il filtro `.gt('created_at', cutoff)` riceva ISO ≈ now−30min.
+3. `src/lib/claude.budget-durable.test.ts`
+   - mock dello stream Anthropic che accumula usage: con `maxRunTokens` ALTO il loop continua oltre 200K;
+     senza (default) → break con testo "superato il budget" in risposta; `logApiUsage` meta.runAborted coerente.
+   - NB: mockare `@anthropic-ai/sdk` è oneroso: guarda se esiste già un pattern di mock stream nel repo;
+     se diventa fragile, testa in alternativa la sola funzione `isRunOverBudget` con cap custom + documenta.
+4. `src/workflows/agent-task.crash-idempotent.test.ts`
+   - `updateRunStatus` eseguito 2× stesso runId (simula re-run WDK di markRunStep): nessun throw;
+     2ª chiamata con UPDATE count=0 + INSERT duplicate-key → ramo "no clobber" (spia su console.warn ok).
+5. `src/lib/workflow/runs.createrun.test.ts` (o estendi)
+   - `createRun` include `status:'running'` esplicito nel payload insert.
+
+**PR:** titolo `test(durable): stress test anti-runaway (S1)`, descrizione con elenco casi e
+(se eseguiti) esiti. NON mergiare. NON toccare file di produzione.
+
+### TASK S2 — Stress test memoria + 3 micro-fix (dopo S1, branch separato)
+
+**Contesto.** Il "disastro POS" del 4 giu: il bot perdeva/rigenerava i documenti e non ricordava i dati
+tra i turni. Il sistema memoria (project_state + draft-tools, `src/lib/working-memory.ts` +
+`src/lib/draft-tools.ts`) è attivo in prod ma va inchiodato con test + 3 micro-fix da audit.
+
+**Regole.** Branch `codex/s2-stress-memoria`. Pattern mock: `working-memory.test.ts` / `draft-tools.test.ts`
+esistenti, ma con store in-memory MUTABILE (insert/update riflessi) dove serve.
+
+**Micro-fix richiesti (con test ciascuno):**
+A. `ritrova_bozza` accetta anche ricerca per titolo: in `src/lib/draft-tools.ts` aggiungi a `getDraft`
+   (o nuova funzione `findDraftByTitle(conversationId, query)`) la ricerca `name ilike %query%` scoped
+   alla conversation; 1 match → ritorna la bozza; più match → ritorna lista breve (id+nome) chiedendo
+   di scegliere; 0 → messaggio chiaro. Aggiorna la definizione del tool in `src/lib/tools.ts`
+   (parametro `titolo` opzionale, `doc_id` resta preferito). NON cambiare la firma esistente per id.
+B. `aggiorna_progetto`: gli array `done`/`pending` devono APPENDERE con dedup, non sostituire
+   (in `setActiveProject`, src/lib/working-memory.ts). `decisions` idem. `key_files` resta merge shallow.
+   Aggiorna il commento/JSDoc.
+C. `aggiorna_bozza`: elimina il doppio round-trip per la colonna `updated_at` inesistente in `documents`
+   (oggi primo update fallisce sempre e fa retry: rimuovi il tentativo, lascia solo il content update).
+
+**Test richiesti** (`src/lib/working-memory-stress.test.ts` + estensioni `draft-tools.test.ts`):
+1. genera→modifica→ritrova: store documents con 1 riga; `updateDraft` → stesso `/doc/&lt;id&gt;`, store ha
+   ANCORA 1 sola riga (assert anti-rigenerazione).
+2. project_state sopravvive a /nuova (nessuna closeActiveProject) → `getActiveProject` ancora attivo;
+   dopo `closeActiveProject` → null.
+3. due bozze simili: `findDraftByTitle('POS Celano')` → lista 2 match; `('Celano v2')` → match unico.
+4. `saveDraftPdfToDrive` happy path + `DrivePolicyError` → output 🔒 e NIENTE upload.
+5. merge `setActiveProject`: campi omessi invariati, `key_files` merge, `done:['x']` poi `done:['y']`
+   → `['x','y']` (nuova semantica append, con dedup se ripetuto).
+6. race unique-active: 2ª insert 'active' stessa conversation → false senza throw, 1 sola riga active.
+7. `buildWorkingContext('prepara un POS','c1')` → contiene `=== PROGETTO ATTIVO` e `=== PROCEDURA`;
+   `('ciao', undefined)` → ''.
+8. stale filter: progetto updated_at −8gg → contesto '' (già coperto da 3 test in working-memory.test.ts:
+   NON duplicare, aggiungi solo il caso updated_at malformato → fail-open inietta).
+
+**PR:** titolo `feat(memoria): stress test + ritrova per titolo, append done/pending, fix updated_at (S2)`.
+Esegui tsc/test se l'ambiente lo consente, altrimenti dichiara. NON mergiare.
 
 ### TASK R1 — Review fix audit del 3 giu (REVIEW-ONLY, NON mergiare)
 I subagenti di Claude hanno corretto 6 cluster di bug trovati in un audit del lavoro del 3 giu.
