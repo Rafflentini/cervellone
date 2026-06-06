@@ -404,6 +404,11 @@ export async function closeActiveProject(conversationId: string): Promise<boolea
   }
 }
 
+/** 7 giorni: oltre questa soglia un progetto 'active' dimenticato non viene più iniettato.
+ *  Audit 6 giu (P1): un progetto 'active' dimenticato sopravvive a /nuova per sempre
+ *  (conversationId deterministico); oltre 7gg di inattività non viene più iniettato. */
+const STALE_PROJECT_MS = 7 * 24 * 60 * 60 * 1000
+
 /**
  * Costruisce il blocco "PROGETTO ATTIVO" da iniettare nel system (NON cachato).
  * Best-effort: nessuna conversazione / nessun progetto attivo / errore → ''.
@@ -413,6 +418,13 @@ export async function buildActiveProjectContext(conversationId?: string): Promis
     if (!conversationId) return ''
     const proj = await getActiveProject(conversationId)
     if (!proj) return ''
+
+    // Stale filter: progetto non aggiornato da più di 7 giorni → non iniettare.
+    // Fail-open: se updated_at mancante, lasciamo passare (non sappiamo quando è stato toccato).
+    if (proj.updated_at) {
+      const age = Date.now() - new Date(proj.updated_at).getTime()
+      if (age > STALE_PROJECT_MS) return ''
+    }
 
     const lines: string[] = []
     lines.push('=== PROGETTO ATTIVO (continua questo lavoro) ===')

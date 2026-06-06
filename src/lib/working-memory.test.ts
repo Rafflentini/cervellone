@@ -110,6 +110,77 @@ describe('buildActiveProjectContext', () => {
   })
 })
 
+describe('buildActiveProjectContext — stale filter', () => {
+  it('progetto aggiornato oggi → viene iniettato', async () => {
+    const now = new Date().toISOString()
+    setTable('project_state', {
+      data: {
+        conversation_id: 'conv-fresh',
+        status: 'active',
+        project_name: 'POS Recente',
+        cliente: null,
+        cantiere: null,
+        task_type: null,
+        key_files: {},
+        done: [],
+        pending: [],
+        decisions: [],
+        updated_at: now,
+      },
+      error: null,
+    })
+
+    const out = await buildActiveProjectContext('conv-fresh')
+    expect(out).toContain('=== PROGETTO ATTIVO')
+    expect(out).toContain('POS Recente')
+  })
+
+  it('progetto con updated_at 8 giorni fa → stringa vuota (stale)', async () => {
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString()
+    setTable('project_state', {
+      data: {
+        conversation_id: 'conv-stale',
+        status: 'active',
+        project_name: 'POS Vecchio',
+        cliente: null,
+        cantiere: null,
+        task_type: null,
+        key_files: {},
+        done: [],
+        pending: [],
+        decisions: [],
+        updated_at: eightDaysAgo,
+      },
+      error: null,
+    })
+
+    const out = await buildActiveProjectContext('conv-stale')
+    expect(out).toBe('')
+  })
+
+  it('progetto senza updated_at → viene iniettato (fail-open: data mancante non è stale)', async () => {
+    setTable('project_state', {
+      data: {
+        conversation_id: 'conv-nodate',
+        status: 'active',
+        project_name: 'POS Senza Data',
+        cliente: null,
+        cantiere: null,
+        task_type: null,
+        key_files: {},
+        done: [],
+        pending: [],
+        decisions: [],
+        updated_at: null,
+      },
+      error: null,
+    })
+
+    const out = await buildActiveProjectContext('conv-nodate')
+    expect(out).toContain('=== PROGETTO ATTIVO')
+  })
+})
+
 describe('buildWorkingContext', () => {
   it('con procedura + progetto mockati contiene entrambi i blocchi', async () => {
     // Progetto attivo per conv1
