@@ -6,6 +6,57 @@
  */
 
 import { matchSkills } from './skills'
+import { supabase } from './supabase'
+
+// ─── Config cache (prompt_extra, TTL 60 s) ───────────────────────────────────
+
+const PROMPT_EXTRA_TTL_MS = 60_000
+const PROMPT_EXTRA_DENYLIST = /ignora le istruzioni precedenti|disattiva|bypassa/i
+const PROMPT_EXTRA_MAX_CHARS = 2_000
+
+let configCache: { value: string; fetchedAt: number } | null = null
+
+async function getPromptExtra(): Promise<string> {
+  const now = Date.now()
+  if (configCache && now - configCache.fetchedAt < PROMPT_EXTRA_TTL_MS) {
+    return configCache.value
+  }
+  try {
+    const { data, error } = await supabase
+      .from('cervellone_config')
+      .select('value')
+      .eq('key', 'prompt_extra')
+      .maybeSingle()
+
+    if (error || !data) {
+      configCache = { value: '', fetchedAt: now }
+      return ''
+    }
+
+    const raw = String(data.value ?? '').trim()
+    if (!raw) {
+      configCache = { value: '', fetchedAt: now }
+      return ''
+    }
+
+    if (PROMPT_EXTRA_DENYLIST.test(raw)) {
+      console.warn('[prompts] prompt_extra bloccato per contenuto sospetto')
+      configCache = { value: '', fetchedAt: now }
+      return ''
+    }
+
+    const safe = raw.slice(0, PROMPT_EXTRA_MAX_CHARS)
+    configCache = { value: safe, fetchedAt: now }
+    return safe
+  } catch {
+    return ''
+  }
+}
+
+/** Esposta per i test: azzera la cache. */
+export function invalidatePromptExtraCache(): void {
+  configCache = null
+}
 
 /**
  * Restituisce la data/ora corrente in formato italiano fuso Europe/Rome,
@@ -259,11 +310,25 @@ GESTIONE BOZZE/DOCUMENTI: PRIMA di generare un documento che potrebbe già esist
 Dai del Lei all'Ingegnere. Rispondi in italiano.`
 
 export async function getChatSystemPrompt(userQuery: string): Promise<string> {
-  const skillContext = await matchSkills(userQuery)
-  return BASE_PROMPT + currentDateTimeContext() + skillContext
+  const [skillContext, promptExtra] = await Promise.all([
+    matchSkills(userQuery),
+    getPromptExtra(),
+  ])
+  let prompt = BASE_PROMPT + currentDateTimeContext() + skillContext
+  if (promptExtra) {
+    prompt = prompt + '\n\nISTRUZIONI AGGIUNTIVE (prompt_extra, modificabile via cervellone_modifica):\n' + promptExtra
+  }
+  return prompt
 }
 
 export async function getTelegramSystemPrompt(userQuery: string): Promise<string> {
-  const skillContext = await matchSkills(userQuery)
-  return BASE_PROMPT + currentDateTimeContext() + skillContext + '\nStai comunicando via Telegram. Rispondi conciso.'
+  const [skillContext, promptExtra] = await Promise.all([
+    matchSkills(userQuery),
+    getPromptExtra(),
+  ])
+  let prompt = BASE_PROMPT + currentDateTimeContext() + skillContext + '\nStai comunicando via Telegram. Rispondi conciso.'
+  if (promptExtra) {
+    prompt = prompt + '\n\nISTRUZIONI AGGIUNTIVE (prompt_extra, modificabile via cervellone_modifica):\n' + promptExtra
+  }
+  return prompt
 }
