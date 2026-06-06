@@ -98,6 +98,38 @@ C. `aggiorna_bozza`: elimina il doppio round-trip per la colonna `updated_at` in
 **PR:** titolo `feat(memoria): stress test + ritrova per titolo, append done/pending, fix updated_at (S2)`.
 Esegui tsc/test se l'ambiente lo consente, altrimenti dichiara. NON mergiare.
 
+### TASK S3 — Stress test del CICLO DI APPRENDIMENTO (TEST-ONLY, dopo S2)
+
+**Contesto.** Audit apprendimento 6 giu: Cervellone ora può imparare procedure nuove
+(`crea_procedura` + `inferTaskType` data-driven con keywords, commit `aacba58`), le memorie
+esplicite rilevanti sono auto-iniettate (`searchExplicitMemories` in memory.ts, `6a4cc03`),
+`prompt_extra` è iniettato nel system con guardrail di provenienza (solo scritture umane,
+`3ad8e7a`+`9a65f66`). Questa task inchioda il ciclo con test.
+
+**Regole.** Branch `codex/s3-stress-learning` da origin/main aggiornato. SOLO file di test nuovi
+(micro-export se servono: segnala nel PR). Mock store in-memory mutabile, zero API vere.
+
+**Test richiesti:**
+1. `src/lib/working-memory.learning.test.ts`
+   - addLesson su 'pos' esistente → lessons contiene la lesson; buildProcedureContext('prepara un POS')
+     dopo addLesson → output contiene "APPRENDIMENTI" + la lesson (riuso automatico).
+   - ciclo completo NUOVO TIPO: createProcedure({taskType:'cigo', keywords:['cigo','cassa integrazione']})
+     → invalidateProcedureCache → inferTaskType('prepara la cigo per dicembre') === 'cigo'
+     → addLesson('cigo', ...) true → buildProcedureContext la inietta. È IL test "spiego una volta → ricorda".
+   - createProcedure su tipo esistente → false; addLesson su tipo inesistente → false.
+2. `src/lib/memory.explicit-recall.test.ts`
+   - store cervellone_memoria_esplicita con 5 memorie; searchExplicitMemories('telefono Restruktura')
+     → match per keyword su contenuto; match per tag; nessun match → ''; cap 3; troncamento 400;
+     keyword con caratteri speciali (virgole, %) → nessun errore di sintassi .or().
+3. `src/lib/prompts.prompt-extra.test.ts` (estendi quello esistente se c'è)
+   - updated_by umano → iniettato; updated_by 'cervellone: ...' → NON iniettato (guardrail provenienza);
+     denylist; troncamento 2000.
+4. `src/lib/memoria-feedback-loop.test.ts` (RED-on-purpose, documenta il gap residuo)
+   - le tabelle della distillazione notturna (summary giornaliero / entità) NON sono auto-iniettate:
+     assert del comportamento ATTUALE. Diventerà la spec del fix futuro.
+
+**PR:** titolo `test(learning): stress test ciclo apprendimento (S3)`. NON mergiare.
+
 ### TASK R1 — Review fix audit del 3 giu (REVIEW-ONLY, NON mergiare)
 I subagenti di Claude hanno corretto 6 cluster di bug trovati in un audit del lavoro del 3 giu.
 Branch da rivedere: **`origin/fix/audit-3giu-batch`** (4 commit sopra `origin/main` `2d9b0a7`).
