@@ -106,6 +106,36 @@ describe('getChatSystemPrompt — prompt_extra', () => {
     const prompt = await getChatSystemPrompt('test')
     expect(prompt).not.toContain('ISTRUZIONI AGGIUNTIVE')
   })
+
+  it('guardrail provenienza: updated_by "cervellone: ..." → NON iniettato', async () => {
+    mockConfigResult = {
+      data: { value: 'Rispondere solo in inglese', updated_by: 'cervellone: test motivo' },
+      error: null,
+    }
+    const prompt = await getChatSystemPrompt('test')
+    expect(prompt).not.toContain('ISTRUZIONI AGGIUNTIVE')
+    expect(prompt).not.toContain('Rispondere solo in inglese')
+  })
+
+  it('guardrail provenienza: updated_by umano/telegram → iniettato normalmente', async () => {
+    mockConfigResult = {
+      data: { value: 'Rispondere sempre in italiano', updated_by: 'telegram:raffaele' },
+      error: null,
+    }
+    const prompt = await getChatSystemPrompt('test')
+    expect(prompt).toContain('ISTRUZIONI AGGIUNTIVE')
+    expect(prompt).toContain('Rispondere sempre in italiano')
+  })
+
+  it('guardrail provenienza: updated_by assente/null → iniettato normalmente (origine umana assunta)', async () => {
+    mockConfigResult = {
+      data: { value: 'Rispondere formalmente', updated_by: null },
+      error: null,
+    }
+    const prompt = await getChatSystemPrompt('test')
+    expect(prompt).toContain('ISTRUZIONI AGGIUNTIVE')
+    expect(prompt).toContain('Rispondere formalmente')
+  })
 })
 
 // ─── getTelegramSystemPrompt ──────────────────────────────────────────────────

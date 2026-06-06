@@ -117,15 +117,18 @@ export async function inferTaskType(userQuery: string): Promise<string> {
       }
     }
 
+    // Escape completo dei metacaratteri regex (incluso trattino, punto, parentesi, ecc.)
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')
+
     // Match: task_type come parola o ognuna delle keywords
     for (const row of procedureCache.rows) {
       const type = row.task_type.toLowerCase()
-      const typeRegex = new RegExp(`\\b${type.replace(/[-]/g, '[-]')}\\b`, 'i')
+      const typeRegex = new RegExp(`\\b${esc(type)}\\b`, 'i')
       if (typeRegex.test(text)) return row.task_type
       for (const kw of row.keywords) {
         if (!kw) continue
         const kwLower = kw.toLowerCase()
-        const kwRegex = new RegExp(`\\b${kwLower.replace(/[-]/g, '[-]')}\\b`, 'i')
+        const kwRegex = new RegExp(`\\b${esc(kwLower)}\\b`, 'i')
         if (kwRegex.test(text)) return row.task_type
       }
     }
@@ -183,12 +186,17 @@ export async function createProcedure(input: {
     // Costruisci la checklist nel formato [{step, source?}]
     const checklist: ChecklistStep[] = (input.checklist ?? []).map((s) => ({ step: s }))
 
+    // Normalizza keywords: lowercase + trim, scarta vuote
+    const normalizedKeywords = (input.keywords ?? [])
+      .map((k) => k.toLowerCase().trim())
+      .filter((k) => k.length > 0)
+
     const row: Record<string, unknown> = {
       task_type: taskType,
       title: input.title.trim(),
       checklist,
       lessons: [],
-      keywords: input.keywords ?? [],
+      keywords: normalizedKeywords,
       updated_at: new Date().toISOString(),
     }
     if (input.outputSpec !== undefined) row.output_spec = input.outputSpec

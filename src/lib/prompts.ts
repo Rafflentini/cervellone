@@ -24,11 +24,18 @@ async function getPromptExtra(): Promise<string> {
   try {
     const { data, error } = await supabase
       .from('cervellone_config')
-      .select('value')
+      .select('value, updated_by')
       .eq('key', 'prompt_extra')
       .maybeSingle()
 
     if (error || !data) {
+      configCache = { value: '', fetchedAt: now }
+      return ''
+    }
+
+    // Guardrail provenienza: NON iniettare se il bot ha scritto lui stesso il valore
+    if (String(data?.updated_by ?? '').startsWith('cervellone')) {
+      console.warn('[prompt_extra] scrittura self del bot NON iniettata (guardrail provenienza)')
       configCache = { value: '', fetchedAt: now }
       return ''
     }
