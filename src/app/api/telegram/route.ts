@@ -413,6 +413,17 @@ export async function POST(request: NextRequest) {
       // proposito. Sblocca la chat anche se c'è un job vivo, interrompendone il
       // mutex (il job, se ancora attivo, perde il lock e non potrà più rilasciarlo).
       await safeSupabase(() => supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId))
+      // Audit 6 giu (P0-B): /reset deve sbloccare anche le run durable rimaste 'running'
+      // (workflow morto senza catch) — altrimenti il guard anti-paralleli blocca la chat 30 min.
+      try {
+        await getSupabaseServer()
+          .from('agent_workflow_runs')
+          .update({ status: 'error', updated_at: new Date().toISOString() })
+          .eq('chat_id', String(chatId))
+          .eq('status', 'running')
+      } catch (err: unknown) {
+        console.error('[/reset] durable run cleanup failed (best-effort):', err instanceof Error ? err.message : String(err))
+      }
       await sendTelegramMessage(chatId, '✅ Sbloccato. Puoi rimandare il messaggio.')
       return NextResponse.json({ ok: true })
     }
