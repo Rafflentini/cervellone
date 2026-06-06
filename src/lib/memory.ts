@@ -125,7 +125,10 @@ export async function searchMemory(query: string, limit = 5): Promise<string> {
     logWarn(`Memory keyword search failed: ${(err as Error).message}`)
   }
 
-  if (results.length === 0) return ''
+  // 3. Memorie esplicite (tool `ricorda`) — più affidabili del RAG, prepend
+  const explicitBlock = await searchExplicitMemories(query)
+
+  if (results.length === 0) return explicitBlock
 
   const memories = results.slice(0, limit).map((item, idx) => {
     const label =
@@ -137,7 +140,67 @@ export async function searchMemory(query: string, limit = 5): Promise<string> {
     return `[${label} ${idx + 1}]\n${item.content.slice(0, 500)}`
   })
 
-  return `\n\n# Contesto dalla memoria\n${memories.join('\n\n---\n\n')}`
+  const ragBlock = `\n\n# Contesto dalla memoria\n${memories.join('\n\n---\n\n')}`
+  if (explicitBlock) {
+    return '\n\n' + explicitBlock + ragBlock
+  }
+  return ragBlock
+}
+
+/**
+ * Memorie esplicite (tool `ricorda`) pertinenti alla query: match keyword su contenuto+tag.
+ * Ritorna al più 3 memorie, troncate a 400 char l'una, formattate per il system.
+ * Best-effort: mai throw, ritorna stringa vuota su errore o nessun match.
+ */
+export async function searchExplicitMemories(query: string): Promise<string> {
+  try {
+    // Estrai parole significative (>3 char, lowercase, max 6) — stesso pattern di searchMemory
+    const words = query
+      .toLowerCase()
+      .replace(/[^\wàáâãäåæçèéêëìíîïðñòóôõöùúûüýÿ\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 3)
+      .slice(0, 6)
+
+    if (words.length === 0) return ''
+
+    // Una query OR su contenuto + tag per ciascuna keyword
+    const orFilters = words.flatMap(kw => [
+      `contenuto.ilike.%${kw}%`,
+      `tag.ilike.%${kw}%`,
+    ])
+
+    const { data, error } = await supabase
+      .from('cervellone_memoria_esplicita')
+      .select('id, contenuto, tag')
+      .or(orFilters.join(','))
+      .order('created_at', { ascending: false })
+      .limit(10)
+
+    if (error || !data || data.length === 0) return ''
+
+    // Dedup per id, prendi max 3
+    const seen = new Set<string>()
+    const deduped: Array<{ id: string; contenuto: string; tag: string | null }> = []
+    for (const row of data) {
+      if (!seen.has(row.id)) {
+        seen.add(row.id)
+        deduped.push(row)
+        if (deduped.length >= 3) break
+      }
+    }
+
+    if (deduped.length === 0) return ''
+
+    const lines = deduped.map(r => {
+      const tagLabel = r.tag ? '[' + r.tag + '] ' : ''
+      return '- ' + tagLabel + r.contenuto.slice(0, 400)
+    })
+
+    return 'MEMORIE SALVATE rilevanti:\n' + lines.join('\n')
+  } catch {
+    return ''
+  }
 }
 
 /**
