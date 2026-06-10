@@ -6,6 +6,7 @@
  */
 
 import { matchSkills } from './skills'
+import { SYSTEM_CACHE_SPLIT } from './system-prompt-split'
 import { supabase } from './supabase'
 
 // ─── Config cache (prompt_extra, TTL 60 s) ───────────────────────────────────
@@ -321,11 +322,13 @@ export async function getChatSystemPrompt(userQuery: string): Promise<string> {
     matchSkills(userQuery),
     getPromptExtra(),
   ])
-  let prompt = BASE_PROMPT + currentDateTimeContext() + skillContext
+  // STATICO (cachato 1h) | SYSTEM_CACHE_SPLIT | VARIABILE (data/ora/skill/prompt_extra, NON cachato).
+  // Audit 10 giu: data+ora+skill dentro il blocco cachato lo bustavano ~ogni minuto.
+  let variable = currentDateTimeContext() + skillContext
   if (promptExtra) {
-    prompt = prompt + '\n\nISTRUZIONI AGGIUNTIVE (prompt_extra, modificabile via cervellone_modifica):\n' + promptExtra
+    variable += '\n\nISTRUZIONI AGGIUNTIVE (prompt_extra, modificabile via cervellone_modifica):\n' + promptExtra
   }
-  return prompt
+  return BASE_PROMPT + SYSTEM_CACHE_SPLIT + variable
 }
 
 export async function getTelegramSystemPrompt(userQuery: string): Promise<string> {
@@ -333,9 +336,11 @@ export async function getTelegramSystemPrompt(userQuery: string): Promise<string
     matchSkills(userQuery),
     getPromptExtra(),
   ])
-  let prompt = BASE_PROMPT + currentDateTimeContext() + skillContext + '\nStai comunicando via Telegram. Rispondi conciso.'
+  // STATICO (BASE_PROMPT + nota Telegram, immutabile) | split | VARIABILE (non cachato).
+  const staticPart = BASE_PROMPT + '\nStai comunicando via Telegram. Rispondi conciso.'
+  let variable = currentDateTimeContext() + skillContext
   if (promptExtra) {
-    prompt = prompt + '\n\nISTRUZIONI AGGIUNTIVE (prompt_extra, modificabile via cervellone_modifica):\n' + promptExtra
+    variable += '\n\nISTRUZIONI AGGIUNTIVE (prompt_extra, modificabile via cervellone_modifica):\n' + promptExtra
   }
-  return prompt
+  return staticPart + SYSTEM_CACHE_SPLIT + variable
 }

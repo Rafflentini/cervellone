@@ -21,6 +21,50 @@ function docPath(id: string): string {
   return `/doc/${id}`
 }
 
+/** Type usato dalle catture automatiche (artifact-capture): content = TESTO PIATTO. */
+const AUTO_DRAFT_TYPE = 'auto-bozza'
+
+/**
+ * Heuristica: il content sembra già HTML? (contiene almeno un tag a blocco tipico).
+ * Conservativa: se NON troviamo nessun tag noto, trattiamo il content come testo piatto.
+ */
+export function looksLikeHtml(content: string): boolean {
+  if (!content) return false
+  return /<(?:h[1-6]|p|div|table|tr|td|th|ul|ol|li|br|section|article|html|body)\b[^>]*>/i.test(
+    content,
+  )
+}
+
+/** Escape dei caratteri speciali HTML (&, <, >, ", '). */
+function escapeHtmlText(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+/**
+ * Wrappa TESTO PIATTO (es. una auto-bozza con markup Telegram/emoji) in HTML
+ * semplice e sicuro per la generazione PDF:
+ *  - escapa &, <, >, " , '
+ *  - ogni blocco separato da riga vuota → un <p>
+ *  - i newline singoli dentro un blocco → <br>
+ * Ritorna sempre almeno un <p> non vuoto.
+ */
+export function wrapPlainTextAsHtml(text: string): string {
+  const escaped = escapeHtmlText((text || '').replace(/\r\n/g, '\n').trim())
+  if (!escaped) return '<p></p>'
+  // Blocchi separati da una o più righe vuote → paragrafi.
+  const blocks = escaped.split(/\n{2,}/)
+  const paragraphs = blocks
+    .map((block) => block.trim())
+    .filter((block) => block.length > 0)
+    .map((block) => `<p>${block.replace(/\n/g, '<br>')}</p>`)
+  return paragraphs.length > 0 ? paragraphs.join('\n') : '<p></p>'
+}
+
 /**
  * Elenca le bozze/documenti più recenti di una conversazione (default 10).
  * Ritorna una stringa leggibile con nome, tipo, data e link /doc/<id> per ognuno.
@@ -166,10 +210,20 @@ export async function saveDraftPdfToDrive(id: string, folderId: string): Promise
 
   const name = draft.name || 'Documento'
 
-  // 2. Genera il PDF dall'HTML
+  // 2. Genera il PDF dall'HTML.
+  // Le auto-bozze (artifact-capture) salvano content = TESTO PIATTO, NON HTML: se
+  // lo passassimo tale e quale a generatePdfFromHtml otterremmo un PDF illeggibile
+  // (markup Telegram *grassetto*, emoji, niente <p>). Quindi: se il documento è
+  // type='auto-bozza' OPPURE il content non sembra HTML, lo wrappiamo in HTML semplice.
+  const isAutoDraft = draft.type === AUTO_DRAFT_TYPE
+  const htmlContent =
+    isAutoDraft || !looksLikeHtml(draft.content)
+      ? wrapPlainTextAsHtml(draft.content)
+      : draft.content
+
   let pdf: Buffer
   try {
-    pdf = await generatePdfFromHtml(draft.content, name)
+    pdf = await generatePdfFromHtml(htmlContent, name)
   } catch (err) {
     return `Impossibile generare il PDF del documento "${name}": ${err instanceof Error ? err.message : String(err)}`
   }

@@ -17,6 +17,7 @@ import { addUsage, logApiUsage, type UsageTokens } from './api-usage'
 import { isRunOverBudget, runTokens, MAX_RUN_TOKENS } from './run-budget'
 import { shouldUseCheapModel, CHEAP_MODEL } from './cheap-routing'
 import { isOpusExpired, SONNET_MODEL } from './opus-ttl'
+import { splitSystemPrompt } from './system-prompt-split'
 import { truncateToolResult } from './tool-result-utils'
 import { applyIncrementalCacheBreakpoint } from './cache-breakpoints'
 
@@ -350,17 +351,19 @@ function extractLatestFileBlocks(messages: Anthropic.MessageParam[]): unknown[] 
 // Il breakpoint sul system cacha l'intera catena tools→system. Hit garantiti nei giri del tool-loop
 // e tra messaggi ravvicinati (TTL 5 min) → input ~‑80/90% sul prefisso fisso (~4-5K token).
 function buildCachedSystem(systemPrompt: string, memoryContext: string, workingContext?: string): Anthropic.TextBlockParam[] {
-  // TTL 5 min (default). NB audit 10 giu: il TTL 1h era CONTROPRODUCENTE perché
-  // `systemPrompt` contiene data + ORA AL MINUTO (currentDateTimeContext) e le skill
-  // per-messaggio → il blocco cambia ~ogni minuto, la cache si busta comunque e il
-  // write 1h costa 2× vs 1.25× del 5min. La VERA cura (per l'email Anthropic cache-hit)
-  // è spostare data/ora/skill/prompt_extra FUORI da questo blocco cachato, lasciando solo
-  // il BASE_PROMPT statico (poi su quello ha senso il 1h). TODO follow-up dedicato.
+  // Split STATICO (cachato 1h) / VARIABILE (non cachato). I builder (prompts.ts) inseriscono
+  // SYSTEM_CACHE_SPLIT tra il BASE_PROMPT immutabile e data/ora/skill/prompt_extra.
+  // Audit 10 giu: prima data+ora-al-minuto+skill stavano nel blocco cachato → si bustava
+  // ~ogni minuto. Ora il prefisso grosso è davvero stabile → cache-hit anche su traffico sparso.
+  // Fallback retrocompat: se il marker manca, tutto come statico.
+  const { staticPart, variablePart } = splitSystemPrompt(systemPrompt)
+
   const blocks: Anthropic.TextBlockParam[] = [
-    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: staticPart, cache_control: { type: 'ephemeral', ttl: '1h' } },
   ]
-  // FASE 1 Memoria procedurale: blocco NON cachato, PRIMA di memoryContext (più prominente).
-  // Non aggiungiamo cache_control: è variabile per messaggio, non deve invalidare la cache.
+  // Parte VARIABILE (data/ora/skill/prompt_extra): NON cachata, subito dopo il breakpoint.
+  if (variablePart && variablePart.trim()) blocks.push({ type: 'text', text: variablePart })
+  // Memoria procedurale + RAG: blocchi NON cachati (variabili per messaggio).
   if (workingContext && workingContext.trim()) blocks.push({ type: 'text', text: workingContext })
   if (memoryContext && memoryContext.trim()) blocks.push({ type: 'text', text: memoryContext })
   return blocks
@@ -702,7 +705,7 @@ export async function callClaudeStreamTelegram(
         currentMessages = [
           ...currentMessages,
           { role: 'assistant' as const, content: final.content },
-          { role: 'user' as const, content: 'Hai detto che avresti svolto un\'azione (cercare/controllare/leggere/inviare/recuperare…) ma NON hai chiamato nessuno strumento, quindi NON è stata eseguita. ESEGUI ORA: chiama i tool necessari e rispondi col risultato REALE. Non descrivere l\'intenzione, agisci.' },
+          { role: 'user' as const, content: [{ type: 'text' as const, text: 'Hai detto che avresti svolto un\'azione (cercare/controllare/leggere/inviare/recuperare…) ma NON hai chiamato nessuno strumento, quindi NON è stata eseguita. ESEGUI ORA: chiama i tool necessari e rispondi col risultato REALE. Non descrivere l\'intenzione, agisci.' }] },
         ]
         applyIncrementalCacheBreakpoint(currentMessages)
         continue

@@ -81,13 +81,12 @@ describe('captureArtifact', () => {
   })
 
   it('flag ON + artefatto sostanziale → INSERT con type auto-bozza, ritorna {saved:true,id}', async () => {
-    // catena dedup: select->eq->eq->order->limit->maybeSingle => nessuna precedente
+    // catena dedup: select->eq->eq->order->limit(5) => nessuna precedente
     const dedupChain = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
       order: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+      limit: vi.fn().mockResolvedValue({ data: [], error: null }),
     }
     // catena insert: insert->select->single
     const insertSingle = vi.fn().mockResolvedValue({ data: { id: 'doc-1' }, error: null })
@@ -131,13 +130,103 @@ describe('captureArtifact', () => {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
       order: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({ data: { content: LETTER.trim() }, error: null }),
+      limit: vi.fn().mockResolvedValue({ data: [{ content: LETTER.trim() }], error: null }),
     }
     mockFrom.mockReturnValueOnce(dedupChain)
 
     const res = await captureArtifact('conv-1', LETTER)
     expect(res).toEqual({ saved: false, reason: 'duplicate' })
+  })
+
+  it('dedup C: match contro UNA delle ultime 5 (non solo l ultima) → duplicate', async () => {
+    // L'ULTIMA bozza è diversa, ma una più indietro (entro le 5) è uguale.
+    const dedupChain = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue({
+        data: [
+          { content: 'bozza diversa A' },
+          { content: 'bozza diversa B' },
+          { content: LETTER.trim() }, // match più indietro
+          { content: 'bozza diversa C' },
+        ],
+        error: null,
+      }),
+    }
+    mockFrom.mockReturnValueOnce(dedupChain)
+
+    const res = await captureArtifact('conv-1', LETTER)
+    expect(res).toEqual({ saved: false, reason: 'duplicate' })
+    // la dedup deve aver chiesto fino a 5 righe
+    expect(dedupChain.limit).toHaveBeenCalledWith(5)
+  })
+
+  it('dedup C: nessuna delle ultime 5 coincide → procede con INSERT', async () => {
+    const dedupChain = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue({
+        data: [{ content: 'x' }, { content: 'y' }, { content: 'z' }],
+        error: null,
+      }),
+    }
+    const insertSingle = vi.fn().mockResolvedValue({ data: { id: 'doc-7' }, error: null })
+    const insertChain = {
+      insert: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({ single: insertSingle }),
+      }),
+    }
+    mockFrom.mockReturnValueOnce(dedupChain).mockReturnValueOnce(insertChain)
+
+    const res = await captureArtifact('conv-1', LETTER)
+    expect(res).toEqual({ saved: true, id: 'doc-7' })
+  })
+
+  it('D: INSERT fallisce per unique violation (23505) → {saved:false, reason:duplicate}', async () => {
+    const dedupChain = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+    }
+    const insertSingle = vi.fn().mockResolvedValue({
+      data: null,
+      error: { code: '23505', message: 'duplicate key value violates unique constraint' },
+    })
+    const insertChain = {
+      insert: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({ single: insertSingle }),
+      }),
+    }
+    mockFrom.mockReturnValueOnce(dedupChain).mockReturnValueOnce(insertChain)
+
+    const res = await captureArtifact('conv-1', LETTER)
+    expect(res).toEqual({ saved: false, reason: 'duplicate' })
+  })
+
+  it('D: INSERT fallisce per altro errore → {saved:false} col messaggio (non duplicate)', async () => {
+    const dedupChain = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+    }
+    const insertSingle = vi.fn().mockResolvedValue({
+      data: null,
+      error: { code: '42P01', message: 'relation does not exist' },
+    })
+    const insertChain = {
+      insert: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({ single: insertSingle }),
+      }),
+    }
+    mockFrom.mockReturnValueOnce(dedupChain).mockReturnValueOnce(insertChain)
+
+    const res = await captureArtifact('conv-1', LETTER)
+    expect(res.saved).toBe(false)
+    expect(res.reason).toContain('relation does not exist')
   })
 })
 
