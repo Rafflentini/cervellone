@@ -11,7 +11,7 @@ import { searchMemory, saveMessageWithEmbedding } from './memory'
 import { logError } from './sanitize'
 import { withRetry } from './resilience'
 import { supabase } from './supabase'
-import { recordOutcome, getActiveModel, detectHallucination, type ModelOutcome } from './circuit-breaker'
+import { recordOutcome, getActiveModel, detectHallucination, isCompletedOrConditional, type ModelOutcome } from './circuit-breaker'
 import { sendTelegramMessage } from './telegram-helpers'
 import { addUsage, logApiUsage, type UsageTokens } from './api-usage'
 import { isRunOverBudget, runTokens, MAX_RUN_TOKENS } from './run-budget'
@@ -350,14 +350,14 @@ function extractLatestFileBlocks(messages: Anthropic.MessageParam[]): unknown[] 
 // Il breakpoint sul system cacha l'intera catena tools→system. Hit garantiti nei giri del tool-loop
 // e tra messaggi ravvicinati (TTL 5 min) → input ~‑80/90% sul prefisso fisso (~4-5K token).
 function buildCachedSystem(systemPrompt: string, memoryContext: string, workingContext?: string): Anthropic.TextBlockParam[] {
-  // TTL 1h sul prefisso stabile (tools + system): il traffico è sparso (pochi
-  // messaggi/giorno, spesso a >5 min l'uno dall'altro), quindi la cache a 5 min
-  // scadeva tra un messaggio e l'altro → ogni messaggio era un cache WRITE invece
-  // di un READ. systemPrompt cambia solo la data (1×/giorno) e prompt_extra (raro):
-  // stabile entro l'ora. 1h write = 2× base, read = 0.1×: net positivo già al 1° riuso.
-  // Ordine TTL valido: questo 1h precede il breakpoint mobile a 5 min sui messaggi.
+  // TTL 5 min (default). NB audit 10 giu: il TTL 1h era CONTROPRODUCENTE perché
+  // `systemPrompt` contiene data + ORA AL MINUTO (currentDateTimeContext) e le skill
+  // per-messaggio → il blocco cambia ~ogni minuto, la cache si busta comunque e il
+  // write 1h costa 2× vs 1.25× del 5min. La VERA cura (per l'email Anthropic cache-hit)
+  // è spostare data/ora/skill/prompt_extra FUORI da questo blocco cachato, lasciando solo
+  // il BASE_PROMPT statico (poi su quello ha senso il 1h). TODO follow-up dedicato.
   const blocks: Anthropic.TextBlockParam[] = [
-    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral', ttl: '1h' } },
+    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
   ]
   // FASE 1 Memoria procedurale: blocco NON cachato, PRIMA di memoryContext (più prominente).
   // Non aggiungiamo cache_control: è variabile per messaggio, non deve invalidare la cache.
@@ -383,7 +383,7 @@ export async function callClaudeStream(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: any[] = getToolDefinitions()
-  let currentMessages = [...request.messages]
+  let currentMessages = trimMessages([...request.messages])
   let fullResponse = ''
   let accUsage: UsageTokens = {}
   let iterations = 0
@@ -483,7 +483,7 @@ export async function callClaude(request: ClaudeRequest): Promise<string> {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: any[] = getToolDefinitions()
-  let currentMessages = [...request.messages]
+  let currentMessages = trimMessages([...request.messages])
   let fullResponse = ''
   let accUsage: UsageTokens = {}
   let iterations = 0
@@ -579,7 +579,7 @@ export async function callClaudeStreamTelegram(
   }
 
   const tools: any[] = getToolDefinitions()
-  let currentMessages = [...request.messages]
+  let currentMessages = trimMessages([...request.messages])
   let fullResponse = ''
   let accUsage: UsageTokens = {}
   let iterations = 0
@@ -696,7 +696,7 @@ export async function callClaudeStreamTelegram(
       // davvero. detectHallucination riusa i pattern già tarati (076/077). Guard forcedAction
       // = una sola volta → nessun loop. Risolve il "dice che fa ma non fa".
       const iterText = textBlocks.map(b => (b as Anthropic.TextBlock).text).join(' ')
-      if (toolBlocks.length === 0 && !forcedAction && detectHallucination(iterText, 0)) {
+      if (toolBlocks.length === 0 && !forcedAction && detectHallucination(iterText, 0) && !isCompletedOrConditional(iterText)) {
         forcedAction = true
         console.log(`STREAM force-action: promessa senza tool ("${iterText.slice(0, 60)}"), ri-prompt per eseguire`)
         currentMessages = [

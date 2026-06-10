@@ -42,10 +42,16 @@ const DOCUMENT_MARKERS = [
   'in fede',
   'egregio',
   'alla cortese attenzione',
+  // Documenti tecnici italiani (relazioni, verbali, preventivi, computi).
+  'relazione',
+  'premesso che',
+  'verbale',
+  'preventivo n',
+  'computo',
 ]
 
-/** Numero minimo di paragrafi (separati da doppio newline) per qualificare come documento. */
-const MIN_PARAGRAPHS = 3
+/** Finestra di recency (ms) per le bozze auto-catturate mostrate nel pointer: 24h. */
+const POINTER_RECENCY_MS = 24 * 60 * 60 * 1000
 
 /** Voci massime nel pointer + lunghezza massima titolo nel pointer. */
 const POINTER_MAX_ENTRIES = 5
@@ -57,9 +63,11 @@ const DERIVED_TITLE_MAXLEN = 60
 /* ─── Euristica: il testo è un artefatto sostanziale? ─── */
 
 /**
- * Euristica conservativa: true solo se il testo è abbastanza lungo E "sembra" un
- * documento/lettera/mail. Falso per le chat brevi normali e per le risposte lunghe
- * ma destrutturate (niente marker e meno di MIN_PARAGRAPHS paragrafi).
+ * Euristica conservativa: true SOLO se il testo è abbastanza lungo E contiene un
+ * marker documentale (lettera/mail/relazione/verbale/preventivo/computo…). Falso
+ * per le chat brevi e per QUALSIASI risposta lunga ma senza marcatori documentali
+ * (anche se strutturata a paragrafi): una normale spiegazione del bot NON è una
+ * bozza. Conservativo > rumoroso: meglio catturare meno.
  */
 export function isSubstantialArtifact(text: string): boolean {
   if (!text) return false
@@ -68,15 +76,7 @@ export function isSubstantialArtifact(text: string): boolean {
 
   const lower = trimmed.toLowerCase()
   const hasMarker = DOCUMENT_MARKERS.some((m) => lower.includes(m))
-  if (hasMarker) return true
-
-  // Niente marker: richiede struttura a paragrafi (>=MIN_PARAGRAPHS blocchi
-  // separati da newline doppi non vuoti).
-  const paragraphs = trimmed
-    .split(/\n\s*\n/)
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0)
-  return paragraphs.length >= MIN_PARAGRAPHS
+  return hasMarker
 }
 
 /* ─── Derivazione titolo ─── */
@@ -187,11 +187,14 @@ export async function captureArtifact(
 /* ─── Pointer da ri-iniettare ─── */
 
 /**
- * Costruisce un blocco breve che elenca le bozze già pronte della conversazione,
- * così il modello non le riscrive da zero. Ritorna '' se non ce ne sono.
+ * Costruisce un blocco breve che elenca le bozze auto-catturate RECENTI della
+ * conversazione, così il modello non le riscrive da zero. Ritorna '' se non ce ne
+ * sono.
  *
- * Legge le righe più recenti di `documents` per la conversazione (qualsiasi type,
- * così copre sia gli 'auto-bozza' sia i documenti generati via tool/agent-job).
+ * Filtra a type='auto-bozza' (solo le catture automatiche, NON i documenti generati
+ * via tool/agent-job) E a created_at nelle ultime 24h: su Telegram la conversation
+ * è globale e permanente, quindi senza il filtro recency il pointer mostrerebbe
+ * bozze vecchie di task ormai chiusi (stale/cross-task).
  * Max POINTER_MAX_ENTRIES voci, titoli troncati a POINTER_TITLE_MAXLEN char.
  *
  * Best-effort: qualsiasi errore → ''.
@@ -201,10 +204,14 @@ export async function buildArtifactsPointer(conversationId: string): Promise<str
     if (!conversationId) return ''
     const supabase = getSupabaseServer()
 
+    const sinceIso = new Date(Date.now() - POINTER_RECENCY_MS).toISOString()
+
     const { data, error } = await supabase
       .from('documents')
-      .select('id, name, type')
+      .select('id, name, type, created_at')
       .eq('conversation_id', conversationId)
+      .eq('type', AUTO_DRAFT_TYPE)
+      .gt('created_at', sinceIso)
       .order('created_at', { ascending: false })
       .limit(POINTER_MAX_ENTRIES)
 
@@ -217,15 +224,21 @@ export async function buildArtifactsPointer(conversationId: string): Promise<str
     const lines: string[] = []
     lines.push("=== BOZZE GIÀ PRONTE (non rifarle da capo) ===")
     for (const row of data) {
-      const r = row as { id?: string; name?: string | null }
+      const r = row as { id?: string; name?: string | null; created_at?: string | null }
       if (!r.id) continue
       const rawTitle = (r.name && r.name.trim()) || '(senza nome)'
       const title =
         rawTitle.length > POINTER_TITLE_MAXLEN
           ? `${rawTitle.slice(0, POINTER_TITLE_MAXLEN)}…`
           : rawTitle
+      // Hint di data (facoltativo): YYYY-MM-DD se created_at è parsabile.
+      let dateHint = ''
+      if (r.created_at) {
+        const d = new Date(r.created_at)
+        if (!Number.isNaN(d.getTime())) dateHint = ` [${d.toISOString().slice(0, 10)}]`
+      }
       lines.push(
-        `- «${title}» (id ${r.id}) — recuperala intera con ritrova_bozza id=${r.id}, non riscriverla`,
+        `- «${title}»${dateHint} (id ${r.id}) — recuperala intera con ritrova_bozza id=${r.id}, non riscriverla`,
       )
     }
 
