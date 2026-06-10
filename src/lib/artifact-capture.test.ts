@@ -57,11 +57,20 @@ describe('isSubstantialArtifact', () => {
     expect(isSubstantialArtifact(blob)).toBe(false)
   })
 
-  it('true per testo lungo strutturato a >=3 paragrafi anche senza marker', () => {
+  it('false per spiegazione lunga a >=3 paragrafi SENZA marker documentale', () => {
+    // Una normale spiegazione del bot NON è una bozza: senza marker → false,
+    // anche se è strutturata a paragrafi e supera la soglia di lunghezza.
     const p = 'Questo è un paragrafo abbastanza lungo da contribuire alla lunghezza totale del testo in esame. '.repeat(3)
     const structured = `${p}\n\n${p}\n\n${p}`
     expect(structured.length).toBeGreaterThan(600)
-    expect(isSubstantialArtifact(structured)).toBe(true)
+    expect(isSubstantialArtifact(structured)).toBe(false)
+  })
+
+  it('true per un documento tecnico lungo con marker "relazione"', () => {
+    const p = 'La presente relazione descrive lo stato di avanzamento dei lavori del cantiere oggetto di indagine. '.repeat(4)
+    const doc = `Relazione tecnica\n\n${p}\n\n${p}`
+    expect(doc.length).toBeGreaterThan(600)
+    expect(isSubstantialArtifact(doc)).toBe(true)
   })
 })
 
@@ -137,13 +146,21 @@ describe('buildArtifactsPointer', () => {
     vi.clearAllMocks()
   })
 
-  it('con 1 bozza → stringa contiene titolo, id e ritrova_bozza', async () => {
+  it('con 1 bozza recente → stringa contiene titolo, id e ritrova_bozza', async () => {
     const chain = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
+      gt: vi.fn().mockReturnThis(),
       order: vi.fn().mockReturnThis(),
       limit: vi.fn().mockResolvedValue({
-        data: [{ id: 'doc-9', name: 'Sollecito fattura 123', type: 'auto-bozza' }],
+        data: [
+          {
+            id: 'doc-9',
+            name: 'Sollecito fattura 123',
+            type: 'auto-bozza',
+            created_at: new Date().toISOString(),
+          },
+        ],
         error: null,
       }),
     }
@@ -155,10 +172,53 @@ describe('buildArtifactsPointer', () => {
     expect(out).toContain('ritrova_bozza')
   })
 
+  it("filtra a type='auto-bozza' e recency 24h via .eq e .gt", async () => {
+    const chain = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      gt: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+    }
+    mockFrom.mockReturnValue(chain)
+
+    await buildArtifactsPointer('conv-1')
+
+    // Filtro type='auto-bozza' applicato (oltre a conversation_id).
+    expect(chain.eq).toHaveBeenCalledWith('type', 'auto-bozza')
+    expect(chain.eq).toHaveBeenCalledWith('conversation_id', 'conv-1')
+    // Filtro recency: .gt('created_at', <ISO ~24h fa>).
+    expect(chain.gt).toHaveBeenCalledTimes(1)
+    const gtArgs = chain.gt.mock.calls[0]
+    expect(gtArgs[0]).toBe('created_at')
+    const sinceMs = Date.parse(gtArgs[1] as string)
+    expect(Number.isNaN(sinceMs)).toBe(false)
+    // La soglia deve essere ~24h fa (entro qualche secondo di tolleranza).
+    const expected = Date.now() - 24 * 60 * 60 * 1000
+    expect(Math.abs(sinceMs - expected)).toBeLessThan(5000)
+  })
+
+  it('un documento type html o più vecchio di 24h NON appare (DB filtra → 0 righe)', async () => {
+    // Simula il filtro server-side: la query con .eq(type='auto-bozza') + .gt(recency)
+    // non restituisce né gli 'html' né le auto-bozza vecchie → data vuoto → ''.
+    const chain = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      gt: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+    }
+    mockFrom.mockReturnValue(chain)
+
+    const out = await buildArtifactsPointer('conv-1')
+    expect(out).toBe('')
+  })
+
   it('con 0 bozze → stringa vuota', async () => {
     const chain = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
+      gt: vi.fn().mockReturnThis(),
       order: vi.fn().mockReturnThis(),
       limit: vi.fn().mockResolvedValue({ data: [], error: null }),
     }

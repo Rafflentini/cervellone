@@ -91,6 +91,26 @@ export function detectHallucination(text: string, toolCount: number): boolean {
   return PROMISE_PATTERNS.some(p => p.test(text))
 }
 
+// Marcatori di lavoro GIÀ SVOLTO o di OFFERTA CONDIZIONALE in attesa di conferma.
+// Se il testo li contiene, un "ora cerco / glielo invio" NON è una promessa non mantenuta
+// (l'azione era già fatta, o è un'offerta che aspetta l'OK dell'utente): in quel caso il
+// force-action NON deve scattare, altrimenti il bot eseguirebbe un'azione non richiesta
+// (es. inviare una mail che l'utente aveva solo "offerto"). Audit 10 giu: 5/8 falsi positivi.
+const COMPLETED_OR_CONDITIONAL_PATTERNS: RegExp[] = [
+  /\b(ho|le ho|gliel['e]?\s*ho|ho gi[àa]|ho appena|abbiamo)\s+\w+/i, // passato prossimo ("ho preparato/inviato/fatto")
+  /\b(ecco|è pronto|e pronto|è fatto|e fatto|pronto\b|preparato|completato|terminato|finito)\b/i,
+  /\b(se vuole|se preferisce|se desidera|vuole che|se mi conferma|mi confermi|fammi sapere|se serve|se le serve|quando vuole)\b/i,
+]
+
+/**
+ * True se il testo indica lavoro già svolto o un'offerta condizionale (in attesa di conferma).
+ * Usato dal force-action per NON ri-promptare quando non è una vera promessa non mantenuta.
+ */
+export function isCompletedOrConditional(text: string): boolean {
+  if (!text) return false
+  return COMPLETED_OR_CONDITIONAL_PATTERNS.some(p => p.test(text))
+}
+
 async function loadConfig(): Promise<{ activeModel: string; state: CircuitState } | null> {
   const { data, error } = await supabase
     .from('cervellone_config')

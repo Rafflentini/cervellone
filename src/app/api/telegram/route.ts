@@ -708,6 +708,10 @@ export async function POST(request: NextRequest) {
           chatId,
           "⏱️ L'ora di *Opus* è finita: torno su *Sonnet* (modello standard). Se il lavoro non è concluso e ti serve ancora la massima potenza, riattivalo con /opus.",
         )
+        // Idempotenza (audit 10 giu P2): cancella SUBITO opus_until qui, così l'avviso parte
+        // una sola volta anche se getConfig è in cache e salta il revert. getConfig farà
+        // comunque il revert del modello a Sonnet alla prossima lettura non-cachata.
+        await safeSupabase(() => supabase.from('cervellone_config').delete().eq('key', 'opus_until'), null)
       }
     } catch { /* best-effort: l'avviso non deve mai bloccare il messaggio */ }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { detectHallucination, getActiveModel, invalidateCache, recordOutcome } from './circuit-breaker'
+import { detectHallucination, isCompletedOrConditional, getActiveModel, invalidateCache, recordOutcome } from './circuit-breaker'
 
 vi.mock('./supabase', () => ({
   supabase: {
@@ -8,6 +8,28 @@ vi.mock('./supabase', () => ({
 }))
 
 import { supabase } from './supabase'
+
+describe('isCompletedOrConditional (guard force-action)', () => {
+  it('true: lavoro già svolto o offerta condizionale (NON deve scattare force-action)', () => {
+    const cases = [
+      'Ho preparato il DDT. Se vuole glielo invio anche in PDF.',
+      'Il documento è pronto. Glielo preparo anche in Word se vuole.',
+      'Ho aggiornato la prima nota. Se mi conferma, lo invio subito al commercialista.',
+      'Ecco il computo. Se preferisce lo controllo di nuovo voce per voce.',
+      'Ho finito l\'analisi. La verifico ancora se ha dubbi.',
+    ]
+    for (const t of cases) expect(isCompletedOrConditional(t)).toBe(true)
+  })
+
+  it('false: vera promessa non mantenuta (force-action DEVE poter scattare)', () => {
+    const cases = [
+      'Ora cerco subito il file e le rispondo.',
+      'Controllo nelle mail e torno con il risultato.',
+      'Lo recupero adesso.',
+    ]
+    for (const t of cases) expect(isCompletedOrConditional(t)).toBe(false)
+  })
+})
 
 describe('detectHallucination', () => {
   describe('promise pattern + 0 tool → true (hallucination)', () => {
