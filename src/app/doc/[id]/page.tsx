@@ -8,16 +8,19 @@ export default function DocViewerPage() {
   const id = params.id as string
   const [html, setHtml] = useState<string | null>(null)
   const [error, setError] = useState(false)
+  const [authNeeded, setAuthNeeded] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   useEffect(() => {
-    fetch(`/api/doc/${id}`)
+    const qs = window.location.search // include ?t=&exp= se presente
+    fetch(`/api/doc/${id}${qs}`)
       .then(res => {
+        if (res.status === 401) { setAuthNeeded(true); throw new Error('auth') }
         if (!res.ok) throw new Error()
         return res.text()
       })
       .then(setHtml)
-      .catch(() => setError(true))
+      .catch((e) => { if ((e as Error).message !== 'auth') setError(true) })
   }, [id])
 
   const handlePrint = useCallback(() => {
@@ -40,6 +43,18 @@ export default function DocViewerPage() {
       try { printWindow.print() } catch { /* already printed */ }
     }, 1000)
   }, [html])
+
+  if (authNeeded) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-50">
+        <div className="text-center">
+          <p className="text-6xl mb-4">🔒</p>
+          <p className="text-xl font-semibold text-gray-700">Documento privato</p>
+          <p className="text-gray-400 mt-2">Accedi a Cervellone (la stessa password della chat) e riapri questo link.</p>
+        </div>
+      </div>
+    )
+  }
 
   if (error) {
     return (
