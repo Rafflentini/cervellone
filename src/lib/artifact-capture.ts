@@ -32,6 +32,9 @@ const MIN_ARTIFACT_LENGTH = 600
 /** Type usato per le righe catturate automaticamente nella tabella `documents`. */
 const AUTO_DRAFT_TYPE = 'auto-bozza'
 
+/** Quante auto-bozze recenti confrontare in dedup (non solo l'ultima → C). */
+const DEDUP_LOOKBACK = 5
+
 /** Marker testuali tipici di una lettera/mail/documento formale (case-insensitive). */
 const DOCUMENT_MARKERS = [
   'oggetto:',
@@ -114,8 +117,9 @@ function deriveTitle(text: string, explicit?: string): string {
  * `documents` (type 'auto-bozza'), se la working memory è attiva e il testo è un
  * artefatto sostanziale.
  *
- * DEDUP: non salva se l'ULTIMA riga 'auto-bozza' della conversazione ha content
- * identico (evita di accumulare la stessa bozza ad ogni turno).
+ * DEDUP: non salva se UNA QUALSIASI delle ultime DEDUP_LOOKBACK righe 'auto-bozza'
+ * della conversazione ha content identico (evita di accumulare la stessa bozza ad
+ * ogni turno, anche quando si alterna con altre bozze).
  *
  * Best-effort: non lancia mai. Ritorna { saved, id?, reason? }.
  */
@@ -134,17 +138,21 @@ export async function captureArtifact(
     const supabase = getSupabaseServer()
     const content = assistantText.trim()
 
-    // DEDUP: confronta col content dell'ultima auto-bozza della conversazione.
+    // DEDUP: confronta col content delle ULTIME DEDUP_LOOKBACK auto-bozze della
+    // conversazione (non solo l'ultima): basta che UNA coincida (trim-uguale) per saltare.
     try {
-      const { data: last } = await supabase
+      const { data: recent } = await supabase
         .from('documents')
         .select('content')
         .eq('conversation_id', conversationId)
         .eq('type', AUTO_DRAFT_TYPE)
         .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-      if (last && typeof last.content === 'string' && last.content.trim() === content) {
+        .limit(DEDUP_LOOKBACK)
+      const rows = (recent as Array<{ content?: unknown }> | null) ?? []
+      const isDuplicate = rows.some(
+        (r) => typeof r?.content === 'string' && r.content.trim() === content,
+      )
+      if (isDuplicate) {
         return { saved: false, reason: 'duplicate' }
       }
     } catch (dedupErr) {
@@ -170,8 +178,17 @@ export async function captureArtifact(
       .single()
 
     if (error) {
-      console.error('[artifact-capture] insert failed:', error.message)
-      return { saved: false, reason: error.message }
+      // D — race: due turni concorrenti possono provare a inserire la stessa
+      // auto-bozza. L'indice unico parziale (md5(content) per conversazione)
+      // blocca il duplicato con una unique violation (Postgres 23505). La trattiamo
+      // come duplicato benigno, NON come errore.
+      const code = (error as { code?: string }).code
+      const msg = error.message || ''
+      if (code === '23505' || /duplicate key|unique constraint/i.test(msg)) {
+        return { saved: false, reason: 'duplicate' }
+      }
+      console.error('[artifact-capture] insert failed:', msg)
+      return { saved: false, reason: msg }
     }
 
     return { saved: true, id: (data as { id?: string } | null)?.id }

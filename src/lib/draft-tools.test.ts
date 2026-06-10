@@ -30,7 +30,14 @@ vi.mock('./drive', () => ({
   DrivePolicyError: class DrivePolicyError extends Error {},
 }))
 
-import { listRecentDrafts, getDraft, updateDraft, saveDraftPdfToDrive } from './draft-tools'
+import {
+  listRecentDrafts,
+  getDraft,
+  updateDraft,
+  saveDraftPdfToDrive,
+  wrapPlainTextAsHtml,
+  looksLikeHtml,
+} from './draft-tools'
 import { generatePdfFromHtml } from './pdf-generator'
 import { uploadBinaryToDrive } from './drive'
 
@@ -75,11 +82,63 @@ describe('draft-tools', () => {
     expect(r).toContain('/doc/a1')
   })
 
-  it('saveDraftPdfToDrive happy path → genera PDF + carica su Drive', async () => {
+  it('saveDraftPdfToDrive happy path (HTML) → genera PDF + carica su Drive', async () => {
     nextResult = { data: { name: 'POS', content: '<h1>POS</h1>', type: 'html' }, error: null }
     const r = await saveDraftPdfToDrive('x', 'folder1')
     expect(generatePdfFromHtml).toHaveBeenCalled()
     expect(uploadBinaryToDrive).toHaveBeenCalled()
     expect(r).toContain('http://drive/file1')
+    // content già HTML → passato tale e quale (nessun wrap aggiuntivo, niente <br> spuri)
+    const passed = (generatePdfFromHtml as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0] as string
+    expect(passed).toBe('<h1>POS</h1>')
+  })
+
+  it('B: saveDraftPdfToDrive su auto-bozza (testo piatto) → wrappa in HTML prima del PDF', async () => {
+    nextResult = {
+      data: {
+        name: 'Sollecito',
+        content: 'Gentile Cliente,\n\nLa & invitiamo <subito>.\nSecondo rigo.',
+        type: 'auto-bozza',
+      },
+      error: null,
+    }
+    const r = await saveDraftPdfToDrive('x', 'folder1')
+    expect(r).toContain('http://drive/file1')
+    const passed = (generatePdfFromHtml as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0] as string
+    // wrappato in <p>, newline interni → <br>, caratteri speciali escapati
+    expect(passed).toContain('<p>')
+    expect(passed).toContain('<br>')
+    expect(passed).toContain('&amp;')
+    expect(passed).toContain('&lt;subito&gt;')
+    // niente tag raw non escapati del content originale
+    expect(passed).not.toContain('<subito>')
+  })
+})
+
+describe('wrapPlainTextAsHtml / looksLikeHtml', () => {
+  it('wrappa testo piatto in paragrafi e <br>', () => {
+    const out = wrapPlainTextAsHtml('Riga uno\nRiga due\n\nNuovo paragrafo')
+    expect(out).toBe('<p>Riga uno<br>Riga due</p>\n<p>Nuovo paragrafo</p>')
+  })
+
+  it('escapa &, <, >, ", \'', () => {
+    const out = wrapPlainTextAsHtml(`a & b <x> "y" 'z'`)
+    expect(out).toContain('&amp;')
+    expect(out).toContain('&lt;x&gt;')
+    expect(out).toContain('&quot;')
+    expect(out).toContain('&#039;')
+    expect(out).not.toContain('<x>')
+  })
+
+  it('testo vuoto → <p></p>', () => {
+    expect(wrapPlainTextAsHtml('')).toBe('<p></p>')
+    expect(wrapPlainTextAsHtml('   \n  ')).toBe('<p></p>')
+  })
+
+  it('looksLikeHtml: true per HTML, false per testo piatto', () => {
+    expect(looksLikeHtml('<h1>Titolo</h1>')).toBe(true)
+    expect(looksLikeHtml('<p>par</p>')).toBe(true)
+    expect(looksLikeHtml('Testo piatto con *grassetto* Telegram e emoji 😀')).toBe(false)
+    expect(looksLikeHtml('Oggetto: x\n\nGentile cliente')).toBe(false)
   })
 })
