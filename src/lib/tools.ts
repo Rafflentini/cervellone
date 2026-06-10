@@ -2308,6 +2308,18 @@ const DRAFT_TOOLS: ToolDefinition[] = [
       required: ['doc_id', 'folder_id'],
     },
   },
+  {
+    name: 'genera_link_condivisione',
+    description: "Prepara un link CONDIVISIBILE (a scadenza) per un documento/bozza, da dare a un cliente/ente esterno. NON genera subito: crea una proposta che l'utente DEVE confermare. Usalo SOLO se l'utente chiede esplicitamente di condividere.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        doc_id: { type: 'string', description: 'id del documento (come da lista_bozze/ritrova_bozza).' },
+        giorni: { type: 'number', description: 'Giorni di validità del link (default 7, max 30).' },
+      },
+      required: ['doc_id'],
+    },
+  },
 ]
 
 async function executeDraftWrapper(
@@ -2315,10 +2327,20 @@ async function executeDraftWrapper(
   input: Record<string, unknown>,
   conversationId?: string,
 ): Promise<string | null> {
-  if (name !== 'lista_bozze' && name !== 'ritrova_bozza' && name !== 'aggiorna_bozza' && name !== 'salva_bozza_pdf') {
+  if (name !== 'lista_bozze' && name !== 'ritrova_bozza' && name !== 'aggiorna_bozza' && name !== 'salva_bozza_pdf' && name !== 'genera_link_condivisione') {
     return null
   }
   try {
+    if (name === 'genera_link_condivisione') {
+      const { createShareProposal } = await import('./share-proposte')
+      const docId = String(input.doc_id || '').trim()
+      if (!docId) return 'Errore: doc_id richiesto.'
+      const giorni = typeof input.giorni === 'number' ? input.giorni : 7
+      const propId = await createShareProposal(docId, giorni)
+      if (!propId) return 'Non sono riuscito a preparare la condivisione (documento non trovato o errore).'
+      return `Sto per creare un link CONDIVISIBILE valido ${Math.min(30, Math.max(1, Math.round(giorni)))} giorni per questo documento. Chi avrà il link potrà vederlo. Confermi rispondendo: /condividi_ok_${propId}`
+    }
+
     const { listRecentDrafts, getDraft, updateDraft, saveDraftPdfToDrive } = await import('./draft-tools')
 
     if (name === 'lista_bozze') {
