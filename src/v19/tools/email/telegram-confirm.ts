@@ -21,6 +21,7 @@ import { sendEmailInternal } from './send-email'
 import type { SendEmailResult } from './types'
 import { logEmail } from './audit'
 import type { AccountKey } from './config'
+import { recordSentMail } from '@/lib/sent-mail'
 
 export async function buildPendingTelegramMessage(uuid: string): Promise<string | null> {
   const p = await fetchPending(uuid)
@@ -107,6 +108,15 @@ export async function confirmPendingSend(
       message_id: result.message_id,
       raw_meta: { uuid },
     })
+    // Consapevolezza mail inviate: l'invio ESTERNO avviene qui (non in executeMailWrapper).
+    // Se la riga pending ha conversation_id, registra la mail come "già inviata" nella
+    // conversazione di origine. Best-effort: non blocca, non lancia.
+    if (p.conversation_id) {
+      void recordSentMail(p.conversation_id, {
+        to: p.to_addrs.join(', '),
+        subject: p.subject,
+      }).catch(() => {})
+    }
     const baseMsg = `✅ Inviata. Message-ID: ${result.message_id}`
     const sentMsg = result.append_failed
       ? `${baseMsg}\n⚠️ ${result.warning ?? 'Copia NON salvata in Sent IMAP'}`

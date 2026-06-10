@@ -24,6 +24,7 @@ export type PendingRow = {
   status: 'pending' | 'sent' | 'cancelled' | 'expired' | 'sent_failed'
   sent_message_id: string | null
   sent_at: string | null
+  conversation_id: string | null
 }
 
 /**

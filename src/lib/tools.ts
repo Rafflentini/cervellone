@@ -24,6 +24,7 @@ import { RICONCILIAZIONE_TOOLS, executeRiconciliazioneTool } from './riconciliaz
 import { PRIMA_NOTA_TOOLS, executePrimaNotaTool } from './prima-nota-tools'
 import { FIC_WRITE_TOOLS, executeFicWriteTool } from './fic-write-tools'
 import { MAIL_TOOL_DEFINITIONS, MAIL_TOOL_EXECUTORS } from '@/v19/tools/email'
+import { recordSentMail } from '@/lib/sent-mail'
 import { promoteModel } from './circuit-breaker'
 import {
   listInbox, searchGmail, readMessage, readThread,
@@ -1614,14 +1615,103 @@ async function executeScadenzeWrapper(
 
 // 2026-05-24 V19 Mail (TopHost IMAP/SMTP per info@/raffaele.lentini@):
 // 5 tool — read_email, get_email_body, send_email, forward_email, mark_email
+// Tool d'invio: il loro successo (status='sent') deve essere registrato come
+// "mail già inviata" così il bot non la re-invia senza richiesta esplicita.
+const MAIL_SEND_TOOLS = new Set([
+  'send_email',
+  'send_email_with_attachments',
+  'forward_email',
+  'pack_emails_and_send',
+])
+
+/** Estrae il destinatario (to) in forma stringa dall'input eterogeneo dei tool d'invio. */
+function extractMailTo(input: Record<string, unknown>): string {
+  const raw = input.to ?? input.to_address ?? ''
+  if (Array.isArray(raw)) return raw.map((x) => String(x)).join(', ')
+  return String(raw)
+}
+
+/** Estrae l'oggetto (subject) in forma stringa dall'input dei tool d'invio. */
+function extractMailSubject(input: Record<string, unknown>): string {
+  const raw = input.subject ?? input.oggetto ?? input.new_subject_prefix ?? ''
+  return String(raw)
+}
+
+/**
+ * True se il risultato (stringa JSON dei tool d'invio) indica un invio EFFETTIVO.
+ * I tool ritornano JSON.stringify({ ok:true, status:'sent'|'pending', ... }).
+ * Solo status='sent' = mail davvero partita; 'pending' = in attesa di conferma utente.
+ */
+function mailWasActuallySent(out: string): boolean {
+  try {
+    const parsed = JSON.parse(out) as { ok?: unknown; status?: unknown }
+    return parsed?.ok === true && parsed?.status === 'sent'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Se il risultato di un tool d'invio indica un PENDING (destinatario esterno, in
+ * attesa di conferma utente via Telegram), estrae l'uuid della riga pending.
+ * Ritorna null se non è un pending o non c'è uuid.
+ */
+function extractPendingUuid(out: string): string | null {
+  try {
+    const parsed = JSON.parse(out) as { ok?: unknown; status?: unknown; uuid?: unknown }
+    if (parsed?.ok === true && parsed?.status === 'pending' && typeof parsed.uuid === 'string') {
+      return parsed.uuid
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Aggancia la conversazione alla riga pending: l'invio REALE verso destinatari esterni
+ * avviene alla conferma utente (confirmPendingSend), percorso che NON passa da qui.
+ * Salvando conversation_id sulla riga pending, la conferma sa in quale conversazione
+ * registrare la mail come "già inviata" (recordSentMail). Best-effort: non blocca, non lancia.
+ */
+async function attachConversationToPending(uuid: string, conversationId: string): Promise<void> {
+  try {
+    await supabase
+      .from('cervellone_email_pending_send')
+      .update({ conversation_id: conversationId })
+      .eq('uuid', uuid)
+  } catch {
+    /* best-effort */
+  }
+}
+
 async function executeMailWrapper(
   name: string,
   input: Record<string, unknown>,
+  conversationId?: string,
 ): Promise<string | null> {
   const executor = MAIL_TOOL_EXECUTORS[name]
   if (!executor) return null
   try {
-    return await executor(input)
+    const out = await executor(input)
+    // Consapevolezza mail inviate: registra solo gli invii EFFETTIVI (status='sent'),
+    // non i 'pending' (in attesa di conferma utente). Best-effort, non blocca il ritorno.
+    if (conversationId && MAIL_SEND_TOOLS.has(name) && mailWasActuallySent(out)) {
+      void recordSentMail(conversationId, {
+        to: extractMailTo(input),
+        subject: extractMailSubject(input),
+      }).catch(() => {})
+    }
+    // Invio ESTERNO: il tool ritorna status='pending' + uuid e l'invio reale avviene
+    // alla conferma utente (confirmPendingSend), fuori da questo wrapper. Agganciamo qui
+    // la conversazione alla riga pending così che la conferma possa registrare la mail.
+    if (conversationId && MAIL_SEND_TOOLS.has(name)) {
+      const pendingUuid = extractPendingUuid(out)
+      if (pendingUuid) {
+        void attachConversationToPending(pendingUuid, conversationId).catch(() => {})
+      }
+    }
+    return out
   } catch (err) {
     return `Errore mail (${name}): ${err instanceof Error ? err.message : String(err)}`
   }
