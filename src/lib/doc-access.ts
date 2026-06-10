@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { validateAuth } from './auth'
 
 const SESSION_PAYLOAD = 'cervellone_v2'
 
@@ -17,9 +18,11 @@ function safeEqualHex(a: string, b: string): boolean {
   }
 }
 
+// Audit r2 (P2): unificato sul MEDESIMO check dei 9 endpoint hardened (validateAuth in ./auth):
+// constant-time, accetta SOLO il token canonico (niente varianti case dell'hex). Un'unica fonte
+// di verità per il cookie di sessione su tutta l'app.
 export function isAuthedCookie(cookieToken: string | undefined): boolean {
-  if (!cookieToken) return false
-  return safeEqualHex(cookieToken, getAuthToken())
+  return validateAuth(cookieToken)
 }
 
 /** Segreto share separato dalla sessione (un token share non vale come cookie e viceversa). */
@@ -28,7 +31,10 @@ function shareSecret(): string {
 }
 
 export function signShareToken(docId: string, expSec: number): string {
-  return crypto.createHmac('sha256', shareSecret()).update(`${docId}.${expSec}`).digest('hex')
+  // Audit r2 (P3): payload non ambiguo. Col vecchio `${docId}.${expSec}` un docId che contiene
+  // un punto poteva collidere con un altro (docId,exp) — neutralizzato dal guard exp<=now, ma qui
+  // lo chiudiamo alla radice. JSON.stringify length-prefissa di fatto le stringhe → nessuna collisione.
+  return crypto.createHmac('sha256', shareSecret()).update(JSON.stringify([docId, expSec])).digest('hex')
 }
 
 export function verifyShareToken(docId: string, token: string | undefined, expSec: number): boolean {

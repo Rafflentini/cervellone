@@ -19,6 +19,18 @@ describe('doc-access', () => {
     expect(verifyShareToken('doc1', 'deadbeef', exp)).toBe(false) // token finto
   })
 
+  it('isAuthedCookie: coerente con validateAuth — la variante case dell-hex NON passa (audit r2 P2)', () => {
+    const valid = getAuthToken()
+    expect(isAuthedCookie(valid)).toBe(true)
+    expect(isAuthedCookie(valid.toUpperCase())).toBe(false) // solo il token canonico (lowercase) è valido
+  })
+
+  it('signShareToken: nessuna collisione di concatenazione (audit r2 P3)', () => {
+    // Col vecchio `${docId}.${expSec}`: sign("foo",1.2) === sign("foo.1",2). Ora devono differire.
+    expect(signShareToken('foo', 1.2)).not.toBe(signShareToken('foo.1', 2))
+    expect(signShareToken('a', 12)).not.toBe(signShareToken('a.1', 2))
+  })
+
   it('isDocAccessAllowed: cookie OPPURE share token', () => {
     const exp = Math.floor(Date.now() / 1000) + 3600
     const tok = signShareToken('d', exp)
