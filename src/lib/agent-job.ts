@@ -25,6 +25,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 
 import { callClaudeStreamTelegram } from '@/lib/claude'
 import { isWorkingMemoryEnabled, buildWorkingContext } from '@/lib/working-memory'
+import { captureArtifact, buildArtifactsPointer } from '@/lib/artifact-capture'
 import { supabase } from '@/lib/supabase'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { getTelegramSystemPrompt } from '@/lib/prompts'
@@ -89,8 +90,13 @@ export async function runAgentJob(
 
   // FASE 1 Memoria procedurale (flag-gated, OFF di default): se attiva, carica la
   // checklist obbligatoria del tipo-documento inferito dalla richiesta. Best-effort.
+  // Pointer "bozze già pronte" ri-iniettato a ogni turno: sopravvive alla finestra di
+  // history (vedi cattura artefatti a fine turno) così il bot recupera invece di rigenerare.
   const workingContext = (await isWorkingMemoryEnabled())
-    ? await buildWorkingContext(userText, conversationId)
+    ? [
+        await buildWorkingContext(userText, conversationId),
+        await buildArtifactsPointer(conversationId),
+      ].filter((b) => b && b.trim()).join('\n\n') || undefined
     : undefined
 
   const fullResponse = await callClaudeStreamTelegram(
@@ -167,5 +173,14 @@ export async function runAgentJob(
   if (fileBlocks.length > 0 && fullResponse.length > 200) {
     const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
     saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
+  }
+
+  // Cattura automatica artefatti in-task: se il bot ha COMPOSTO un artefatto sostanziale
+  // (mail/lettera/documento) come testo — non già salvato come document block sopra — lo
+  // persistiamo in `documents` (auto-bozza) così non lo perde quando scorre fuori dalla
+  // finestra di history e lo recupera con ritrova_bozza. Best-effort, gated dal flag.
+  const hadDocumentBlock = responseBlocks.some((b) => b.type === 'document')
+  if (!hadDocumentBlock) {
+    captureArtifact(conversationId, finalText).catch(() => {})
   }
 }
