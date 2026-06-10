@@ -148,6 +148,102 @@ describe('confirmPendingSend — claim atomico chiude race SMTP', () => {
     vi.resetModules()
   })
 
+  it('pending con conversation_id e status sent → recordSentMail chiamato con to/subject', async () => {
+    const fetchPendingMock = vi.fn(async () => ({
+      uuid: 'u-conv',
+      from_account: 'restruktura',
+      to_addrs: ['cliente@esterno.it', 'altro@esterno.it'],
+      cc_addrs: null,
+      bcc_addrs: null,
+      subject: 'Preventivo lavori',
+      body_text: 'body',
+      body_html: null,
+      attachments: null,
+      in_reply_to: null,
+      status: 'pending',
+      sent_message_id: null,
+      sent_at: null,
+      created_at: '2026-06-10T00:00:00Z',
+      expires_at: '2026-06-10T00:30:00Z',
+      conversation_id: 'conv-42',
+    }))
+    const recordSentMailMock = vi.fn(async () => undefined)
+
+    vi.doMock('../tools/email/pending', () => ({
+      fetchPending: fetchPendingMock,
+      markPendingSent: vi.fn(async () => ({ ok: true })),
+      markPendingCancelled: vi.fn(),
+      updatePendingMessageId: vi.fn(async () => ({ ok: true })),
+    }))
+    vi.doMock('../tools/email/send-email', () => ({
+      sendEmailInternal: vi.fn(async () => ({
+        status: 'sent',
+        message_id: '<real-smtp-id@x>',
+        sent_folder: 'INBOX.Sent',
+        sent_uid: 7,
+        append_failed: false,
+      })),
+    }))
+    vi.doMock('../tools/email/audit', () => ({ logEmail: vi.fn(async () => undefined) }))
+    vi.doMock('@/lib/sent-mail', () => ({ recordSentMail: recordSentMailMock }))
+
+    const { confirmPendingSend } = await import('../tools/email/telegram-confirm')
+    const res = await confirmPendingSend('u-conv')
+
+    expect(res.ok).toBe(true)
+    expect(recordSentMailMock).toHaveBeenCalledTimes(1)
+    expect(recordSentMailMock).toHaveBeenCalledWith('conv-42', {
+      to: 'cliente@esterno.it, altro@esterno.it',
+      subject: 'Preventivo lavori',
+    })
+  })
+
+  it('pending SENZA conversation_id e status sent → recordSentMail NON chiamato, nessun crash', async () => {
+    const fetchPendingMock = vi.fn(async () => ({
+      uuid: 'u-noconv',
+      from_account: 'restruktura',
+      to_addrs: ['cliente@esterno.it'],
+      cc_addrs: null,
+      bcc_addrs: null,
+      subject: 'Senza conv',
+      body_text: 'body',
+      body_html: null,
+      attachments: null,
+      in_reply_to: null,
+      status: 'pending',
+      sent_message_id: null,
+      sent_at: null,
+      created_at: '2026-06-10T00:00:00Z',
+      expires_at: '2026-06-10T00:30:00Z',
+      conversation_id: null,
+    }))
+    const recordSentMailMock = vi.fn(async () => undefined)
+
+    vi.doMock('../tools/email/pending', () => ({
+      fetchPending: fetchPendingMock,
+      markPendingSent: vi.fn(async () => ({ ok: true })),
+      markPendingCancelled: vi.fn(),
+      updatePendingMessageId: vi.fn(async () => ({ ok: true })),
+    }))
+    vi.doMock('../tools/email/send-email', () => ({
+      sendEmailInternal: vi.fn(async () => ({
+        status: 'sent',
+        message_id: '<real-smtp-id@x>',
+        sent_folder: 'INBOX.Sent',
+        sent_uid: 8,
+        append_failed: false,
+      })),
+    }))
+    vi.doMock('../tools/email/audit', () => ({ logEmail: vi.fn(async () => undefined) }))
+    vi.doMock('@/lib/sent-mail', () => ({ recordSentMail: recordSentMailMock }))
+
+    const { confirmPendingSend } = await import('../tools/email/telegram-confirm')
+    const res = await confirmPendingSend('u-noconv')
+
+    expect(res.ok).toBe(true)
+    expect(recordSentMailMock).not.toHaveBeenCalled()
+  })
+
   it('race: 2 webhook simultanei per stesso uuid → solo 1 chiama sendEmailInternal', async () => {
     const fetchPendingMock = vi.fn(async () => ({
       uuid: 'u-race',

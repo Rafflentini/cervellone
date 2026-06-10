@@ -26,6 +26,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { callClaudeStreamTelegram } from '@/lib/claude'
 import { isWorkingMemoryEnabled, buildWorkingContext } from '@/lib/working-memory'
 import { captureArtifact, buildArtifactsPointer } from '@/lib/artifact-capture'
+import { buildSentMailPointer } from '@/lib/sent-mail'
 import { supabase } from '@/lib/supabase'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { getTelegramSystemPrompt } from '@/lib/prompts'
@@ -96,6 +97,7 @@ export async function runAgentJob(
     ? [
         await buildWorkingContext(userText, conversationId),
         await buildArtifactsPointer(conversationId),
+        await buildSentMailPointer(conversationId),
       ].filter((b) => b && b.trim()).join('\n\n') || undefined
     : undefined
 

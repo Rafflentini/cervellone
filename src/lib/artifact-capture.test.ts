@@ -259,6 +259,12 @@ describe('buildArtifactsPointer', () => {
     expect(out).toContain('Sollecito fattura 123')
     expect(out).toContain('doc-9')
     expect(out).toContain('ritrova_bozza')
+    // Nuovo wording: riferimento, NON consegna/invio.
+    expect(out).toContain('MATERIALE GIÀ PRODOTTO')
+    expect(out).toContain('NON re-inviare')
+    expect(out).toContain('NON inviarla/consegnarla senza richiesta ESPLICITA')
+    // Non deve più implicare che la bozza sia da "non rifare da capo" come unica indicazione.
+    expect(out).not.toContain('BOZZE GIÀ PRONTE')
   })
 
   it("filtra a type='auto-bozza' e recency 24h via .eq e .gt", async () => {

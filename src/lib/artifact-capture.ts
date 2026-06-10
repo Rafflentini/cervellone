@@ -239,7 +239,9 @@ export async function buildArtifactsPointer(conversationId: string): Promise<str
     if (!data || data.length === 0) return ''
 
     const lines: string[] = []
-    lines.push("=== BOZZE GIÀ PRONTE (non rifarle da capo) ===")
+    lines.push(
+      "=== MATERIALE GIÀ PRODOTTO in questa chat (riferimento; NON re-inviare/ri-generare senza richiesta) ===",
+    )
     for (const row of data) {
       const r = row as { id?: string; name?: string | null; created_at?: string | null }
       if (!r.id) continue
@@ -255,7 +257,7 @@ export async function buildArtifactsPointer(conversationId: string): Promise<str
         if (!Number.isNaN(d.getTime())) dateHint = ` [${d.toISOString().slice(0, 10)}]`
       }
       lines.push(
-        `- «${title}»${dateHint} (id ${r.id}) — recuperala intera con ritrova_bozza id=${r.id}, non riscriverla`,
+        `- «${title}»${dateHint} (id ${r.id}) — già prodotta; per MODIFICARLA usa ritrova_bozza id=${r.id} + aggiorna_bozza. NON inviarla/consegnarla senza richiesta ESPLICITA.`,
       )
     }
 
