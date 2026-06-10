@@ -518,13 +518,18 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Storia ──
-    // FIX W1.2: history ridotta da 10 a 6 messaggi per ridurre contaminazione cross-turn
-    // (es. POS chiesto 3 turni fa che si trascina in nuovi saluti).
-    // Per knowledge persistente la RAG via embedding fa il resto.
+    // FIX 10 giu: history 6 → 16 messaggi (8 scambi). Il taglio a 6 del 5 giu (anti
+    // contaminazione cross-turn + costi) era TROPPO stretto: in un task lungo (es. comporre
+    // una mail, poi cercare allegati per più turni) il messaggio in cui il bot aveva scritto
+    // il contenuto scorreva fuori finestra → il bot lo perdeva e rifaceva da capo. Perdere il
+    // proprio output è molto peggio della contaminazione che il taglio voleva evitare; la RAG
+    // di fallback è troppo debole per ripescarlo. Costo contenuto: durante un task attivo la
+    // history è cache-read (breakpoint mobile + TTL 1h sul prefisso). Fix robusto: working-memory
+    // che persiste/ri-inietta gli artefatti (bozze/decisioni) a prescindere dalla finestra.
     const recentMessages = await safeSupabase(
       () => supabase.from('messages').select('role, content')
         .eq('conversation_id', conversationId)
-        .order('created_at', { ascending: false }).limit(6),
+        .order('created_at', { ascending: false }).limit(16),
       []
     )
     // L'order DESC + reverse: prendi gli ultimi 6, poi rimetti in ordine cronologico
