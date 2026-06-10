@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import JSZip from 'jszip'
 import { PDFParse } from 'pdf-parse'
 import { supabase } from '@/lib/supabase'
+import { validateAuth } from '@/lib/auth'
 import { saveProjectKnowledge } from '@/lib/memory'
 import { digestDocument, chunkDigest } from '@/lib/digest'
 import { getConfig } from '@/lib/claude'
@@ -327,7 +328,7 @@ async function extractWord(buf: Buffer, fileName: string): Promise<{ text: strin
 // ===== POST — Upload e digestione =====
 export async function POST(request: NextRequest) {
   const authCookie = request.cookies.get('cervellone_auth')
-  if (!authCookie) {
+  if (!validateAuth(authCookie?.value)) {
     return NextResponse.json({ error: 'Non autorizzato' }, { status: 401 })
   }
 
@@ -525,7 +526,7 @@ export async function POST(request: NextRequest) {
 // ===== GET — lista progetti =====
 export async function GET(request: NextRequest) {
   const authCookie = request.cookies.get('cervellone_auth')
-  if (!authCookie) {
+  if (!validateAuth(authCookie?.value)) {
     return NextResponse.json({ error: 'Non autorizzato' }, { status: 401 })
   }
 

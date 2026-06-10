@@ -1,12 +1,23 @@
 import { NextRequest } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { isDocAccessAllowed } from '@/lib/doc-access'
 
-// GET /api/doc/[id] — restituisce l'HTML del documento
+// GET /api/doc/[id] — restituisce l'HTML del documento (privato: cookie sessione o share token)
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params
+
+  const cookieToken = request.cookies.get('cervellone_auth')?.value
+  const url = new URL(request.url)
+  const shareToken = url.searchParams.get('t') ?? undefined
+  const expRaw = url.searchParams.get('exp')
+  const exp = expRaw ? Number(expRaw) : undefined
+
+  if (!isDocAccessAllowed({ id, cookieToken, shareToken, exp })) {
+    return new Response('Accesso non autorizzato', { status: 401 })
+  }
 
   const { data, error } = await supabase
     .from('documents')

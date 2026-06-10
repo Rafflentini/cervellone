@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import crypto from 'crypto'
-
-function getAuthToken(): string {
-  const secret = process.env.AUTH_SECRET || 'cervellone'
-  return crypto.createHmac('sha256', secret).update('cervellone_v2').digest('hex')
-}
+import { getAuthToken } from '@/lib/doc-access'
 
 export async function POST(request: NextRequest) {
   const { password } = await request.json()

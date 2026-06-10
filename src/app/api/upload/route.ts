@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { validateAuth } from '@/lib/auth'
 
 export const maxDuration = 60
 
 // Upload file su Supabase Storage, ritorna URL per il download
 export async function POST(request: NextRequest) {
   const authCookie = request.cookies.get('cervellone_auth')
-  if (!authCookie) {
+  if (!validateAuth(authCookie?.value)) {
     return NextResponse.json({ error: 'Non autorizzato' }, { status: 401 })
   }
 

@@ -407,6 +407,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    // ── Privacy doc: conferma condivisione → firma e invia il link a scadenza ──
+    const mShareOk = userText.match(/^\/condividi_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    if (mShareOk) {
+      const { confirmShareProposal } = await import('@/lib/share-proposte')
+      const url = await confirmShareProposal(mShareOk[1])
+      const msg = url
+        ? `🔗 Link di condivisione (scade tra i giorni indicati):\n${url}\n\nChi ha il link vede il documento finché non scade.`
+        : '⚠️ Proposta di condivisione non trovata, già usata o scaduta.'
+      await sendTelegramMessage(chatId, msg)
+      return NextResponse.json({ ok: true })
+    }
+
     // ── /reset — sblocca manualmente il mutex se il bot è bloccato ──
     if (userText.trim().toLowerCase() === '/reset') {
       // Azione MANUALE esplicita: delete per-chat (NON scoped per request_id) di

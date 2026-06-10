@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle } from 'docx'
 import ExcelJS from 'exceljs'
 import { jsPDF } from 'jspdf'
+import { validateAuth } from '@/lib/auth'
 
 export async function POST(request: NextRequest) {
   const authCookie = request.cookies.get('cervellone_auth')
-  if (!authCookie) {
+  if (!validateAuth(authCookie?.value)) {
     return NextResponse.json({ error: 'Non autorizzato' }, { status: 401 })
   }
 
