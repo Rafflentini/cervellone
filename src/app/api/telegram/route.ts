@@ -20,7 +20,7 @@ import { validateWebhookSecret } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { safeSupabase } from '@/lib/resilience'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
-import { parseOpusCommand, computeOpusUntil, OPUS_MODEL, SONNET_MODEL } from '@/lib/opus-ttl'
+import { parseOpusCommand, computeOpusUntil, isOpusExpired, OPUS_MODEL, SONNET_MODEL } from '@/lib/opus-ttl'
 import { MAX_DURABLE_RUN_TOKENS } from '@/lib/run-budget'
 // Trigger.dev imports temporaneamente non usati (Task #10 backlog)
 // import { tasks } from '@trigger.dev/sdk/v3'
@@ -689,6 +689,27 @@ export async function POST(request: NextRequest) {
         )
       }
     }
+
+    // ── Avviso rientro Opus → Sonnet (opzione A) ──
+    // Se l'ora di Opus è scaduta, avvisa UNA volta al primo messaggio dopo la scadenza.
+    // `opus_until` esiste SOLO mentre Opus è attivo (lo scrive /opus, lo cancellano /sonnet
+    // e il revert in getConfig). Quindi: opus_until presente + scaduto ⇒ l'ora è appena finita.
+    // getConfig (poco dopo, nella chiamata al modello) fa il revert vero e cancella opus_until,
+    // perciò dal messaggio successivo questa condizione è falsa → l'avviso parte una volta sola.
+    try {
+      const ou = await safeSupabase(
+        () => supabase.from('cervellone_config').select('value').eq('key', 'opus_until').maybeSingle(),
+        null,
+      )
+      const opusUntilVal = (ou as { value?: unknown } | null)?.value
+      const opusUntil = opusUntilVal ? String(opusUntilVal).replace(/"/g, '') : undefined
+      if (opusUntil && isOpusExpired(opusUntil, new Date())) {
+        await sendTelegramMessage(
+          chatId,
+          "⏱️ L'ora di *Opus* è finita: torno su *Sonnet* (modello standard). Se il lavoro non è concluso e ti serve ancora la massima potenza, riattivalo con /opus.",
+        )
+      }
+    } catch { /* best-effort: l'avviso non deve mai bloccare il messaggio */ }
 
     // ── Classifica task: veloce vs durable (FASE 1b) ──
     // shouldUseDurable = flag `durable_workflows_enabled` ON **E** task lungo.
