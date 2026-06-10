@@ -350,8 +350,14 @@ function extractLatestFileBlocks(messages: Anthropic.MessageParam[]): unknown[] 
 // Il breakpoint sul system cacha l'intera catena tools→system. Hit garantiti nei giri del tool-loop
 // e tra messaggi ravvicinati (TTL 5 min) → input ~‑80/90% sul prefisso fisso (~4-5K token).
 function buildCachedSystem(systemPrompt: string, memoryContext: string, workingContext?: string): Anthropic.TextBlockParam[] {
+  // TTL 1h sul prefisso stabile (tools + system): il traffico è sparso (pochi
+  // messaggi/giorno, spesso a >5 min l'uno dall'altro), quindi la cache a 5 min
+  // scadeva tra un messaggio e l'altro → ogni messaggio era un cache WRITE invece
+  // di un READ. systemPrompt cambia solo la data (1×/giorno) e prompt_extra (raro):
+  // stabile entro l'ora. 1h write = 2× base, read = 0.1×: net positivo già al 1° riuso.
+  // Ordine TTL valido: questo 1h precede il breakpoint mobile a 5 min sui messaggi.
   const blocks: Anthropic.TextBlockParam[] = [
-    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral', ttl: '1h' } },
   ]
   // FASE 1 Memoria procedurale: blocco NON cachato, PRIMA di memoryContext (più prominente).
   // Non aggiungiamo cache_control: è variabile per messaggio, non deve invalidare la cache.
