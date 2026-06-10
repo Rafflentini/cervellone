@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { validateAuth } from '@/lib/auth'
 
 // GET — messaggi di una conversazione
 export async function GET(
@@ -7,7 +8,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const authCookie = request.cookies.get('cervellone_auth')
-  if (!authCookie) {
+  if (!validateAuth(authCookie?.value)) {
     return NextResponse.json({ error: 'Non autorizzato' }, { status: 401 })
   }
 
@@ -32,7 +33,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const authCookie = request.cookies.get('cervellone_auth')
-  if (!authCookie) {
+  if (!validateAuth(authCookie?.value)) {
     return NextResponse.json({ error: 'Non autorizzato' }, { status: 401 })
   }
 

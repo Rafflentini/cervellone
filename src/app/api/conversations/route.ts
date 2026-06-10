@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { validateAuth } from '@/lib/auth'
 
 // GET — lista conversazioni (opzionale: ?project_id=xxx)
 export async function GET(request: NextRequest) {
   const authCookie = request.cookies.get('cervellone_auth')
-  if (!authCookie) {
+  if (!validateAuth(authCookie?.value)) {
     return NextResponse.json({ error: 'Non autorizzato' }, { status: 401 })
   }
 
@@ -32,7 +33,7 @@ export async function GET(request: NextRequest) {
 // POST — crea nuova conversazione
 export async function POST(request: NextRequest) {
   const authCookie = request.cookies.get('cervellone_auth')
-  if (!authCookie) {
+  if (!validateAuth(authCookie?.value)) {
     return NextResponse.json({ error: 'Non autorizzato' }, { status: 401 })
   }
 
