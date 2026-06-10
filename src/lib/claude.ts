@@ -616,6 +616,7 @@ export async function callClaudeStreamTelegram(
 
   const runBudget = request.maxRunTokens ?? MAX_RUN_TOKENS
   let totalToolCalls = 0
+  let forcedAction = false // force-action: ri-prompt UNA volta se il modello promette un'azione senza chiamare tool
   let apiErrorOccurred = false
   let apiErrorMsg = ''
   let apiErrorRecordDetails = ''
@@ -688,7 +689,26 @@ export async function callClaudeStreamTelegram(
     console.log(`STREAM iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} toolNames=[${toolNames}] texts=${textBlocks.length} fullLen=${fullResponse.length} thinkingChars=${thinkingChars} consNoText=${consecutiveNoText}`)
 
     // Break naturale: modello soddisfatto (no tool richiesti, conversazione finita)
-    if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
+    if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') {
+      // FORCE-ACTION: il modello ha PROMESSO un'azione ("ora cerco", "glielo invio subito"…)
+      // ma NON ha chiamato alcun tool in questo turno → l'azione non è stata eseguita.
+      // Invece di consegnare la promessa a vuoto, lo ri-promptiamo UNA volta perché esegua
+      // davvero. detectHallucination riusa i pattern già tarati (076/077). Guard forcedAction
+      // = una sola volta → nessun loop. Risolve il "dice che fa ma non fa".
+      const iterText = textBlocks.map(b => (b as Anthropic.TextBlock).text).join(' ')
+      if (toolBlocks.length === 0 && !forcedAction && detectHallucination(iterText, 0)) {
+        forcedAction = true
+        console.log(`STREAM force-action: promessa senza tool ("${iterText.slice(0, 60)}"), ri-prompt per eseguire`)
+        currentMessages = [
+          ...currentMessages,
+          { role: 'assistant' as const, content: final.content },
+          { role: 'user' as const, content: 'Hai detto che avresti svolto un\'azione (cercare/controllare/leggere/inviare/recuperare…) ma NON hai chiamato nessuno strumento, quindi NON è stata eseguita. ESEGUI ORA: chiama i tool necessari e rispondi col risultato REALE. Non descrivere l\'intenzione, agisci.' },
+        ]
+        applyIncrementalCacheBreakpoint(currentMessages)
+        continue
+      }
+      break
+    }
 
     // FIX Bug 5: ESEGUI sempre i tool dell'iter corrente PRIMA di valutare se
     // forzare sintesi. Il modello li ha richiesti, eseguirli arricchisce il
