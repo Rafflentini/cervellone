@@ -47,6 +47,22 @@ export interface CreateTemplateInput {
   mai_inviare?: boolean
 }
 
+/**
+ * Strips unsafe HTML constructs from a template before storage:
+ * - <script ...>...</script> blocks (including multiline)
+ * - on* inline event handlers (onclick=, onload=, etc.)
+ * - javascript: URL schemes
+ */
+export function stripUnsafeHtml(html: string): string {
+  // Remove <script>...</script> blocks (case-insensitive, dotall)
+  let out = html.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '')
+  // Remove on* inline event handler attributes: on[alpha]+=...  (single/double quoted or unquoted up to space/>)
+  out = out.replace(/\bon\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '')
+  // Replace javascript: URLs with #
+  out = out.replace(/javascript\s*:/gi, '#')
+  return out
+}
+
 export function normalizeSlug(raw: string): string {
   return raw
     .normalize('NFD')
@@ -85,6 +101,15 @@ export async function createTemplate(
   if (!input.titolo?.trim()) return { ok: false, error: 'titolo obbligatorio' }
   if (!Array.isArray(input.campi)) return { ok: false, error: 'campi deve essere un array' }
 
+  // FIX 5: B_html requires html_template; enforce size limit; sanitize
+  if (input.metodo === 'B_html' && !input.html_template) {
+    return { ok: false, error: 'Il metodo B_html richiede un html_template' }
+  }
+  if (input.html_template && input.html_template.length > 500_000) {
+    return { ok: false, error: 'html_template troppo grande (max 500KB)' }
+  }
+  const safeHtmlTemplate = input.html_template ? stripUnsafeHtml(input.html_template) : null
+
   const supabase = getSupabaseServer()
   const { error } = await supabase
     .from('document_templates')
@@ -96,7 +121,7 @@ export async function createTemplate(
         tipo_sorgente: input.tipo_sorgente,
         metodo: input.metodo,
         master_drive_id: input.master_drive_id ?? null,
-        html_template: input.html_template ?? null,
+        html_template: safeHtmlTemplate,
         campi: input.campi,
         dati_fissi: input.dati_fissi ?? {},
         formati_output: input.formati_output ?? ['pdf'],

@@ -19,6 +19,8 @@ create table if not exists document_templates (
   updated_by      text default 'cervellone:insegna_modello'
 );
 
+alter table document_templates add column if not exists dati_fissi jsonb not null default '{}'::jsonb;
+
 create index if not exists idx_document_templates_keywords
   on document_templates using gin (parole_chiave);
 
@@ -67,6 +69,7 @@ values (
     {"nome":"evento_meteo","label":"Motivazione meteorologica","tipo":"testo","obbligatorio":true},
     {"nome":"conseguenze","label":"Conseguenze sull''''attivita''''","tipo":"testo","obbligatorio":true},
     {"nome":"beneficiari","label":"Operai coinvolti","tipo":"tabella","obbligatorio":false,
+      "descrizione":"Per ciascun operaio: cognome, nome, codice fiscale, qualifica e ore TOTALI di sospensione nel periodo (non per settimana).",
       "colonne":[{"nome":"cognome","tipo":"testo"},{"nome":"nome","tipo":"testo"},{"nome":"codice_fiscale","tipo":"testo"},{"nome":"qualifica","tipo":"testo"},{"nome":"ore","tipo":"numero"}]
     },
     {"nome":"pagamento_diretto","label":"Pagamento diretto (SR41)","tipo":"scelta","obbligatorio":false,"default":false}

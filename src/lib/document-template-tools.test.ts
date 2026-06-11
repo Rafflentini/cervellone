@@ -59,7 +59,7 @@ describe('executeDocumentTemplateTool', () => {
     expect(out).toContain('https://drive/x')
   })
 
-  it('compila_modello builtin_cigo: delega a generaAllegato10Cigo + carica ZIP', async () => {
+  it('compila_modello builtin_cigo: delega a generaAllegato10Cigo + carica ZIP con filename periodo', async () => {
     ;(dt.getTemplate as any).mockResolvedValue({
       slug: 'cigo_allegato10', titolo: 'CIGO', metodo: 'builtin_cigo',
       campi: [
@@ -73,11 +73,41 @@ describe('executeDocumentTemplateTool', () => {
     ;(drive.uploadBinaryToDrive as any).mockResolvedValue({ id: 'z', webViewLink: 'https://drive/zip' })
     const out = await executeDocumentTemplateTool('compila_modello', {
       slug: 'cigo_allegato10',
-      valori: { periodo_dal: '2026-06-01', periodo_al: '2026-06-11' },
+      valori: {
+        periodo_dal: '2026-06-01',
+        periodo_al: '2026-06-11',
+        beneficiari: [{ cognome: 'ROSSI', nome: 'MARIO', codice_fiscale: 'RSSMRA80A01H501U', ore: 8 }],
+      },
     })
     expect(cigo.generaAllegato10Cigo).toHaveBeenCalledOnce()
-    expect(drive.uploadBinaryToDrive).toHaveBeenCalledWith(expect.any(Buffer), expect.stringContaining('.zip'), 'application/zip', undefined)
+    // Filename must contain the periodo, not today's date
+    expect(drive.uploadBinaryToDrive).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'CIGO_Allegato10_2026-06-01_2026-06-11.zip',
+      'application/zip',
+      undefined,
+    )
     expect(out).toContain('https://drive/zip')
+    // Worker count appears in success message
+    expect(out).toContain('1 operai')
+  })
+
+  it('compila_modello builtin_cigo: zero beneficiari -> errore, NON chiama generaAllegato10Cigo', async () => {
+    ;(dt.getTemplate as any).mockResolvedValue({
+      slug: 'cigo_allegato10', titolo: 'CIGO', metodo: 'builtin_cigo',
+      campi: [
+        { nome: 'periodo_dal', label: 'dal', tipo: 'data', obbligatorio: true },
+        { nome: 'periodo_al', label: 'al', tipo: 'data', obbligatorio: true },
+      ],
+      dati_fissi: {},
+      formati_output: ['pdf'], mai_inviare: true,
+    })
+    const out = await executeDocumentTemplateTool('compila_modello', {
+      slug: 'cigo_allegato10',
+      valori: { periodo_dal: '2026-06-01', periodo_al: '2026-06-11' },
+    })
+    expect(cigo.generaAllegato10Cigo).not.toHaveBeenCalled()
+    expect(out).toMatch(/operai|beneficiari|imposta_dati_fissi/i)
   })
 
   it('compila_modello: dati_fissi soddisfano campi obbligatori senza richiederli di nuovo', async () => {
@@ -105,7 +135,11 @@ describe('executeDocumentTemplateTool', () => {
     // Only per-request variable fields provided — company fields come from dati_fissi
     const out = await executeDocumentTemplateTool('compila_modello', {
       slug: 'cigo_allegato10',
-      valori: { periodo_dal: '2026-06-01', periodo_al: '2026-06-30' },
+      valori: {
+        periodo_dal: '2026-06-01',
+        periodo_al: '2026-06-30',
+        beneficiari: [{ cognome: 'VERDI', nome: 'LUCA', codice_fiscale: 'VRDLCU90A01F205E', ore: 16 }],
+      },
     })
 
     // Must NOT ask for missing fields (they're covered by dati_fissi)
@@ -176,6 +210,36 @@ describe('mapCigoInput', () => {
   it('periodo mappato correttamente', () => {
     const out = mapCigoInput({ periodo_dal: '2026-06-01', periodo_al: '2026-06-11', beneficiari: [] })
     expect(out.periodo).toEqual({ data_inizio: '2026-06-01', data_fine: '2026-06-11' })
+  })
+
+  it('cantiere folded into attivita_svolta (comune + indirizzo + data_apertura + lavorazioni)', () => {
+    const out = mapCigoInput({
+      cantiere_comune: 'Viggiano',
+      cantiere_indirizzo: 'Via Roma 1',
+      cantiere_data_apertura: '2026-03-15',
+      lavorazioni: 'Carpenteria in ferro',
+      beneficiari: [],
+    })
+    expect(out.attivita_svolta).toContain('Cantiere sito in Viggiano, Via Roma 1')
+    expect(out.attivita_svolta).toContain('aperto il 15/03/2026')
+    expect(out.attivita_svolta).toContain('Carpenteria in ferro')
+  })
+
+  it('cantiere senza data_apertura: no virgola extra', () => {
+    const out = mapCigoInput({
+      cantiere_comune: 'Marsico Nuovo',
+      cantiere_indirizzo: 'Contrada Valle',
+      lavorazioni: 'Demolizioni',
+      beneficiari: [],
+    })
+    expect(out.attivita_svolta).toContain('Cantiere sito in Marsico Nuovo, Contrada Valle.')
+    expect(out.attivita_svolta).not.toContain('aperto il')
+    expect(out.attivita_svolta).toContain('Demolizioni')
+  })
+
+  it('senza cantiere_comune/indirizzo: attivita_svolta e solo lavorazioni', () => {
+    const out = mapCigoInput({ lavorazioni: 'Solo lavorazioni', beneficiari: [] })
+    expect(out.attivita_svolta).toBe('Solo lavorazioni')
   })
 
   it('dati azienda letti da valori, non hardcodati', () => {
