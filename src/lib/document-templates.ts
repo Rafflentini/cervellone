@@ -165,6 +165,39 @@ export async function listTemplates(): Promise<
 }
 
 /**
+ * Ritorna i dati minimi di tutti i modelli (slug, titolo, parole_chiave, campi, dati_fissi)
+ * per la costruzione del blocco di injection nel system prompt.
+ * Best-effort: ritorna [] su errore o tabella vuota.
+ */
+export async function listTemplatesForInjection(): Promise<
+  Array<{
+    slug: string
+    titolo: string
+    parole_chiave: string[]
+    campi: CampoModello[]
+    dati_fissi: Record<string, unknown>
+  }>
+> {
+  try {
+    const supabase = getSupabaseServer()
+    const { data, error } = await supabase
+      .from('document_templates')
+      .select('slug, titolo, parole_chiave, campi, dati_fissi')
+      .limit(50)
+    if (error || !data) return []
+    return (data as Array<Record<string, unknown>>).map((r) => ({
+      slug: r.slug as string,
+      titolo: r.titolo as string,
+      parole_chiave: (r.parole_chiave as string[]) ?? [],
+      campi: (r.campi as CampoModello[]) ?? [],
+      dati_fissi: (r.dati_fissi as Record<string, unknown>) ?? {},
+    }))
+  } catch {
+    return []
+  }
+}
+
+/**
  * Merges the given keys into the existing dati_fissi for the given template.
  * Read-modify-write: existing keys not in `valori` are preserved.
  */

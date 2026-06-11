@@ -11,6 +11,7 @@ import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { supabase } from '@/lib/supabase'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
 import { isWorkingMemoryEnabled, buildWorkingContext } from '@/lib/working-memory'
+import { buildTemplateContext } from '@/lib/template-context'
 
 export const maxDuration = 800
 
@@ -203,9 +204,17 @@ export async function POST(request: NextRequest) {
 
   // FASE 1 Memoria procedurale (flag-gated, OFF di default): se attiva, carica la
   // checklist obbligatoria del tipo-documento inferito dalla richiesta. Best-effort.
-  const workingContext = (await isWorkingMemoryEnabled())
+  const flaggedWorkingContext = (await isWorkingMemoryEnabled())
     ? await buildWorkingContext(userQuery, conversationId)
     : undefined
+
+  // Injection modelli documento: INCONDIZIONATA (non dipende dal flag working_memory_enabled).
+  // Cheap: cache 5 min + un solo loop regex sui template. Best-effort: '' su errore.
+  const templateContext = await buildTemplateContext(userQuery)
+
+  const workingContext = [flaggedWorkingContext, templateContext]
+    .filter((b) => b && b.trim())
+    .join('\n\n') || undefined
 
   const encoder = new TextEncoder()
   const readable = new ReadableStream({
