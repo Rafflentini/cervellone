@@ -25,6 +25,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 
 import { callClaudeStreamTelegram } from '@/lib/claude'
 import { isWorkingMemoryEnabled, buildWorkingContext } from '@/lib/working-memory'
+import { buildTemplateContext } from '@/lib/template-context'
 import { captureArtifact, buildArtifactsPointer } from '@/lib/artifact-capture'
 import { buildSentMailPointer } from '@/lib/sent-mail'
 import { supabase } from '@/lib/supabase'
@@ -93,13 +94,22 @@ export async function runAgentJob(
   // checklist obbligatoria del tipo-documento inferito dalla richiesta. Best-effort.
   // Pointer "bozze già pronte" ri-iniettato a ogni turno: sopravvive alla finestra di
   // history (vedi cattura artefatti a fine turno) così il bot recupera invece di rigenerare.
-  const workingContext = (await isWorkingMemoryEnabled())
+  const flaggedWorkingContext = (await isWorkingMemoryEnabled())
     ? [
         await buildWorkingContext(userText, conversationId),
         await buildArtifactsPointer(conversationId),
         await buildSentMailPointer(conversationId),
       ].filter((b) => b && b.trim()).join('\n\n') || undefined
     : undefined
+
+  // Injection modelli documento: INCONDIZIONATA (non dipende dal flag working_memory_enabled).
+  // Cheap: cache 5 min + un solo loop regex sui template. Best-effort: '' su errore.
+  // Lanciata in parallelo con il flag check sopra per non aggiungere latenza.
+  const templateContext = await buildTemplateContext(userText)
+
+  const workingContext = [flaggedWorkingContext, templateContext]
+    .filter((b) => b && b.trim())
+    .join('\n\n') || undefined
 
   const fullResponse = await callClaudeStreamTelegram(
     {
