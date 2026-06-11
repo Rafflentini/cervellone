@@ -26,6 +26,7 @@ export interface DocumentTemplate {
   master_drive_id?: string | null
   html_template?: string | null
   campi: CampoModello[]
+  dati_fissi: Record<string, unknown>
   formati_output: string[]
   dove_salvare?: string | null
   mai_inviare: boolean
@@ -40,6 +41,7 @@ export interface CreateTemplateInput {
   master_drive_id?: string | null
   html_template?: string | null
   campi: CampoModello[]
+  dati_fissi?: Record<string, unknown>
   formati_output?: string[]
   dove_salvare?: string | null
   mai_inviare?: boolean
@@ -56,7 +58,7 @@ export function normalizeSlug(raw: string): string {
 }
 
 const SELECT_COLS =
-  'slug, titolo, parole_chiave, tipo_sorgente, metodo, master_drive_id, html_template, campi, formati_output, dove_salvare, mai_inviare'
+  'slug, titolo, parole_chiave, tipo_sorgente, metodo, master_drive_id, html_template, campi, dati_fissi, formati_output, dove_salvare, mai_inviare'
 
 function rowToTemplate(row: Record<string, unknown>): DocumentTemplate {
   return {
@@ -68,6 +70,7 @@ function rowToTemplate(row: Record<string, unknown>): DocumentTemplate {
     master_drive_id: (row.master_drive_id as string | null) ?? null,
     html_template: (row.html_template as string | null) ?? null,
     campi: (row.campi as CampoModello[]) ?? [],
+    dati_fissi: (row.dati_fissi as Record<string, unknown>) ?? {},
     formati_output: (row.formati_output as string[]) ?? ['pdf'],
     dove_salvare: (row.dove_salvare as string | null) ?? null,
     mai_inviare: (row.mai_inviare as boolean) ?? true,
@@ -95,6 +98,7 @@ export async function createTemplate(
         master_drive_id: input.master_drive_id ?? null,
         html_template: input.html_template ?? null,
         campi: input.campi,
+        dati_fissi: input.dati_fissi ?? {},
         formati_output: input.formati_output ?? ['pdf'],
         dove_salvare: input.dove_salvare ?? null,
         mai_inviare: input.mai_inviare ?? true,
@@ -133,4 +137,39 @@ export async function listTemplates(): Promise<
     titolo: r.titolo as string,
     parole_chiave: (r.parole_chiave as string[]) ?? [],
   }))
+}
+
+/**
+ * Merges the given keys into the existing dati_fissi for the given template.
+ * Read-modify-write: existing keys not in `valori` are preserved.
+ */
+export async function setDatiFissi(
+  slug: string,
+  valori: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string }> {
+  const normalizedSlug = normalizeSlug(slug)
+  if (!normalizedSlug) return { ok: false, error: 'slug non valido' }
+
+  const supabase = getSupabaseServer()
+
+  // Read current dati_fissi
+  const { data, error: readErr } = await supabase
+    .from('document_templates')
+    .select('dati_fissi')
+    .eq('slug', normalizedSlug)
+    .maybeSingle()
+
+  if (readErr) return { ok: false, error: readErr.message }
+  if (!data) return { ok: false, error: `Modello "${normalizedSlug}" non trovato` }
+
+  const current = (data as Record<string, unknown>).dati_fissi as Record<string, unknown> ?? {}
+  const merged = { ...current, ...valori }
+
+  const { error: writeErr } = await supabase
+    .from('document_templates')
+    .update({ dati_fissi: merged, updated_at: new Date().toISOString() })
+    .eq('slug', normalizedSlug)
+
+  if (writeErr) return { ok: false, error: writeErr.message }
+  return { ok: true }
 }

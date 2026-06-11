@@ -3,6 +3,7 @@ import {
   createTemplate,
   getTemplate,
   listTemplates,
+  setDatiFissi,
   normalizeSlug,
   type CampoModello,
   type DocumentTemplate,
@@ -72,6 +73,22 @@ export const DOCUMENT_TEMPLATE_TOOLS: ToolDefinition[] = [
       required: ['slug', 'valori'],
     },
   },
+  {
+    name: 'imposta_dati_fissi',
+    description:
+      "Salva i dati fissi riutilizzabili di un modello (es. dati azienda, legale rappresentante, operai abituali per CIGO) in modo che non servano a ogni richiesta. Chiamalo la prima volta che l'utente fornisce questi dati, oppure quando cambia azienda. I dati vengono uniti a quelli gia' presenti: le chiavi passate sovrascrivono, le altre restano. NON invia mai nulla.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        slug: { type: 'string', description: 'slug del modello a cui associare i dati fissi' },
+        valori: {
+          type: 'object',
+          description: 'mappa chiave->valore dei dati fissi da memorizzare (es. azienda_denominazione, lr_nome_cognome, operai_abituali)',
+        },
+      },
+      required: ['slug', 'valori'],
+    },
+  },
 ]
 
 function labelOf(campi: CampoModello[], nome: string): string {
@@ -79,23 +96,51 @@ function labelOf(campi: CampoModello[], nome: string): string {
 }
 
 // Mappa i valori "piatti" del modello CIGO sull'Allegato10Input del builder esistente.
+// Tutti i dati vengono letti da valori: nessun valore hardcodato.
 export function mapCigoInput(valori: Record<string, unknown>): Record<string, unknown> {
-  const beneficiari = Array.isArray(valori.beneficiari) ? valori.beneficiari : []
+  // Azienda
+  const azienda: Record<string, unknown> = {
+    denominazione: String(valori.azienda_denominazione ?? ''),
+    codice_fiscale: String(valori.azienda_cf ?? ''),
+    matricola_inps: String(valori.azienda_matricola_inps ?? ''),
+  }
+  if (valori.azienda_unita_produttiva) {
+    azienda.unita_produttiva = String(valori.azienda_unita_produttiva)
+  }
+  if (valori.azienda_data_inizio_attivita) {
+    azienda.data_inizio_attivita = String(valori.azienda_data_inizio_attivita)
+  }
+
+  // Legale rappresentante
+  const lr: Record<string, unknown> = {
+    nome_cognome: String(valori.lr_nome_cognome ?? ''),
+  }
+  const qualifica = valori.lr_qualifica
+  if (qualifica === 'titolare' || qualifica === 'legale_rappresentante') {
+    lr.qualifica = qualifica
+  }
+  if (valori.lr_luogo_nascita) lr.luogo_nascita = String(valori.lr_luogo_nascita)
+  if (valori.lr_data_nascita) lr.data_nascita = String(valori.lr_data_nascita)
+  if (valori.lr_residenza) lr.residenza = String(valori.lr_residenza)
+  if (valori.lr_telefono) lr.telefono = String(valori.lr_telefono)
+
+  // Beneficiari: prima guarda beneficiari, poi fallback a operai_abituali
+  const beneficiariRaw = Array.isArray(valori.beneficiari) && valori.beneficiari.length > 0
+    ? valori.beneficiari
+    : Array.isArray(valori.operai_abituali)
+      ? valori.operai_abituali
+      : []
+
   return {
-    azienda: {
-      denominazione: 'RESTRUKTURA S.R.L.',
-      codice_fiscale: '02087420762',
-      matricola_inps: '6405924990',
-      unita_produttiva: "Villa d'Agri - Via Enrico Mattei 5",
-    },
-    legale_rappresentante: { nome_cognome: 'Lentini Raffaele', qualifica: 'legale_rappresentante' },
+    azienda,
+    legale_rappresentante: lr,
     periodo: { data_inizio: String(valori.periodo_dal ?? ''), data_fine: String(valori.periodo_al ?? '') },
     attivita_svolta: String(valori.lavorazioni ?? ''),
     evento_meteo: String(valori.evento_meteo ?? ''),
     conseguenze: String(valori.conseguenze ?? ''),
     ulteriori_annotazioni:
       valori.giornate_stop ? `Giornate di sospensione: ${String(valori.giornate_stop)}.` : undefined,
-    beneficiari: beneficiari.map((b) => {
+    beneficiari: beneficiariRaw.map((b) => {
       const row = b as Record<string, unknown>
       // Le ore di stop totali per operaio finiscono in OreCIG del CSV INPS
       // (build-beneficiari-csv somma ore_perse_settimana_1..4). Mettiamo il totale in settimana_1.
@@ -122,13 +167,16 @@ async function compila(input: Record<string, unknown>): Promise<string> {
   const tpl: DocumentTemplate | null = await getTemplate(slug)
   if (!tpl) return `Modello "${slug}" non trovato. Usa lista_modelli per vedere quelli disponibili, oppure insegnamelo con insegna_modello.`
 
-  const validation = validateValues(tpl.campi, valoriRaw)
+  // Merge: dati_fissi come base, valori per-richiesta sovrascrivono, poi i default del modello
+  const merged = applyDefaults(tpl.campi, { ...(tpl.dati_fissi ?? {}), ...valoriRaw })
+
+  const validation = validateValues(tpl.campi, merged)
   if (!validation.ok) {
     const etichette = validation.missing.map((n) => `- ${labelOf(tpl.campi, n)}`).join('\n')
     return `Per generare "${tpl.titolo}" mi servono questi dati:\n${etichette}\n\nDammeli e procedo. (Non li invento.)`
   }
 
-  const valori = applyDefaults(tpl.campi, valoriRaw)
+  const valori = merged
   const folderId = (input.dove_salvare as string) || tpl.dove_salvare || undefined
 
   if (tpl.metodo === 'builtin_cigo') {
@@ -193,6 +241,14 @@ export async function executeDocumentTemplateTool(
 
     if (name === 'compila_modello') {
       return await compila(input)
+    }
+
+    if (name === 'imposta_dati_fissi') {
+      const slug = String(input.slug ?? '')
+      const valori = (input.valori as Record<string, unknown>) ?? {}
+      const res = await setDatiFissi(slug, valori)
+      if (!res.ok) return `Non sono riuscito a salvare i dati fissi: ${res.error}`
+      return `Dati fissi salvati per il modello "${normalizeSlug(slug)}". Da ora li riuso automaticamente: non dovrai ridarmeli ogni volta. Per cambiare azienda, richiama questo comando con i nuovi dati.`
     }
 
     return null

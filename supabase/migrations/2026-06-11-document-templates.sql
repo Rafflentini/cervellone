@@ -9,6 +9,7 @@ create table if not exists document_templates (
   master_drive_id text,
   html_template   text,
   campi           jsonb not null default '[]'::jsonb,
+  dati_fissi      jsonb not null default '{}'::jsonb,
   formati_output  jsonb not null default '["pdf"]'::jsonb,
   dove_salvare    text,
   mai_inviare     boolean not null default true,
@@ -31,8 +32,9 @@ create policy "service_role_all_document_templates"
   using (true) with check (true);
 
 -- Seed: CIGO Allegato 10 come primo modello (metodo builtin_cigo).
--- I default coprono i dati fissi (azienda + 3 operai abituali); l'utente passa solo i campi variabili.
-insert into document_templates (slug, titolo, parole_chiave, tipo_sorgente, metodo, formati_output, dove_salvare, mai_inviare, campi)
+-- dati_fissi e' vuoto: l'utente li imposta una-tantum via imposta_dati_fissi.
+-- I campi fissi (azienda, LR) sono obbligatori ma senza default: devono venire da dati_fissi o dalla richiesta.
+insert into document_templates (slug, titolo, parole_chiave, tipo_sorgente, metodo, formati_output, dove_salvare, mai_inviare, dati_fissi, campi)
 values (
   'cigo_allegato10',
   'CIGO — Allegato 10 (relazione tecnica eventi meteo)',
@@ -42,7 +44,19 @@ values (
   '["pdf"]'::jsonb,
   null,
   true,
+  '{}'::jsonb,
   '[
+    {"nome":"azienda_denominazione","label":"Azienda — denominazione","tipo":"testo","obbligatorio":true},
+    {"nome":"azienda_cf","label":"Azienda — codice fiscale","tipo":"testo","obbligatorio":true},
+    {"nome":"azienda_matricola_inps","label":"Azienda — matricola INPS","tipo":"testo","obbligatorio":true},
+    {"nome":"azienda_unita_produttiva","label":"Azienda — unita'' produttiva","tipo":"testo","obbligatorio":false},
+    {"nome":"azienda_data_inizio_attivita","label":"Azienda — data inizio attivita'' (YYYY-MM-DD)","tipo":"data","obbligatorio":false},
+    {"nome":"lr_nome_cognome","label":"Legale rappresentante — nome e cognome","tipo":"testo","obbligatorio":true},
+    {"nome":"lr_qualifica","label":"Legale rappresentante — qualifica","tipo":"scelta","obbligatorio":false,"descrizione":"titolare oppure legale_rappresentante"},
+    {"nome":"lr_luogo_nascita","label":"Legale rappresentante — luogo di nascita","tipo":"testo","obbligatorio":false},
+    {"nome":"lr_data_nascita","label":"Legale rappresentante — data di nascita (YYYY-MM-DD)","tipo":"data","obbligatorio":false},
+    {"nome":"lr_residenza","label":"Legale rappresentante — residenza","tipo":"testo","obbligatorio":false},
+    {"nome":"lr_telefono","label":"Legale rappresentante — telefono","tipo":"testo","obbligatorio":false},
     {"nome":"cantiere_comune","label":"Cantiere — Comune","tipo":"testo","obbligatorio":true,"descrizione":"Comune del cantiere"},
     {"nome":"cantiere_indirizzo","label":"Cantiere — indirizzo","tipo":"testo","obbligatorio":true},
     {"nome":"cantiere_data_apertura","label":"Data apertura cantiere (YYYY-MM-DD)","tipo":"data","obbligatorio":false},
@@ -53,12 +67,7 @@ values (
     {"nome":"evento_meteo","label":"Motivazione meteorologica","tipo":"testo","obbligatorio":true},
     {"nome":"conseguenze","label":"Conseguenze sull''''attivita''''","tipo":"testo","obbligatorio":true},
     {"nome":"beneficiari","label":"Operai coinvolti","tipo":"tabella","obbligatorio":false,
-      "colonne":[{"nome":"cognome","tipo":"testo"},{"nome":"nome","tipo":"testo"},{"nome":"codice_fiscale","tipo":"testo"},{"nome":"qualifica","tipo":"testo"},{"nome":"ore","tipo":"numero"}],
-      "default":[
-        {"cognome":"PACILLI","nome":"MARTIN","codice_fiscale":"PCLMTN94C04E977G","qualifica":"Muratore Edile","ore":0},
-        {"cognome":"PIRRONE","nome":"MICHELE","codice_fiscale":"PRRMHL83H08E977T","qualifica":"Manovale Edile","ore":0},
-        {"cognome":"GURU","nome":"KULWANT RAY","codice_fiscale":"GRUKWN88E01Z222K","qualifica":"Manovale Edile","ore":0}
-      ]
+      "colonne":[{"nome":"cognome","tipo":"testo"},{"nome":"nome","tipo":"testo"},{"nome":"codice_fiscale","tipo":"testo"},{"nome":"qualifica","tipo":"testo"},{"nome":"ore","tipo":"numero"}]
     },
     {"nome":"pagamento_diretto","label":"Pagamento diretto (SR41)","tipo":"scelta","obbligatorio":false,"default":false}
   ]'::jsonb
