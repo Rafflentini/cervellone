@@ -24,6 +24,7 @@ import { RICONCILIAZIONE_TOOLS, executeRiconciliazioneTool } from './riconciliaz
 import { PRIMA_NOTA_TOOLS, executePrimaNotaTool } from './prima-nota-tools'
 import { FIC_WRITE_TOOLS, executeFicWriteTool } from './fic-write-tools'
 import { MAIL_TOOL_DEFINITIONS, MAIL_TOOL_EXECUTORS } from '@/v19/tools/email'
+import { DOCUMENT_TEMPLATE_TOOLS, executeDocumentTemplateTool } from './document-template-tools'
 import { recordSentMail } from '@/lib/sent-mail'
 import { promoteModel } from './circuit-breaker'
 import {
@@ -2386,9 +2387,10 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...PROJECT_TOOLS, // 2026-06-04 FASE 2 Memoria di progetto: imposta/aggiorna/chiudi progetto attivo
   ...DRAFT_TOOLS, // 2026-06-04 FASE 2 Gestione bozze: lista/ritrova/aggiorna/salva_pdf documenti
   ...PDF_TOOLS, // 2026-05-07 Pipeline PDF: genera_pdf
+  ...(DOCUMENT_TEMPLATE_TOOLS as unknown as ToolDefinition[]), // 2026-06-11 Modelli documento Fase 1: insegna/compila/lista/ritrova
   ...(MAIL_TOOL_DEFINITIONS as unknown as ToolDefinition[]), // 2026-05-24 V19 Mail TopHost IMAP/SMTP: 5 tool (info@/raffaele.lentini@)
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeMailWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [
