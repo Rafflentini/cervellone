@@ -107,9 +107,16 @@ export async function buildTemplateContext(userQuery: string): Promise<string> {
 
     // Campi obbligatori NON gia' presenti nei dati fissi
     const datiFissiKeys = new Set(Object.keys(tpl.dati_fissi))
+
+    // Tutte le chiavi del modello (solo nome-chiave, niente etichette: il modello
+    // DEVE usare questi nomi in valori). * = obbligatorio.
+    const tuttiKeys = tpl.campi
+      .map((c) => c.nome + (c.obbligatorio ? '*' : ''))
+      .join(', ')
+
     const campiDaChiedere = tpl.campi
       .filter((c) => c.obbligatorio && !datiFissiKeys.has(c.nome))
-      .map((c) => c.label)
+      .map((c) => c.nome + ' (' + c.label + ')')
 
     const campiStr =
       campiDaChiedere.length > 0
@@ -124,10 +131,12 @@ export async function buildTemplateContext(userQuery: string): Promise<string> {
     return (
       '\n=== MODELLO DOCUMENTO DISPONIBILE ===\n' +
       'Per questa richiesta esiste il modello "' + tpl.titolo + '" (slug: ' + tpl.slug + ').\n' +
-      'USA SEMPRE lo strumento compila_modello(slug="' + tpl.slug + '", valori={...}) per generarlo. NON scrivere il documento in prosa nella chat: l\'impaginazione ufficiale la produce solo compila_modello.\n' +
-      'Campi ancora da chiedere all\'utente (solo quelli obbligatori NON gia\' presenti nei dati fissi): ' + campiStr + '.\n' +
+      'USA SEMPRE lo strumento compila_modello(slug="' + tpl.slug + '", valori={...}). NON scrivere il documento in prosa nella chat: l\'impaginazione ufficiale la produce solo compila_modello.\n' +
+      'IMPORTANTE: nel parametro valori usa ESATTAMENTE questi nomi-chiave, NON le etichette (* = obbligatorio): ' + tuttiKeys + '.\n' +
+      'Mancano ancora (chiedili all\'utente e passali con la chiave indicata tra parentesi): ' + campiStr + '.\n' +
       'Dati fissi gia\' memorizzati (NON richiederli): ' + datiFissiStr + '.\n' +
-      'Se l\'utente fornisce dati fissi nuovi (azienda, operai abituali), salvali prima con imposta_dati_fissi.\n' +
+      'Se l\'utente fornisce dati fissi nuovi (azienda, legale rappresentante, operai abituali), salvali con imposta_dati_fissi usando le stesse chiavi.\n' +
+      'NON dire mai "documento generato" e NON fornire alcun link se compila_modello non ti ha restituito un link reale IN QUESTA risposta. Se restituisce campi mancanti o un errore, riportalo all\'utente e chiedi i dati: non inventare nulla.\n' +
       '===\n'
     )
   } catch (err) {

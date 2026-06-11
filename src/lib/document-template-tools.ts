@@ -62,12 +62,12 @@ export const DOCUMENT_TEMPLATE_TOOLS: ToolDefinition[] = [
   {
     name: 'compila_modello',
     description:
-      "Genera un documento da un modello insegnato, riempiendo i campi variabili e mantenendo l'impaginazione. Salva il file su Drive e RITORNA IL LINK REALE. NON invia mai nulla. Se mancano campi obbligatori, te li dice: chiedili all'utente, non inventarli.",
+      "Genera un documento da un modello insegnato, riempiendo i campi variabili e mantenendo l'impaginazione. Salva il file su Drive e RITORNA IL LINK REALE. NON invia mai nulla. Se mancano campi obbligatori, te li dice: chiedili all'utente, non inventarli. Le chiavi dell'oggetto valori DEVONO essere i nomi-chiave dei campi (es. periodo_dal, azienda_denominazione, beneficiari), NON le etichette: prendi i nomi esatti dal blocco MODELLO DOCUMENTO DISPONIBILE o da ritrova_modello.",
     input_schema: {
       type: 'object',
       properties: {
         slug: { type: 'string' },
-        valori: { type: 'object', description: 'mappa campo->valore secondo la scheda del modello' },
+        valori: { type: 'object', description: 'mappa nome-chiave-campo -> valore (usa i nomi esatti dei campi, non le etichette)' },
         formato: { type: 'string', enum: ['pdf', 'docx'] },
         dove_salvare: { type: 'string', description: 'ID cartella Drive (opzionale)' },
       },
@@ -201,8 +201,8 @@ async function compila(input: Record<string, unknown>): Promise<string> {
 
   const validation = validateValues(tpl.campi, merged)
   if (!validation.ok) {
-    const etichette = validation.missing.map((n) => `- ${labelOf(tpl.campi, n)}`).join('\n')
-    return `Per generare "${tpl.titolo}" mi servono questi dati:\n${etichette}\n\nDammeli e procedo. (Non li invento.)`
+    const etichette = validation.missing.map((n) => `- ${n} (${labelOf(tpl.campi, n)})`).join('\n')
+    return `Per generare "${tpl.titolo}" mi servono questi dati. Chiedili all'utente e richiama compila_modello usando ESATTAMENTE queste chiavi nel parametro valori:\n${etichette}\n\n(Non inventare valori. Non dire che il documento e' pronto: non lo e' finche' non hai un link reale.)`
   }
 
   const valori = merged
@@ -255,9 +255,11 @@ export async function executeDocumentTemplateTool(
       const tpl = await getTemplate(String(input.slug ?? ''))
       if (!tpl) return `Modello "${input.slug}" non trovato.`
       const campi = tpl.campi
-        .map((c) => `- ${c.label}${c.obbligatorio ? ' (obbligatorio)' : ''} [${c.tipo}]`)
+        .map((c) => `- ${c.nome}${c.obbligatorio ? '*' : ''} (${c.label}) [${c.tipo}]`)
         .join('\n')
-      return `Modello: ${tpl.titolo} (slug: ${tpl.slug})\nMetodo: ${tpl.metodo}\nCampi:\n${campi}`
+      const datiFissi = Object.keys(tpl.dati_fissi ?? {})
+      const datiFissiStr = datiFissi.length ? datiFissi.join(', ') : 'nessuno'
+      return `Modello: ${tpl.titolo} (slug: ${tpl.slug})\nMetodo: ${tpl.metodo}\nNel parametro valori di compila_modello usa il nome-chiave (prima parola di ogni riga, * = obbligatorio), NON l'etichetta tra parentesi.\nCampi:\n${campi}\nDati fissi gia' memorizzati: ${datiFissiStr}`
     }
 
     if (name === 'insegna_modello') {
