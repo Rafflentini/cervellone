@@ -79,7 +79,7 @@ function labelOf(campi: CampoModello[], nome: string): string {
 }
 
 // Mappa i valori "piatti" del modello CIGO sull'Allegato10Input del builder esistente.
-function mapCigoInput(valori: Record<string, unknown>): Record<string, unknown> {
+export function mapCigoInput(valori: Record<string, unknown>): Record<string, unknown> {
   const beneficiari = Array.isArray(valori.beneficiari) ? valori.beneficiari : []
   return {
     azienda: {
@@ -97,11 +97,15 @@ function mapCigoInput(valori: Record<string, unknown>): Record<string, unknown> 
       valori.giornate_stop ? `Giornate di sospensione: ${String(valori.giornate_stop)}.` : undefined,
     beneficiari: beneficiari.map((b) => {
       const row = b as Record<string, unknown>
+      // Le ore di stop totali per operaio finiscono in OreCIG del CSV INPS
+      // (build-beneficiari-csv somma ore_perse_settimana_1..4). Mettiamo il totale in settimana_1.
+      const oreNum = Number(row.ore ?? 0)
       return {
         cognome: String(row.cognome ?? ''),
         nome: String(row.nome ?? ''),
         codice_fiscale: String(row.codice_fiscale ?? ''),
         qualifica: row.qualifica ? String(row.qualifica) : undefined,
+        ore_perse_settimana_1: Number.isFinite(oreNum) ? oreNum : 0,
       }
     }),
     pagamento_diretto: Boolean(valori.pagamento_diretto ?? false),

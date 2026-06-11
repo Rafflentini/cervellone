@@ -10,7 +10,7 @@ vi.mock('./drive', () => ({ uploadBinaryToDrive: vi.fn() }))
 vi.mock('./pdf-generator', () => ({ generatePdfFromHtml: vi.fn() }))
 vi.mock('@/v19/tools/cigo', () => ({ generaAllegato10Cigo: vi.fn() }))
 
-import { executeDocumentTemplateTool } from './document-template-tools'
+import { executeDocumentTemplateTool, mapCigoInput } from './document-template-tools'
 import * as dt from './document-templates'
 import * as drive from './drive'
 import * as pdf from './pdf-generator'
@@ -80,5 +80,33 @@ describe('executeDocumentTemplateTool', () => {
     ;(dt.listTemplates as any).mockResolvedValue([{ slug: 'cigo_allegato10', titolo: 'CIGO', parole_chiave: [] }])
     const out = await executeDocumentTemplateTool('lista_modelli', {})
     expect(out).toContain('cigo_allegato10')
+  })
+})
+
+describe('mapCigoInput', () => {
+  it('mappa le ore di stop per operaio su ore_perse_settimana_1 (-> OreCIG nel CSV)', () => {
+    const out = mapCigoInput({
+      periodo_dal: '2026-06-01',
+      periodo_al: '2026-06-11',
+      beneficiari: [
+        { cognome: 'PACILLI', nome: 'MARTIN', codice_fiscale: 'PCLMTN94C04E977G', qualifica: 'Muratore Edile', ore: 24 },
+      ],
+    })
+    const ben = (out.beneficiari as Array<Record<string, unknown>>)[0]
+    expect(ben.ore_perse_settimana_1).toBe(24)
+    expect(ben.codice_fiscale).toBe('PCLMTN94C04E977G')
+    expect(ben.qualifica).toBe('Muratore Edile')
+  })
+
+  it('ore mancanti o non numeriche -> 0 (mai NaN)', () => {
+    const out = mapCigoInput({ beneficiari: [{ cognome: 'A', nome: 'B', codice_fiscale: 'C' }] })
+    expect((out.beneficiari as Array<Record<string, unknown>>)[0].ore_perse_settimana_1).toBe(0)
+    const out2 = mapCigoInput({ beneficiari: [{ cognome: 'A', nome: 'B', codice_fiscale: 'C', ore: 'abc' }] })
+    expect((out2.beneficiari as Array<Record<string, unknown>>)[0].ore_perse_settimana_1).toBe(0)
+  })
+
+  it('periodo mappato correttamente', () => {
+    const out = mapCigoInput({ periodo_dal: '2026-06-01', periodo_al: '2026-06-11', beneficiari: [] })
+    expect(out.periodo).toEqual({ data_inizio: '2026-06-01', data_fine: '2026-06-11' })
   })
 })
