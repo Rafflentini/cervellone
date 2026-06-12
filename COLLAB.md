@@ -13,8 +13,9 @@ See `AGENTS.md` → "Multi-agent collaboration" for the full rules.
 ## In-flight work
 | Task | Owner | Branch | Files / area | Status |
 |------|-------|--------|--------------|--------|
-| TASK S1 stress test durable | Codex | `codex/s1-stress-durable` | SOLO file *.test.ts nuovi (vedi spec) | ASSEGNATA |
-| TASK S2 stress test memoria + micro-fix | Codex | `codex/s2-stress-memoria` | test + draft-tools/working-memory (vedi spec) | IN CODA (dopo S1) |
+| 083 BUG4 fix 500 upload immagini | Codex | `codex/083-fix-chat-500-toplevel-trycatch` | SOLO `src/app/api/chat/route.ts` | ASSEGNATA (queue 083) |
+| BUG1 ibrido persistenza immagini (strutturale) | Claude (piano) | TBD | artifact-capture clone per immagini | PIANO IN CORSO |
+| ~~S1/S2 stress test~~ | — | — | — | PARCHEGGIATE (mai partite, vedi storico sotto) |
 
 ## Task queue (assigned by Claude)
 
