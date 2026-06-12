@@ -390,6 +390,7 @@ export async function callClaudeStream(
   let fullResponse = ''
   let accUsage: UsageTokens = {}
   let iterations = 0
+  let forcedAction = false // force-action: ri-prompt UNA volta se il modello promette un'azione senza chiamare tool
   const MAX_ITERATIONS = 10 // PER-004 fix
 
   const cfg = await getConfig()
@@ -444,7 +445,28 @@ export async function callClaudeStream(
     }
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
 
-    if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
+    if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') {
+      // FORCE-ACTION (parità con callClaudeStreamTelegram): se il modello ha PROMESSO
+      // un'azione ma NON ha chiamato alcun tool, lo ri-promptiamo UNA volta perché esegua
+      // davvero. Guard forcedAction = una sola volta → niente loop. Risolve gli stalli
+      // "🔍 Cerco…"/promessa a vuoto sul path web.
+      const iterText = final.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map(b => b.text)
+        .join(' ')
+      if (toolBlocks.length === 0 && !forcedAction && detectHallucination(iterText, 0) && !isCompletedOrConditional(iterText)) {
+        forcedAction = true
+        console.log(`STREAM(web) force-action: promessa senza tool ("${iterText.slice(0, 60)}"), ri-prompt per eseguire`)
+        currentMessages = [
+          ...currentMessages,
+          { role: 'assistant' as const, content: final.content },
+          { role: 'user' as const, content: [{ type: 'text' as const, text: 'Hai detto che avresti svolto un\'azione (cercare/controllare/leggere/inviare/recuperare…) ma NON hai chiamato nessuno strumento, quindi NON è stata eseguita. ESEGUI ORA: chiama i tool necessari e rispondi col risultato REALE. Non descrivere l\'intenzione, agisci.' }] },
+        ]
+        applyIncrementalCacheBreakpoint(currentMessages)
+        continue
+      }
+      break
+    }
     if (!iterationHasText && i > 0) break
 
     const toolResults = await executeToolBlocks(toolBlocks, conversationId)
