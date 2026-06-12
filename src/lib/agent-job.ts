@@ -27,6 +27,7 @@ import { callClaudeStreamTelegram } from '@/lib/claude'
 import { isWorkingMemoryEnabled, buildWorkingContext } from '@/lib/working-memory'
 import { buildTemplateContext } from '@/lib/template-context'
 import { captureArtifact, buildArtifactsPointer } from '@/lib/artifact-capture'
+import { captureImageExtraction, buildImagesPointer, type UploadedImageRef } from '@/lib/image-memory'
 import { buildSentMailPointer } from '@/lib/sent-mail'
 import { supabase } from '@/lib/supabase'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
@@ -55,6 +56,9 @@ export type AgentJobInput = {
   /** Serializzabile. Budget token per run; settato SOLO dal ramo durable (MAX_DURABLE_RUN_TOKENS).
    *  Undefined → callClaudeStreamTelegram usa il default MAX_RUN_TOKENS (200K). */
   maxRunTokens?: number
+  /** Riferimenti Drive delle immagini caricate IN QUESTO turno (memoria immagini).
+   *  Usati a fine turno da captureImageExtraction per legare l'estrazione alle foto. */
+  uploadedImages?: UploadedImageRef[]
 }
 
 /**
@@ -107,7 +111,12 @@ export async function runAgentJob(
   // Lanciata in parallelo con il flag check sopra per non aggiungere latenza.
   const templateContext = await buildTemplateContext(userText)
 
-  const workingContext = [flaggedWorkingContext, templateContext]
+  // Pointer "memoria immagini" INCONDIZIONATO (non gated dal flag working_memory):
+  // ri-iniettato a ogni turno così le estrazioni delle foto sopravvivono alla finestra
+  // di history (analogo a templateContext). Best-effort: '' se non c'è nulla.
+  const imagesPointer = await buildImagesPointer(conversationId)
+
+  const workingContext = [flaggedWorkingContext, templateContext, imagesPointer]
     .filter((b) => b && b.trim())
     .join('\n\n') || undefined
 
@@ -195,4 +204,9 @@ export async function runAgentJob(
   if (!hadDocumentBlock) {
     captureArtifact(conversationId, finalText).catch(() => {})
   }
+
+  // Cattura "memoria immagini" a fine turno: lega l'estrazione testuale del turno
+  // (finalText) ai riferimenti Drive delle foto caricate in questo turno. Best-effort;
+  // se uploadedImages è vuoto, captureImageExtraction non salva (reason: no-images).
+  captureImageExtraction(conversationId, finalText, input.uploadedImages ?? []).catch(() => {})
 }

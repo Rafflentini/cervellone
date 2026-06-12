@@ -76,6 +76,9 @@ export async function POST(request: NextRequest) {
     let fileBlocks: Anthropic.ContentBlockParam[] = []
     let fileDescription = ''
     let currentUploadFileId: string | null = null // FIX multi-foto: file_id dell'upload di QUESTO turno
+    // Memoria immagini: riferimenti Drive delle foto ingerite IN QUESTO turno, passati a
+    // runAgentJob → captureImageExtraction per legare l'estrazione alle immagini caricate.
+    const turnImageRefs: { driveFileId: string; filename: string; driveUrl: string | null }[] = []
 
     // ── Voice ──
     if (!userText && (message.voice || message.audio)) {
@@ -159,11 +162,16 @@ export async function POST(request: NextRequest) {
         if (!largest.file_size || largest.file_size < 32 * 1024 * 1024) {
           try {
             const { ingestPhotoUpload } = await import('@/lib/foto-ingest')
-            const [rec] = await ingestPhotoUpload({
+            const ingested = await ingestPhotoUpload({
               canale: 'telegram',
               chatId: chatIdToUuid(chatId),
               items: [{ buffer: Buffer.from(fileData.buffer), mimeType: fileData.mimeType, filename: fileData.fileName }],
             })
+            // Memoria immagini: raccogli TUTTI i ref Drive ingeriti in questo turno.
+            for (const rec of ingested) {
+              turnImageRefs.push({ driveFileId: rec.driveFileId, filename: rec.filename, driveUrl: rec.driveUrl })
+            }
+            const [rec] = ingested
             archivedDriveLink = rec?.driveUrl ?? null
             if (archivedDriveLink) console.log(`[TG-ARCHIVE] file=${fileData.fileName} → ${archivedDriveLink}`)
           } catch (err) {
@@ -675,6 +683,7 @@ export async function POST(request: NextRequest) {
             fileDescription,
             attachedRecentUploadIds,
             requestId,
+            uploadedImages: turnImageRefs,
           },
           {
             onStreamSettled: () => {
