@@ -41,6 +41,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: '"messages" deve essere un array' }, { status: 400 })
   }
 
+  // BUG4 fix
+  try {
   const messages = filterEmptyMessages(rawMessages)
 
   // V10: Comprimi blocchi ~~~document nei messaggi assistant (HTML enorme -> riferimento breve)
@@ -270,6 +272,13 @@ export async function POST(request: NextRequest) {
   return new Response(readable, {
     headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache' },
   })
+  } catch (err) {
+    console.error('[CHAT POST] errore setup pre-stream:', err instanceof Error ? err.message : err)
+    return new Response('Si è verificato un problema nel preparare la richiesta — può capitare quando carichi molte immagini insieme. Riprova caricando meno foto per volta (2-3 alla volta).', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  }
 }
 
 // ── Helpers ──
