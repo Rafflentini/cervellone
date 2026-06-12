@@ -13,9 +13,13 @@ See `AGENTS.md` → "Multi-agent collaboration" for the full rules.
 ## In-flight work
 | Task | Owner | Branch | Files / area | Status |
 |------|-------|--------|--------------|--------|
-| 083 BUG4 fix 500 upload immagini | Codex | `codex/083-fix-chat-500-toplevel-trycatch` | SOLO `src/app/api/chat/route.ts` | ASSEGNATA (queue 083) |
-| BUG1 ibrido persistenza immagini (strutturale) | Claude (piano) | TBD | artifact-capture clone per immagini | PIANO IN CORSO |
-| ~~S1/S2 stress test~~ | — | — | — | PARCHEGGIATE (mai partite, vedi storico sotto) |
+| 083 BUG4 fix 500 upload immagini | Codex | merged `bed8b7a` | `chat/route.ts` | ✅ LIVE prod |
+| 084 modulo image-memory | Codex | merged `b5a2877` | `image-memory.ts`+test | ✅ LIVE (8/8 test) |
+| 085 wiring web BUG1 | Codex | merged `7e93d2c` | `chat/route.ts` | ✅ LIVE prod |
+| 086 wiring Telegram BUG1 | Subagente Claude | merged `eb6fc7e` | `agent-job.ts`+`telegram/route.ts` | ✅ LIVE prod |
+| Increment 2: tool `rivedi_immagine` (re-attach pixel) | — | — | `tools.ts`+nuovo modulo | 📋 TODO (spec dopo lettura tools.ts) |
+| BUG5: force-action su path web | — | — | `chat/route.ts` | 📋 TODO |
+| ~~S1/S2 stress test~~ | — | — | — | PARCHEGGIATE (mai partite) |
 
 ## Task queue (assigned by Claude)
 
