@@ -75,9 +75,15 @@ export async function captureImageExtraction(
       )
     }
 
-    const filenames = images.map((i) => i.filename).filter(Boolean)
-    const driveFileIds = images.map((i) => i.driveFileId).filter(Boolean)
-    const driveUrls = images.map((i) => i.driveUrl).filter((u): u is string => Boolean(u))
+    // Array PARALLELI e allineati per indice: `drive_file_ids` è la chiave autoritativa
+    // (il tool rivedi_immagine risolve filename→drive_file_id per indice). Filtriamo UNA
+    // volta sulle immagini con driveFileId valido, poi mappiamo i campi in parallelo
+    // (filename vuoto → placeholder, driveUrl assente → null) così gli indici non si
+    // disallineano mai. NB: filter(Boolean) separati per campo li disallineerebbero.
+    const valid = images.filter((i) => i.driveFileId)
+    const filenames = valid.map((i) => i.filename || '(immagine)')
+    const driveFileIds = valid.map((i) => i.driveFileId)
+    const driveUrls = valid.map((i) => i.driveUrl ?? null)
     const name = `Estrazione immagini: ${filenames.slice(0, 3).join(', ') || '(immagini)'}`.slice(0, 120)
 
     const { data, error } = await supabase

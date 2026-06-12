@@ -10,6 +10,7 @@
  */
 
 import { supabase } from './supabase'
+import { getSupabaseServer } from './supabase-server'
 import { sendTelegramMessage } from './telegram-helpers'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
 import { GITHUB_TOOLS, executeGithubTool } from './github-tools'
@@ -199,6 +200,24 @@ const STUDIO_TECNICO_TOOLS: ToolDefinition[] = [
   },
 ]
 
+// ── IMAGE TOOLS (ri-aggancio pixel immagini caricate) ──
+
+const IMAGE_TOOLS: ToolDefinition[] = [
+  {
+    name: 'rivedi_immagine',
+    description:
+      "Ri-aggancia e MOSTRA al modello i pixel REALI di un'immagine caricata in PRECEDENZA in questa conversazione (foto di cantiere, ricevute, allegati). Usalo quando devi ricontrollare visivamente un dettaglio di una foto già caricata (es. una cifra, una targa, una firma) e non basta il testo già estratto. Passa il drive_file_id che trovi nel blocco 'IMMAGINI/DOCUMENTI GIÀ CARICATI' del contesto (campo [drive: ...]); in alternativa il filename. Funziona SOLO su immagini caricate in questa chat.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        drive_file_id: { type: 'string', description: "ID Google Drive dell'immagine (dal blocco immagini del contesto, campo [drive: ...])." },
+        filename: { type: 'string', description: "Nome file dell'immagine, in alternativa al drive_file_id." },
+      },
+      required: [],
+    },
+  },
+]
+
 // ── DOCUMENT TOOLS (PDF + DOCX + XLSX) ──
 
 const PDF_TOOLS: ToolDefinition[] = [
@@ -336,6 +355,66 @@ const REGIONI_ALIAS: Record<string, string> = {
 }
 
 // ── EXECUTORS ──
+
+async function executeImageTools(
+  name: string,
+  input: Record<string, unknown>,
+  conversationId?: string,
+): Promise<string | null> {
+  if (name !== 'rivedi_immagine') return null
+  const out = (o: Record<string, unknown>) => JSON.stringify(o)
+  try {
+    const driveIdIn = typeof input.drive_file_id === 'string' ? input.drive_file_id.trim() : ''
+    const filenameIn = typeof input.filename === 'string' ? input.filename.trim() : ''
+    if (!driveIdIn && !filenameIn) return out({ ok: false, message: 'Specifica drive_file_id o filename.' })
+    if (!conversationId) return out({ ok: false, message: 'Conversazione non disponibile.' })
+
+    // SICUREZZA: ri-aggancia SOLO immagini di QUESTA conversazione (righe image-extraction).
+    const supabase = getSupabaseServer()
+    const { data } = await supabase
+      .from('documents')
+      .select('metadata')
+      .eq('conversation_id', conversationId)
+      .eq('type', 'image-extraction')
+      .order('created_at', { ascending: false })
+      .limit(20)
+
+    let resolvedId = ''
+    let resolvedName = filenameIn
+    for (const row of (data ?? []) as Array<{ metadata?: unknown }>) {
+      const meta = (row.metadata ?? {}) as { filenames?: unknown; drive_file_ids?: unknown }
+      const ids = Array.isArray(meta.drive_file_ids) ? (meta.drive_file_ids as string[]) : []
+      const names = Array.isArray(meta.filenames) ? (meta.filenames as string[]) : []
+      if (driveIdIn && ids.includes(driveIdIn)) {
+        resolvedId = driveIdIn
+        const i = ids.indexOf(driveIdIn)
+        if (names[i]) resolvedName = names[i]
+        break
+      }
+      if (!driveIdIn && filenameIn) {
+        const i = names.indexOf(filenameIn)
+        if (i >= 0 && ids[i]) { resolvedId = ids[i]; resolvedName = filenameIn; break }
+      }
+    }
+    if (!resolvedId) {
+      return out({ ok: false, message: `Non trovo "${driveIdIn || filenameIn}" tra le immagini caricate in questa chat. Se serve, chiedi all'utente di ricaricarla.` })
+    }
+
+    const { downloadFileBase64 } = await import('./drive')
+    const { base64, mimeType, name: fileName } = await downloadFileBase64(resolvedId)
+    const supported = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+    if (!supported.includes(mimeType)) {
+      return out({ ok: false, message: `Il file "${fileName}" non è un'immagine ri-agganciabile (${mimeType}). Supportati: JPG, PNG, GIF, WEBP.` })
+    }
+    // Limite API immagine (~5MB base64): rifiuta pulito invece di errore API.
+    if (base64.length > 4_500_000) {
+      return out({ ok: false, message: `Immagine troppo grande da ri-agganciare (~${Math.round(base64.length / 1_000_000)}MB).` })
+    }
+    return out({ ok: true, base64, mimeType, filename: resolvedName || fileName })
+  } catch (err) {
+    return out({ ok: false, message: `Errore nel recupero immagine: ${err instanceof Error ? err.message : String(err)}` })
+  }
+}
 
 async function executeStudioTecnico(name: string, input: Record<string, unknown>, conversationId?: string): Promise<string | null> {
   switch (name) {
@@ -2370,6 +2449,7 @@ async function executeDraftWrapper(
 
 const ALL_TOOLS: ToolDefinition[] = [
   ...STUDIO_TECNICO_TOOLS,
+  ...IMAGE_TOOLS, // 2026-06-12: rivedi_immagine — ri-aggancia i pixel di un'immagine già caricata
   ...SELF_TOOLS,
   ...DRIVE_TOOLS, // W1.3: 10 tool Drive/Sheets registrati + drive_upload_binary
   ...GITHUB_TOOLS, // Self-healing 2026-05-04 + 2026-05-08: read_file, propose_fix, deploy_status, merge_pr
@@ -2392,7 +2472,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...(DOCUMENT_TEMPLATE_TOOLS as unknown as ToolDefinition[]), // 2026-06-11 Modelli documento Fase 1: insegna/compila/lista/ritrova
   ...(MAIL_TOOL_DEFINITIONS as unknown as ToolDefinition[]), // 2026-05-24 V19 Mail TopHost IMAP/SMTP: 5 tool (info@/raffaele.lentini@)
 ]
-const EXECUTORS = [executeStudioTecnico, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
+const EXECUTORS = [executeStudioTecnico, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [

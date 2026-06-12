@@ -887,6 +887,24 @@ async function executeToolBlocks(toolBlocks: any[], conversationId?: string): Pr
 
     try {
       const result = await executeTool(block.name, block.input as Record<string, unknown>, conversationId)
+      if (block.name === 'rivedi_immagine') {
+        // Tool result speciale: ri-aggancia i pixel come blocco immagine vero.
+        let parsed: { ok?: boolean; base64?: string; mimeType?: string; filename?: string; message?: string }
+        try { parsed = JSON.parse(result) } catch { parsed = { ok: false, message: result } }
+        if (parsed?.ok && parsed.base64 && parsed.mimeType) {
+          results.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: parsed.mimeType, data: parsed.base64 } },
+              { type: 'text', text: `Immagine ri-agganciata: ${parsed.filename ?? ''}` },
+            ],
+          })
+        } else {
+          results.push({ type: 'tool_result', tool_use_id: block.id, content: parsed?.message ?? 'Errore nel recupero immagine.' })
+        }
+        continue
+      }
       results.push({ type: 'tool_result', tool_use_id: block.id, content: truncateToolResult(result) })
     } catch (err) {
       logError(`Tool ${block.name} error`, err)
