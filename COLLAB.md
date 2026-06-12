@@ -17,8 +17,9 @@ See `AGENTS.md` → "Multi-agent collaboration" for the full rules.
 | 084 modulo image-memory | Codex | merged `b5a2877` | `image-memory.ts`+test | ✅ LIVE (8/8 test) |
 | 085 wiring web BUG1 | Codex | merged `7e93d2c` | `chat/route.ts` | ✅ LIVE prod |
 | 086 wiring Telegram BUG1 | Subagente Claude | merged `eb6fc7e` | `agent-job.ts`+`telegram/route.ts` | ✅ LIVE prod |
+| Audit BUG1 (3 auditor) + fix | Subagenti Claude | merged `7f80f35` | image-memory/draft/doc/share/tools/agent-job | ✅ LIVE (contaminazione+privacy+costo+dedup) |
+| BUG5: force-action su path web | Subagente Claude | merged `19d6849` | `claude.ts` | ✅ LIVE prod |
 | Increment 2: tool `rivedi_immagine` (re-attach pixel) | — | — | `tools.ts`+nuovo modulo | 📋 TODO (spec dopo lettura tools.ts) |
-| BUG5: force-action su path web | — | — | `chat/route.ts` | 📋 TODO |
 | ~~S1/S2 stress test~~ | — | — | — | PARCHEGGIATE (mai partite) |
 
 ## Task queue (assigned by Claude)
