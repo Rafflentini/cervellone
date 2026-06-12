@@ -12,6 +12,8 @@ import { supabase } from '@/lib/supabase'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
 import { isWorkingMemoryEnabled, buildWorkingContext } from '@/lib/working-memory'
 import { buildTemplateContext } from '@/lib/template-context'
+import { buildArtifactsPointer, captureArtifact } from '@/lib/artifact-capture'
+import { captureImageExtraction, buildImagesPointer, type UploadedImageRef } from '@/lib/image-memory'
 
 export const maxDuration = 800
 
@@ -78,6 +80,7 @@ export async function POST(request: NextRequest) {
   )
 
   // Parità con Telegram: salva SUBITO su Drive (Inbox) + record foto_pending le foto caricate da web.
+  let uploadedImageRefs: UploadedImageRef[] = []
   if (lastUserMsg && Array.isArray(lastUserMsg.content)) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const imgs = (lastUserMsg.content as any[]).filter((b: any) =>
@@ -86,7 +89,7 @@ export async function POST(request: NextRequest) {
     if (imgs.length > 0) {
       try {
         const { ingestPhotoUpload } = await import('@/lib/foto-ingest')
-        await ingestPhotoUpload({
+        const recs = await ingestPhotoUpload({
           canale: 'web',
           chatId: conversationId ?? null,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -96,6 +99,11 @@ export async function POST(request: NextRequest) {
             filename: `web-${Date.now()}-${i}.jpg`,
           })),
         })
+        uploadedImageRefs = recs.map((r) => ({
+          driveFileId: r.driveFileId,
+          filename: r.filename,
+          driveUrl: r.driveUrl,
+        }))
       } catch (err) {
         console.error('[FOTO-INGEST web] errore:', err instanceof Error ? err.message : err)
       }
@@ -214,7 +222,9 @@ export async function POST(request: NextRequest) {
   // Cheap: cache 5 min + un solo loop regex sui template. Best-effort: '' su errore.
   const templateContext = await buildTemplateContext(userQuery)
 
-  const workingContext = [flaggedWorkingContext, templateContext]
+  const artifactsPointer = await buildArtifactsPointer(conversationId ?? '')
+  const imagesPointer = await buildImagesPointer(conversationId ?? '')
+  const workingContext = [flaggedWorkingContext, templateContext, artifactsPointer, imagesPointer]
     .filter((b) => b && b.trim())
     .join('\n\n') || undefined
 
@@ -229,6 +239,11 @@ export async function POST(request: NextRequest) {
             onToolStart: () => controller.enqueue(encoder.encode('\n\n🔍 *Cerco informazioni...*\n\n')),
           },
         )
+
+        if (conversationId) {
+          captureArtifact(conversationId, fullResponse).catch(() => {})
+          captureImageExtraction(conversationId, fullResponse, uploadedImageRefs).catch(() => {})
+        }
 
         // Estrai document blocks e salva come documenti linkabili
         const responseBlocks = parseDocumentBlocks(fullResponse)
