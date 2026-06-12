@@ -85,6 +85,7 @@ export async function listRecentDrafts(conversationId: string, limit = 10): Prom
         .from('documents')
         .select('id, name, type, created_at')
         .eq('conversation_id', conversationId)
+        .neq('type', 'image-extraction')
         .order('created_at', { ascending: false })
         .limit(limit)
       data = res.data
@@ -96,6 +97,7 @@ export async function listRecentDrafts(conversationId: string, limit = 10): Prom
         .from('documents')
         .select('id, name, type')
         .eq('conversation_id', conversationId)
+        .neq('type', 'image-extraction')
         .order('id', { ascending: false })
         .limit(limit)
       data = retry.data

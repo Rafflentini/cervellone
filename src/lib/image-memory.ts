@@ -19,13 +19,15 @@
 import { getSupabaseServer } from './supabase-server'
 
 const IMAGE_EXTRACTION_TYPE = 'image-extraction'
-/** Recency del pointer: 24h (conversazione Telegram è globale/permanente). */
-const POINTER_RECENCY_MS = 24 * 60 * 60 * 1000
-const POINTER_MAX_ENTRIES = 8
+/** Recency del pointer: 8h (le foto di cantiere sono più task-bound delle bozze). */
+const POINTER_RECENCY_MS = 8 * 60 * 60 * 1000
+const POINTER_MAX_ENTRIES = 4
 /** Estratto massimo per immagine mostrato nel pointer. */
-const EXTRACTION_EXCERPT_MAXLEN = 600
+const EXTRACTION_EXCERPT_MAXLEN = 250
 /** Estrazione minima perché valga la pena salvarla. */
 const MIN_EXTRACTION_LENGTH = 40
+/** Quante righe image-extraction recenti confrontare in dedup. */
+const DEDUP_LOOKBACK = 5
 
 export interface UploadedImageRef {
   driveFileId: string
@@ -50,6 +52,29 @@ export async function captureImageExtraction(
     if (content.length < MIN_EXTRACTION_LENGTH) return { saved: false, reason: 'empty-extraction' }
 
     const supabase = getSupabaseServer()
+
+    // DEDUP: confronta col content delle ULTIME DEDUP_LOOKBACK righe image-extraction
+    // della conversazione (un retry dello stesso turno o la ricarica delle stesse foto
+    // creerebbe righe duplicate). Best-effort: se la query fallisce, logga e procedi.
+    try {
+      const { data: recent } = await supabase
+        .from('documents')
+        .select('content')
+        .eq('conversation_id', conversationId)
+        .eq('type', IMAGE_EXTRACTION_TYPE)
+        .order('created_at', { ascending: false })
+        .limit(DEDUP_LOOKBACK)
+      const rows = (recent as Array<{ content?: unknown }> | null) ?? []
+      if (rows.some((r) => typeof r?.content === 'string' && r.content.trim() === content)) {
+        return { saved: false, reason: 'duplicate' }
+      }
+    } catch (dedupErr) {
+      console.error(
+        '[image-memory] dedup check failed:',
+        dedupErr instanceof Error ? dedupErr.message : dedupErr,
+      )
+    }
+
     const filenames = images.map((i) => i.filename).filter(Boolean)
     const driveFileIds = images.map((i) => i.driveFileId).filter(Boolean)
     const driveUrls = images.map((i) => i.driveUrl).filter((u): u is string => Boolean(u))
@@ -105,7 +130,7 @@ export async function buildImagesPointer(conversationId: string): Promise<string
 
     const lines: string[] = []
     lines.push(
-      '=== IMMAGINI/DOCUMENTI GIÀ CARICATI E ANALIZZATI in questa chat — i dati estratti sono QUI SOTTO. NON dire che non puoi rivederli; NON re-inventare numeri/ID: se un dato non è qui, CHIEDILO. ===',
+      '=== IMMAGINI/DOCUMENTI GIÀ CARICATI in questa chat (SE pertinenti alla richiesta corrente — i dati estratti sono qui sotto). NON re-inventare numeri/ID: se un dato serve e non è qui, CHIEDILO o usa gli strumenti per rivedere il file. ===',
     )
     for (const row of data) {
       const r = row as { content?: string | null; metadata?: unknown }

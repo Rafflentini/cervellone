@@ -37,13 +37,21 @@ describe('captureImageExtraction', () => {
   })
 
   it('salva estrazione immagine su documents con type image-extraction', async () => {
+    // 1ª chiamata from(): dedup lookback → nessun duplicato (data: [])
+    const dedupChain = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+    }
+    // 2ª chiamata from(): insert vero
     const insertSingle = vi.fn().mockResolvedValue({ data: { id: 'imgmem-1' }, error: null })
     const insertChain = {
       insert: vi.fn().mockReturnValue({
         select: vi.fn().mockReturnValue({ single: insertSingle }),
       }),
     }
-    mockFrom.mockReturnValueOnce(insertChain)
+    mockFrom.mockReturnValueOnce(dedupChain).mockReturnValueOnce(insertChain)
 
     const r = await captureImageExtraction('conv1', 'x'.repeat(50), [
       { driveFileId: 'd1', filename: 'a.jpg', driveUrl: 'https://drive/a' },
@@ -64,6 +72,19 @@ describe('captureImageExtraction', () => {
         },
       }),
     )
+  })
+
+  it('non salva se una riga recente ha content identico (dedup)', async () => {
+    const content = 'y'.repeat(50)
+    const dedupChain = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue({ data: [{ content }], error: null }),
+    }
+    mockFrom.mockReturnValueOnce(dedupChain)
+    const r = await captureImageExtraction('conv1', content, [{ driveFileId: 'd1', filename: 'a.jpg' }])
+    expect(r).toEqual({ saved: false, reason: 'duplicate' })
   })
 
   it('non lancia mai (best-effort) su errore interno', async () => {
@@ -99,8 +120,8 @@ describe('buildImagesPointer', () => {
     expect(gtArgs[0]).toBe('created_at')
     const sinceMs = Date.parse(gtArgs[1] as string)
     expect(Number.isNaN(sinceMs)).toBe(false)
-    expect(Math.abs(sinceMs - (Date.now() - 24 * 60 * 60 * 1000))).toBeLessThan(5000)
-    expect(chain.limit).toHaveBeenCalledWith(8)
+    expect(Math.abs(sinceMs - (Date.now() - 8 * 60 * 60 * 1000))).toBeLessThan(5000)
+    expect(chain.limit).toHaveBeenCalledWith(4)
   })
 
   it('costruisce pointer con file, drive id ed estratto', async () => {

@@ -45,6 +45,7 @@ export async function GET(request: NextRequest) {
   let query = supabase
     .from('documents')
     .select('id, name, type, project_id, conversation_id, created_at, metadata')
+    .neq('type', 'image-extraction')
     .order('created_at', { ascending: false })
     .limit(50)
 

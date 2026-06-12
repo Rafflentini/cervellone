@@ -23,6 +23,8 @@ export async function GET(
     .from('documents')
     .select('content')
     .eq('id', id)
+    // Le estrazioni testuali delle foto sono memoria interna (PII): mai servirle come documento.
+    .neq('type', 'image-extraction')
     .single()
 
   if (error || !data) {

@@ -205,8 +205,10 @@ export async function runAgentJob(
     captureArtifact(conversationId, finalText).catch(() => {})
   }
 
-  // Cattura "memoria immagini" a fine turno: lega l'estrazione testuale del turno
-  // (finalText) ai riferimenti Drive delle foto caricate in questo turno. Best-effort;
+  // Cattura "memoria immagini" a fine turno: lega l'estrazione testuale del turno ai
+  // riferimenti Drive delle foto caricate in questo turno. Usa `fullResponse` (testo
+  // GREZZO del modello, come fa il path web) e NON `finalText`: quest'ultimo, sui turni
+  // con document block, è il link "📄 …👉 url" e non l'estrazione vera. Best-effort;
   // se uploadedImages è vuoto, captureImageExtraction non salva (reason: no-images).
-  captureImageExtraction(conversationId, finalText, input.uploadedImages ?? []).catch(() => {})
+  captureImageExtraction(conversationId, fullResponse, input.uploadedImages ?? []).catch(() => {})
 }

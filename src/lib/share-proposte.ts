@@ -3,9 +3,23 @@ import { signShareToken } from './doc-access'
 
 const BASE_URL = process.env.APP_BASE_URL || 'https://cervellone-five.vercel.app'
 
-export async function createShareProposal(documentId: string, giorni: number): Promise<string | null> {
+export async function createShareProposal(
+  documentId: string,
+  giorni: number,
+): Promise<string | { error: string } | null> {
   const g = Math.min(30, Math.max(1, Math.round(giorni || 7)))
   const supabase = getSupabaseServer()
+
+  // Le estrazioni testuali delle foto sono memoria interna (PII): non sono condivisibili.
+  const { data: docRow } = await supabase
+    .from('documents')
+    .select('type')
+    .eq('id', documentId)
+    .single()
+  if (docRow && (docRow as { type: string }).type === 'image-extraction') {
+    return { error: 'Questo elemento è memoria interna e non è condivisibile.' }
+  }
+
   const { data, error } = await supabase
     .from('cervellone_share_proposte')
     .insert({ document_id: documentId, giorni: g, stato: 'in_attesa' })
