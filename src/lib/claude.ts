@@ -10,6 +10,7 @@ import { getToolDefinitions, executeTool } from './tools'
 import { searchMemory, saveMessageWithEmbedding } from './memory'
 import { logError } from './sanitize'
 import { withRetry } from './resilience'
+import { consumeStreamWithRetry } from './stream-retry'
 import { supabase } from './supabase'
 import { recordOutcome, getActiveModel, detectHallucination, isCompletedOrConditional, type ModelOutcome } from './circuit-breaker'
 import { sendTelegramMessage } from './telegram-helpers'
@@ -409,9 +410,13 @@ export async function callClaudeStream(
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     iterations = i + 1
     const iterStartLen = fullResponse.length // force-action: confine per scartare il testo-promessa se ri-promptiamo
-    // REL-003: retry su errori transitori
-    const stream = await withRetry(() =>
-      Promise.resolve(client.messages.stream({
+    // REL-003 + resilienza mid-stream: consumo con retry su errori transitori (overloaded/529/
+    // rete/timeout). onAttemptStart azzera il parziale dell'iterazione (fullResponse a iterStartLen
+    // + iterationHasText) così un re-tentativo non duplica nella persistenza; sul web il testo già
+    // streammato è cosmetico, fullResponse persistito resta corretto.
+    let iterationHasText = false
+    const final = await consumeStreamWithRetry({
+      createStream: () => client.messages.stream({
         model: modelConfig.model,
         max_tokens: modelConfig.maxTokens,
         system: systemBlocks,
@@ -420,23 +425,21 @@ export async function callClaudeStream(
         ...modelOpts,
       }, {
         headers: { 'anthropic-beta': 'files-api-2025-04-14' },
-      }))
-    )
-
-    let iterationHasText = false
-    for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        fullResponse += event.delta.text
-        callbacks.onText(event.delta.text)
-        iterationHasText = true
-      }
-      if (event.type === 'content_block_start' && (event as any).content_block?.type === 'server_tool_use') {
-        const serverToolName = (event as any).content_block?.name ?? 'server_tool'
-        callbacks.onToolStart?.(serverToolName)
-      }
-    }
-
-    const final = await stream.finalMessage()
+      }),
+      onAttemptStart: () => { fullResponse = fullResponse.slice(0, iterStartLen); iterationHasText = false },
+      onRetry: (n, err) => console.warn(`STREAM(web) retry ${n}: ${err instanceof Error ? err.message : err}`),
+      onEvent: (event) => {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          fullResponse += event.delta.text
+          callbacks.onText(event.delta.text)
+          iterationHasText = true
+        }
+        if (event.type === 'content_block_start' && (event as any).content_block?.type === 'server_tool_use') {
+          const serverToolName = (event as any).content_block?.name ?? 'server_tool'
+          callbacks.onToolStart?.(serverToolName)
+        }
+      },
+    })
     accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
     // Guard rail cost-control: stop se la run ha superato il budget token
     if (isRunOverBudget(accUsage)) {
@@ -651,8 +654,15 @@ export async function callClaudeStreamTelegram(
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     iterations = i + 1
     const iterStartLen = fullResponse.length // force-action: confine per scartare il testo-promessa se ri-promptiamo
-    const stream = await withRetry(() =>
-      Promise.resolve(client.messages.stream({
+    let lastTextEdit = 0
+    let lastThinkingEdit = 0
+    let thinkingChars = 0
+
+    // REL-003 + resilienza mid-stream: consumo con retry su errori transitori (overloaded/529/rete/
+    // timeout) → un blip a metà non uccide più il turno. onAttemptStart azzera il parziale; su
+    // Telegram onChunk sovrascrive il messaggio, quindi il re-tentativo non lascia testo doppio.
+    const final = await consumeStreamWithRetry({
+      createStream: () => client.messages.stream({
         model: modelConfig.model,
         max_tokens: modelConfig.maxTokens,
         system: systemBlocks,
@@ -661,41 +671,36 @@ export async function callClaudeStreamTelegram(
         ...modelOpts,
       }, {
         headers: { 'anthropic-beta': 'files-api-2025-04-14' },
-      }))
-    )
-
-    let lastTextEdit = 0
-    let lastThinkingEdit = 0
-    let thinkingChars = 0
-
-    for await (const event of stream) {
-      if (event.type === 'content_block_delta') {
-        if (event.delta.type === 'text_delta') {
-          fullResponse += event.delta.text
-          const now = Date.now()
-          if (now - lastTextEdit > 3000) {
-            await onChunk(fullResponse)
-            lastTextEdit = now
+      }),
+      onAttemptStart: () => { fullResponse = fullResponse.slice(0, iterStartLen); lastTextEdit = 0; lastThinkingEdit = 0; thinkingChars = 0 },
+      onRetry: (n, err) => console.warn(`STREAM(tg) retry ${n}: ${err instanceof Error ? err.message : err}`),
+      onEvent: async (event) => {
+        if (event.type === 'content_block_delta') {
+          if (event.delta.type === 'text_delta') {
+            fullResponse += event.delta.text
+            const now = Date.now()
+            if (now - lastTextEdit > 3000) {
+              await onChunk(fullResponse)
+              lastTextEdit = now
+            }
           }
-        }
-        // FIX W1: stream del thinking. Aggiorna placeholder Telegram con counter
-        // così l'utente vede progresso anche durante il reasoning.
-        // Solo finché non c'è ancora testo (poi il testo prevale).
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        else if ((event.delta as any).type === 'thinking_delta' && fullResponse === '') {
+          // FIX W1: stream del thinking. Aggiorna placeholder Telegram con counter
+          // così l'utente vede progresso anche durante il reasoning.
+          // Solo finché non c'è ancora testo (poi il testo prevale).
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const td = (event.delta as any).thinking
-          thinkingChars += typeof td === 'string' ? td.length : 0
-          const now = Date.now()
-          if (now - lastThinkingEdit > 5000) {
-            await onChunk(`🧠 Sto pensando... (${thinkingChars} char di reasoning)`)
-            lastThinkingEdit = now
+          else if ((event.delta as any).type === 'thinking_delta' && fullResponse === '') {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const td = (event.delta as any).thinking
+            thinkingChars += typeof td === 'string' ? td.length : 0
+            const now = Date.now()
+            if (now - lastThinkingEdit > 5000) {
+              await onChunk(`🧠 Sto pensando... (${thinkingChars} char di reasoning)`)
+              lastThinkingEdit = now
+            }
           }
         }
-      }
-    }
-
-    const final = await stream.finalMessage()
+      },
+    })
     accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
     // Guard rail cost-control: stop se la run ha superato il budget token
     if (isRunOverBudget(accUsage, runBudget)) {
@@ -759,8 +764,10 @@ export async function callClaudeStreamTelegram(
     if (consecutiveNoText >= NO_TEXT_LIMIT) {
       console.log(`STREAM force-text: ${consecutiveNoText} consecutive no-text iters, forcing tool_choice=none`)
       try {
-        const synthStream = await withRetry(() =>
-          Promise.resolve(client.messages.stream({
+        const synthStartLen = fullResponse.length
+        let synthLastEdit = 0
+        const synthFinal = await consumeStreamWithRetry({
+          createStream: () => client.messages.stream({
             model: modelConfig.model,
             max_tokens: modelConfig.maxTokens,
             system: systemBlocks,
@@ -770,20 +777,20 @@ export async function callClaudeStreamTelegram(
             ...modelOpts,
           }, {
             headers: { 'anthropic-beta': 'files-api-2025-04-14' },
-          }))
-        )
-        let synthLastEdit = 0
-        for await (const event of synthStream) {
-          if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-            fullResponse += event.delta.text
-            const now = Date.now()
-            if (now - synthLastEdit > 3000) {
-              await onChunk(fullResponse)
-              synthLastEdit = now
+          }),
+          onAttemptStart: () => { fullResponse = fullResponse.slice(0, synthStartLen); synthLastEdit = 0 },
+          onRetry: (n, err) => console.warn(`STREAM(tg) force-text retry ${n}: ${err instanceof Error ? err.message : err}`),
+          onEvent: async (event) => {
+            if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+              fullResponse += event.delta.text
+              const now = Date.now()
+              if (now - synthLastEdit > 3000) {
+                await onChunk(fullResponse)
+                synthLastEdit = now
+              }
             }
-          }
-        }
-        const synthFinal = await synthStream.finalMessage()
+          },
+        })
         accUsage = addUsage(accUsage, synthFinal.usage as unknown as UsageTokens)
         const synthTexts = synthFinal.content.filter(b => b.type === 'text').length
         console.log(`STREAM force-text done texts=${synthTexts} fullLen=${fullResponse.length}`)
