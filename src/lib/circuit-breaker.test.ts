@@ -21,6 +21,16 @@ describe('isCompletedOrConditional (guard force-action)', () => {
     for (const t of cases) expect(isCompletedOrConditional(t)).toBe(true)
   })
 
+  it('true: offerta interrogativa (chiede conferma, non promette) → soppressa', () => {
+    const cases = [
+      'Vuole che invii la mail adesso?',
+      'Lo invio adesso?',
+      'Procedo?',
+      'Vuole che cerchi il documento? ',
+    ]
+    for (const t of cases) expect(isCompletedOrConditional(t)).toBe(true)
+  })
+
   it('false: vera promessa non mantenuta (force-action DEVE poter scattare)', () => {
     const cases = [
       'Ora cerco subito il file e le rispondo.',

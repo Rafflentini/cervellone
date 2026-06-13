@@ -408,6 +408,7 @@ export async function callClaudeStream(
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     iterations = i + 1
+    const iterStartLen = fullResponse.length // force-action: confine per scartare il testo-promessa se ri-promptiamo
     // REL-003: retry su errori transitori
     const stream = await withRetry(() =>
       Promise.resolve(client.messages.stream({
@@ -456,6 +457,7 @@ export async function callClaudeStream(
         .join(' ')
       if (toolBlocks.length === 0 && !forcedAction && detectHallucination(iterText, 0) && !isCompletedOrConditional(iterText)) {
         forcedAction = true
+        fullResponse = fullResponse.slice(0, iterStartLen) // scarta il testo-promessa dalla persistenza/ritorno
         console.log(`STREAM(web) force-action: promessa senza tool ("${iterText.slice(0, 60)}"), ri-prompt per eseguire`)
         currentMessages = [
           ...currentMessages,
@@ -648,6 +650,7 @@ export async function callClaudeStreamTelegram(
   try {
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     iterations = i + 1
+    const iterStartLen = fullResponse.length // force-action: confine per scartare il testo-promessa se ri-promptiamo
     const stream = await withRetry(() =>
       Promise.resolve(client.messages.stream({
         model: modelConfig.model,
@@ -723,6 +726,7 @@ export async function callClaudeStreamTelegram(
       const iterText = textBlocks.map(b => (b as Anthropic.TextBlock).text).join(' ')
       if (toolBlocks.length === 0 && !forcedAction && detectHallucination(iterText, 0) && !isCompletedOrConditional(iterText)) {
         forcedAction = true
+        fullResponse = fullResponse.slice(0, iterStartLen) // scarta il testo-promessa dalla persistenza/ritorno
         console.log(`STREAM force-action: promessa senza tool ("${iterText.slice(0, 60)}"), ri-prompt per eseguire`)
         currentMessages = [
           ...currentMessages,

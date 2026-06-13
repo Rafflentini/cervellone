@@ -144,6 +144,8 @@ export async function getDraft(
       .from('documents')
       .select('name, content, type')
       .eq('id', id)
+      // Le estrazioni testuali delle foto sono memoria interna (PII): mai servirle come bozza/documento.
+      .neq('type', 'image-extraction')
       .single()
 
     if (error || !data) {

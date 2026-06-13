@@ -100,6 +100,10 @@ const COMPLETED_OR_CONDITIONAL_PATTERNS: RegExp[] = [
   /\b(ho|le ho|gliel['e]?\s*ho|ho gi[àa]|ho appena|abbiamo)\s+\w+/i, // passato prossimo ("ho preparato/inviato/fatto")
   /\b(ecco|è pronto|e pronto|è fatto|e fatto|pronto\b|preparato|completato|terminato|finito)\b/i,
   /\b(se vuole|se preferisce|se desidera|vuole che|se mi conferma|mi confermi|fammi sapere|se serve|se le serve|quando vuole)\b/i,
+  // offerta interrogativa (chiede conferma, non promette) → non forzare azione.
+  // Un testo trimmato che finisce con "?" è una DOMANDA all'utente ("lo invio adesso?",
+  // "procedo?", "vuole che cerchi?"), non una promessa d'azione: va soppresso.
+  /\?\s*$/,
 ]
 
 /**
