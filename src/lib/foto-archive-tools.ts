@@ -9,6 +9,7 @@ import {
   DrivePolicyError,
 } from './drive'
 import { supabase } from './supabase'
+import { splitRecentOlder, clusterByTime, type PendingRow } from './foto-archive-pending'
 
 interface ToolDefinition {
   name: string
@@ -344,6 +345,15 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   const lavorazione = cleanString(input.lavorazione)
   const data = cleanString(input.data)
   const cartellaFotoHint = cleanString(input.cartella_foto)
+  // Selezione del batch da archiviare dopo una conferma (need:'conferma_batch').
+  //  - 'ultimo' → solo il cluster temporale più recente fra le pending recenti;
+  //  - 'tutti'  → tutte le pending recenti (più gruppi insieme);
+  //  - assente  → procede solo se NON c'è ambiguità (1 solo gruppo, niente orfani).
+  const gruppoRaw = cleanString(input.gruppo)?.toLowerCase()
+  const gruppoScelta: 'ultimo' | 'tutti' | undefined =
+    gruppoRaw === 'ultimo' || gruppoRaw === 'tutti' ? gruppoRaw : undefined
+  // L'Ingegnere ha esplicitamente chiesto di includere anche le foto più vecchie (>48h).
+  const includiVecchie = input.includi_vecchie === true || input.includi_vecchie === 'true'
 
   if (!ambito) return fail({ need: 'ambito' })
   if (!nome) return fail({ error: 'nome richiesto' })
@@ -482,6 +492,81 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     fotoPathPrefix = pickedDeep.match.depth > 1 ? `${pickedDeep.match.parentName}/` : ''
   }
 
+  // ANTI-CONTAMINAZIONE (spec 2026-06-13 #2): la cartella destinazione è risolta.
+  // PRIMA di spostare, decidi QUALI pending archiviare. NON rastrellare tutto il
+  // pool: includi solo le foto recenti (48h) e, se queste formano più "raffiche"
+  // distinte o ci sono orfani vecchi, CHIEDI conferma invece di indovinare.
+  const { recent, older } = splitRecentOlder(pendingRows as PendingRow[], Date.now())
+
+  if (recent.length === 0) {
+    return fail({
+      stato: 'nessuna_foto_recente',
+      message: 'Nessuna foto caricata di recente da archiviare.'
+        + (older.length ? ` Ci sono ${older.length} foto più vecchie non archiviate.` : ''),
+    })
+  }
+
+  const clusters = clusterByTime(recent)
+  // Conferma necessaria SOLO se ci sono PIÙ raffiche recenti distinte (ambiguità reale su
+  // quale commessa). Gli orfani vecchi (>48h) NON fanno scattare la conferma — altrimenti un
+  // singolo orfano fantasma la farebbe scattare a OGNI archiviazione futura in questa chat;
+  // vengono solo SEGNALATI nel messaggio finale e MAI inclusi senza includi_vecchie.
+  const needsConfirm = clusters.length > 1 && gruppoScelta === undefined
+
+  if (needsConfirm) {
+    const gruppi = clusters.map((cluster, idx) => {
+      const sorted = [...cluster].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+      const first = sorted[0]
+      const last = sorted[sorted.length - 1]
+      const hhmm = (iso: string) => {
+        const t = Date.parse(iso)
+        return Number.isFinite(t)
+          ? new Date(t).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' })
+          : '??:??'
+      }
+      return {
+        indice: idx + 1,
+        count: cluster.length,
+        dalle: hhmm(first.created_at),
+        alle: hhmm(last.created_at),
+        files: sorted.slice(0, 3).map(r => r.filename).filter(Boolean),
+      }
+    })
+    return fail({
+      need: 'conferma_batch',
+      stato: 'batch_ambiguo',
+      gruppi,
+      vecchie: older.length,
+      message: `Ci sono ${clusters.length} grupp${clusters.length === 1 ? 'o' : 'i'} di foto in attesa`
+        + (older.length ? ` (più ${older.length} foto più vecchie di 48h)` : '')
+        + ` — chiedi all'Ingegnere QUALI archiviare PRIMA di procedere. Poi richiama archivia_foto con gruppo:"ultimo" (solo le più recenti) o gruppo:"tutti" (tutte le recenti)`
+        + (older.length ? ', e includi_vecchie:true SOLO se conferma di voler archiviare anche le vecchie' : '')
+        + '. NON includere mai foto non richieste (contaminazione).',
+    })
+  }
+
+  // Selezione effettiva delle righe da spostare. Il loop opera SOLO su queste,
+  // MAI su `older` salvo includi_vecchie esplicito.
+  let rowsToArchive: FotoPendingRow[]
+  if (gruppoScelta === 'ultimo') {
+    // Solo la raffica più recente (l'ultimo cluster, ordinato per tempo).
+    const lastCluster = clusters.length > 0 ? clusters[clusters.length - 1] : []
+    rowsToArchive = lastCluster as FotoPendingRow[]
+  } else {
+    // 'tutti' o nessuna ambiguità → tutte le recenti.
+    rowsToArchive = recent as FotoPendingRow[]
+  }
+  if (includiVecchie && older.length > 0) {
+    rowsToArchive = [...rowsToArchive, ...(older as FotoPendingRow[])]
+  }
+
+  if (rowsToArchive.length === 0) {
+    return fail({
+      stato: 'nessuna_foto_recente',
+      message: 'Nessuna foto selezionata da archiviare.',
+    })
+  }
+
   const giorno = data && ISO_DATE_RE.test(data) ? data : todayRomeISO()
   const cleanLavorazione = lavorazione ? sanitizeFolderSegment(lavorazione) : undefined
   const segment = cleanLavorazione ? `${giorno} - ${cleanLavorazione}` : giorno
@@ -504,7 +589,7 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   // marcata 'errore' (rimuoverebbe l'allineamento col file già fisicamente archiviato).
   let erroriDb = 0
 
-  for (const row of pendingRows) {
+  for (const row of rowsToArchive) {
     const moveResult = await moveFile(row.drive_file_id, targetId)
     if (isMoveSuccess(moveResult)) {
       const { error: updateError } = await supabase
@@ -539,7 +624,7 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     }
   }
 
-  const totale = pendingRows.length
+  const totale = rowsToArchive.length
   // Spostate fisicamente = update OK + update fallito (il file è comunque nella cartella).
   const spostate = archiviate + erroriDb
   // "In attesa" sul serio = SOLO i move realmente falliti.
@@ -567,6 +652,10 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     })
   }
 
+  // Nota orfani: foto >48h non archiviate e NON incluse → segnalale (senza bloccare).
+  const notaOrfani = (older.length > 0 && !includiVecchie)
+    ? ` Nota: ci sono ${older.length} foto più vecchie di 48h non archiviate — se vanno qui, richiama con includi_vecchie:true.`
+    : ''
   // Tutti i move riusciti (anche se qualche update DB è fallito): archiviazione OK.
   return ok({
     archiviate: spostate,
@@ -574,7 +663,8 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     errori_db: erroriDb,
     totale,
     path,
-    message: `Tutte le ${spostate} foto spostate e verificate in ${path}.${notaDb}`,
+    vecchie_non_archiviate: !includiVecchie ? older.length : 0,
+    message: `Tutte le ${spostate} foto spostate e verificate in ${path}.${notaDb}${notaOrfani}`,
   })
 }
 
@@ -678,7 +768,7 @@ export const FOTO_ARCHIVE_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'archivia_foto',
-    description: 'Archivia le foto pending della conversazione nella sottocartella Foto di un cantiere o progetto.',
+    description: 'Archivia le foto pending della conversazione nella sottocartella Foto di un cantiere o progetto. Considera solo le foto caricate di recente (ultime 48h); se ci sono più gruppi temporali o foto vecchie non archiviate, torna need:"conferma_batch" e va richiamato indicando il gruppo.',
     input_schema: {
       type: 'object',
       properties: {
@@ -687,6 +777,8 @@ export const FOTO_ARCHIVE_TOOLS: ToolDefinition[] = [
         lavorazione: { type: 'string', description: 'Lavorazione o descrizione breve della sessione foto.' },
         data: { type: 'string', description: 'Data lavorazione in formato YYYY-MM-DD.' },
         cartella_foto: { type: 'string', description: 'OPZIONALE — nome (anche parziale) della sottocartella foto da usare, es. "Documentazione Fotografica". Se omesso, viene rilevata automaticamente.' },
+        gruppo: { type: 'string', enum: ['ultimo', 'tutti'], description: 'OPZIONALE — da usare SOLO dopo che il tool ha risposto need:"conferma_batch" e l\'Ingegnere ha confermato. "ultimo" = archivia solo la raffica di foto più recente; "tutti" = archivia tutte le foto caricate nelle ultime 48h.' },
+        includi_vecchie: { type: 'boolean', description: 'OPZIONALE — true SOLO se l\'Ingegnere conferma esplicitamente di voler archiviare anche le foto più vecchie di 48h (segnalate nel campo "vecchie" della conferma). Default: le foto vecchie NON vengono toccate.' },
       },
       required: ['nome'],
     },
