@@ -20,6 +20,7 @@ See `AGENTS.md` → "Multi-agent collaboration" for the full rules.
 | Audit BUG1 (3 auditor) + fix | Subagenti Claude | merged `7f80f35` | image-memory/draft/doc/share/tools/agent-job | ✅ LIVE (contaminazione+privacy+costo+dedup) |
 | BUG5: force-action su path web | Subagente Claude | merged `19d6849` | `claude.ts` | ✅ LIVE prod |
 | Increment 2: tool `rivedi_immagine` (re-attach pixel) | Subagente Claude | merged `a79aaab` | `tools.ts`+`claude.ts`+`image-memory.ts` | ✅ LIVE prod (audit 2 agenti GO) |
+| Audit OLISTICO (3 agenti) + hardening | Subagenti Claude | merged `b80a2f2` | claude/circuit-breaker/draft-tools/doc-test | ✅ LIVE (persistenza force-action + test rotto + suppressor + defense-in-depth) |
 | ~~S1/S2 stress test~~ | — | — | — | PARCHEGGIATE (mai partite) |
 
 ## Task queue (assigned by Claude)
