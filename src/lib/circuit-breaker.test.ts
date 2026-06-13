@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { detectHallucination, isCompletedOrConditional, getActiveModel, invalidateCache, recordOutcome } from './circuit-breaker'
+import { detectHallucination, isCompletedOrConditional, claimsArchiveCompletion, getActiveModel, invalidateCache, recordOutcome } from './circuit-breaker'
 
 vi.mock('./supabase', () => ({
   supabase: {
@@ -94,6 +94,40 @@ describe('detectHallucination', () => {
     cases.forEach(text => {
       it(`"${text.slice(0, 40)}..." → false`, () => {
         expect(detectHallucination(text, 0)).toBe(false)
+      })
+    })
+  })
+})
+
+describe('claimsArchiveCompletion (anti-bugia archiviazione)', () => {
+  describe('true: AFFERMA archiviazione completata (deve poter ri-promptare)', () => {
+    const cases = [
+      '✅ 12 foto archiviate in Celano',
+      'Ho archiviato le foto nella cartella 2026-06-13',
+      'Le ho spostate nella cartella massetto',
+      'Foto e video salvati su Drive',
+      '✅ Tutte e 4 le foto sono ora in Foto cantiere',
+      'le ho messe nella cartella giusta',
+    ]
+    cases.forEach(text => {
+      it(`"${text.slice(0, 40)}..." → true`, () => {
+        expect(claimsArchiveCompletion(text)).toBe(true)
+      })
+    })
+  })
+
+  describe('false: NON è claim di archiviazione completata', () => {
+    const cases = [
+      'Ora archivio le foto',                       // promessa futura, non completamento
+      'Vuoi che archivi le foto?',                  // domanda
+      'Ho analizzato le foto: mostrano il massetto', // analisi, non archiviazione
+      'Le foto non sono ancora state archiviate',   // negazione esplicita
+      'Dimmi in quale cartella archiviare',         // richiesta, non completamento
+      '',                                           // vuoto
+    ]
+    cases.forEach(text => {
+      it(`"${text.slice(0, 40)}..." → false`, () => {
+        expect(claimsArchiveCompletion(text)).toBe(false)
       })
     })
   })

@@ -12,7 +12,7 @@ import { logError } from './sanitize'
 import { withRetry } from './resilience'
 import { consumeStreamWithRetry } from './stream-retry'
 import { supabase } from './supabase'
-import { recordOutcome, getActiveModel, detectHallucination, isCompletedOrConditional, type ModelOutcome } from './circuit-breaker'
+import { recordOutcome, getActiveModel, detectHallucination, isCompletedOrConditional, claimsArchiveCompletion, type ModelOutcome } from './circuit-breaker'
 import { sendTelegramMessage } from './telegram-helpers'
 import { addUsage, logApiUsage, type UsageTokens } from './api-usage'
 import { isRunOverBudget, runTokens, MAX_RUN_TOKENS } from './run-budget'
@@ -372,6 +372,28 @@ function buildCachedSystem(systemPrompt: string, memoryContext: string, workingC
 
 // ── Streaming (chat web) ──
 
+/**
+ * Anti-bugia archiviazione: true se nel turno corrente una chiamata ad
+ * archivia_foto / archivia_documento è andata a buon fine REALMENTE (esito letto dal
+ * tool_result, non da stato in-memory). archivia_foto ritorna JSON {ok:true};
+ * archivia_documento ritorna una stringa ("…spostato…" su successo, "Errore…"/"🔒" su errore).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function archiveToolSucceededIn(toolBlocks: any[], toolResults: any[]): boolean {
+  for (const tr of toolResults) {
+    if (tr?.type !== 'tool_result') continue
+    const tb = toolBlocks.find((b: any) => b?.id === tr.tool_use_id)
+    const name = tb?.name
+    const content = typeof tr.content === 'string' ? tr.content : ''
+    // archivia_foto E archivia_documento ritornano entrambi JSON {ok:true} su successo reale
+    // (archivia_foto: foto-archive-tools ok(); archivia_documento: archiveDocumentToDrive).
+    // Il fallimento ritorna {ok:false}/Errore → NON matcha. NB: evitare il pattern "spostat"
+    // perché la stringa di fallimento "non risulta spostato" lo conterrebbe (falso positivo).
+    if ((name === 'archivia_foto' || name === 'archivia_documento') && /"ok"\s*:\s*true/.test(content)) return true
+  }
+  return false
+}
+
 export async function callClaudeStream(
   request: ClaudeRequest,
   callbacks: ClaudeStreamCallbacks,
@@ -392,6 +414,8 @@ export async function callClaudeStream(
   let accUsage: UsageTokens = {}
   let iterations = 0
   let forcedAction = false // force-action: ri-prompt UNA volta se il modello promette un'azione senza chiamare tool
+  let forcedArchiveCorrection = false // anti-bugia: ri-prompt UNA volta se afferma archiviazione senza esito reale
+  let archiveToolSucceeded = false // true se archivia_foto/archivia_documento è andato a buon fine nel turno
   const MAX_ITERATIONS = 10 // PER-004 fix
 
   const cfg = await getConfig()
@@ -458,6 +482,21 @@ export async function callClaudeStream(
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map(b => b.text)
         .join(' ')
+      // ANTI-BUGIA archiviazione: afferma di aver archiviato/spostato file ma in questo turno
+      // nessun archivia_foto/archivia_documento è andato a buon fine → ri-prompt UNA volta.
+      // Indipendente dal force-action (scatta anche dopo tool di sola lettura). Guard one-shot.
+      if (!forcedArchiveCorrection && claimsArchiveCompletion(iterText) && !archiveToolSucceeded) {
+        forcedArchiveCorrection = true
+        fullResponse = fullResponse.slice(0, iterStartLen)
+        console.log(`STREAM(web) anti-bugia: claim archiviazione senza esito reale ("${iterText.slice(0, 60)}")`)
+        currentMessages = [
+          ...currentMessages,
+          { role: 'assistant' as const, content: final.content },
+          { role: 'user' as const, content: [{ type: 'text' as const, text: 'Hai detto che le foto/i file sono stati archiviati/spostati, ma in questo turno NON è andata a buon fine alcuna chiamata ad archivia_foto/archivia_documento. NON dichiarare un archivio che non è avvenuto: O chiami ORA archivia_foto/archivia_documento e riporti l\'esito REALE, oppure dici onestamente che NON sono ancora archiviati e cosa manca.' }] },
+        ]
+        applyIncrementalCacheBreakpoint(currentMessages)
+        continue
+      }
       if (toolBlocks.length === 0 && !forcedAction && detectHallucination(iterText, 0) && !isCompletedOrConditional(iterText)) {
         forcedAction = true
         fullResponse = fullResponse.slice(0, iterStartLen) // scarta il testo-promessa dalla persistenza/ritorno
@@ -476,6 +515,7 @@ export async function callClaudeStream(
 
     const toolResults = await executeToolBlocks(toolBlocks, conversationId)
     if (toolResults.length === 0) break
+    if (archiveToolSucceededIn(toolBlocks, toolResults)) archiveToolSucceeded = true
 
     currentMessages = [
       ...currentMessages,
@@ -647,6 +687,8 @@ export async function callClaudeStreamTelegram(
   const runBudget = request.maxRunTokens ?? MAX_RUN_TOKENS
   let totalToolCalls = 0
   let forcedAction = false // force-action: ri-prompt UNA volta se il modello promette un'azione senza chiamare tool
+  let forcedArchiveCorrection = false // anti-bugia: ri-prompt UNA volta se afferma archiviazione senza esito reale
+  let archiveToolSucceeded = false // true se archivia_foto/archivia_documento è andato a buon fine nel turno
   let apiErrorOccurred = false
   let apiErrorMsg = ''
   let apiErrorRecordDetails = ''
@@ -729,6 +771,21 @@ export async function callClaudeStreamTelegram(
       // davvero. detectHallucination riusa i pattern già tarati (076/077). Guard forcedAction
       // = una sola volta → nessun loop. Risolve il "dice che fa ma non fa".
       const iterText = textBlocks.map(b => (b as Anthropic.TextBlock).text).join(' ')
+      // ANTI-BUGIA archiviazione (parità web): afferma di aver archiviato/spostato file ma in
+      // questo turno nessun archivia_foto/archivia_documento è andato a buon fine → ri-prompt UNA
+      // volta. Indipendente dal force-action (scatta anche dopo tool di sola lettura). One-shot.
+      if (!forcedArchiveCorrection && claimsArchiveCompletion(iterText) && !archiveToolSucceeded) {
+        forcedArchiveCorrection = true
+        fullResponse = fullResponse.slice(0, iterStartLen)
+        console.log(`STREAM anti-bugia: claim archiviazione senza esito reale ("${iterText.slice(0, 60)}")`)
+        currentMessages = [
+          ...currentMessages,
+          { role: 'assistant' as const, content: final.content },
+          { role: 'user' as const, content: [{ type: 'text' as const, text: 'Hai detto che le foto/i file sono stati archiviati/spostati, ma in questo turno NON è andata a buon fine alcuna chiamata ad archivia_foto/archivia_documento. NON dichiarare un archivio che non è avvenuto: O chiami ORA archivia_foto/archivia_documento e riporti l\'esito REALE, oppure dici onestamente che NON sono ancora archiviati e cosa manca.' }] },
+        ]
+        applyIncrementalCacheBreakpoint(currentMessages)
+        continue
+      }
       if (toolBlocks.length === 0 && !forcedAction && detectHallucination(iterText, 0) && !isCompletedOrConditional(iterText)) {
         forcedAction = true
         fullResponse = fullResponse.slice(0, iterStartLen) // scarta il testo-promessa dalla persistenza/ritorno
@@ -749,6 +806,7 @@ export async function callClaudeStreamTelegram(
     // contesto per l'iter successivo (anche se quella sarà la sintesi forzata).
     const toolResults = await executeToolBlocks(toolBlocks, conversationId)
     if (toolResults.length === 0) break
+    if (archiveToolSucceededIn(toolBlocks, toolResults)) archiveToolSucceeded = true
 
     currentMessages = [
       ...currentMessages,

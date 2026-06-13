@@ -115,6 +115,60 @@ export function isCompletedOrConditional(text: string): boolean {
   return COMPLETED_OR_CONDITIONAL_PATTERNS.some(p => p.test(text))
 }
 
+// Pattern di AFFERMAZIONE di archiviazione COMPLETATA (foto/file/video archiviati,
+// spostati, salvati nella cartella/Drive). Anti-bugia: meglio un falso positivo che
+// fa ri-promptare il bot ("davvero archiviato?") di un falso negativo che lascia
+// passare una bugia ("✅ archiviate" mentre i file non sono mai stati spostati).
+// Deliberatamente LASCHI. Solo verbi al PASSATO/STATO, MAI al futuro
+// ("archivierò", "archivio ora", "sto per archiviare").
+const ARCHIVE_COMPLETION_PATTERNS: RegExp[] = [
+  // verbo archiviazione al passato/participio + riferimento a foto/file/video/immagini/cartella/drive
+  // (in qualsiasi ordine, entro la stessa frase) — "archiviate ... in Celano", "foto ... salvati su Drive"
+  /\b(archiviat[oaie]|spostat[oaie]|salvat[oaie]|caricat[oaie]|messo|messe|messi|inserit[oaie])\b[\s\S]{0,60}\b(fot[oi]|file|video|immagin\w*|document\w*|cartell\w*|drive)\b/i,
+  /\b(fot[oi]|file|video|immagin\w*|document\w*)\b[\s\S]{0,60}\b(archiviat[oaie]|spostat[oaie]|salvat[oaie]|caricat[oaie]|sono ora in|sono adesso in|sono nella cartell\w*|sono su drive)\b/i,
+  // "le ho/li ho/li ha messe/messi/spostate nella cartella" — forma clitica + cartella
+  /\b(l[ae]|li|gliel[ae])\s+ho\s+(mess[aei]|spostat[aei]|archiviat[aei]|salvat[aei]|caricat[aei])\b/i,
+  // "✅ ... (foto|file|video|immagini) ... (archiviate|in Foto|nella cartella)"
+  /✅[\s\S]{0,80}\b(fot[oi]|file|video|immagin\w*)\b[\s\S]{0,40}\b(archiviat[oaie]|in foto\b|nella cartell\w*|su drive)\b/i,
+  /✅[\s\S]{0,40}\b(fot[oi]|file|video|immagin\w*)\b[\s\S]{0,80}\b(archiviat[oaie]|sono ora in)\b/i,
+  // "sono ora in Foto cantiere" / "ora in <cartella>"
+  /\bsono\s+(ora|adesso|gi[àa])\s+in\b/i,
+]
+
+// Negazione / non-ancora: se il claim è negato o futuro condizionato, NON è completamento.
+const ARCHIVE_NEGATION_PATTERNS: RegExp[] = [
+  /\bnon\b[\s\S]{0,40}\b(archiviat|spostat|salvat|messo|messe|caricat)/i,
+  /\bancora\b[\s\S]{0,40}\b(archiviat|spostat|salvat|da archiviare|da salvare|da spostare)/i,
+  /\b(archiviat|spostat|salvat|caricat)\w*\b[\s\S]{0,20}\bancora\b/i,
+  // futuro / sto-per: "ora archivio", "archivierò", "sto per archiviare/salvare/spostare", "vado ad archiviare"
+  /\b(ora|adesso|subito)\s+(archivio|salvo|sposto|carico)\b/i,
+  /\b(archivier[òo]|salver[òo]|sposter[òo]|caricher[òo])\b/i,
+  /\bsto\s+per\s+(archiviare|salvare|spostare|caricare)\b/i,
+  /\bvado\s+a[d]?\s+(archiviare|salvare|spostare|caricare)\b/i,
+  /\b(vuoi|vuole|devo|posso)\s+che\s+(le\s+)?(archivi|salvi|sposti|carichi)\b/i,
+  /\b(in\s+quale|dove)\s+(cartell\w*|le\s+archivi|archiviare)/i,
+]
+
+/**
+ * True se il testo AFFERMA che foto/file/documenti sono stati GIÀ archiviati/spostati/
+ * salvati nella cartella/Drive (affermazione di COMPLETAMENTO, non promessa al futuro).
+ *
+ * Rilevatore anti-bugia separato da detectHallucination: serve a sapere quando il bot
+ * SOSTIENE di aver archiviato, così da poterlo verificare (e ri-promptare se mente).
+ * Deliberatamente LASCO: preferiamo un falso positivo (→ re-prompt) a un falso negativo
+ * (→ la bugia passa). Sopprime negazioni ("non … archiviate", "ancora da archiviare"),
+ * domande ("vuoi che archivi?", "in quale cartella?") e verbi al futuro ("archivierò",
+ * "ora archivio", "sto per archiviare").
+ */
+export function claimsArchiveCompletion(text: string): boolean {
+  if (!text || text.trim().length === 0) return false
+  // Anti-domanda: una domanda non è un claim di completamento.
+  if (text.trim().endsWith('?')) return false
+  // Anti-negazione / non-ancora / futuro.
+  if (ARCHIVE_NEGATION_PATTERNS.some(p => p.test(text))) return false
+  return ARCHIVE_COMPLETION_PATTERNS.some(p => p.test(text))
+}
+
 async function loadConfig(): Promise<{ activeModel: string; state: CircuitState } | null> {
   const { data, error } = await supabase
     .from('cervellone_config')
