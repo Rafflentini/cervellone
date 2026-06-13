@@ -71,7 +71,25 @@ import {
   createProcedure,
   buildActiveProjectContext,
   buildWorkingContext,
+  setOutputPreferences,
+  mergeChecklistSteps,
+  setLastDebriefAt,
 } from './working-memory'
+
+/**
+ * Helper: ritorna i builder costruiti da fromSpy per una data tabella, nell'ordine
+ * di chiamata. Permette di ispezionare gli argomenti passati a `.update()` / `.eq()`.
+ */
+function buildersForTable(table: string): Builder[] {
+  const out: Builder[] = []
+  fromSpy.mock.calls.forEach((call, i) => {
+    if (call[0] === table) {
+      const res = fromSpy.mock.results[i]
+      if (res && res.type === 'return') out.push(res.value as Builder)
+    }
+  })
+  return out
+}
 
 beforeEach(() => {
   fromSpy.mockClear()
@@ -438,5 +456,96 @@ describe('buildWorkingContext', () => {
     setTable('procedures', { data: [], error: null })
     const out = await buildWorkingContext('ciao come stai', undefined)
     expect(out).toBe('')
+  })
+})
+
+// ─── setOutputPreferences (auto-debrief) ──────────────────────────────────────
+
+describe('setOutputPreferences', () => {
+  it('chiama update con output_preferences + updated_by, filtrando per task_type', async () => {
+    setTable('procedures', { data: null, error: null })
+
+    const ok = await setOutputPreferences('POS', ['PDF', 'tabella'])
+    expect(ok).toBe(true)
+
+    const builders = buildersForTable('procedures')
+    expect(builders.length).toBeGreaterThan(0)
+    const b = builders[builders.length - 1]
+    expect(b.update).toHaveBeenCalledTimes(1)
+    const updateArg = b.update.mock.calls[0][0] as Record<string, unknown>
+    expect(updateArg.output_preferences).toEqual(['PDF', 'tabella'])
+    expect(updateArg.updated_by).toBe('cervellone:auto-debrief')
+    // task_type normalizzato (POS → pos) usato nel filtro .eq
+    expect(b.eq).toHaveBeenCalledWith('task_type', 'pos')
+  })
+
+  it('prefs vuoti → false, nessun update', async () => {
+    setTable('procedures', { data: null, error: null })
+    const ok = await setOutputPreferences('pos', [])
+    expect(ok).toBe(false)
+    expect(buildersForTable('procedures').length).toBe(0)
+  })
+})
+
+// ─── mergeChecklistSteps (auto-debrief) ───────────────────────────────────────
+
+describe('mergeChecklistSteps', () => {
+  it('aggiunge solo gli step non già presenti (dedup case-insensitive)', async () => {
+    // La SELECT della checklist esistente ritorna [{step:'A'}]
+    setTable('procedures', { data: { checklist: [{ step: 'A' }] }, error: null })
+
+    const ok = await mergeChecklistSteps('pos', ['a', 'B'])
+    expect(ok).toBe(true)
+
+    // Builder che ha eseguito l'update (ha .update chiamato)
+    const updated = buildersForTable('procedures').find((b) => b.update.mock.calls.length > 0)
+    expect(updated).toBeDefined()
+    const updateArg = updated!.update.mock.calls[0][0] as { checklist: Array<{ step: string }> }
+    // 'a' è dedup di 'A' esistente → resta solo {step:'B'} aggiunto in coda
+    expect(updateArg.checklist).toEqual([{ step: 'A' }, { step: 'B' }])
+    expect((updateArg as unknown as Record<string, unknown>).updated_by).toBe('cervellone:auto-debrief')
+  })
+
+  it('se tutti gli step esistono già → true senza update', async () => {
+    setTable('procedures', { data: { checklist: [{ step: 'A' }, { step: 'B' }] }, error: null })
+
+    const ok = await mergeChecklistSteps('pos', ['a', 'b'])
+    expect(ok).toBe(true)
+
+    // Nessun builder deve aver eseguito update
+    const anyUpdate = buildersForTable('procedures').some((b) => b.update.mock.calls.length > 0)
+    expect(anyUpdate).toBe(false)
+  })
+
+  it('steps vuoti → false', async () => {
+    setTable('procedures', { data: { checklist: [] }, error: null })
+    const ok = await mergeChecklistSteps('pos', [])
+    expect(ok).toBe(false)
+  })
+})
+
+// ─── setLastDebriefAt (auto-debrief dedup) ────────────────────────────────────
+
+describe('setLastDebriefAt', () => {
+  it('chiama update con last_debrief_at filtrando conversation_id + status active', async () => {
+    setTable('project_state', { data: null, error: null })
+    const when = '2026-06-13T10:00:00.000Z'
+
+    const ok = await setLastDebriefAt('conv1', when)
+    expect(ok).toBe(true)
+
+    const builders = buildersForTable('project_state')
+    expect(builders.length).toBeGreaterThan(0)
+    const b = builders[builders.length - 1]
+    const updateArg = b.update.mock.calls[0][0] as Record<string, unknown>
+    expect(updateArg.last_debrief_at).toBe(when)
+    expect(b.eq).toHaveBeenCalledWith('conversation_id', 'conv1')
+    expect(b.eq).toHaveBeenCalledWith('status', 'active')
+  })
+
+  it('senza conversationId → false, nessun update', async () => {
+    const ok = await setLastDebriefAt('', '2026-06-13T10:00:00.000Z')
+    expect(ok).toBe(false)
+    expect(buildersForTable('project_state').length).toBe(0)
   })
 })

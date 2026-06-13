@@ -44,6 +44,7 @@ export interface Procedure {
   save_location: string | null
   lessons: string[]
   keywords: string[]
+  output_preferences?: string[]
   updated_at?: string
 }
 
@@ -69,6 +70,18 @@ export function invalidateProcedureCache(): void {
  * document-saver perché tira dentro googleapis (pesante) — qui ci serve solo la
  * piccola funzione regex, replicata 1:1.
  */
+/**
+ * Normalizza un task_type: trim, lowercase, solo [a-z0-9_-].
+ * Stessa logica usata storicamente inline da createProcedure. Riusata dai nuovi
+ * helper (setOutputPreferences/mergeChecklistSteps) così la chiave di match è coerente.
+ */
+function normalizeTaskType(taskType: string): string {
+  return (taskType || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
+}
+
 export function inferTaskTypeRegex(userQuery: string): ProcedureTaskType {
   const text = (userQuery || '').toLowerCase()
   // Ordine importante: pattern più specifici prima (identico a inferDocumentType)
@@ -156,10 +169,7 @@ export async function createProcedure(input: {
   saveLocation?: string
 }): Promise<boolean> {
   try {
-    const taskType = (input.taskType || '')
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]/g, '')
+    const taskType = normalizeTaskType(input.taskType)
     if (!taskType || !input.title?.trim()) {
       console.warn('[working-memory] createProcedure: taskType o title mancante')
       return false
@@ -249,7 +259,7 @@ export async function getProcedure(taskType: string): Promise<Procedure | null> 
     const supabase = getSupabaseServer()
     const { data, error } = await supabase
       .from('procedures')
-      .select('id, task_type, title, checklist, output_spec, save_location, lessons, keywords, updated_at')
+      .select('id, task_type, title, checklist, output_spec, save_location, lessons, keywords, output_preferences, updated_at')
       .eq('task_type', taskType)
       .maybeSingle()
 
@@ -262,6 +272,10 @@ export async function getProcedure(taskType: string): Promise<Procedure | null> 
     const checklist = Array.isArray(data.checklist) ? (data.checklist as ChecklistStep[]) : []
     const lessons = Array.isArray(data.lessons) ? (data.lessons as string[]) : []
     const keywords = Array.isArray(data.keywords) ? (data.keywords as string[]) : []
+    // Degrada con grazia se la colonna manca (campo undefined) → array vuoto.
+    const outputPreferences = Array.isArray(data.output_preferences)
+      ? (data.output_preferences as string[])
+      : []
     return {
       id: data.id,
       task_type: data.task_type,
@@ -271,6 +285,7 @@ export async function getProcedure(taskType: string): Promise<Procedure | null> 
       save_location: data.save_location ?? null,
       lessons,
       keywords,
+      output_preferences: outputPreferences,
       updated_at: data.updated_at,
     }
   } catch (err) {
@@ -324,6 +339,90 @@ export async function addLesson(taskType: string, lesson: string): Promise<boole
   }
 }
 
+/** Imposta output_preferences su una procedura (auto-debrief). Best-effort. */
+export async function setOutputPreferences(
+  taskType: string,
+  prefs: string[],
+  updatedBy = 'cervellone:auto-debrief',
+): Promise<boolean> {
+  try {
+    if (!taskType || !prefs?.length) return false
+    const supabase = getSupabaseServer()
+    const { error } = await supabase
+      .from('procedures')
+      .update({ output_preferences: prefs, updated_by: updatedBy, updated_at: new Date().toISOString() })
+      .eq('task_type', normalizeTaskType(taskType))
+    if (error) {
+      console.error('[working-memory] setOutputPreferences:', error.message)
+      return false
+    }
+    invalidateProcedureCache()
+    return true
+  } catch (e) {
+    console.error('[working-memory] setOutputPreferences err:', e instanceof Error ? e.message : e)
+    return false
+  }
+}
+
+/** Aggiunge step alla checklist di una procedura senza duplicati (per `step`). Best-effort. */
+export async function mergeChecklistSteps(
+  taskType: string,
+  steps: string[],
+  updatedBy = 'cervellone:auto-debrief',
+): Promise<boolean> {
+  try {
+    if (!taskType || !steps?.length) return false
+    const supabase = getSupabaseServer()
+    const tt = normalizeTaskType(taskType)
+    const { data } = await supabase.from('procedures').select('checklist').eq('task_type', tt).maybeSingle()
+    const existing = Array.isArray((data as { checklist?: unknown } | null)?.checklist)
+      ? (data as { checklist: Array<{ step?: string }> }).checklist
+      : []
+    const existingSteps = new Set(
+      existing.map((c) => (c?.step ?? '').trim().toLowerCase()).filter(Boolean),
+    )
+    const toAdd = steps
+      .map((s) => s.trim())
+      .filter((s) => s && !existingSteps.has(s.toLowerCase()))
+      .map((s) => ({ step: s }))
+    if (!toAdd.length) return true
+    const { error } = await supabase
+      .from('procedures')
+      .update({ checklist: [...existing, ...toAdd], updated_by: updatedBy, updated_at: new Date().toISOString() })
+      .eq('task_type', tt)
+    if (error) {
+      console.error('[working-memory] mergeChecklistSteps:', error.message)
+      return false
+    }
+    invalidateProcedureCache()
+    return true
+  } catch (e) {
+    console.error('[working-memory] mergeChecklistSteps err:', e instanceof Error ? e.message : e)
+    return false
+  }
+}
+
+/** Segna l'ultimo debrief sul progetto attivo (dedup). Best-effort. */
+export async function setLastDebriefAt(conversationId: string, whenIso: string): Promise<boolean> {
+  try {
+    if (!conversationId) return false
+    const supabase = getSupabaseServer()
+    const { error } = await supabase
+      .from('project_state')
+      .update({ last_debrief_at: whenIso, updated_at: new Date().toISOString() })
+      .eq('conversation_id', conversationId)
+      .eq('status', 'active')
+    if (error) {
+      console.error('[working-memory] setLastDebriefAt:', error.message)
+      return false
+    }
+    return true
+  } catch (e) {
+    console.error('[working-memory] setLastDebriefAt err:', e instanceof Error ? e.message : e)
+    return false
+  }
+}
+
 /**
  * Costruisce il blocco "PROCEDURA OBBLIGATORIA" da iniettare nel system come blocco
  * NON cachato. Best-effort: qualsiasi errore (o task 'altro', o procedura assente) → ''.
@@ -347,6 +446,10 @@ export async function buildProcedureContext(userQuery: string): Promise<string> 
     })
     if (proc.output_spec) lines.push(`OUTPUT richiesto: ${proc.output_spec}`)
     if (proc.save_location) lines.push(`DOVE SALVARE: ${proc.save_location}`)
+    // Degrada con grazia se la colonna manca/è vuota: salta la riga.
+    if (proc.output_preferences && proc.output_preferences.length > 0) {
+      lines.push(`Formato preferito da Raffaele per questo tipo: ${proc.output_preferences.join(', ')}`)
+    }
     if (proc.lessons.length > 0) {
       lines.push('APPRENDIMENTI (rispettali): ')
       for (const l of proc.lessons) lines.push(`- ${l}`)
@@ -390,6 +493,7 @@ export interface ProjectState {
   done: string[]
   pending: string[]
   decisions: string[]
+  last_debrief_at?: string | null
   updated_at?: string
 }
 
@@ -436,6 +540,8 @@ export async function getActiveProject(conversationId: string): Promise<ProjectS
       done: toStringArray(data.done),
       pending: toStringArray(data.pending),
       decisions: toStringArray(data.decisions),
+      // Degrada con grazia se la colonna manca (campo undefined) → null.
+      last_debrief_at: data.last_debrief_at ?? null,
       updated_at: data.updated_at,
     }
   } catch (err) {
