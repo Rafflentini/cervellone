@@ -424,7 +424,7 @@ export async function moveFile(fileId: string, newParentId: string): Promise<str
   try {
     const drive = await getDrive()
     // Ottieni i parent attuali
-    const file = await drive.files.get({ fileId, fields: 'parents, name' })
+    const file = await drive.files.get({ fileId, fields: 'parents, name', supportsAllDrives: true })
     const previousParents = (file.data.parents || []).join(',')
 
     await drive.files.update({
@@ -432,7 +432,23 @@ export async function moveFile(fileId: string, newParentId: string): Promise<str
       addParents: newParentId,
       removeParents: previousParents,
       fields: 'id, name, parents',
+      supportsAllDrives: true,
     })
+
+    // MOVE ONESTO: rileggi i parent dal Drive e VERIFICA che la destinazione
+    // sia davvero fra i parent del file. L'update può andare a buon fine lato API
+    // ma lasciare il file dov'era (es. permessi parziali, race, drive condiviso):
+    // non dichiariamo successo senza prova.
+    let confirmedParents: string[] = []
+    try {
+      const after = await drive.files.get({ fileId, fields: 'parents', supportsAllDrives: true })
+      confirmedParents = after.data.parents || []
+    } catch (verifyErr) {
+      return `Errore: verifica spostamento non riuscita per "${file.data.name}" (${verifyErr instanceof Error ? verifyErr.message : verifyErr}). Lo spostamento potrebbe non essere avvenuto.`
+    }
+    if (!confirmedParents.includes(newParentId)) {
+      return `Errore: "${file.data.name}" NON risulta spostato nella cartella di destinazione dopo l'operazione (parent attuali: ${confirmedParents.join(',') || 'nessuno'}). Lo spostamento non è andato a buon fine.`
+    }
 
     return `"${file.data.name}" spostato nella nuova cartella.`
   } catch (err) {

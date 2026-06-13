@@ -197,19 +197,95 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ── FUN-002: Video (extract thumbnail) ──
+    // ── FUN-002: Video — salva il VIDEO vero su Drive (Inbox), non solo la thumb ──
     if (message.video && fileBlocks.length === 0) {
       await sendTyping(chatId)
-      const thumb = message.video.thumb || message.video.thumbnail
-      if (thumb) {
-        const fileData = await downloadTelegramFile(thumb.file_id)
-        if (fileData) {
-          fileBlocks = await buildContentBlocks({ ...fileData, mimeType: 'image/jpeg', fileName: 'video_frame.jpg' })
-          fileDescription = 'frame dal video'
+      const videoSize = message.video.file_size || 0
+      if (videoSize > 20 * 1024 * 1024) {
+        // Telegram Bot API non scarica file oltre ~20MB: messaggio ONESTO, niente download.
+        await sendTelegramMessage(
+          chatId,
+          '⚠️ Il video supera i 20 MB: Telegram non permette al bot di scaricarlo. Caricalo direttamente nella cartella Drive del progetto, oppure invialo come file più leggero.',
+        )
+        if (!userText) {
+          userText = "L'utente ha inviato un video oltre i 20 MB: non posso scaricarlo da Telegram, va caricato manualmente su Drive o reinviato più leggero."
         }
-      }
-      if (!userText && fileBlocks.length === 0) {
-        userText = 'Ho ricevuto un video ma non riesco a estrarre il frame. Può rimandarlo come foto?'
+        fileDescription = 'video oltre 20 MB (non scaricabile dal bot)'
+      } else {
+        const fileData = await downloadTelegramFile(message.video.file_id)
+        if (!fileData) {
+          await sendTelegramMessage(chatId, '⚠️ Non riesco a scaricare il video.')
+          if (!userText) {
+            userText = "L'utente ha inviato un video ma il download da Telegram è fallito. Chiedi di riprovare o di caricarlo su Drive."
+          }
+          fileDescription = 'video (download fallito)'
+        } else {
+          // Nome file: usa file_name se presente, altrimenti deriva dall'estensione del mime.
+          const extFromMime = fileData.mimeType === 'video/quicktime' ? 'mov'
+            : fileData.mimeType === 'video/x-msvideo' ? 'avi'
+            : fileData.mimeType === 'video/x-matroska' ? 'mkv'
+            : fileData.mimeType === 'video/webm' ? 'webm'
+            : fileData.mimeType === 'video/x-m4v' ? 'm4v'
+            : 'mp4'
+          const fileName = message.video.file_name || `video-${Date.now()}.${extFromMime}`
+          const mimeType = fileData.mimeType && fileData.mimeType.startsWith('video/')
+            ? fileData.mimeType
+            : 'video/mp4'
+
+          // AUTO-ARCHIVE: salva sempre il video originale su Drive (garanzia salva-video).
+          let archivedDriveLink: string | null = null
+          let archivedDriveFileId: string | null = null
+          try {
+            const { uploadBinaryToDrive, getTelegramInboxFolderId } = await import('@/lib/drive')
+            const folderId = await getTelegramInboxFolderId()
+            const { id, webViewLink } = await uploadBinaryToDrive(
+              Buffer.from(fileData.buffer),
+              fileName,
+              mimeType,
+              folderId,
+            )
+            archivedDriveLink = webViewLink
+            archivedDriveFileId = id
+            console.log(`[TG-ARCHIVE] video=${fileName} → ${archivedDriveLink}`)
+          } catch (err) {
+            console.warn(`[TG-ARCHIVE] video archive failed, continuing without archive:`, err instanceof Error ? err.message : err)
+          }
+
+          // Facoltativo: estrai la thumbnail per dare al modello il contenuto VISIVO del video.
+          const thumb = message.video.thumb || message.video.thumbnail
+          if (thumb) {
+            try {
+              const thumbData = await downloadTelegramFile(thumb.file_id)
+              if (thumbData) {
+                fileBlocks = await buildContentBlocks({ ...thumbData, mimeType: 'image/jpeg', fileName: 'video_frame.jpg' })
+              }
+            } catch (err) {
+              console.warn('[TG-VIDEO] thumb extract failed:', err instanceof Error ? err.message : err)
+            }
+          }
+
+          // fileDescription con il link Drive così il modello conosce l'ID per archivia_documento.
+          fileDescription = fileName
+          if (archivedDriveLink) {
+            fileDescription += ` (video originale archiviato su Drive: ${archivedDriveLink}`
+            if (archivedDriveFileId) fileDescription += ` — drive_file_id: ${archivedDriveFileId}`
+            fileDescription += ')'
+          } else {
+            fileDescription += ' (archiviazione su Drive fallita — avvisa l\'utente, non fingere successo)'
+          }
+
+          // Registra l'upload (stesso pattern del ramo Document) così è allegabile al turno
+          // e il modello può poi spostarlo con archivia_documento.
+          await safeSupabase(() => supabase.from('telegram_recent_uploads').insert({
+            chat_id: chatId,
+            telegram_file_id: message.video.file_id,
+            drive_url: archivedDriveLink,
+            filename: fileName,
+            caption: message.caption ?? null,
+            mime_type: mimeType,
+          }))
+          currentUploadFileId = message.video.file_id
+        }
       }
     }
 

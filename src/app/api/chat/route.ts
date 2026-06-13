@@ -10,7 +10,7 @@ import { rateLimit } from '@/lib/rate-limiter'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { supabase } from '@/lib/supabase'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
-import { isWorkingMemoryEnabled, buildWorkingContext } from '@/lib/working-memory'
+import { isWorkingMemoryEnabled, buildProcedureContext, buildActiveProjectContext } from '@/lib/working-memory'
 import { buildTemplateContext } from '@/lib/template-context'
 import { buildArtifactsPointer, captureArtifact } from '@/lib/artifact-capture'
 import { captureImageExtraction, buildImagesPointer, type UploadedImageRef } from '@/lib/image-memory'
@@ -214,9 +214,16 @@ export async function POST(request: NextRequest) {
 
   // FASE 1 Memoria procedurale (flag-gated, OFF di default): se attiva, carica la
   // checklist obbligatoria del tipo-documento inferito dalla richiesta. Best-effort.
+  // NB: qui resta SOLO buildProcedureContext (la procedura è gated). Il contesto del
+  // PROGETTO ATTIVO è stato spostato nel merge INCONDIZIONATO sotto (projectContext),
+  // per parità col path Telegram: la continuità non dipende dal flag.
   const flaggedWorkingContext = (await isWorkingMemoryEnabled())
-    ? await buildWorkingContext(userQuery, conversationId)
+    ? await buildProcedureContext(userQuery)
     : undefined
+
+  // Contesto PROGETTO ATTIVO: INCONDIZIONATO (non dipende dal flag working_memory_enabled).
+  // Best-effort: '' se non c'è progetto attivo / conversationId assente / errore.
+  const projectContext = await buildActiveProjectContext(conversationId ?? '')
 
   // Injection modelli documento: INCONDIZIONATA (non dipende dal flag working_memory_enabled).
   // Cheap: cache 5 min + un solo loop regex sui template. Best-effort: '' su errore.
@@ -224,7 +231,7 @@ export async function POST(request: NextRequest) {
 
   const artifactsPointer = await buildArtifactsPointer(conversationId ?? '')
   const imagesPointer = await buildImagesPointer(conversationId ?? '')
-  const workingContext = [flaggedWorkingContext, templateContext, artifactsPointer, imagesPointer]
+  const workingContext = [projectContext, flaggedWorkingContext, templateContext, artifactsPointer, imagesPointer]
     .filter((b) => b && b.trim())
     .join('\n\n') || undefined
 

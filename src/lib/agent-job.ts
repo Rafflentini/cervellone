@@ -24,7 +24,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 
 import { callClaudeStreamTelegram } from '@/lib/claude'
-import { isWorkingMemoryEnabled, buildWorkingContext } from '@/lib/working-memory'
+import { isWorkingMemoryEnabled, buildProcedureContext, buildActiveProjectContext } from '@/lib/working-memory'
 import { buildTemplateContext } from '@/lib/template-context'
 import { captureArtifact, buildArtifactsPointer } from '@/lib/artifact-capture'
 import { captureImageExtraction, buildImagesPointer, type UploadedImageRef } from '@/lib/image-memory'
@@ -98,13 +98,21 @@ export async function runAgentJob(
   // checklist obbligatoria del tipo-documento inferito dalla richiesta. Best-effort.
   // Pointer "bozze già pronte" ri-iniettato a ogni turno: sopravvive alla finestra di
   // history (vedi cattura artefatti a fine turno) così il bot recupera invece di rigenerare.
+  // NB: qui resta SOLO buildProcedureContext (la procedura è gated). Il contesto del
+  // PROGETTO ATTIVO è stato spostato nel merge INCONDIZIONATO sotto (vedi projectContext),
+  // così la continuità non dipende dal flag (incidente: bot perde il filo a metà task).
   const flaggedWorkingContext = (await isWorkingMemoryEnabled())
     ? [
-        await buildWorkingContext(userText, conversationId),
+        await buildProcedureContext(userText),
         await buildArtifactsPointer(conversationId),
         await buildSentMailPointer(conversationId),
       ].filter((b) => b && b.trim()).join('\n\n') || undefined
     : undefined
+
+  // Contesto PROGETTO ATTIVO: INCONDIZIONATO (non dipende dal flag working_memory_enabled).
+  // Best-effort: '' se non c'è progetto attivo / conversationId assente / errore.
+  // Garantisce la continuità conversazionale anche con il flag OFF.
+  const projectContext = await buildActiveProjectContext(conversationId)
 
   // Injection modelli documento: INCONDIZIONATA (non dipende dal flag working_memory_enabled).
   // Cheap: cache 5 min + un solo loop regex sui template. Best-effort: '' su errore.
@@ -116,7 +124,7 @@ export async function runAgentJob(
   // di history (analogo a templateContext). Best-effort: '' se non c'è nulla.
   const imagesPointer = await buildImagesPointer(conversationId)
 
-  const workingContext = [flaggedWorkingContext, templateContext, imagesPointer]
+  const workingContext = [projectContext, flaggedWorkingContext, templateContext, imagesPointer]
     .filter((b) => b && b.trim())
     .join('\n\n') || undefined
 

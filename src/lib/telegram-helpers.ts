@@ -78,6 +78,8 @@ export async function downloadTelegramFile(fileId: string): Promise<{ buffer: Ar
     txt: 'text/plain', md: 'text/markdown', json: 'application/json',
     xml: 'application/xml', html: 'text/html',
     zip: 'application/zip',
+    mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo',
+    mkv: 'video/x-matroska', webm: 'video/webm', m4v: 'video/x-m4v',
   }
   const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
   if (!res.ok) return null
