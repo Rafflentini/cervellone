@@ -633,13 +633,18 @@ export async function POST(request: NextRequest) {
     // di fallback è troppo debole per ripescarlo. Costo contenuto: durante un task attivo la
     // history è cache-read (breakpoint mobile + TTL 1h sul prefisso). Fix robusto: working-memory
     // che persiste/ri-inietta gli artefatti (bozze/decisioni) a prescindere dalla finestra.
+    // Memoria conversazione da COORDINATORE (non da chatbot): finestra ampia (80 msg) con TETTO a
+    // caratteri per controllare il costo (il prefisso ripetuto è cachato 1h, quindi il sovrapprezzo
+    // reale è basso). Prima era 16 → dimenticava tutto dopo poche battute.
+    const HISTORY_MAX_MESSAGES = 80
+    const HISTORY_CHAR_BUDGET = 120_000 // ~30-40K token: memoria larga ma bounded
     const recentMessages = await safeSupabase(
       () => supabase.from('messages').select('role, content')
         .eq('conversation_id', conversationId)
-        .order('created_at', { ascending: false }).limit(16),
+        .order('created_at', { ascending: false }).limit(HISTORY_MAX_MESSAGES),
       []
     )
-    // L'order DESC + reverse: prendi gli ultimi 6, poi rimetti in ordine cronologico
+    // order DESC + reverse → ordine cronologico
     if (Array.isArray(recentMessages)) {
       recentMessages.reverse()
     }
@@ -647,6 +652,17 @@ export async function POST(request: NextRequest) {
     const history: Anthropic.MessageParam[] = ((recentMessages as any[]) || [])
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role, content: m.content }))
+    // Tetto di costo: se la finestra supera il budget, scarta i messaggi PIÙ VECCHI (tiene i recenti)
+    // finché rientra. Mai sotto gli ultimi 8 (continuità minima garantita).
+    {
+      const charsOf = (c: Anthropic.MessageParam['content']): number =>
+        typeof c === 'string' ? c.length : JSON.stringify(c ?? '').length
+      let total = history.reduce((s, m) => s + charsOf(m.content), 0)
+      while (history.length > 8 && total > HISTORY_CHAR_BUDGET) {
+        total -= charsOf(history[0].content)
+        history.shift()
+      }
+    }
 
     const attachedRecentUploadIds: string[] = []
 
