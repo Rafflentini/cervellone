@@ -54,8 +54,19 @@ export async function POST(request: NextRequest) {
     const chatId: number = message.chat.id
     errorChatId = chatId
 
-    // SEC-003: Rate limiting
-    if (!rateLimit(`tg_${chatId}`, 60_000, 5)) {
+    // SEC-003: Rate limiting.
+    // ⚠️ BUG CRITICO STORICO (fix 14 giu): un album / upload multiplo arriva come N webhook
+    // SEPARATI con lo stesso media_group_id. Col vecchio limite unico 5/60s, dal 6° file in poi
+    // il webhook veniva SCARTATO QUI, PRIMA dell'ingest → perdita SILENZIOSA (l'utente credeva di
+    // averli caricati). Ora i messaggi con MEDIA usano un bucket dedicato con limite ALTO (consente
+    // album da 30+ file); il solo testo resta protetto a 5/60s contro lo spam.
+    const hasMediaUpload = !!(
+      message.photo || message.video || message.document ||
+      message.audio || message.voice || message.animation
+    )
+    const rlKey = hasMediaUpload ? `tg_media_${chatId}` : `tg_${chatId}`
+    const rlMax = hasMediaUpload ? 90 : 5
+    if (!rateLimit(rlKey, 60_000, rlMax)) {
       await sendTelegramMessage(chatId, '⚠️ Troppi messaggi. Attenda un momento.')
       return NextResponse.json({ ok: true })
     }
