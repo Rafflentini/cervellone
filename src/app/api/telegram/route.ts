@@ -320,6 +320,36 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    // ── A: RAFFICA = cataloga SENZA analizzare (anti analisi-storm + mutex) ──
+    // Se arrivano 4+ file in ~60s, NON avvio il turno LLM (niente analisi foto-per-foto): i file
+    // sono già su Drive + registro, mando UN avviso (throttle 30s) e attendo l'istruzione.
+    // 1-3 file → comportamento normale (analisi). SAFE-FALLBACK: qualsiasi errore/colonna mancante
+    // → conta 0 → si procede come sempre (nessuna regressione possibile).
+    if (currentUploadFileId !== null) {
+      try {
+        const { isRaffica, shouldSendRafficaAck } = await import('@/lib/upload-flow')
+        const since = new Date(Date.now() - 60_000).toISOString()
+        const recent = await safeSupabase(
+          () => supabase.from('telegram_recent_uploads').select('id')
+            .eq('chat_id', chatId).gte('inserted_at', since),
+          [],
+        )
+        const count = Array.isArray(recent) ? recent.length : 0
+        if (isRaffica(count)) {
+          if (shouldSendRafficaAck(String(chatId), Date.now())) {
+            await sendTelegramMessage(
+              chatId,
+              '📥 Ho ricevuto i file e li sto raccogliendo (non li analizzo). Mi dica dove archiviarli, es. "archivia nel cantiere ...".',
+            ).catch(() => {})
+          }
+          return NextResponse.json({ ok: true })
+        }
+      } catch (err) {
+        console.error('[RAFFICA]', err instanceof Error ? err.message : err)
+        // safe-fallback: prosegui col flusso normale (analisi)
+      }
+    }
+
     // ── Comandi ──
     if (userText === '/start') {
       await sendTelegramMessage(chatId, '🧠 *Cervellone attivo.* Come posso aiutarLa?')
