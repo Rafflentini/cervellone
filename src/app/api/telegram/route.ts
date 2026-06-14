@@ -321,17 +321,19 @@ export async function POST(request: NextRequest) {
     }
 
     // ── A: RAFFICA = cataloga SENZA analizzare (anti analisi-storm + mutex) ──
-    // Se arrivano 4+ file in ~60s, NON avvio il turno LLM (niente analisi foto-per-foto): i file
-    // sono già su Drive + registro, mando UN avviso (throttle 30s) e attendo l'istruzione.
-    // 1-3 file → comportamento normale (analisi). SAFE-FALLBACK: qualsiasi errore/colonna mancante
-    // → conta 0 → si procede come sempre (nessuna regressione possibile).
-    if (currentUploadFileId !== null) {
+    // Se arrivano 4+ file NON processati in ~60s, NON avvio il turno LLM (niente analisi foto-per-foto):
+    // i file sono già su Drive + registro, mando UN avviso (throttle) e attendo l'istruzione.
+    // 1-3 file → comportamento normale (analisi). ECCEZIONE: se QUESTA foto porta una caption
+    // (= istruzione esplicita, es. "mettila in C2026-010") NON sopprimo, la lascio agire (audit P2).
+    // SAFE-FALLBACK: qualsiasi errore/colonna mancante → conta 0 → si procede come sempre.
+    const hasCaptionInstruction = !!(message.caption && message.caption.trim())
+    if (currentUploadFileId !== null && !hasCaptionInstruction) {
       try {
         const { isRaffica, shouldSendRafficaAck } = await import('@/lib/upload-flow')
         const since = new Date(Date.now() - 60_000).toISOString()
         const recent = await safeSupabase(
           () => supabase.from('telegram_recent_uploads').select('id')
-            .eq('chat_id', chatId).gte('inserted_at', since),
+            .eq('chat_id', chatId).eq('processed', false).gte('inserted_at', since),
           [],
         )
         const count = Array.isArray(recent) ? recent.length : 0
@@ -679,9 +681,17 @@ export async function POST(request: NextRequest) {
       recentMessages.reverse()
     }
 
+    // Cap per-messaggio: un singolo messaggio enorme (es. documento incollato) non deve riempire da
+    // solo la finestra né far esplodere il costo. Tronca le stringhe oltre il cap (audit P1).
+    const PER_MSG_CHAR_CAP = 12_000
     const history: Anthropic.MessageParam[] = ((recentMessages as any[]) || [])
       .filter(m => m.role === 'user' || m.role === 'assistant')
-      .map(m => ({ role: m.role, content: m.content }))
+      .map(m => ({
+        role: m.role,
+        content: typeof m.content === 'string' && m.content.length > PER_MSG_CHAR_CAP
+          ? m.content.slice(0, PER_MSG_CHAR_CAP) + ' […troncato]'
+          : m.content,
+      }))
     // Tetto di costo: se la finestra supera il budget, scarta i messaggi PIÙ VECCHI (tiene i recenti)
     // finché rientra. Mai sotto gli ultimi 8 (continuità minima garantita).
     {

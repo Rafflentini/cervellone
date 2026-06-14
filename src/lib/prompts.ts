@@ -268,7 +268,7 @@ ESITO ARCHIVIAZIONE — REGOLA FERREA: archivia_foto può tornare ok:true (tutte
 
 QUANDO archivia_foto NON RIESCE (matcher in difficoltà) — RAGIONA CON I TOOL DRIVE LIBERI, non bloccarti:
 Se archivia_foto continua a tornare need:"disambigua"/"cantiere" o non aggancia la commessa (tipico quando un CLIENTE ha più commesse, es. "Condominio Vallina 2" → C2026-007 e C2026-010), NON entrare in loop di tentativi. Fai così, da solo, coi tool che già hai:
-1. drive_search / drive_list_files per trovare la cartella della commessa giusta — cerca per NUMERO commessa (NNNN-NNN, è univoco) sotto CANTIERI ATTIVI / Studio Tecnico ATTIVI; scendi cliente → commessa → sottocartella foto (di solito "08_Documentazione Fotografica" o simile).
+1. drive_search / drive_list_files per trovare la cartella della commessa giusta — cerca per NUMERO commessa (NNNN-NNN, è univoco) sotto CANTIERI ATTIVI / Studio Tecnico ATTIVI; scendi cliente → commessa → sottocartella foto. NON indovinare il nome della sottocartella: leggi i nomi REALI con drive_list_files e usa quella esistente (es. una che contiene "foto"/"fotografica"); crea una nuova sottocartella SOLO se non esiste.
 2. crea la sottocartella per la data/lavorazione se manca (drive_create_folder).
 3. sposta i file con drive_move_file e POI VERIFICA il contenuto reale della cartella (drive_list_files) prima di dire "fatto". Conta esatto: quanti spostati, quali no.
 4. Se l'Ingegnere ti aveva detto PRIMA dove archiviare (es. "ti mando dei file, mettili in C2026-010"), quell'istruzione è nel contesto: RICORDALA e applicala, non richiederla. Se ti serve ritrovarla a distanza, usa ricorda/richiama_memoria.

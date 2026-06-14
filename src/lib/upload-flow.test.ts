@@ -31,8 +31,8 @@ describe('shouldSendRafficaAck (throttle 30s)', () => {
     const k = 'chat-A-' + Math.random()
     const t0 = 1_000_000
     expect(shouldSendRafficaAck(k, t0)).toBe(true)
-    expect(shouldSendRafficaAck(k, t0 + 5_000)).toBe(false)   // entro cooldown
-    expect(shouldSendRafficaAck(k, t0 + 31_000)).toBe(true)   // oltre cooldown
+    expect(shouldSendRafficaAck(k, t0 + 5_000)).toBe(false)    // entro cooldown
+    expect(shouldSendRafficaAck(k, t0 + 61_000)).toBe(true)    // oltre cooldown (60s)
   })
   it('chat diverse non interferiscono', () => {
     const t = 2_000_000

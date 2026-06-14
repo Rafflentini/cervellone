@@ -16,7 +16,7 @@ export function isRaffica(recentCount: number, threshold: number = RAFFICA_THRES
 // Throttle in-memory dell'avviso "ho ricevuto i file": una raffica arriva come N webhook separati;
 // senza throttle manderebbe N avvisi. Qui ne manda UNO ogni ~30s per chat. Best-effort (per-istanza
 // serverless: al più qualche avviso in più, mai spam). Niente tabella nuova.
-const RAFFICA_ACK_COOLDOWN_MS = 30_000
+const RAFFICA_ACK_COOLDOWN_MS = 60_000 // allineato alla finestra raffica (no doppio avviso su album lenti)
 const _lastRafficaAck = new Map<string, number>()
 export function shouldSendRafficaAck(chatKey: string, nowMs: number): boolean {
   const last = _lastRafficaAck.get(chatKey)
