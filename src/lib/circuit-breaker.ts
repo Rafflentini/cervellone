@@ -64,6 +64,17 @@ const PROMISE_PATTERNS: RegExp[] = [
   // RIMOSSO: futuro (cercher|legger|...[oò]) — "leggero" falso positivo edile; futuro gestito a livello di prompt
   // vado a + infinito azione: costruzione perifrasi immediata
   /\bvado\s+a\s+(controllare|inviare|creare|spostare|archiviare|salvare|mandare|preparare|aggiornare)\b/i,
+  // ── FIX hallucination verbo+articolo (16 giu 2026) ──
+  // Cattura "Leggo il DURC", "Cerco la cartella", "Verifico il file", "Trovo l'indirizzo"
+  // Forma: verbo azione in prima persona singolare + articolo determinativo.
+  // È il pattern più comune quando il bot DESCRIVE l'azione che sta per fare senza eseguirla.
+  // isCompletedOrConditional() con passato prossimo ("ho letto", "ho trovato") impedisce
+  // falsi positivi quando l'azione è già stata svolta.
+  /\b(cerco|leggo|verifico|controllo|scarico|guardo|trovo|recupero|apro|esamino)\s+(il|la|lo|le|i|gli|l['’])\b/i,
+  // "procedo a/con/subito" — il bot annuncia che procede senza eseguire
+  /\bprocedo\s+(subito|adesso|ora|a\s|con\s)\b/i,
+  // "provo ora/subito/a [infinito]" — tentativo dichiarato senza tool
+  /\bprovo\s+(adesso|ora|subito|a\s+\w)/i,
 ]
 
 // ── Cache stato breaker ──
@@ -373,9 +384,13 @@ export async function tripBreaker(reason: string): Promise<void> {
   invalidateCache()
 
   await notifyAdmin(
-    `⚠️ *Rollback automatico* — rilevata regressione su \`${defaultModel}\`.\n` +
-    `Bot tornato a \`${stableModel}\` (stable).\n` +
-    `Motivo: ${reason}\n\n` +
+    `⚠️ *Rollback automatico* — rilevata regressione su \`${defaultModel}\`.
+` +
+    `Bot tornato a \`${stableModel}\` (stable).
+` +
+    `Motivo: ${reason}
+
+` +
     `Il canary ritenterà \`${defaultModel}\` ogni 30 min e tornerà al default quando 3 canary consecutivi vanno OK.`,
     true,
   )
