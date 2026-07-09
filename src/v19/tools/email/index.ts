@@ -11,6 +11,7 @@ import { FORWARD_EMAIL_TOOL, executeForwardEmail } from './forward-email'
 import { MARK_EMAIL_TOOL, executeMarkEmail } from './mark-email'
 import { PACK_EMAILS_AND_SEND_TOOL, executePackEmailsAndSend } from './pack-emails-and-send'
 import { uploadBinaryToDrive, downloadFileBase64 } from '@/lib/drive'
+import { READ_SCAN_DRIVE_TOOL, executeReadScanFromDrive } from '@/lib/scan-ocr'
 import type { AccountKey } from './config'
 import type { SendEmailInput, AttachmentInput } from './types'
 
@@ -26,7 +27,7 @@ export type { SendEmailInput, SendEmailResult, AttachmentInput } from './types'
 // Connection helpers.
 export { openImap, closeImap, makeSmtp, fromHeader } from './connection'
 
-/* ──────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────
  * Tool: save_email_attachments_to_drive
  *
  * Pattern server-side gemello di pack_emails_and_send: il LLM passa SOLO i
@@ -41,7 +42,7 @@ export { openImap, closeImap, makeSmtp, fromHeader } from './connection'
  *
  * Definito inline qui (non in file separato) perché il tooling di PR del bot
  * modifica solo file già esistenti su main.
- * ────────────────────────────────────────────────────────────────────────── */
+ * ───────────────────────────────────────────────────────────────────── */
 
 export type SaveEmailAttachmentsInput = {
   account: AccountKey
@@ -224,7 +225,7 @@ export async function executeSaveEmailAttachmentsToDrive(
   }
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────
  * Tool: send_email_with_attachments
  *
  * Invia una mail (da account TopHost) componendo gli allegati server-side da
@@ -240,7 +241,7 @@ export async function executeSaveEmailAttachmentsToDrive(
  *     diretto, con copia in Sent del mittente.
  *
  * Definito inline qui per lo stesso motivo di save_email_attachments_to_drive.
- * ────────────────────────────────────────────────────────────────────────── */
+ * ───────────────────────────────────────────────────────────────────── */
 
 export type EmailAttachmentRef = {
   account: AccountKey
@@ -390,6 +391,7 @@ export const MAIL_TOOL_DEFINITIONS: Anthropic.Tool[] = [
   PACK_EMAILS_AND_SEND_TOOL,
   SAVE_EMAIL_ATTACHMENTS_TOOL,
   SEND_EMAIL_WITH_ATTACHMENTS_TOOL,
+  READ_SCAN_DRIVE_TOOL,
 ]
 
 export const MAIL_TOOL_EXECUTORS: Record<string, (input: unknown) => Promise<string>> = {
@@ -404,6 +406,8 @@ export const MAIL_TOOL_EXECUTORS: Record<string, (input: unknown) => Promise<str
     executeSaveEmailAttachmentsToDrive(i as SaveEmailAttachmentsInput),
   send_email_with_attachments: (i) =>
     executeSendEmailWithAttachments(i as SendEmailWithAttachmentsInput),
+  leggi_scansione_drive: (i) =>
+    executeReadScanFromDrive(i as { file_id: string; prompt?: string }),
 }
 
 /** Sub-agent allow-list (mail-router): solo read/get/mark.
