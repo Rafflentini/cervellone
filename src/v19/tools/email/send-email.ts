@@ -19,6 +19,7 @@
  * Se SMTP riesce ma APPEND fallisce: la mail è inviata, segnaliamo warning
  * (impossibile rollback) e logghiamo `append_failed=true`.
  */
+import { randomUUID } from 'crypto'
 import type Anthropic from '@anthropic-ai/sdk'
 import nodemailer from 'nodemailer'
 import { makeSmtp, fromHeader } from './connection'
@@ -111,7 +112,11 @@ export async function sendEmailInternal(
     }
   }
 
-  const transporter = makeSmtp(input.from_account)
+  // Genera un Message-ID esplicito e univoco da usare sia per SMTP che per IMAP APPEND.
+  // Questo garantisce che il raw RFC822 pre-composto (sotto) abbia lo stesso
+  // Message-ID della mail che arriva al destinatario.
+  const messageId = `<${randomUUID()}@restruktura.it>`
+
   const message = {
     from: fromHeader(input.from_account),
     to: input.to.join(', '),
@@ -123,7 +128,32 @@ export async function sendEmailInternal(
     attachments: buildAttachments(input),
     inReplyTo: input.in_reply_to?.message_id,
     references: input.in_reply_to?.message_id,
+    messageId,
   }
+
+  // ── PRE-COMPOSE RFC822 raw PRIMA dell'invio SMTP ──────────────────────────
+  // Nodemailer SMTP transport NON popola info.raw dopo sendMail (bug noto).
+  // Costruiamo il raw via streamTransport PRIMA dell'invio così il buffer è
+  // garantito disponibile per IMAP APPEND, anche in caso di allegati grandi.
+  // Il messageId fisso sopra garantisce coerenza tra raw e mail ricevuta.
+  let raw: Buffer = Buffer.alloc(0)
+  try {
+    const preComposer = nodemailer.createTransport({ streamTransport: true, buffer: true })
+    const preComposed = (await preComposer.sendMail(message)) as {
+      message?: Buffer | string
+    }
+    if (preComposed.message) {
+      raw = Buffer.isBuffer(preComposed.message)
+        ? preComposed.message
+        : Buffer.from(preComposed.message)
+    }
+    console.info(`[mail] pre-compose raw OK: ${raw.length} bytes (attachments=${message.attachments.length})`)
+  } catch (preComposeErr) {
+    console.warn('[mail] pre-compose raw failed — IMAP APPEND will be skipped:', preComposeErr)
+  }
+
+  // ── INVIO SMTP ────────────────────────────────────────────────────────────
+  const transporter = makeSmtp(input.from_account)
   const info = (await transporter.sendMail(message)) as {
     messageId?: string
     raw?: Buffer
@@ -131,30 +161,7 @@ export async function sendEmailInternal(
     envelope?: unknown
   }
 
-  // Bug-fix 24 mag: Nodemailer SMTP transport NON popola automaticamente info.raw o
-  // info.message dopo sendMail. Senza questo, raw è 0 byte e IMAP APPEND fallisce con
-  // "NO Can't save a zero byte message" (server Dovecot TopHost). Soluzione canonica:
-  // generare il raw RFC822 separatamente via streamTransport (buffer:true) DOPO l'invio
-  // SMTP riuscito, usando lo stesso message object. Costo: extra MIME compose ~10ms,
-  // zero rete (streamTransport non invia, solo serializza).
-  let raw: Buffer = info.raw ?? Buffer.from(info.message ?? '')
-  if (raw.length === 0) {
-    try {
-      const composer = nodemailer.createTransport({ streamTransport: true, buffer: true })
-      const composed = (await composer.sendMail({
-        ...message,
-        messageId: info.messageId, // mantieni stesso Message-ID dell'SMTP send
-      })) as { message?: Buffer | string }
-      if (composed.message) {
-        raw = Buffer.isBuffer(composed.message)
-          ? composed.message
-          : Buffer.from(composed.message)
-      }
-    } catch (composeErr) {
-      console.warn('[mail] raw compose for IMAP APPEND failed:', composeErr)
-    }
-  }
-
+  // ── IMAP APPEND (copia in Sent) ───────────────────────────────────────────
   // Atomicità SMTP→IMAP: se SMTP ok ma APPEND fallisce, la mail è già partita
   // e non possiamo rollbackare. Segnaliamo warning + log, ma NON throw.
   let appendPath: string | null = null
@@ -171,6 +178,7 @@ export async function sendEmailInternal(
     console.warn('[mail] appendToSent failed after SMTP success', {
       account: input.from_account,
       message_id: info.messageId,
+      raw_len: raw.length,
       error: appendError,
     })
   }
@@ -198,13 +206,14 @@ export async function sendEmailInternal(
       sent_uid: appendUid,
       append_failed: appendFailed,
       append_error: appendError ?? null,
+      raw_len: raw.length,
     },
     append_failed: appendFailed,
   })
 
   return {
     status: 'sent',
-    message_id: info.messageId ?? '',
+    message_id: info.messageId ?? messageId,
     sent_folder: appendPath ?? '',
     sent_uid: appendUid,
     append_failed: appendFailed,

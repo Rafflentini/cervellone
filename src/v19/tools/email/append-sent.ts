@@ -60,6 +60,16 @@ function extractErrDetails(err: unknown): string {
 }
 
 export async function appendToSent(account: AccountKey, raw: Buffer): Promise<AppendSentResult> {
+  // Guard: buffer vuoto → fallisce subito con messaggio descrittivo.
+  // Dovecot rifiuta APPEND di zero byte con "NO Can't save a zero byte message".
+  // Meglio fallire qui con log chiaro piuttosto che sprecare 3 tentativi IMAP.
+  if (raw.length === 0) {
+    throw new Error(
+      'appendToSent: raw RFC822 buffer è vuoto (0 byte) — impossibile fare IMAP APPEND. ' +
+      'La mail è stata inviata via SMTP ma la copia in Sent non è stata salvata.',
+    )
+  }
+
   const client = await openImap(account)
   try {
     const list = (await client.list()) as ImapFolder[]
