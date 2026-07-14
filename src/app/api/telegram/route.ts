@@ -499,11 +499,19 @@ export async function POST(request: NextRequest) {
     // ─── Conferma invio mail a LINGUAGGIO NATURALE: "invia pure mail" ───
     // Conferma l'ultimo pending non scaduto senza codice uuid. Match SOLO su
     // frasi-conferma brevi (NON su "invia una mail a Mario ..." = composizione).
-    if (/^\s*(s[iì][,.\s]+)?(conferm[oai]\s+(l'?\s*)?invio|(invia|manda|spedisci)(la|lo|tela)?(\s+pure)?\s+(la\s+|quella\s+)?(mail|email|e-?mail|messaggio))(\s+pure)?\s*[.!…]*\s*$/i.test(userText)) {
-      const { confirmLatestPendingSend } = await import('@/v19/tools/email/telegram-confirm')
-      const r = await confirmLatestPendingSend()
-      await sendTelegramMessage(chatId, r.message)
-      return NextResponse.json({ ok: true })
+    // Pre-normalizza artefatti di trascrizione vocale comuni:
+    // - "in via" → "invia"  (Telegram trascrive spesso "invia pure" → "in via pure/pura")
+    // - "pura"/"puro" → "pure"  (genere errato da speech-to-text)
+    {
+      const normalizedForConfirm = userText.trim()
+        .replace(/\bin\s+via\b/gi, 'invia')
+        .replace(/\bpur[ao]\b/gi, 'pure')
+      if (/^\s*(s[iì][,.\s]+)?(conferm[oai]\s+(l'?\s*)?invio|(invia|manda|spedisci)(la|lo|tela)?(\s+pure)?\s+(la\s+|quella\s+)?(mail|email|e-?mail|messaggio))(\s+pure)?\s*[.!…]*\s*$/i.test(normalizedForConfirm)) {
+        const { confirmLatestPendingSend } = await import('@/v19/tools/email/telegram-confirm')
+        const r = await confirmLatestPendingSend()
+        await sendTelegramMessage(chatId, r.message)
+        return NextResponse.json({ ok: true })
+      }
     }
 
     const mConferma = userText.match(/^\/conferma_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
@@ -657,32 +665,18 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Storia ──
-    // FIX 10 giu: history 6 → 16 messaggi (8 scambi). Il taglio a 6 del 5 giu (anti
-    // contaminazione cross-turn + costi) era TROPPO stretto: in un task lungo (es. comporre
-    // una mail, poi cercare allegati per più turni) il messaggio in cui il bot aveva scritto
-    // il contenuto scorreva fuori finestra → il bot lo perdeva e rifaceva da capo. Perdere il
-    // proprio output è molto peggio della contaminazione che il taglio voleva evitare; la RAG
-    // di fallback è troppo debole per ripescarlo. Costo contenuto: durante un task attivo la
-    // history è cache-read (breakpoint mobile + TTL 1h sul prefisso). Fix robusto: working-memory
-    // che persiste/ri-inietta gli artefatti (bozze/decisioni) a prescindere dalla finestra.
-    // Memoria conversazione da COORDINATORE (non da chatbot): finestra ampia (80 msg) con TETTO a
-    // caratteri per controllare il costo (il prefisso ripetuto è cachato 1h, quindi il sovrapprezzo
-    // reale è basso). Prima era 16 → dimenticava tutto dopo poche battute.
     const HISTORY_MAX_MESSAGES = 80
-    const HISTORY_CHAR_BUDGET = 120_000 // ~30-40K token: memoria larga ma bounded
+    const HISTORY_CHAR_BUDGET = 120_000
     const recentMessages = await safeSupabase(
       () => supabase.from('messages').select('role, content')
         .eq('conversation_id', conversationId)
         .order('created_at', { ascending: false }).limit(HISTORY_MAX_MESSAGES),
       []
     )
-    // order DESC + reverse → ordine cronologico
     if (Array.isArray(recentMessages)) {
       recentMessages.reverse()
     }
 
-    // Cap per-messaggio: un singolo messaggio enorme (es. documento incollato) non deve riempire da
-    // solo la finestra né far esplodere il costo. Tronca le stringhe oltre il cap (audit P1).
     const PER_MSG_CHAR_CAP = 12_000
     const history: Anthropic.MessageParam[] = ((recentMessages as any[]) || [])
       .filter(m => m.role === 'user' || m.role === 'assistant')
@@ -692,8 +686,6 @@ export async function POST(request: NextRequest) {
           ? m.content.slice(0, PER_MSG_CHAR_CAP) + ' […troncato]'
           : m.content,
       }))
-    // Tetto di costo: se la finestra supera il budget, scarta i messaggi PIÙ VECCHI (tiene i recenti)
-    // finché rientra. Mai sotto gli ultimi 8 (continuità minima garantita).
     {
       const charsOf = (c: Anthropic.MessageParam['content']): number =>
         typeof c === 'string' ? c.length : JSON.stringify(c ?? '').length
@@ -707,7 +699,6 @@ export async function POST(request: NextRequest) {
     const attachedRecentUploadIds: string[] = []
 
     // FIX multi-foto (Approccio 2): allega gli upload recenti NON ancora processati di questa chat
-    // (es. 2ª foto di un album scartata dal mutex), escludendo quello del messaggio corrente.
     try {
       const cutoffIso = new Date(Date.now() - 10 * 60 * 1000).toISOString()
       const pending = await safeSupabase(
@@ -722,7 +713,7 @@ export async function POST(request: NextRequest) {
       )
       const pendingRows = (Array.isArray(pending) ? pending : []) as Array<{ id: string; telegram_file_id: string }>
       for (const row of pendingRows) {
-        if (row.telegram_file_id === currentUploadFileId) continue // già nei fileBlocks correnti
+        if (row.telegram_file_id === currentUploadFileId) continue
         try {
           const extra = await downloadTelegramFile(row.telegram_file_id)
           if (extra) {
@@ -746,27 +737,8 @@ export async function POST(request: NextRequest) {
     }
     if (history.length > 0 && history[0].role !== 'user') history.shift()
 
-    // FIX BUG-DDT (07/05/2026): compressione documenti stratificata.
-    //
-    // Bug precedente: TUTTI i ~~~document venivano sostituiti con stringa
-    // generica "[Documento gia generato]", facendo sparire i dati reali
-    // (es. articoli DDT, voci preventivo) dalla history. Quando l'utente
-    // chiedeva modifiche di formato ("impaginalo A4"), il modello non
-    // vedeva più il contenuto e ricostruiva a memoria → HALLUCINATION
-    // di dati che non erano mai stati specificati.
-    //
-    // Repro: chat #X del 07/05 — DDT con piastrelle "IRIS cotto serie 8"
-    // mai menzionate dall'utente, inventate dal modello su richiesta di
-    // re-impaginazione perché non vedeva più i dati originali.
-    //
-    // Fix stratificato:
-    //   1. Identifica l'INDICE dell'ultimo messaggio assistant con un ~~~document.
-    //   2. L'ultimo documento NON viene compresso — è quello su cui si lavora ora.
-    //   3. I documenti precedenti vengono troncati a 3000 char (header + struttura
-    //      + dati chiave preservati) invece di cancellati interamente.
-    //   4. Il placeholder include il <h1> del documento per identificarlo.
+    // FIX BUG-DDT: compressione documenti stratificata.
     {
-      // Trova l'indice dell'ultimo messaggio assistant che contiene un documento.
       let lastDocIdx = -1
       for (let k = history.length - 1; k >= 0; k--) {
         const m = history[k]
@@ -777,11 +749,10 @@ export async function POST(request: NextRequest) {
       }
 
       const compressDoc = (docBlock: string): string => {
-        // docBlock = "~~~document\n...html...\n~~~"
         const titleMatch = docBlock.match(/<h1[^>]*>([^<]+)<\/h1>/i)
         const title = titleMatch ? titleMatch[1].trim().slice(0, 80) : 'senza titolo'
         const TRUNCATE_AT = 3000
-        if (docBlock.length <= TRUNCATE_AT) return docBlock // già piccolo, lascia
+        if (docBlock.length <= TRUNCATE_AT) return docBlock
         const head = docBlock.slice(0, TRUNCATE_AT)
         const remaining = docBlock.length - TRUNCATE_AT
         return `${head}\n[...documento "${title}" troncato — ${remaining} char omessi per economia di contesto]\n~~~\n`
@@ -790,17 +761,13 @@ export async function POST(request: NextRequest) {
       for (let k = 0; k < history.length; k++) {
         const msg = history[k]
         if (msg.role !== 'assistant' || typeof msg.content !== 'string') continue
-        if (k === lastDocIdx) continue // ultimo documento: integro
-        // Per i precedenti: sostituisci ogni blocco ~~~document con versione troncata
+        if (k === lastDocIdx) continue
         msg.content = msg.content.replace(/~~~document\n[\s\S]*?~~~(?:\n|$)/g, (match: string) => compressDoc(match))
       }
     }
 
     // ── Claude (ASINCRONO) — risponde subito, elabora in background ──
     const bgProcess = async () => {
-      // Heartbeat: aggiorna started_at ogni 20s per mantenere il lock "fresco".
-      // Se Vercel hard-kills la funzione, il heartbeat si ferma e il lock diventa
-      // stale dopo STALE_LOCK_MS (90s), permettendo al messaggio successivo di reclamarlo.
       let heartbeatInterval: NodeJS.Timeout | null = setInterval(() => {
         safeSupabase(() =>
           supabase
@@ -812,10 +779,6 @@ export async function POST(request: NextRequest) {
       }, 20_000)
 
       try {
-        // FASE 1b: lavoro core estratto in runAgentJob (condiviso con il path
-        // durable). L'hook onStreamSettled riproduce ESATTAMENTE il punto in cui
-        // l'originale clear-ava heartbeat + typing (subito dopo lo stream Claude
-        // + mark uploads, prima del parsing documenti).
         await runAgentJob(
           {
             chatId,
@@ -845,21 +808,13 @@ export async function POST(request: NextRequest) {
       } finally {
         if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null }
         if (typingInterval) clearInterval(typingInterval)
-        // Bug 1: release del mutex chat (sempre, anche su errore)
-        // Scoped per request_id: rilascia SOLO il lock di QUESTO job, così non
-        // cancella per errore il lock di un job subentrato dopo lo stale-cleanup.
         await safeSupabase(() =>
           supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId).eq('request_id', requestId)
         )
       }
     }
 
-    // ── Avviso rientro Opus → Sonnet (opzione A) ──
-    // Se l'ora di Opus è scaduta, avvisa UNA volta al primo messaggio dopo la scadenza.
-    // `opus_until` esiste SOLO mentre Opus è attivo (lo scrive /opus, lo cancellano /sonnet
-    // e il revert in getConfig). Quindi: opus_until presente + scaduto ⇒ l'ora è appena finita.
-    // getConfig (poco dopo, nella chiamata al modello) fa il revert vero e cancella opus_until,
-    // perciò dal messaggio successivo questa condizione è falsa → l'avviso parte una volta sola.
+    // ── Avviso rientro Opus → Sonnet ──
     try {
       const ou = await safeSupabase(
         () => supabase.from('cervellone_config').select('value').eq('key', 'opus_until').maybeSingle(),
@@ -872,21 +827,11 @@ export async function POST(request: NextRequest) {
           chatId,
           "⏱️ L'ora di *Opus* è finita: torno su *Sonnet* (modello standard). Se il lavoro non è concluso e ti serve ancora la massima potenza, riattivalo con /opus.",
         )
-        // Idempotenza (audit 10 giu P2): cancella SUBITO opus_until qui, così l'avviso parte
-        // una sola volta anche se getConfig è in cache e salta il revert. getConfig farà
-        // comunque il revert del modello a Sonnet alla prossima lettura non-cachata.
         await safeSupabase(() => supabase.from('cervellone_config').delete().eq('key', 'opus_until'), null)
       }
     } catch { /* best-effort: l'avviso non deve mai bloccare il messaggio */ }
 
-    // ── Classifica task: veloce vs durable (FASE 1b) ──
-    // shouldUseDurable = flag `durable_workflows_enabled` ON **E** task lungo.
-    // FLAG OFF (prod): ritorna sempre false → ramo else → comportamento IDENTICO
-    // a oggi (waitUntil(bgProcess()), path in-process 300s).
     if (await shouldUseDurable(userText, fileBlocks)) {
-      // ── Path DURABLE (flag ON + long task) ──
-      // Guard anti-paralleli: il path durable rilascia subito il mutex per-chat,
-      // quindi serializziamo qui — una sola task lunga 'running' fresca per chat.
       const activeRun = await getActiveRunForChat(String(chatId))
       if (activeRun) {
         await sendTelegramMessage(chatId, '⏳ Ho già una task lunga in corso per questa chat. Attenda che finisca (o usi /reset se è bloccata).')
@@ -915,26 +860,14 @@ export async function POST(request: NextRequest) {
         conversationId,
       })
 
-      // Mutex/heartbeat: nel path durable bgProcess NON viene eseguito, quindi
-      // il suo finally (che rilasciava il lock) non gira e non c'è heartbeat.
-      // Il workflow possiede ora il job in modo durevole/crash-safe: il mutex
-      // in-process (serializzazione bgProcess paralleli) non serve più per
-      // questa request. Lo rilascio QUI per non lasciare la chat bloccata fino
-      // allo stale-cleanup a 90s. Fermo anche il typingInterval avviato prima
-      // del dispatch (il workflow invia il proprio placeholder/stream).
       if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
-      // Scoped per request_id: rilascia SOLO il lock di QUESTO job (vedi finally bgProcess).
       await safeSupabase(() =>
         supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId).eq('request_id', requestId)
       )
     } else {
-      // ── Path FLAG-OFF (default prod) — INVARIATO ──
-      // Path veloce in-process (max 300s Vercel). bgProcess gestisce
-      // heartbeat + release mutex nel proprio finally, come sempre.
       waitUntil(bgProcess())
     }
 
-    // Rispondi SUBITO al webhook — niente più timeout
     return NextResponse.json({ ok: true })
   } catch (err) {
     if (typingInterval) clearInterval(typingInterval)
@@ -942,8 +875,6 @@ export async function POST(request: NextRequest) {
     if (errorChatId) {
       const msg = err instanceof Error ? err.message : String(err)
       await sendTelegramMessage(errorChatId, `⚠️ ${msg.slice(0, 300)}`).catch(() => {})
-      // Bug 1: release lock se errore prima del dispatch bgProcess (altrimenti
-      // il lock rimane fino a stale cleanup 5 min, bloccando l'utente).
       await safeSupabase(() =>
         supabase.from('telegram_active_jobs').delete().eq('chat_id', errorChatId!)
       )
