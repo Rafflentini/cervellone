@@ -68,9 +68,16 @@ function ghHeaders(): Record<string, string> {
 }
 
 // ── github_read_file ──
+//
+// PAGINAZIONE (2026-07-21): l'ambiente di esecuzione tronca QUALSIASI risultato-tool
+// a ~100K char prima di consegnarlo al modello. Per leggere file grandi (es. tools.ts
+// da 110KB) senza perdere la coda, readFile supporta un `offset` (char) e restituisce
+// una finestra di WINDOW char, indicando l'offset successivo. Così il modello può
+// paginare: offset=0 → 90000 → 180000 ...
+const READ_WINDOW = 90000
 
-async function readFile(path: string, ref?: string): Promise<string> {
-  console.log(`[GH] readFile path="${path}" ref="${ref || 'main'}"`)
+async function readFile(path: string, ref?: string, offset?: number): Promise<string> {
+  console.log(`[GH] readFile path="${path}" ref="${ref || 'main'}" offset=${offset || 0}`)
   try {
     const url = `${GITHUB_API}/repos/${REPO_FULL}/contents/${path}${ref ? `?ref=${ref}` : ''}`
     const res = await fetch(url, { headers: ghHeaders() })
@@ -87,7 +94,22 @@ async function readFile(path: string, ref?: string): Promise<string> {
       return `⚠️ File "${path}" troppo grande (${sizeKB}KB > 400KB max). Riduci scope o leggi un file più piccolo.`
     }
     const content = Buffer.from(data.content, 'base64').toString('utf-8')
-    return `📄 ${path} (${sizeKB}KB, sha=${data.sha?.slice(0, 7)})\n\n\`\`\`\n${content}\n\`\`\``
+    const totalChars = content.length
+    const start = Math.max(0, Math.floor(offset || 0))
+
+    // File che sta in una finestra: comportamento invariato (nessun footer rumoroso).
+    if (start === 0 && totalChars <= READ_WINDOW) {
+      return `📄 ${path} (${sizeKB}KB, sha=${data.sha?.slice(0, 7)})\n\n\`\`\`\n${content}\n\`\`\``
+    }
+
+    // File grande: restituisci una finestra e indica come continuare.
+    const slice = content.slice(start, start + READ_WINDOW)
+    const end = start + slice.length
+    const hasMore = end < totalChars
+    const footer = hasMore
+      ? `\n\n[finestra char ${start}–${end} di ${totalChars} totali. Per continuare: github_read_file(path="${path}", offset=${end})]`
+      : `\n\n[finestra char ${start}–${end} di ${totalChars} totali. Fine file raggiunta.]`
+    return `📄 ${path} (${sizeKB}KB, sha=${data.sha?.slice(0, 7)}, finestra da char ${start})\n\n\`\`\`\n${slice}\n\`\`\`${footer}`
   } catch (err) {
     console.error('[GH] readFile ERROR:', err)
     return `Errore lettura file GitHub: ${err instanceof Error ? err.message : err}`
@@ -396,12 +418,13 @@ async function mergePr(prNumber: string, mergeMethod: string = 'squash'): Promis
 export const GITHUB_TOOLS = [
   {
     name: 'github_read_file',
-    description: `Legge il contenuto di un file dal repo GitHub ${REPO_FULL} (codice sorgente di Cervellone). Usa per ispezionare il proprio codice quando l'Ingegnere segnala un bug o chiede come funziona una feature. Read-only, sicuro. Limite 400KB.`,
+    description: `Legge il contenuto di un file dal repo ${REPO_FULL} (codice sorgente di Cervellone). Usa per ispezionare il proprio codice quando l'Ingegnere segnala un bug o chiede come funziona una feature. Read-only, sicuro. Limite 400KB. Per file grandi l'ambiente tronca il risultato a ~100K char: usa il parametro offset per leggere le finestre successive (l'output indica l'offset da usare per continuare).`,
     input_schema: {
       type: 'object' as const,
       properties: {
         path: { type: 'string', description: 'Path relativo al root del repo, es. "src/lib/claude.ts"' },
         ref: { type: 'string', description: 'Branch/commit (default: main). Opzionale.' },
+        offset: { type: 'number', description: 'OPZIONALE — offset in caratteri da cui iniziare la lettura, per paginare file grandi. Default 0. L\'output di una finestra indica l\'offset successivo da passare.' },
       },
       required: ['path'],
     },
@@ -464,8 +487,12 @@ export async function executeGithubTool(
   input: Record<string, any>,
 ): Promise<string> {
   switch (name) {
-    case 'github_read_file':
-      return readFile(input.path, input.ref)
+    case 'github_read_file': {
+      const off = input.offset !== undefined && input.offset !== null && input.offset !== ''
+        ? Number(input.offset)
+        : undefined
+      return readFile(input.path, input.ref, Number.isFinite(off as number) ? (off as number) : undefined)
+    }
     case 'github_propose_fix': {
       // input.files può arrivare come array (chiamata diretta) o come stringa JSON
       // (alcuni wrapper stringificano i valori non-string prima del dispatch).
