@@ -83,8 +83,8 @@ async function readFile(path: string, ref?: string): Promise<string> {
       return `File "${path}" non leggibile (encoding=${data.encoding})`
     }
     const sizeKB = Math.round((data.size || 0) / 1024)
-    if (sizeKB > 100) {
-      return `⚠️ File "${path}" troppo grande (${sizeKB}KB > 100KB max). Riduci scope o leggi un file più piccolo.`
+    if (sizeKB > 400) {
+      return `⚠️ File "${path}" troppo grande (${sizeKB}KB > 400KB max). Riduci scope o leggi un file più piccolo.`
     }
     const content = Buffer.from(data.content, 'base64').toString('utf-8')
     return `📄 ${path} (${sizeKB}KB, sha=${data.sha?.slice(0, 7)})\n\n\`\`\`\n${content}\n\`\`\``
@@ -396,7 +396,7 @@ async function mergePr(prNumber: string, mergeMethod: string = 'squash'): Promis
 export const GITHUB_TOOLS = [
   {
     name: 'github_read_file',
-    description: `Legge il contenuto di un file dal repo GitHub ${REPO_FULL} (codice sorgente di Cervellone). Usa per ispezionare il proprio codice quando l'Ingegnere segnala un bug o chiede come funziona una feature. Read-only, sicuro. Limite 100KB.`,
+    description: `Legge il contenuto di un file dal repo GitHub ${REPO_FULL} (codice sorgente di Cervellone). Usa per ispezionare il proprio codice quando l'Ingegnere segnala un bug o chiede come funziona una feature. Read-only, sicuro. Limite 400KB.`,
     input_schema: {
       type: 'object' as const,
       properties: {
