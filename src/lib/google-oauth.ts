@@ -7,6 +7,7 @@ const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/calendar',  // 2026-07-22: eventi Google Calendar (richiede ri-consent)
   'openid',  // FIX W1.3.5: richiesto per ottenere id_token con email
   'email',
   'profile',

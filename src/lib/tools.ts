@@ -24,6 +24,7 @@ import { MOVIMENTI_TOOLS, executeMovimentiTool } from './movimenti-extract'
 import { RICONCILIAZIONE_TOOLS, executeRiconciliazioneTool } from './riconciliazione-tools'
 import { PRIMA_NOTA_TOOLS, executePrimaNotaTool } from './prima-nota-tools'
 import { FIC_WRITE_TOOLS, executeFicWriteTool } from './fic-write-tools'
+import { CALENDAR_TOOLS, executeCalendarTool } from './calendar-tools'
 import { MAIL_TOOL_DEFINITIONS, MAIL_TOOL_EXECUTORS } from '@/v19/tools/email'
 import { DOCUMENT_TEMPLATE_TOOLS, executeDocumentTemplateTool } from './document-template-tools'
 import { recordSentMail } from '@/lib/sent-mail'
@@ -2464,6 +2465,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...PRIMA_NOTA_TOOLS, // 2026-05-26 Contabilita D: Prima Nota Google Sheet
   ...FIC_WRITE_TOOLS, // 2026-05-26 Contabilita F: compilazione bozze FIC con doppia conferma
   ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool (account restruktura.drive@gmail.com via Google API)
+  ...CALENDAR_TOOLS, // 2026-07-22 Google Calendar R+W: 5 tool (stesso account/OAuth, richiede ri-consent scope calendar)
   ...MEMORIA_TOOLS, // 2026-05-07 Memoria persistente sub-progetto B: 4 tool
   ...WORKING_MEMORY_TOOLS, // 2026-06-04 FASE 1 Memoria procedurale: registra_apprendimento
   ...PROJECT_TOOLS, // 2026-06-04 FASE 2 Memoria di progetto: imposta/aggiorna/chiudi progetto attivo
@@ -2472,7 +2474,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...(DOCUMENT_TEMPLATE_TOOLS as unknown as ToolDefinition[]), // 2026-06-11 Modelli documento Fase 1: insegna/compila/lista/ritrova
   ...(MAIL_TOOL_DEFINITIONS as unknown as ToolDefinition[]), // 2026-05-24 V19 Mail TopHost IMAP/SMTP: 5 tool (info@/raffaele.lentini@)
 ]
-const EXECUTORS = [executeStudioTecnico, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
+const EXECUTORS = [executeStudioTecnico, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [
