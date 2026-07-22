@@ -242,12 +242,62 @@ async function registraScadenza(input: Record<string, unknown>): Promise<string>
   const { data, error } = await supabase
     .from('cervellone_scadenze')
     .insert(insertFields)
-    .select('id')
+    .select('id, reminder_days')
     .single()
 
   if (error) return fail(`Errore inserimento scadenza: ${error.message}`)
-  const created = data as Pick<ScadenzaRow, 'id'> | null
-  return ok({ id: created?.id, sostituite: replacedIds })
+  const created = data as Pick<ScadenzaRow, 'id' | 'reminder_days'> | null
+
+  // 2026-07-22: scrive la scadenza anche su Google Calendar. BEST-EFFORT:
+  // la registrazione in DB è già andata a buon fine, quindi un errore Calendar
+  // (scope/API/rete) NON deve far fallire la scadenza. Riusa executeCalendarTool.
+  // NB: se la stessa scadenza viene ri-registrata (path sostituzione), viene
+  // creato un nuovo evento; il vecchio evento NON viene rimosso (nessuna colonna
+  // calendar_event_id → niente dedup). Follow-up se diventa fastidioso.
+  const calendar = await createCalendarForScadenza({
+    soggetto,
+    dataScadenza: parsedDate.value,
+    tipoDocumento: insertFields.tipo_documento ?? null,
+    note: insertFields.note ?? null,
+    reminderDays: created?.reminder_days ?? insertFields.reminder_days,
+  })
+
+  return ok({ id: created?.id, sostituite: replacedIds, calendar })
+}
+
+/**
+ * Crea un evento all-day sul Google Calendar per una scadenza. Best-effort:
+ * ritorna una stringa-nota (successo o motivo del mancato inserimento), mai
+ * lancia — il chiamante l'ha già persistita in DB.
+ */
+async function createCalendarForScadenza(opts: {
+  soggetto: string
+  dataScadenza: string
+  tipoDocumento: string | null
+  note: string | null
+  reminderDays: number | undefined
+}): Promise<string> {
+  try {
+    const { executeCalendarTool } = await import('./calendar-tools')
+    const title = opts.tipoDocumento
+      ? `Scadenza ${opts.tipoDocumento}: ${opts.soggetto}`
+      : `Scadenza: ${opts.soggetto}`
+    const descParts = ['Scadenza registrata in Cervellone.']
+    if (opts.tipoDocumento) descParts.push(`Tipo: ${opts.tipoDocumento}.`)
+    if (opts.note) descParts.push(`Note: ${opts.note}`)
+    const res = await executeCalendarTool('calendar_create_event', {
+      summary: title,
+      start_date: opts.dataScadenza,
+      reminder_days_before: String(opts.reminderDays ?? 5),
+      description: descParts.join(' '),
+    })
+    if (typeof res === 'string' && res.startsWith('✅')) {
+      return 'evento creato su Google Calendar'
+    }
+    return `Calendar non aggiornato: ${(res ?? 'nessuna risposta').slice(0, 200)}`
+  } catch (e) {
+    return `Calendar non aggiornato: ${e instanceof Error ? e.message : String(e)}`
+  }
 }
 
 async function listaScadenze(input: Record<string, unknown>): Promise<string> {
@@ -352,7 +402,7 @@ export async function executeScadenzeTool(name: string, input: Record<string, un
 export const SCADENZE_TOOLS: ToolDefinition[] = [
   {
     name: 'registra_scadenza',
-    description: 'Registra una scadenza documentale/operativa in cervellone_scadenze. Se esiste gia una scadenza attiva con stesso soggetto e tipo_documento, la marca come sostituita e crea la nuova.',
+    description: 'Registra una scadenza documentale/operativa in cervellone_scadenze. Se esiste gia una scadenza attiva con stesso soggetto e tipo_documento, la marca come sostituita e crea la nuova. Crea AUTOMATICAMENTE anche un evento sul Google Calendar di restruktura.drive (best-effort: se il Calendar non e disponibile la scadenza viene comunque registrata; il campo "calendar" nella risposta indica l\'esito).',
     input_schema: {
       type: 'object' as const,
       properties: {
