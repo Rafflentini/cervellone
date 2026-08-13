@@ -492,7 +492,7 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       }
 
       const lines = data.map(v =>
-        `${v.codice_voce} | ${v.descrizione.slice(0, 300)} | ${v.unita_misura} | €${v.prezzo}`
+        `${v.codice_voce} | ${v.descrizione.slice(0, 800)} | ${v.unita_misura} | €${v.prezzo}`
       )
       return `Trovate ${data.length} voci per "${query}" (${regione}):\n\n${lines.join('\n')}`
     }
