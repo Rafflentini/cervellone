@@ -374,6 +374,41 @@ export async function readXlsxFromDrive(fileId: string): Promise<string> {
   }
 }
 
+export async function readOdsFromDrive(fileId: string): Promise<string> {
+  console.log(`[DRIVE] readOdsFromDrive id=${fileId}`)
+  try {
+    const file = await downloadFile(fileId)
+    const isOds = file.mimeType.includes('opendocument.spreadsheet') || file.name.toLowerCase().endsWith('.ods')
+    if (!isOds) return `File "${file.name}" non è un ODS (mime: ${file.mimeType}).`
+    const JSZip = (await import('jszip')).default
+    const zip = await JSZip.loadAsync(file.buffer)
+    const contentXml = await zip.file('content.xml')?.async('string')
+    if (!contentXml) return `ODS "${file.name}" senza content.xml — file vuoto o non valido.`
+
+    const texts: string[] = []
+    const re = /<text:p\b[^>]*>([\s\S]*?)<\/text:p>/g
+    let m
+    while ((m = re.exec(contentXml)) !== null) {
+      const text = m[1]
+        .replace(/<[^>]+>/g, '')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .trim()
+      if (text) texts.push(text)
+    }
+
+    const content = texts.slice(0, 5000).join(' | ').slice(0, 50000)
+    console.log(`[DRIVE] readOdsFromDrive ok paragraphs=${texts.length}`)
+    return `📊 ODS: ${file.name}\n\n${content || '(nessun testo trovato nel foglio ODS)'}`
+  } catch (err) {
+    console.error(`[DRIVE] readOdsFromDrive ERROR:`, err)
+    return `Errore lettura ODS: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 // FIX 2026-06-04: lettura file di testo semplice (text/plain, .txt/.csv/.md/.log).
 // Scarica i byte e li decodifica UTF-8. Riusa il limite 20MB di downloadFile.
 export async function readPlainTextFromDrive(fileId: string): Promise<string> {
@@ -933,7 +968,7 @@ export async function executeDriveTool(name: string, input: Record<string, strin
     case 'drive_read_pdf':
       return readPdfFromDrive(input.file_id)
     case 'drive_read_office': {
-      // Auto-detect DOCX vs XLSX vs testo semplice da metadata
+      // Auto-detect DOCX vs XLSX/ODS vs testo semplice da metadata
       try {
         const drive = await getDrive()
         const meta = await drive.files.get({ fileId: input.file_id, fields: 'name, mimeType' })
@@ -941,6 +976,9 @@ export async function executeDriveTool(name: string, input: Record<string, strin
         const fmime = meta.data.mimeType || ''
         if (fname.endsWith('.docx') || fmime.includes('wordprocessing')) {
           return readDocxFromDrive(input.file_id)
+        }
+        if (fname.endsWith('.ods') || fmime.includes('opendocument.spreadsheet')) {
+          return readOdsFromDrive(input.file_id)
         }
         if (fname.endsWith('.xlsx') || fmime.includes('spreadsheet')) {
           return readXlsxFromDrive(input.file_id)
@@ -952,7 +990,7 @@ export async function executeDriveTool(name: string, input: Record<string, strin
         ) {
           return readPlainTextFromDrive(input.file_id)
         }
-        return `Formato non supportato: ${fmime}. Usa drive_read_pdf o drive_read_document.`
+        return `Formato non supportato: ${fmime}. Formati gestiti: .docx, .xlsx, .ods, .txt, .csv, .md, .log, .tsv, .json, .xml. Usa drive_read_pdf per PDF o drive_read_document per Google Docs/testi.`
       } catch (err) {
         return `Errore drive_read_office: ${err instanceof Error ? err.message : err}`
       }
@@ -1194,11 +1232,11 @@ Il tool sceglie automaticamente la cartella destinazione:
   },
   {
     name: 'drive_read_office',
-    description: 'Leggi un file Microsoft Office (DOCX o XLSX) o un file di testo semplice (.txt/.csv/.md) dal Drive Restruktura. Auto-detect formato. Limite 20MB, contenuto troncato a 50K char.',
+    description: 'Leggi un file Microsoft Office (DOCX o XLSX), OpenDocument (.ods) o un file di testo semplice (.txt/.csv/.md) dal Drive Restruktura. Auto-detect formato. Limite 20MB, contenuto troncato a 50K char.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        file_id: { type: 'string', description: 'ID del file DOCX, XLSX o di testo nel Drive' },
+        file_id: { type: 'string', description: 'ID del file DOCX, XLSX, ODS o di testo nel Drive' },
       },
       required: ['file_id'],
     },
