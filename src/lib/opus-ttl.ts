@@ -9,8 +9,11 @@
 
 export const OPUS_TTL_DEFAULT_MIN = 60
 export const OPUS_TTL_MAX_MIN = 480
-export const OPUS_MODEL = 'claude-opus-4-8'
-export const SONNET_MODEL = 'claude-sonnet-4-6'
+// 2026-08-13 (report #5): allineati alla generazione 5. Le costanti obsolete
+// (opus-4-8 / sonnet-4-6) causavano l'auto-revert opus-ttl e /opus /sonnet a
+// riscrivere model_default su modelli vecchi, sovrascrivendo la config corretta.
+export const OPUS_MODEL = 'claude-opus-5'
+export const SONNET_MODEL = 'claude-sonnet-5'
 
 /**
  * Parsa '/opus' o '/opus 120' → minuti clampati [5, 480].
