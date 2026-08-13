@@ -20,6 +20,7 @@ import { validateWebhookSecret } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { safeSupabase } from '@/lib/resilience'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
+import { confirmSalStep1, confirmSalStep2, cancelSal } from '@/lib/sal-tools'
 import { parseOpusCommand, computeOpusUntil, isOpusExpired, OPUS_MODEL, SONNET_MODEL } from '@/lib/opus-ttl'
 import { MAX_DURABLE_RUN_TOKENS } from '@/lib/run-budget'
 // Trigger.dev imports temporaneamente non usati (Task #10 backlog)
@@ -592,6 +593,20 @@ export async function POST(request: NextRequest) {
         : mFicOk
           ? await confirmFicStep1(uuid)
           : await cancelFic(uuid)
+      await sendTelegramMessage(chatId, message)
+      return NextResponse.json({ ok: true })
+    }
+
+    const mSalOk2 = userText.match(/^\/sal_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    const mSalOk = userText.match(/^\/sal_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    const mSalNo = userText.match(/^\/sal_no_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    if (mSalOk2 || mSalOk || mSalNo) {
+      const uuid = (mSalOk2 ?? mSalOk ?? mSalNo)![1]
+      const message = mSalOk2
+        ? await confirmSalStep2(uuid)
+        : mSalOk
+          ? await confirmSalStep1(uuid)
+          : await cancelSal(uuid)
       await sendTelegramMessage(chatId, message)
       return NextResponse.json({ ok: true })
     }
