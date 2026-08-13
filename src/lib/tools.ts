@@ -492,7 +492,7 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       }
 
       const lines = data.map(v =>
-        `${v.codice_voce} | ${v.descrizione.slice(0, 80)} | ${v.unita_misura} | €${v.prezzo}`
+        `${v.codice_voce} | ${v.descrizione.slice(0, 300)} | ${v.unita_misura} | €${v.prezzo}`
       )
       return `Trovate ${data.length} voci per "${query}" (${regione}):\n\n${lines.join('\n')}`
     }
@@ -513,7 +513,7 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
 
         if (data?.length) {
           results.push(`📌 "${voce}":\n${data.map(v =>
-            `  ${v.codice_voce} | ${v.descrizione.slice(0, 60)} | ${v.unita_misura} | €${v.prezzo}`
+            `  ${v.codice_voce} | ${v.descrizione.slice(0, 300)} | ${v.unita_misura} | €${v.prezzo}`
           ).join('\n')}`)
         } else {
           results.push(`📌 "${voce}": nessuna voce trovata`)
@@ -772,12 +772,21 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
 
         type CachedDocument = {
           content: string
-          metadata?: { doc_type?: string } | null
+          metadata?: { doc_type?: string; committente?: string; comune?: string } | null
         }
         const docs: CachedDocument[] = allDocs || []
         const cachedDocTypes: Array<string | undefined> = ['preventivo', 'cme', 'quadro_economico']
+        // FIX #3 (report 13/08): la cache deve valere SOLO per lo stesso committente+comune.
+        // Prima filtrava solo su conversation_id → nella stessa conversazione un secondo
+        // preventivo per un committente diverso riceveva i documenti del primo
+        // (repro: perlinato D'Addario → restituito recinzione Ravanelli/Olevano).
+        const norm = (s: unknown) => String(s ?? '').trim().toLowerCase()
+        const reqCommittente = norm(input.committente)
+        const reqComune = norm(input.comune)
         const cached = docs.filter(d =>
-          cachedDocTypes.includes(d.metadata?.doc_type)
+          cachedDocTypes.includes(d.metadata?.doc_type) &&
+          norm(d.metadata?.committente) === reqCommittente &&
+          norm(d.metadata?.comune) === reqComune
         )
 
         if (cached.length >= 2) {
