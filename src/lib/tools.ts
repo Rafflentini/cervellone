@@ -704,15 +704,39 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       const dlUrl = input.url as string
       const filename = (input.filename as string) || dlUrl.split('/').pop() || 'file'
 
+      const DL_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+      }
       try {
-        const response = await fetch(dlUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-            'Accept': '*/*',
-          },
-          redirect: 'follow',
-        })
+        let response = await fetch(dlUrl, { headers: DL_HEADERS, redirect: 'follow' })
         if (!response.ok) return `Errore download: HTTP ${response.status}`
+
+        // FIX #9 (report 13/08): su file Drive grandi Google restituisce una pagina HTML
+        // di conferma antivirus invece del binario. Rileviamo l'interstitial (solo per URL
+        // Google Drive) ed estraiamo il form "download-form" per riscaricare il file vero.
+        const isDriveUrl = /(?:drive|docs)\.google\.com|drive\.usercontent\.google\.com/.test(dlUrl)
+        const contentType = response.headers.get('content-type') || ''
+        if (isDriveUrl && contentType.includes('text/html')) {
+          const html = await response.text()
+          const decodeEnt = (s: string) => s.replace(/&amp;/g, '&')
+          const formMatch =
+            html.match(/<form[^>]*id="download-form"[^>]*action="([^"]+)"/i) ||
+            html.match(/action="(https:\/\/drive\.usercontent\.google\.com\/download[^"]*)"/i)
+          if (formMatch) {
+            const action = decodeEnt(formMatch[1])
+            const params = new URLSearchParams()
+            const inputRe = /<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"/gi
+            let im: RegExpExecArray | null
+            while ((im = inputRe.exec(html)) !== null) params.set(im[1], decodeEnt(im[2]))
+            const sep = action.includes('?') ? '&' : '?'
+            const confirmUrl = params.toString() ? `${action}${sep}${params.toString()}` : action
+            response = await fetch(confirmUrl, { headers: DL_HEADERS, redirect: 'follow' })
+            if (!response.ok) return `Errore download (conferma Drive): HTTP ${response.status}`
+          } else {
+            return `Il link Google Drive ha restituito una pagina HTML (conferma/login) e non il file. Per file grandi condividilo con accesso "chiunque abbia il link", oppure usa drive_read_pdf/drive_read_office con l'ID del file.`
+          }
+        }
 
         const buffer = Buffer.from(await response.arrayBuffer())
         const sizeMB = (buffer.length / 1024 / 1024).toFixed(1)
