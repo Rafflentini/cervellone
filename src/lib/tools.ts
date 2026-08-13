@@ -425,6 +425,19 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       const regione = REGIONI_ALIAS[regioneRaw2] || regioneRaw2
       const limit = Math.min((input.limit as number) || 10, 20)
 
+      // FIX (13 ago): con più annate in DB (es. 2025 + 2026) filtra all'anno più
+      // recente per default, così le ricerche non mescolano prezzi di anni diversi.
+      // L'utente può forzare un anno specifico passando input.anno.
+      let annoTarget = input.anno as number | undefined
+      if (!annoTarget) {
+        const { data: yrRow } = await supabase
+          .from('prezziario').select('anno').eq('regione', regione)
+          .order('anno', { ascending: false }).limit(1)
+        annoTarget = yrRow?.[0]?.anno
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const byAnno = (q: any) => (annoTarget ? q.eq('anno', annoTarget) : q)
+
       // FIX FUN-004: Controlla se è un codice voce
       const isCode = /^[A-Z]{2,5}\d{2}[_-]/.test(query)
 
@@ -432,11 +445,11 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
 
       if (isCode) {
         // Ricerca per codice voce (prefix match)
-        const { data: d } = await supabase
+        const { data: d } = await byAnno(supabase
           .from('prezziario')
           .select('codice_voce, descrizione, unita_misura, prezzo, fonte')
           .eq('regione', regione)
-          .ilike('codice_voce', `${query}%`)
+          .ilike('codice_voce', `${query}%`))
           .order('codice_voce')
           .limit(limit)
         data = d
@@ -444,11 +457,11 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
 
       if (!data?.length) {
         // Ricerca per descrizione (ILIKE)
-        const { data: d } = await supabase
+        const { data: d } = await byAnno(supabase
           .from('prezziario')
           .select('codice_voce, descrizione, unita_misura, prezzo, fonte')
           .eq('regione', regione)
-          .ilike('descrizione', `%${query}%`)
+          .ilike('descrizione', `%${query}%`))
           .order('descrizione')
           .limit(limit)
         data = d
@@ -458,11 +471,11 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       if (!data?.length) {
         const words = query.split(/\s+/).filter(w => w.length > 3)
         for (const word of words.slice(0, 2)) {
-          const { data: d } = await supabase
+          const { data: d } = await byAnno(supabase
             .from('prezziario')
             .select('codice_voce, descrizione, unita_misura, prezzo, fonte')
             .eq('regione', regione)
-            .ilike('descrizione', `%${word}%`)
+            .ilike('descrizione', `%${word}%`))
             .limit(5)
           if (d?.length) {
             data = [...(data || []), ...d]
@@ -503,16 +516,28 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       const regione = REGIONI_ALIAS[regioneRaw3] || regioneRaw3
       const results: string[] = []
 
+      // FIX (13 ago): filtra all'anno più recente per non mescolare annate
+      let annoTargetB = input.anno as number | undefined
+      if (!annoTargetB) {
+        const { data: yrRow } = await supabase
+          .from('prezziario').select('anno').eq('regione', regione)
+          .order('anno', { ascending: false }).limit(1)
+        annoTargetB = yrRow?.[0]?.anno
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const byAnnoB = (q: any) => (annoTargetB ? q.eq('anno', annoTargetB) : q)
+
       for (const voce of voci.slice(0, 20)) {
-        const { data } = await supabase
+        const { data } = await byAnnoB(supabase
           .from('prezziario')
           .select('codice_voce, descrizione, unita_misura, prezzo')
           .eq('regione', regione)
-          .ilike('descrizione', `%${voce}%`)
+          .ilike('descrizione', `%${voce}%`))
           .limit(3)
 
         if (data?.length) {
-          results.push(`📌 "${voce}":\n${data.map(v =>
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          results.push(`📌 "${voce}":\n${data.map((v: any) =>
             `  ${v.codice_voce} | ${v.descrizione.slice(0, 300)} | ${v.unita_misura} | €${v.prezzo}`
           ).join('\n')}`)
         } else {
@@ -865,6 +890,15 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const lavorazioni = input.lavorazioni as any[]
       const regione = ((input.regione as string) || 'basilicata').toLowerCase()
+      // FIX (13 ago): usa l'anno più recente del prezziario (o input.anno) per non
+      // mescolare annate diverse nei computi.
+      let annoPrez = input.anno as number | undefined
+      if (!annoPrez) {
+        const { data: yrRowP } = await supabase
+          .from('prezziario').select('anno').eq('regione', regione)
+          .order('anno', { ascending: false }).limit(1)
+        annoPrez = yrRowP?.[0]?.anno
+      }
       const sgPerc = (input.spese_generali_perc as number) || 0.15
       const uiPerc = (input.utile_impresa_perc as number) || 0.10
       const ivaPerc = (input.iva_perc as number) || 0.10
@@ -910,12 +944,13 @@ async function executeStudioTecnico(name: string, input: Record<string, unknown>
       }
 
       async function cercaPerParola(parola: string): Promise<{codice_voce:string; descrizione:string; prezzo:number; um?:string}[]> {
-        const { data } = await supabase.from('prezziario')
+        let q = supabase.from('prezziario')
           .select('codice_voce, descrizione, prezzo, unita_misura')
           .eq('regione', regione)
           .ilike('descrizione', `%${parola}%`)
           .gt('prezzo', 0)
-          .limit(25)
+        if (annoPrez) q = q.eq('anno', annoPrez)
+        const { data } = await q.limit(25)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return (data || []).map((r: any) => ({ ...r, um: r.unita_misura }))
       }
