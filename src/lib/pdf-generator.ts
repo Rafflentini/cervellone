@@ -114,22 +114,34 @@ async function getBrowser(): Promise<any> {
  */
 export async function generatePdfFromHtml(html: string, title: string): Promise<Buffer> {
   const wrappedHtml = wrapForPrint(html, title)
-  const browser = await getBrowser()
-  try {
-    const page = await browser.newPage()
-    await page.setContent(wrappedHtml, { waitUntil: 'networkidle0' })
-    const pdfBytes = await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      margin: { top: '15mm', right: '15mm', bottom: '20mm', left: '15mm' },
-      displayHeaderFooter: true,
-      headerTemplate: HEADER_TEMPLATE,
-      footerTemplate: FOOTER_TEMPLATE,
-    })
-    return Buffer.from(pdfBytes)
-  } finally {
-    await browser.close().catch(() => undefined)
+  // FIX #10 (report 13/08): Chromium serverless fallisce a intermittenza (cold start,
+  // launch race). Retry con browser fresco + timeout su setContent per non appendere.
+  const MAX_ATTEMPTS = 2
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let browser: any
+    try {
+      browser = await getBrowser()
+      const page = await browser.newPage()
+      await page.setContent(wrappedHtml, { waitUntil: 'networkidle0', timeout: 30000 })
+      const pdfBytes = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: { top: '15mm', right: '15mm', bottom: '20mm', left: '15mm' },
+        displayHeaderFooter: true,
+        headerTemplate: HEADER_TEMPLATE,
+        footerTemplate: FOOTER_TEMPLATE,
+      })
+      return Buffer.from(pdfBytes)
+    } catch (err) {
+      lastErr = err
+      console.error(`[PDF] tentativo ${attempt}/${MAX_ATTEMPTS} fallito:`, err instanceof Error ? err.message : err)
+    } finally {
+      if (browser) await browser.close().catch(() => undefined)
+    }
   }
+  throw new Error(`Generazione PDF fallita dopo ${MAX_ATTEMPTS} tentativi: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`)
 }
 
 // ═══════════════════════════════════════════════════════════════

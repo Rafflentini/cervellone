@@ -98,10 +98,13 @@ describe('generatePdfFromHtml', () => {
     const pdf = vi.fn(async () => {
       throw new Error('pdf render failed')
     })
-    vi.mocked(puppeteer.launch).mockResolvedValueOnce(makeMockBrowser({ pdf, close: closeBrowser }) as never)
+    // FIX #10: generatePdfFromHtml ora ritenta (2 tentativi) su errore transitorio.
+    // Usa mockResolvedValue (persistente) così entrambi i tentativi ottengono un browser;
+    // l'invariante verificato è "il browser viene chiuso ad OGNI tentativo".
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser({ pdf, close: closeBrowser }) as never)
 
     await expect(generatePdfFromHtml('<p>x</p>', 'T')).rejects.toThrow('pdf render failed')
-    expect(closeBrowser).toHaveBeenCalledOnce()
+    expect(closeBrowser).toHaveBeenCalledTimes(2)
   })
 
   it('uses A4 + printBackground + margins + footer template', async () => {
