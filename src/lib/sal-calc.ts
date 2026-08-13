@@ -25,8 +25,19 @@ const r2 = (n: number): number => Math.round(n * 100) / 100
 export function calcolaSal(input: SalCalcInput): SalResult {
   const { gruppi, totale_computo, sal_precedente, params } = input
 
+  // FIX audit #2: valida la finitezza PRIMA del gate, altrimenti un NaN
+  // (input LLM malformato) fa passare `NaN > 1 === false` e produce "NaN" negli importi.
+  if (!Number.isFinite(totale_computo) || !Number.isFinite(sal_precedente)) {
+    throw new SalReconcileError('totale_computo o sal_precedente non numerici')
+  }
+  if (gruppi.length === 0) {
+    throw new SalReconcileError('Nessun gruppo di lavorazione fornito')
+  }
   for (const g of gruppi) {
-    if (g.percentuale < 0 || g.percentuale > 100) {
+    if (!Number.isFinite(g.importo_contrattuale)) {
+      throw new SalReconcileError(`Importo contrattuale non valido per "${g.nome}"`)
+    }
+    if (!Number.isFinite(g.percentuale) || g.percentuale < 0 || g.percentuale > 100) {
       throw new SalReconcileError(`Percentuale non valida per "${g.nome}": ${g.percentuale} (attesa 0..100)`)
     }
   }
@@ -48,6 +59,15 @@ export function calcolaSal(input: SalCalcInput): SalResult {
 
   const totale_maturato_a_oggi = r2(gruppiCalcolati.reduce((s, g) => s + g.maturato_a_oggi, 0))
   const maturato_nel_periodo = r2(totale_maturato_a_oggi - sal_precedente)
+  // FIX audit #3: un periodo negativo (SAL precedente > maturato a oggi) è un errore
+  // di input, non un SAL valido. Meglio bloccare che archiviare importi negativi.
+  if (maturato_nel_periodo < -1) {
+    throw new SalReconcileError(
+      `Maturato nel periodo negativo (€ ${maturato_nel_periodo}): il SAL precedente ` +
+      `(€ ${r2(sal_precedente)}) supera il maturato a oggi (€ ${totale_maturato_a_oggi}). ` +
+      `Controlla le percentuali o l'importo del SAL precedente.`,
+    )
+  }
   const ritenuta_periodo = r2(maturato_nel_periodo * params.ritenuta_garanzia_perc / 100)
   const ritenuta_cumulata = r2(totale_maturato_a_oggi * params.ritenuta_garanzia_perc / 100)
   const recupero_anticipazione = params.is_ultimo_sal ? r2(params.anticipazione) : 0

@@ -189,6 +189,24 @@ function escapeDriveQueryString(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }
 
+// Cestina i file con nome ESATTO dentro una cartella. Serve per upload idempotenti:
+// evita documenti duplicati quando un salvataggio va ritentato (es. SAL su retry).
+// Ritorna quanti file sono stati cestinati.
+export async function trashFilesByName(folderId: string, name: string): Promise<number> {
+  await assertWriteAllowed(folderId)
+  const drive = await getDrive()
+  const res = await drive.files.list({
+    q: `name = '${escapeDriveQueryString(name)}' and '${folderId}' in parents and trashed = false`,
+    fields: 'files(id)',
+    pageSize: 50,
+  })
+  const files = res.data.files || []
+  for (const f of files) {
+    if (f.id) await drive.files.update({ fileId: f.id, requestBody: { trashed: true } })
+  }
+  return files.length
+}
+
 // Cerca file per nome in tutto il Drive o in una cartella
 export async function searchFiles(query: string, folderId?: string): Promise<string> {
   console.log(`[DRIVE] searchFiles query="${query}" folder="${folderId || 'root'}"`)

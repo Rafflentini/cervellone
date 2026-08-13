@@ -55,4 +55,19 @@ describe('calcolaSal', () => {
   it('accetta scarti di arrotondamento entro ±1€', () => {
     expect(() => calcolaSal({ ...base, totale_computo: 1000.4 })).not.toThrow()
   })
+
+  it('rifiuta input non numerici (NaN non deve bypassare il gate)', () => {
+    const bad = { ...base, gruppi: [{ nome: 'A', importo_contrattuale: NaN, percentuale: 50 }] }
+    expect(() => calcolaSal(bad as never)).toThrow(SalReconcileError)
+    const badPerc = { ...base, gruppi: [{ nome: 'A', importo_contrattuale: 1000, percentuale: NaN }] }
+    expect(() => calcolaSal(badPerc as never)).toThrow(SalReconcileError)
+  })
+
+  it('rifiuta gruppi vuoti', () => {
+    expect(() => calcolaSal({ ...base, gruppi: [] })).toThrow(SalReconcileError)
+  })
+
+  it('rifiuta un maturato nel periodo negativo (SAL precedente troppo alto)', () => {
+    expect(() => calcolaSal({ ...base, sal_precedente: 900 })).toThrow(SalReconcileError) // maturato a oggi 400
+  })
 })

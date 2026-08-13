@@ -1,6 +1,6 @@
 import { calcolaSal, SalReconcileError, type SalCalcInput, type SalResult } from './sal-calc'
 import { buildSalHtml, buildSalSheets, type SalMeta } from './sal-render'
-import { getOrCreatePathFolders, searchFilesFullText, readPdfFromDrive, uploadBinaryToDrive } from './drive'
+import { getOrCreatePathFolders, searchFilesFullText, readPdfFromDrive, readXlsxFromDrive, readOdsFromDrive, readDocxFromDrive, uploadBinaryToDrive, trashFilesByName } from './drive'
 import { generatePdfFromHtml, generateXlsxFromData } from './pdf-generator'
 import { getSupabaseServer } from './supabase-server'
 
@@ -74,9 +74,19 @@ export async function executeSalTool(name: string, input: Record<string, unknown
     const folderId = input.commessa_folder_id as string
     const contabId = await getOrCreatePathFolders(folderId, [CONTAB_FOLDER])
     const lista = await searchFilesFullText('computo', contabId)
-    const m = lista.match(/\[ID:\s*([^\]]+)\]/)
-    if (!m) return `Nessun computo trovato in ${CONTAB_FOLDER}. File presenti:\n${lista}`
-    const testo = await readPdfFromDrive(m[1].trim())
+    // Prende la prima riga con un ID file
+    const line = lista.split('\n').find(l => /\[ID:/.test(l)) ?? ''
+    const idM = line.match(/\[ID:\s*([^\]]+)\]/)
+    if (!idM) return `Nessun computo trovato in ${CONTAB_FOLDER}. File presenti:\n${lista}`
+    const fileId = idM[1].trim()
+    // FIX audit #4: il computo è spesso .xlsx/.ods, non PDF. Instrada per estensione,
+    // altrimenti readPdfFromDrive ritorna un messaggio d'errore scambiato per "computo".
+    const ext = (line.match(/\.(pdf|xlsx|xls|ods|docx)\b/i)?.[1] ?? 'pdf').toLowerCase()
+    let testo: string
+    if (ext === 'xlsx' || ext === 'xls') testo = await readXlsxFromDrive(fileId)
+    else if (ext === 'ods') testo = await readOdsFromDrive(fileId)
+    else if (ext === 'docx') testo = await readDocxFromDrive(fileId)
+    else testo = await readPdfFromDrive(fileId)
     return `Computo trovato. Estrai da qui le voci (codice, descrizione, quantità, prezzo, importo) e il TOTALE, poi raggruppa in gruppi coerenti:\n\n${testo}`
   }
 
@@ -140,11 +150,13 @@ export async function confirmSalStep1(id: string): Promise<string> {
 
 export async function cancelSal(id: string): Promise<string> {
   const sb = getSupabaseServer()
+  // FIX audit #5: non annullare una riga già reclamata dallo step2 (conferme=2),
+  // altrimenti l'upload in corso verrebbe poi "resuscitato" a 'creato'.
   const { data } = await sb.from('cervellone_sal_pending')
     .update({ stato: 'annullato', updated_at: new Date().toISOString() })
-    .eq('id', id).neq('stato', 'creato')
+    .eq('id', id).eq('stato', 'in_attesa').neq('conferme', 2)
     .select('id')
-  if (!data || data.length === 0) return 'SAL non trovato o già creato.'
+  if (!data || data.length === 0) return 'SAL non trovato, già creato o già in salvataggio.'
   return 'SAL annullato.'
 }
 
@@ -162,9 +174,13 @@ export async function confirmSalStep2(id: string): Promise<string> {
     const pdfBuf = await generatePdfFromHtml(buildSalHtml(payload.result, payload.meta), `SAL n${payload.result.numero_sal}`)
     const contabId = await getOrCreatePathFolders(payload.commessa_folder_id, [CONTAB_FOLDER])
     const base = `SAL_${payload.result.numero_sal}_${payload.meta.data}`
+    // FIX audit #1: upload idempotente — cestina eventuali omonimi da un tentativo
+    // precedente fallito a metà, così un retry non lascia documenti duplicati.
+    await trashFilesByName(contabId, `${base}.xlsx`)
+    await trashFilesByName(contabId, `${base}.pdf`)
     const xlsx = await uploadBinaryToDrive(xlsxBuf, `${base}.xlsx`, XLSX_MIME, contabId)
     const pdf = await uploadBinaryToDrive(pdfBuf, `${base}.pdf`, PDF_MIME, contabId)
-    await sb.from('cervellone_sal_pending').update({ stato: 'creato', updated_at: new Date().toISOString() }).eq('id', id)
+    await sb.from('cervellone_sal_pending').update({ stato: 'creato', updated_at: new Date().toISOString() }).eq('id', id).eq('conferme', 2)
     return `✅ SAL n° ${payload.result.numero_sal} salvato in ${CONTAB_FOLDER}:\n📊 ${xlsx.webViewLink}\n📄 ${pdf.webViewLink}`
   } catch (err) {
     await sb.from('cervellone_sal_pending').update({ conferme: 1, updated_at: new Date().toISOString() }).eq('id', id)
