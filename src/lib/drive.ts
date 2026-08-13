@@ -58,6 +58,22 @@ export const SHEETS = {
   REGISTRO_CANTIERI: '1LvUkPRCWhDRZW5qIAiap0aJ_qA9TKHm-HOhV1H6FBso',
 }
 
+const PAGE_SIZE = 50000
+
+function normalizeReadOffset(offset: number): number {
+  if (!Number.isFinite(offset) || offset < 0) return 0
+  return Math.floor(offset)
+}
+
+function paginatedTextWindow(text: string, offset: number, continueToolName: 'drive_read_office' | 'drive_read_pdf'): string {
+  const start = normalizeReadOffset(offset)
+  const end = start + PAGE_SIZE
+  const window = text.slice(start, end)
+  const remaining = Math.max(0, text.length - end)
+  if (remaining === 0) return window
+  return `${window}\n\n[...altri ${remaining} caratteri. Per continuare: ${continueToolName} con offset=${end}]`
+}
+
 // --- RECINZIONE SCRITTURE (folder access policy) ---
 // Una scrittura su Drive è permessa SOLO se la cartella di destinazione è una "radice
 // consentita" (tabella cervellone_drive_policy, can_write=true) oppure una sua DISCENDENTE.
@@ -293,7 +309,7 @@ export async function downloadFileBase64(fileId: string): Promise<{ base64: stri
   return { base64: f.buffer.toString('base64'), mimeType: f.mimeType, name: f.name }
 }
 
-export async function readPdfFromDrive(fileId: string): Promise<string> {
+export async function readPdfFromDrive(fileId: string, offset: number = 0): Promise<string> {
   console.log(`[DRIVE] readPdfFromDrive id=${fileId}`)
   try {
     const file = await downloadFile(fileId)
@@ -317,24 +333,26 @@ export async function readPdfFromDrive(fileId: string): Promise<string> {
     const { PDFParse } = await import('pdf-parse')
     const parser = new PDFParse({ data: file.buffer })
     let text = ''
+    let pageText = ''
     let pages = 0
     try {
       const result = await parser.getText()
-      text = (result.text || '').slice(0, 50000)
+      text = result.text || ''
+      pageText = paginatedTextWindow(text, offset, 'drive_read_pdf')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       pages = (result as any).numpages || (result as any).pages?.length || 0
     } finally {
       await parser.destroy()
     }
     console.log(`[DRIVE] readPdfFromDrive ok pages=${pages} chars=${text.length}`)
-    return `📄 PDF: ${file.name}${pages ? ` (${pages} pagine)` : ''}\n\n${text || '(testo vuoto o solo immagini — considera Vision OCR)'}`
+    return `📄 PDF: ${file.name}${pages ? ` (${pages} pagine)` : ''}\n\n${pageText || '(testo vuoto o solo immagini — considera Vision OCR)'}`
   } catch (err) {
     console.error(`[DRIVE] readPdfFromDrive ERROR:`, err)
     return `Errore lettura PDF: ${err instanceof Error ? err.message : err}`
   }
 }
 
-export async function readDocxFromDrive(fileId: string): Promise<string> {
+export async function readDocxFromDrive(fileId: string, offset: number = 0): Promise<string> {
   console.log(`[DRIVE] readDocxFromDrive id=${fileId}`)
   try {
     const file = await downloadFile(fileId)
@@ -342,8 +360,9 @@ export async function readDocxFromDrive(fileId: string): Promise<string> {
     if (!isDocx) return `File "${file.name}" non è un DOCX (mime: ${file.mimeType}).`
     const mammoth = await import('mammoth')
     const result = await mammoth.extractRawText({ buffer: file.buffer })
-    const text = (result.value || '').slice(0, 50000)
-    console.log(`[DRIVE] readDocxFromDrive ok chars=${text.length}`)
+    const fullText = result.value || ''
+    const text = paginatedTextWindow(fullText, offset, 'drive_read_office')
+    console.log(`[DRIVE] readDocxFromDrive ok chars=${fullText.length}`)
     return `📄 DOCX: ${file.name}\n\n${text}`
   } catch (err) {
     console.error(`[DRIVE] readDocxFromDrive ERROR:`, err)
@@ -351,7 +370,7 @@ export async function readDocxFromDrive(fileId: string): Promise<string> {
   }
 }
 
-export async function readXlsxFromDrive(fileId: string): Promise<string> {
+export async function readXlsxFromDrive(fileId: string, offset: number = 0): Promise<string> {
   console.log(`[DRIVE] readXlsxFromDrive id=${fileId}`)
   try {
     const file = await downloadFile(fileId)
@@ -365,7 +384,7 @@ export async function readXlsxFromDrive(fileId: string): Promise<string> {
     const re = /<t[^>]*>([\s\S]*?)<\/t>/g
     let m
     while ((m = re.exec(shared)) !== null) texts.push(m[1].trim())
-    const content = texts.slice(0, 5000).join(' | ').slice(0, 50000)
+    const content = paginatedTextWindow(texts.join(' | '), offset, 'drive_read_office')
     console.log(`[DRIVE] readXlsxFromDrive ok strings=${texts.length}`)
     return `📊 XLSX: ${file.name}\n\n${content}`
   } catch (err) {
@@ -374,7 +393,7 @@ export async function readXlsxFromDrive(fileId: string): Promise<string> {
   }
 }
 
-export async function readOdsFromDrive(fileId: string): Promise<string> {
+export async function readOdsFromDrive(fileId: string, offset: number = 0): Promise<string> {
   console.log(`[DRIVE] readOdsFromDrive id=${fileId}`)
   try {
     const file = await downloadFile(fileId)
@@ -400,7 +419,7 @@ export async function readOdsFromDrive(fileId: string): Promise<string> {
       if (text) texts.push(text)
     }
 
-    const content = texts.slice(0, 5000).join(' | ').slice(0, 50000)
+    const content = paginatedTextWindow(texts.join(' | '), offset, 'drive_read_office')
     console.log(`[DRIVE] readOdsFromDrive ok paragraphs=${texts.length}`)
     return `📊 ODS: ${file.name}\n\n${content || '(nessun testo trovato nel foglio ODS)'}`
   } catch (err) {
@@ -965,9 +984,14 @@ export async function executeDriveTool(name: string, input: Record<string, strin
     // FIX W1.3 Task 2-3: nuovi tool full-text + binari
     case 'drive_search_fulltext':
       return searchFilesFullText(input.query, input.folder_id)
-    case 'drive_read_pdf':
-      return readPdfFromDrive(input.file_id)
+    case 'drive_read_pdf': {
+      const rawOffset = (input as { offset?: unknown }).offset
+      const offset = typeof rawOffset === 'number' ? rawOffset : 0
+      return readPdfFromDrive(input.file_id, offset)
+    }
     case 'drive_read_office': {
+      const rawOffset = (input as { offset?: unknown }).offset
+      const offset = typeof rawOffset === 'number' ? rawOffset : 0
       // Auto-detect DOCX vs XLSX/ODS vs testo semplice da metadata
       try {
         const drive = await getDrive()
@@ -975,13 +999,13 @@ export async function executeDriveTool(name: string, input: Record<string, strin
         const fname = (meta.data.name || '').toLowerCase()
         const fmime = meta.data.mimeType || ''
         if (fname.endsWith('.docx') || fmime.includes('wordprocessing')) {
-          return readDocxFromDrive(input.file_id)
+          return readDocxFromDrive(input.file_id, offset)
         }
         if (fname.endsWith('.ods') || fmime.includes('opendocument.spreadsheet')) {
-          return readOdsFromDrive(input.file_id)
+          return readOdsFromDrive(input.file_id, offset)
         }
         if (fname.endsWith('.xlsx') || fmime.includes('spreadsheet')) {
-          return readXlsxFromDrive(input.file_id)
+          return readXlsxFromDrive(input.file_id, offset)
         }
         // FIX 2026-06-04: file di testo semplice (.txt/.csv/.md/.log o mime text/*)
         if (
@@ -1221,22 +1245,24 @@ Il tool sceglie automaticamente la cartella destinazione:
   },
   {
     name: 'drive_read_pdf',
-    description: 'Leggi il contenuto testuale di un file PDF nel Drive di Restruktura. Limite 20MB, testo troncato a 50K char. Per PDF solo immagini il testo sarà vuoto.',
+    description: 'Leggi il contenuto testuale di un file PDF nel Drive di Restruktura. Limite 20MB. Per file lunghi usa offset per leggere blocchi successivi da 50000 caratteri. Per PDF solo immagini il testo sarà vuoto.',
     input_schema: {
       type: 'object' as const,
       properties: {
         file_id: { type: 'string', description: 'ID del file PDF nel Drive' },
+        offset: { type: 'number', description: 'Carattere di partenza per leggere file lunghi a blocchi di 50000 (default 0). Usa il valore suggerito in coda al risultato per continuare.' },
       },
       required: ['file_id'],
     },
   },
   {
     name: 'drive_read_office',
-    description: 'Leggi un file Microsoft Office (DOCX o XLSX), OpenDocument (.ods) o un file di testo semplice (.txt/.csv/.md) dal Drive Restruktura. Auto-detect formato. Limite 20MB, contenuto troncato a 50K char.',
+    description: 'Leggi un file Microsoft Office (DOCX o XLSX), OpenDocument (.ods) o un file di testo semplice (.txt/.csv/.md) dal Drive Restruktura. Auto-detect formato. Limite 20MB. Per file Office lunghi usa offset per leggere blocchi successivi da 50000 caratteri.',
     input_schema: {
       type: 'object' as const,
       properties: {
         file_id: { type: 'string', description: 'ID del file DOCX, XLSX, ODS o di testo nel Drive' },
+        offset: { type: 'number', description: 'Carattere di partenza per leggere file lunghi a blocchi di 50000 (default 0). Usa il valore suggerito in coda al risultato per continuare.' },
       },
       required: ['file_id'],
     },
