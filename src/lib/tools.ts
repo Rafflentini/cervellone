@@ -24,6 +24,7 @@ import { MOVIMENTI_TOOLS, executeMovimentiTool } from './movimenti-extract'
 import { RICONCILIAZIONE_TOOLS, executeRiconciliazioneTool } from './riconciliazione-tools'
 import { PRIMA_NOTA_TOOLS, executePrimaNotaTool } from './prima-nota-tools'
 import { FIC_WRITE_TOOLS, executeFicWriteTool } from './fic-write-tools'
+import { SAL_TOOLS, executeSalTool } from './sal-tools'
 import { CALENDAR_TOOLS, executeCalendarTool } from './calendar-tools'
 import { MAIL_TOOL_DEFINITIONS, MAIL_TOOL_EXECUTORS } from '@/v19/tools/email'
 import { DOCUMENT_TEMPLATE_TOOLS, executeDocumentTemplateTool } from './document-template-tools'
@@ -2518,6 +2519,7 @@ async function executeDraftWrapper(
 
 const ALL_TOOLS: ToolDefinition[] = [
   ...STUDIO_TECNICO_TOOLS,
+  ...SAL_TOOLS, // 2026-08-13: SAL da computo (sal_estrai_computo, sal_calcola) con doppia conferma
   ...IMAGE_TOOLS, // 2026-06-12: rivedi_immagine — ri-aggancia i pixel di un'immagine già caricata
   ...SELF_TOOLS,
   ...DRIVE_TOOLS, // W1.3: 10 tool Drive/Sheets registrati + drive_upload_binary
@@ -2542,7 +2544,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...(DOCUMENT_TEMPLATE_TOOLS as unknown as ToolDefinition[]), // 2026-06-11 Modelli documento Fase 1: insegna/compila/lista/ritrova
   ...(MAIL_TOOL_DEFINITIONS as unknown as ToolDefinition[]), // 2026-05-24 V19 Mail TopHost IMAP/SMTP: 5 tool (info@/raffaele.lentini@)
 ]
-const EXECUTORS = [executeStudioTecnico, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [
