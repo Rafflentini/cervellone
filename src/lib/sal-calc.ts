@@ -30,12 +30,19 @@ export function calcolaSal(input: SalCalcInput): SalResult {
   if (!Number.isFinite(totale_computo) || !Number.isFinite(sal_precedente)) {
     throw new SalReconcileError('totale_computo o sal_precedente non numerici')
   }
-  if (gruppi.length === 0) {
+  // FIX audit-verify: valida anche i params economici, altrimenti un iva_perc/
+  // ritenuta/anticipazione undefined|NaN (letto da un contratto incompleto)
+  // produrrebbe importi certificati NaN salvati come SAL ufficiale.
+  if (!params || !Number.isFinite(params.iva_perc) ||
+      !Number.isFinite(params.ritenuta_garanzia_perc) || !Number.isFinite(params.anticipazione)) {
+    throw new SalReconcileError('Parametri economici non validi (iva_perc / ritenuta_garanzia_perc / anticipazione mancanti o non numerici). Leggili dal Contratto d\'Appalto.')
+  }
+  if (!Array.isArray(gruppi) || gruppi.length === 0) {
     throw new SalReconcileError('Nessun gruppo di lavorazione fornito')
   }
   for (const g of gruppi) {
-    if (!Number.isFinite(g.importo_contrattuale)) {
-      throw new SalReconcileError(`Importo contrattuale non valido per "${g.nome}"`)
+    if (!g || !Number.isFinite(g.importo_contrattuale)) {
+      throw new SalReconcileError(`Importo contrattuale non valido per "${g?.nome ?? '?'}"`)
     }
     if (!Number.isFinite(g.percentuale) || g.percentuale < 0 || g.percentuale > 100) {
       throw new SalReconcileError(`Percentuale non valida per "${g.nome}": ${g.percentuale} (attesa 0..100)`)

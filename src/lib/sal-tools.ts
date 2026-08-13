@@ -173,7 +173,10 @@ export async function confirmSalStep2(id: string): Promise<string> {
     const xlsxBuf = await generateXlsxFromData(buildSalSheets(payload.result, payload.meta), `SAL_${payload.result.numero_sal}`)
     const pdfBuf = await generatePdfFromHtml(buildSalHtml(payload.result, payload.meta), `SAL n${payload.result.numero_sal}`)
     const contabId = await getOrCreatePathFolders(payload.commessa_folder_id, [CONTAB_FOLDER])
-    const base = `SAL_${payload.result.numero_sal}_${payload.meta.data}`
+    // Nome file conforme alla spec: SAL_<n>_<commessa>_<data>. Sanitizza la commessa
+    // (niente slash/caratteri problematici per un nome file Drive).
+    const commessaSlug = (payload.meta.commessa || 'commessa').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60)
+    const base = `SAL_${payload.result.numero_sal}_${commessaSlug}_${payload.meta.data}`
     // FIX audit #1: upload idempotente — cestina eventuali omonimi da un tentativo
     // precedente fallito a metà, così un retry non lascia documenti duplicati.
     await trashFilesByName(contabId, `${base}.xlsx`)

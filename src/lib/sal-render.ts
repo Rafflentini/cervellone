@@ -5,8 +5,14 @@ export interface SalMeta { commessa: string; oggetto: string; data: string; nume
 
 const eur = (n: number) => n.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-export function buildSalSheets(result: SalResult, _meta: SalMeta): XlsxSheet[] {
+export function buildSalSheets(result: SalResult, meta: SalMeta): XlsxSheet[] {
   const rows: (string | number | null)[][] = []
+  // Intestazione: identifica il SAL dentro il foglio (non solo dal nome file)
+  rows.push([`SAL n° ${result.numero_sal}`, null, null, null])
+  rows.push(['Commessa', meta.commessa, null, null])
+  rows.push(['Oggetto', meta.oggetto, null, null])
+  rows.push(['Data', meta.data, null, null])
+  rows.push([])
   rows.push(['Gruppo di lavorazione', 'Importo contrattuale', '% avanz.', 'Maturato a oggi'])
   for (const g of result.gruppi) rows.push([g.nome, g.importo_contrattuale, g.percentuale, g.maturato_a_oggi])
   rows.push([])

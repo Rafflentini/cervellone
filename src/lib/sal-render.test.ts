@@ -14,12 +14,18 @@ const input: SalCalcInput = {
 const meta = { commessa: 'C2026-008 Cond. E. Fermi', oggetto: 'Ripristino facciate', data: '2026-08-13', numero_sal: 1 }
 
 describe('buildSalSheets', () => {
-  it('produce un foglio con header e una riga per gruppo', () => {
+  it('produce un foglio con intestazione commessa, header e una riga per gruppo', () => {
     const sheets = buildSalSheets(calcolaSal(input), meta)
     expect(sheets).toHaveLength(1)
-    expect(sheets[0].rows[0]).toEqual(['Gruppo di lavorazione', 'Importo contrattuale', '% avanz.', 'Maturato a oggi'])
-    expect(sheets[0].rows[1]).toEqual(['Ponteggio', 600, 50, 300])
-    const flat = JSON.stringify(sheets[0].rows)
+    const rows = sheets[0].rows
+    const flat = JSON.stringify(rows)
+    // intestazione commessa dentro il foglio
+    expect(flat).toContain('C2026-008')
+    // header tabella e prima riga gruppo (posizione trovata, non assunta a indice 0)
+    const headerIdx = rows.findIndex(r => r[0] === 'Gruppo di lavorazione')
+    expect(headerIdx).toBeGreaterThanOrEqual(0)
+    expect(rows[headerIdx]).toEqual(['Gruppo di lavorazione', 'Importo contrattuale', '% avanz.', 'Maturato a oggi'])
+    expect(rows[headerIdx + 1]).toEqual(['Ponteggio', 600, 50, 300])
     expect(flat).toContain('Imponibile certificato')
   })
 })

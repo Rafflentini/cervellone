@@ -70,4 +70,11 @@ describe('calcolaSal', () => {
   it('rifiuta un maturato nel periodo negativo (SAL precedente troppo alto)', () => {
     expect(() => calcolaSal({ ...base, sal_precedente: 900 })).toThrow(SalReconcileError) // maturato a oggi 400
   })
+
+  it('rifiuta params economici non numerici (iva/ritenuta/anticipazione)', () => {
+    const badIva = { ...base, params: { ...base.params, iva_perc: NaN } }
+    expect(() => calcolaSal(badIva as never)).toThrow(SalReconcileError)
+    const missingIva = { ...base, params: { ritenuta_garanzia_perc: 0, anticipazione: 0, is_ultimo_sal: false } }
+    expect(() => calcolaSal(missingIva as never)).toThrow(SalReconcileError)
+  })
 })
