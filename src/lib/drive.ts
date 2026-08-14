@@ -363,10 +363,17 @@ export async function readPdfFromDrive(fileId: string, offset: number = 0): Prom
       await parser.destroy()
     }
     console.log(`[DRIVE] readPdfFromDrive ok pages=${pages} chars=${text.length}`)
-    return `📄 PDF: ${file.name}${pages ? ` (${pages} pagine)` : ''}\n\n${pageText || '(testo vuoto o solo immagini — considera Vision OCR)'}`
+    const emptyHint = `PDF senza testo estraibile (probabile scansione/immagine). Leggilo con leggi_scansione_drive (file_id=${fileId}) che usa l'OCR vision.`
+    return `📄 PDF: ${file.name}${pages ? ` (${pages} pagine)` : ''}\n\n${pageText || emptyHint}`
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
     console.error(`[DRIVE] readPdfFromDrive ERROR:`, err)
-    return `Errore lettura PDF: ${err instanceof Error ? err.message : err}`
+    // #6: fallback resiliente. Errori di worker/bundling pdfjs (o PDF problematici) non
+    // devono lasciare l'utente bloccato: indirizza all'OCR vision con l'ID del file.
+    if (/worker|cannot find module|import|dommatrix/i.test(msg)) {
+      return `Non sono riuscito a estrarre il testo del PDF (${msg}). Leggilo con leggi_scansione_drive (file_id=${fileId}), che usa l'OCR vision.`
+    }
+    return `Errore lettura PDF: ${msg}. Se è una scansione/immagine, usa leggi_scansione_drive (file_id=${fileId}).`
   }
 }
 
