@@ -12,6 +12,7 @@
 import { supabase } from './supabase'
 import { getSupabaseServer } from './supabase-server'
 import { sendTelegramMessage } from './telegram-helpers'
+import type { ToolDefinition } from './tools/types'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
 import { GITHUB_TOOLS, executeGithubTool } from './github-tools'
 import { WEATHER_TOOLS, executeWeatherTool } from './weather-tool'
@@ -77,14 +78,6 @@ async function notifyModelChange(noticeText: string): Promise<void> {
   } catch (err) {
     console.error('Notify webchat failed:', err)
   }
-}
-
-// ── Interfaccia ──
-
-interface ToolDefinition {
-  name: string
-  description: string
-  input_schema: Record<string, unknown>
 }
 
 // ── STUDIO TECNICO ──
