@@ -1,0 +1,9 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`caratterizzazione studio-tecnico > cerca_prezziario — output stabile 1`] = `
+"Trovate 1 voci per "calcestruzzo" (basilicata):
+
+BAS25_E.03.068.01 | Calcestruzzo Rck 30 in opera | mc | €204.49"
+`;
+
+exports[`caratterizzazione studio-tecnico > genera_preventivo_completo — comportamento stabile 1`] = `"THREW: Cannot read properties of undefined (reading 'toLowerCase')"`;

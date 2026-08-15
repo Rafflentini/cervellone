@@ -362,7 +362,7 @@ async function executeImageTools(
   }
 }
 
-async function executeStudioTecnico(name: string, input: Record<string, unknown>, conversationId?: string): Promise<string | null> {
+export async function executeStudioTecnico(name: string, input: Record<string, unknown>, conversationId?: string): Promise<string | null> {
   switch (name) {
     case 'cerca_prezziario': {
       const query = input.query as string
