@@ -20,7 +20,7 @@ vi.mock('@supabase/supabase-js', () => {
   return { createClient: () => ({ from: () => chain }) }
 })
 
-import { executeStudioTecnico } from '../tools'
+import { executeStudioTecnico } from './studio-tecnico'
 
 // Cattura output o errore in modo deterministico: per un puro spostamento conta solo
 // che il risultato sia IDENTICO prima e dopo (anche un errore stabile è una prova valida).
