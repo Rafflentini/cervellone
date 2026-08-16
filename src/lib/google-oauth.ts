@@ -1,6 +1,12 @@
 import { google } from 'googleapis'
 import type { OAuth2Client } from 'google-auth-library'
 import { getSupabaseServer } from './supabase-server'
+import {
+  classifyGoogleError,
+  isFatalGoogleAuthKind,
+  markGoogleTokenDead,
+  GoogleAuthDeadError,
+} from './google-token-health'
 
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
@@ -184,6 +190,15 @@ export async function exchangeCodeAndStore(code: string): Promise<{ email: strin
 /**
  * Recupera credenziali da Supabase e ritorna OAuth2Client già configurato.
  * googleapis library auto-refresha access_token quando necessario via listener 'tokens'.
+ *
+ * FIX affidabilità: la credenziale viene ESERCITATA prima di essere restituita
+ * (`getAccessToken()`). Senza questa prova un refresh_token revocato produceva
+ * un client formalmente valido e l'invalid_grant esplodeva pigramente dentro la
+ * prima chiamata API, arrivando all'utente come errore generico.
+ *
+ * Costo netto zero: getAccessTokenAsync rinfresca solo se l'access token manca o
+ * sta scadendo; se è fresco è un no-op in memoria, e quando rinfresca fa il
+ * round-trip che la prima chiamata API avrebbe fatto comunque.
  */
 export async function getAuthorizedClient(): Promise<OAuth2Client | null> {
   try {
@@ -233,8 +248,29 @@ export async function getAuthorizedClient(): Promise<OAuth2Client | null> {
       }
     })
 
+    // Prova la credenziale: è l'unico punto in cui un token morto può essere
+    // riconosciuto PRIMA che l'errore si travesta da "file non trovato".
+    try {
+      await oauth2Client.getAccessToken()
+    } catch (probeErr) {
+      const kind = classifyGoogleError(probeErr)
+      const detail = probeErr instanceof Error ? probeErr.message : String(probeErr)
+      if (isFatalGoogleAuthKind(kind)) {
+        console.error(`[OAUTH] credenziale non valida (${kind}): ${detail}`)
+        await markGoogleTokenDead(kind)
+        throw new GoogleAuthDeadError(kind)
+      }
+      // transient/other: rete ballerina o credenziali assenti. Nessun alert,
+      // si restituisce comunque il client e si lascia decidere alla vera chiamata.
+      console.warn(`[OAUTH] prova credenziale non conclusiva (${kind}): ${detail}`)
+    }
+
     return oauth2Client
   } catch (err) {
+    // Il token morto NON va inghiottito: se restituissimo null i chiamanti
+    // cadrebbero sul Service Account, un principal diverso che non vede le
+    // cartelle dell'utente → "file non trovato" al posto di "riautorizza".
+    if (err instanceof GoogleAuthDeadError) throw err
     console.error('[OAUTH] getAuthorizedClient error:', err instanceof Error ? err.message : String(err))
     return null
   }

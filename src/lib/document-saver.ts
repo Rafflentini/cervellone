@@ -1,6 +1,7 @@
 import { google } from 'googleapis'
 import type { GoogleAuth, OAuth2Client } from 'google-auth-library'
 import { DRIVE_FOLDERS, SHEETS, createDocument } from './drive'
+import { GoogleAuthDeadError } from './google-token-health'
 
 export type DocumentType =
   | 'pos'
@@ -83,6 +84,9 @@ async function getAuth(): Promise<OAuth2Client | GoogleAuth> {
     const oauthClient = await getAuthorizedClient()
     if (oauthClient) return oauthClient
   } catch (err) {
+    // Stesso motivo di drive.ts: su token morto il fallback SA maschererebbe
+    // l'errore di autenticazione (il SA non vede le cartelle dell'utente).
+    if (err instanceof GoogleAuthDeadError) throw err
     console.error('[DRIVE-SAVER] OAuth lookup failed, fallback to SA:', err instanceof Error ? err.message : err)
   }
   const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '{}')
