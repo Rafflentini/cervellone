@@ -270,17 +270,44 @@ function parseWriteFields(input: Record<string, unknown>, allowStato: boolean): 
   return { fields }
 }
 
-async function registraScadenza(input: Record<string, unknown>): Promise<string> {
+/**
+ * Esito STRUTTURATO della registrazione di una scadenza.
+ *
+ * Esiste perche registra_scadenza non ha piu un solo chiamante: oltre al tool
+ * dell'LLM la usa `confirmProposta` (mail-sentinella → proposta → /conferma),
+ * che ha bisogno dei campi tipati e non di una stringa JSON da riparsare.
+ */
+export interface RegistraScadenzaEsito {
+  ok: boolean
+  error?: string
+  id?: string
+  sostituite: string[]
+  /** Presente solo quando la sostituzione delle precedenti e fallita. */
+  avviso?: string
+  /** false = l'evento in agenda NON esiste. Vedi `calendarNota` per il motivo. */
+  calendarOk: boolean
+  calendarNota: string
+}
+
+export async function registraScadenzaCore(input: Record<string, unknown>): Promise<RegistraScadenzaEsito> {
+  const rejected = (error: string): RegistraScadenzaEsito => ({
+    ok: false,
+    error,
+    sostituite: [],
+    calendarOk: false,
+    calendarNota: 'Calendar non aggiornato: scadenza non registrata.',
+  })
+
   const rawSoggetto = cleanString(input.soggetto)
-  if (!rawSoggetto) return fail('soggetto obbligatorio.')
+  if (!rawSoggetto) return rejected('soggetto obbligatorio.')
   const soggetto = normalizeSubject(rawSoggetto)
 
   const parsedDate = parseDate(input.data_scadenza, 'data_scadenza')
-  if (parsedDate.error) return fail(parsedDate.error)
-  if (!parsedDate.value) return fail('data_scadenza obbligatoria nel formato YYYY-MM-DD.')
+  if (parsedDate.error) return rejected(parsedDate.error)
+  if (!parsedDate.value) return rejected('data_scadenza obbligatoria nel formato YYYY-MM-DD.')
 
   const parsedFields = parseWriteFields(input, false)
-  if (parsedFields.error) return fail(parsedFields.error)
+  if (parsedFields.error) return rejected(parsedFields.error)
 
   const insertFields: ScadenzaWrite = {
     ...parsedFields.fields,
@@ -299,11 +326,11 @@ async function registraScadenza(input: Record<string, unknown>): Promise<string>
   const { data, error } = await supabase
     .from('cervellone_scadenze')
     .insert(insertFields)
-    .select('id, reminder_days')
+    .select('id')
     .single()
 
-  if (error) return fail(`Errore inserimento scadenza: ${error.message}`)
-  const created = data as Pick<ScadenzaRow, 'id' | 'reminder_days'> | null
+  if (error) return rejected(`Errore inserimento scadenza: ${error.message}`)
+  const created = data as Pick<ScadenzaRow, 'id'> | null
 
   const sostituzione: SostituzioneResult = created?.id
     ? await marcaSostituite({
@@ -326,8 +353,21 @@ async function registraScadenza(input: Record<string, unknown>): Promise<string>
     dataScadenza: parsedDate.value,
     tipoDocumento: insertFields.tipo_documento ?? null,
     note: insertFields.note ?? null,
-    reminderDays: created?.reminder_days ?? insertFields.reminder_days,
   })
+
+  return {
+    ok: true,
+    id: created?.id,
+    sostituite: replacedIds,
+    ...(sostituzione.warning ? { avviso: sostituzione.warning } : {}),
+    calendarOk: calendar.ok,
+    calendarNota: calendar.nota,
+  }
+}
+
+async function registraScadenza(input: Record<string, unknown>): Promise<string> {
+  const esito = await registraScadenzaCore(input)
+  if (!esito.ok) return fail(esito.error ?? 'Errore registrazione scadenza.')
 
   // `sostituite: []` da solo e AMBIGUO: vale sia "non c'era nulla da
   // sostituire" (caso normale) sia "la sostituzione e fallita dopo un INSERT
@@ -335,11 +375,17 @@ async function registraScadenza(input: Record<string, unknown>): Promise<string>
   // il modello leggeva ok:true e dichiarava la registrazione pulita. Quando c'e
   // un warning emettiamo quindi un campo esplicito `sostituzione: "fallita"`
   // accanto all'`avviso`, cosi i due casi non sono piu confondibili.
+  //
+  // Stessa logica per il Calendar: la sola nota in prosa dentro `calendar` era
+  // ignorabile dal modello ("registrata, te l'ho messa anche in agenda" anche
+  // quando l'evento non esisteva). `calendar_ok` e un booleano: non si legge a
+  // meta.
   return ok({
-    id: created?.id,
-    sostituite: replacedIds,
-    ...(sostituzione.warning ? { sostituzione: 'fallita', avviso: sostituzione.warning } : {}),
-    calendar,
+    id: esito.id,
+    sostituite: esito.sostituite,
+    ...(esito.avviso ? { sostituzione: 'fallita', avviso: esito.avviso } : {}),
+    calendar_ok: esito.calendarOk,
+    calendar: esito.calendarNota,
   })
 }
 
@@ -417,18 +463,51 @@ async function marcaSostituite(opts: {
   return { ids: replacedIds }
 }
 
+interface CalendarEsito {
+  ok: boolean
+  nota: string
+}
+
+// Oltre questo tempo si smette di aspettare Google. NON e un limite di cortesia:
+// la chiamata era `await`-ata senza timeout, quindi con Google appeso la
+// richiesta restava viva fino al kill di Vercel (maxDuration 800). La scadenza
+// era gia in DB, ma l'utente vedeva il turno morire e ri-registrava → duplicato.
+const CALENDAR_TIMEOUT_MS = 10_000
+
+const CALENDAR_TIMEOUT = Symbol('calendar-timeout')
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof CALENDAR_TIMEOUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<typeof CALENDAR_TIMEOUT>(resolve => {
+    timer = setTimeout(() => resolve(CALENDAR_TIMEOUT), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
+}
+
 /**
  * Crea un evento all-day sul Google Calendar per una scadenza. Best-effort:
- * ritorna una stringa-nota (successo o motivo del mancato inserimento), mai
- * lancia — il chiamante l'ha già persistita in DB.
+ * ritorna `{ ok, nota }` (mai lancia) — il chiamante l'ha già persistita in DB.
+ *
+ * `ok` e un BOOLEANO e non una nota in prosa perche il modello la prosa la
+ * ignorava: con lo scope calendar scaduto ogni registrazione tornava ok:true
+ * con "Calendar non aggiornato: ..." dentro un campo testuale, e il bot
+ * rispondeva comunque "te l'ho messa anche in agenda".
+ *
+ * NIENTE `reminder_days_before` (decisione 2026-08): il promemoria lo manda il
+ * cron `/api/cron/scadenze`, unica sorgente. Gli override email+popup
+ * dell'evento erano un secondo allarme non voluto — per giunta clampato a 28
+ * giorni da Calendar (reminder_days 60 → due allarmi a un mese di distanza) e
+ * recapitato a restruktura.drive@gmail.com, casella che nessuno legge.
+ * L'evento qui e solo la voce VISIVA in agenda.
  */
 async function createCalendarForScadenza(opts: {
   soggetto: string
   dataScadenza: string
   tipoDocumento: string | null
   note: string | null
-  reminderDays: number | undefined
-}): Promise<string> {
+}): Promise<CalendarEsito> {
   try {
     const { executeCalendarTool } = await import('./calendar-tools')
     const title = opts.tipoDocumento
@@ -437,18 +516,26 @@ async function createCalendarForScadenza(opts: {
     const descParts = ['Scadenza registrata in Cervellone.']
     if (opts.tipoDocumento) descParts.push(`Tipo: ${opts.tipoDocumento}.`)
     if (opts.note) descParts.push(`Note: ${opts.note}`)
-    const res = await executeCalendarTool('calendar_create_event', {
-      summary: title,
-      start_date: opts.dataScadenza,
-      reminder_days_before: String(opts.reminderDays ?? 5),
-      description: descParts.join(' '),
-    })
-    if (typeof res === 'string' && res.startsWith('✅')) {
-      return 'evento creato su Google Calendar'
+    const res = await withTimeout(
+      Promise.resolve(executeCalendarTool('calendar_create_event', {
+        summary: title,
+        start_date: opts.dataScadenza,
+        description: descParts.join(' '),
+      })),
+      CALENDAR_TIMEOUT_MS,
+    )
+    if (res === CALENDAR_TIMEOUT) {
+      return {
+        ok: false,
+        nota: `Calendar non aggiornato: timeout dopo ${CALENDAR_TIMEOUT_MS / 1000}s, Google non ha risposto. La scadenza e registrata, l'evento in agenda NO.`,
+      }
     }
-    return `Calendar non aggiornato: ${(res ?? 'nessuna risposta').slice(0, 200)}`
+    if (typeof res === 'string' && res.startsWith('✅')) {
+      return { ok: true, nota: 'evento creato su Google Calendar' }
+    }
+    return { ok: false, nota: `Calendar non aggiornato: ${(res ?? 'nessuna risposta').slice(0, 200)}` }
   } catch (e) {
-    return `Calendar non aggiornato: ${e instanceof Error ? e.message : String(e)}`
+    return { ok: false, nota: `Calendar non aggiornato: ${e instanceof Error ? e.message : String(e)}` }
   }
 }
 
@@ -464,7 +551,10 @@ async function listaScadenze(input: Record<string, unknown>): Promise<string> {
 
   const rawSoggetto = cleanString(input.soggetto)
   const soggetto = rawSoggetto ? normalizeSubject(rawSoggetto) : undefined
-  if (soggetto) query = query.ilike('soggetto', `%${soggetto}%`)
+  // Stesso escape della sostituzione: senza `ilikePattern` il soggetto
+  // `Ditta A\B Srl` produceva `%Ditta A\B Srl%`, dove `\B` e un escape LIKE che
+  // diventa una `B` letterale → la riga esiste ma non viene trovata.
+  if (soggetto) query = query.ilike('soggetto', ilikePattern(soggetto))
 
   const categoria = cleanString(input.categoria)
   if (categoria) query = query.eq('categoria', categoria)
@@ -554,7 +644,7 @@ export async function executeScadenzeTool(name: string, input: Record<string, un
 export const SCADENZE_TOOLS: ToolDefinition[] = [
   {
     name: 'registra_scadenza',
-    description: 'Registra una scadenza documentale/operativa in cervellone_scadenze. CHIAVE DI IDENTITA della scadenza = soggetto + tipo_documento + categoria (confronto senza distinzione di maiuscole ne di spazi): se esiste gia una scadenza attiva con la stessa chiave, viene marcata come sostituita DOPO aver creato la nuova. Quindi: al RINNOVO dello stesso documento ripeti la chiave IDENTICA (stessa categoria di prima), altrimenti restano due righe attive e arrivano due promemoria; per due documenti DIVERSI dello stesso tipo e dello stesso soggetto (es. tre attestati di formazione di Mario Rossi) usa categorie DIVERSE (es. antincendio / primo soccorso / ponteggi), altrimenti il piu recente cancella il precedente. Crea AUTOMATICAMENTE anche un evento sul Google Calendar di restruktura.drive (best-effort: se il Calendar non e disponibile la scadenza viene comunque registrata; il campo "calendar" nella risposta indica l\'esito). ESITO — REGOLA FERREA: se la risposta contiene il campo "avviso" (e "sostituzione":"fallita") la registrazione NON e pulita, restano due righe attive: riporta l\'avviso TESTUALMENTE all\'Ingegnere e proponi di chiudere la vecchia con chiudi_scadenza. Non dire mai solo "scadenza registrata" quando c\'e un avviso.',
+    description: 'Registra una scadenza documentale/operativa in cervellone_scadenze. CHIAVE DI IDENTITA della scadenza = soggetto + tipo_documento + categoria (confronto senza distinzione di maiuscole ne di spazi): se esiste gia una scadenza attiva con la stessa chiave, viene marcata come sostituita DOPO aver creato la nuova. Quindi: al RINNOVO dello stesso documento ripeti la chiave IDENTICA (stessa categoria di prima), altrimenti restano due righe attive e arrivano due promemoria; per due documenti DIVERSI dello stesso tipo e dello stesso soggetto (es. tre attestati di formazione di Mario Rossi) usa categorie DIVERSE (es. antincendio / primo soccorso / ponteggi), altrimenti il piu recente cancella il precedente. Crea AUTOMATICAMENTE anche l\'evento sul Google Calendar di restruktura.drive: NON chiamare calendar_create_event per una scadenza, faresti un doppione. Il promemoria lo manda il cron (mail ai destinatari), l\'evento e solo la voce in agenda. ESITO — REGOLA FERREA: se la risposta contiene il campo "avviso" (e "sostituzione":"fallita") la registrazione NON e pulita, restano due righe attive: riporta l\'avviso TESTUALMENTE all\'Ingegnere e proponi di chiudere la vecchia con chiudi_scadenza. E se "calendar_ok" e false l\'evento in agenda NON esiste: dillo esplicitamente citando il campo "calendar" (che spiega il motivo) e NON dire che hai messo la scadenza in agenda. Non dire mai solo "scadenza registrata" quando c\'e un avviso o calendar_ok false.',
     input_schema: {
       type: 'object' as const,
       properties: {

@@ -99,9 +99,18 @@ vi.mock('@/lib/supabase', () => ({
   supabase: { from: (table: string) => new MockQueryBuilder(table) },
 }))
 
-// Nessun test deve toccare Google Calendar.
+// Nessun test deve toccare Google Calendar. L'implementazione e sostituibile per
+// test (`calendarImpl`) e ogni chiamata viene registrata (`calendarCalls`), cosi
+// si puo asserire *cosa* viene passato all'evento (es. nessun reminder override).
+const CALENDAR_OK = '✅ Evento creato'
+let calendarImpl: (name: string, input: Record<string, unknown>) => Promise<string> = async () => CALENDAR_OK
+const calendarCalls: { name: string; input: Record<string, unknown> }[] = []
+
 vi.mock('./calendar-tools', () => ({
-  executeCalendarTool: vi.fn(async () => '✅ Evento creato'),
+  executeCalendarTool: (name: string, input: Record<string, unknown>) => {
+    calendarCalls.push({ name, input })
+    return calendarImpl(name, input)
+  },
   CALENDAR_TOOLS: [],
 }))
 
@@ -113,6 +122,7 @@ interface ParsedResult {
   sostituzione?: string
   avviso?: string
   calendar?: string
+  calendar_ok?: boolean
 }
 
 async function registra(input: Record<string, unknown>): Promise<ParsedResult> {
@@ -144,6 +154,8 @@ const BASE = {
 beforeEach(() => {
   mockOps.length = 0
   mockHandler = mockDefaultHandler
+  calendarCalls.length = 0
+  calendarImpl = async () => CALENDAR_OK
 })
 
 describe('registra_scadenza — atomicita sostituzione (BUG 1)', () => {
@@ -462,6 +474,113 @@ describe('registra_scadenza — esito non ambiguo quando la sostituzione fallisc
   })
 })
 
+/**
+ * FIX 1/2/4 — l'esito Calendar deve essere un BOOLEANO, non una nota in prosa.
+ *
+ * Scenario reale: il refresh token perde lo scope calendar. Ogni
+ * registra_scadenza tornava ok:true con una frase d'errore dentro `calendar`,
+ * il modello rispondeva "registrata, te l'ho messa anche in agenda" e
+ * l'Ingegnere si fidava dell'agenda per settimane senza un solo evento.
+ */
+describe('registra_scadenza — esito Calendar non ignorabile (FIX 1/2/4)', () => {
+  it('Calendar fallito → ok:true, calendar_ok:false, la scadenza resta in DB', async () => {
+    calendarImpl = async () => '❌ Errore Calendar: scope non autorizzato.'
+
+    const res = await registra({ ...BASE, tipo_documento: 'DURC' })
+
+    expect(res.ok).toBe(true)
+    expect(res.id).toBe('new-id')
+    expect(res.calendar_ok).toBe(false)
+    expect(res.calendar).toMatch(/scope non autorizzato/)
+    // La scadenza e stata comunque scritta: il Calendar e best-effort.
+    expect(insertOps()).toHaveLength(1)
+  })
+
+  it('Calendar che lancia → calendar_ok:false, la registrazione non fallisce', async () => {
+    calendarImpl = async () => { throw new Error('ECONNRESET') }
+
+    const res = await registra({ ...BASE, tipo_documento: 'DURC' })
+
+    expect(res.ok).toBe(true)
+    expect(res.calendar_ok).toBe(false)
+    expect(res.calendar).toMatch(/ECONNRESET/)
+  })
+
+  it('Calendar che non risponde → ritorna entro il timeout con calendar_ok:false', async () => {
+    // Senza timeout la chiamata "best-effort" tiene aperta la richiesta finche
+    // Vercel la uccide (maxDuration 800): la scadenza e gia in DB ma l'utente
+    // vede il turno morire e ri-registra → duplicato.
+    await import('./scadenze-tools') // pre-carica i moduli: i fake timer non devono correre durante gli import
+    calendarImpl = () => new Promise<string>(() => {})
+
+    vi.useFakeTimers()
+    try {
+      const pending = registra({ ...BASE, tipo_documento: 'DURC' })
+      await vi.advanceTimersByTimeAsync(15_000)
+      const res = await pending
+
+      expect(res.ok).toBe(true)
+      expect(res.id).toBe('new-id')
+      expect(res.calendar_ok).toBe(false)
+      expect(res.calendar).toMatch(/timeout/i)
+      expect(insertOps()).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('Calendar ok → calendar_ok:true', async () => {
+    const res = await registra({ ...BASE, tipo_documento: 'DURC' })
+
+    expect(res.ok).toBe(true)
+    expect(res.calendar_ok).toBe(true)
+    expect(res.calendar).toMatch(/Calendar/i)
+    expect(calendarCalls).toHaveLength(1)
+    expect(calendarCalls[0].name).toBe('calendar_create_event')
+  })
+
+  it('l evento della scadenza NON porta override di reminder (il cron e l unica sorgente)', async () => {
+    // Il cron scadenze manda gia la mail a N giorni. Gli override email+popup
+    // dell'evento erano un secondo allarme non voluto, per giunta clampato a 28
+    // giorni da Calendar (reminder_days 60 → due allarmi a un mese di distanza)
+    // e recapitato a restruktura.drive@gmail.com, casella che nessuno legge.
+    const res = await registra({ ...BASE, tipo_documento: 'DURC', reminder_days: 60 })
+
+    expect(res.ok).toBe(true)
+    expect(calendarCalls).toHaveLength(1)
+    expect(calendarCalls[0].input).not.toHaveProperty('reminder_days_before')
+    expect(Object.keys(calendarCalls[0].input)).not.toContain('reminder_days_before')
+  })
+})
+
+describe('lista_scadenze — filtro soggetto escapato (FIX 6)', () => {
+  async function lista(input: Record<string, unknown>): Promise<ParsedResult> {
+    const { executeScadenzeTool } = await import('./scadenze-tools')
+    const raw = await executeScadenzeTool('lista_scadenze', input)
+    return JSON.parse(raw ?? '{}') as ParsedResult
+  }
+
+  it('un soggetto con backslash produce il pattern escapato, non `%Ditta A\\B Srl%`', async () => {
+    const { ilikePattern } = await import('./scadenze-tools')
+    const res = await lista({ soggetto: 'Ditta A\\B Srl' })
+    expect(res.ok).toBe(true)
+
+    const select = mockOps.find(op => op.op === 'select')
+    const filter = (select?.filters ?? []).find(f => f.method === 'ilike' && f.args[0] === 'soggetto')
+    expect(filter).toBeDefined()
+    expect(filter?.args[1]).toBe(ilikePattern('Ditta A\\B Srl'))
+    expect(filter?.args[1]).toBe('%Ditta%A\\\\B%Srl%')
+    expect(filter?.args[1]).not.toBe('%Ditta A\\B Srl%')
+  })
+
+  it('anche % e _ nel soggetto restano letterali', async () => {
+    await lista({ soggetto: 'Ditta 100% Srl' })
+    const select = mockOps.find(op => op.op === 'select')
+    const filter = (select?.filters ?? []).find(f => f.method === 'ilike' && f.args[0] === 'soggetto')
+    expect(filter?.args[1]).toBe('%Ditta%100\\%%Srl%')
+  })
+})
+
 describe('SCADENZE_TOOLS — le istruzioni all LLM sono allineate al codice', () => {
   async function toolByName(name: string) {
     const { SCADENZE_TOOLS } = await import('./scadenze-tools')
@@ -489,6 +608,25 @@ describe('SCADENZE_TOOLS — le istruzioni all LLM sono allineate al codice', ()
     const tool = await toolByName('registra_scadenza')
     expect(tool.description).toMatch(/avviso/)
     expect(tool.description).toMatch(/TESTUALMENTE/)
+  })
+
+  it('registra_scadenza documenta calendar_ok come booleano da riportare (FIX 1)', async () => {
+    const tool = await toolByName('registra_scadenza')
+    expect(tool.description).toMatch(/calendar_ok/)
+    // Non basta nominarlo: deve dire che a false l'agenda NON e aggiornata.
+    expect(tool.description).toMatch(/calendar_ok["']?\s*(:|=)?\s*false|calendar_ok e false|calendar_ok è false/i)
+  })
+
+  it('calendar_create_event NON invita piu a duplicare le scadenze (FIX 5)', async () => {
+    // La description vecchia ("Ideale per registrare scadenze anche sul
+    // calendario, oltre che nello scadenzario") spingeva il modello a creare a
+    // mano l'evento che registra_scadenza crea gia da solo → due eventi.
+    const actual = await vi.importActual<typeof import('./calendar-tools')>('./calendar-tools')
+    const tool = actual.CALENDAR_TOOLS.find(t => t.name === 'calendar_create_event')
+    expect(tool).toBeDefined()
+    expect(tool!.description).not.toMatch(/Ideale per registrare scadenze/i)
+    expect(tool!.description).toMatch(/registra_scadenza/)
+    expect(tool!.description).toMatch(/appuntament|riunion/i)
   })
 
   it('aggiorna_scadenza dichiara le validazioni condivise con parseWriteFields', async () => {

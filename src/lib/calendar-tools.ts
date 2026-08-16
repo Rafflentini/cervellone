@@ -243,7 +243,7 @@ export const CALENDAR_TOOLS: ToolDefinition[] = [
   {
     name: 'calendar_create_event',
     description:
-      'Crea un evento sul Google Calendar dell\'account restruktura.drive@gmail.com. Usa start_date (YYYY-MM-DD) per un evento di un giorno intero (es. una scadenza), oppure start_datetime (ISO, es. 2026-06-17T09:00:00) per un evento con orario. reminder_days_before imposta un promemoria email+popup N giorni prima. Ideale per registrare scadenze anche sul calendario, oltre che nello scadenzario.',
+      'Crea un evento sul Google Calendar dell\'account restruktura.drive@gmail.com. Serve per APPUNTAMENTI e RIUNIONI (sopralluoghi, incontri con il committente, consegne concordate): usa start_datetime (ISO, es. 2026-06-17T09:00:00) per un evento con orario, oppure start_date (YYYY-MM-DD) per un evento di un giorno intero. reminder_days_before imposta un promemoria email+popup N giorni prima. NON usarlo per le SCADENZE documentali (DURC, visite mediche, attestati, revisioni): quelle si registrano con registra_scadenza, che crea gia da solo la voce in agenda e fa partire il promemoria via mail — crearne una qui in piu significa due eventi e due promemoria.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -254,7 +254,7 @@ export const CALENDAR_TOOLS: ToolDefinition[] = [
         end_datetime: { type: 'string', description: 'Fine con orario ISO. Opzionale (default +1h).' },
         description: { type: 'string', description: 'Descrizione/note dell\'evento' },
         location: { type: 'string', description: 'Luogo' },
-        reminder_days_before: { type: 'string', description: 'Promemoria N giorni prima (email+popup). Es. "5"' },
+        reminder_days_before: { type: 'string', description: 'Promemoria N giorni prima (email+popup). Es. "5". Google accetta al massimo 28 giorni: valori piu alti vengono ridotti a 28.' },
         calendar_id: { type: 'string', description: 'ID calendario (default "primary")' },
       },
       required: ['summary'],
