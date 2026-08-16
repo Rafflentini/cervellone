@@ -1,5 +1,6 @@
 import { google } from 'googleapis'
 import { Readable } from 'stream'
+import { GoogleAuthDeadError } from './google-token-health'
 
 /**
  * FIX W1.3.5: auth dinamica OAuth-first → SA fallback.
@@ -18,6 +19,11 @@ async function getAuth(): Promise<any> {
     const oauthClient = await getAuthorizedClient()
     if (oauthClient) return oauthClient
   } catch (err) {
+    // Token morto: il SA è un principal DIVERSO che non vede le cartelle
+    // dell'utente. Cadere lì trasformerebbe un errore di autenticazione in una
+    // bugia ("file non trovato"). Rilancio: i catch a valle stampano il
+    // messaggio di GoogleAuthDeadError, che spiega come riautorizzare.
+    if (err instanceof GoogleAuthDeadError) throw err
     console.error('[DRIVE] OAuth lookup failed, fallback to SA:', err instanceof Error ? err.message : err)
   }
 
