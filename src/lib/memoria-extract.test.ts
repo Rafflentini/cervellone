@@ -40,6 +40,25 @@ vi.mock('@/lib/supabase', () => ({
   },
 }))
 
+vi.mock('@/lib/supabase-server', () => ({
+  getSupabaseServer: vi.fn(() => ({
+    from: vi.fn((_table: string) => ({
+      insert: mockInsert,
+      update: mockUpdate,
+      select: mockSelect,
+      upsert: mockUpsert,
+    })),
+  })),
+}))
+
+vi.mock('./claude', () => ({
+  getConfig: vi.fn().mockResolvedValue({ modelAudit: 'claude-sonnet-4-6' }),
+}))
+
+vi.mock('@/lib/api-usage', () => ({
+  logApiUsage: vi.fn().mockResolvedValue(undefined),
+}))
+
 // ── Default mock setup ────────────────────────────────────────────────────────
 
 beforeEach(() => {

@@ -4,9 +4,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // ── Mock Anthropic SDK (per runDebrief / maybeRunDebrief) ─────────────────────
 const mockCreate = vi.fn()
 vi.mock('@anthropic-ai/sdk', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    messages: { create: mockCreate },
-  })),
+  default: class {
+    messages = { create: mockCreate }
+  },
 }))
 
 // ── Mock Supabase (per isAutoDebriefEnabled) ──────────────────────────────────
@@ -278,8 +278,13 @@ describe('maybeRunDebrief', () => {
 
   it('nessun segnale (no tool, no approval) → return senza distillazione', async () => {
     setFlag(true)
-    await maybeRunDebrief({ conversationId: 'conv-1', userText: 'ciao come va', transcript: 't' })
+    await maybeRunDebrief({ conversationId: 'conv-no-signal', userText: 'ciao come va', transcript: 't' })
     expect(mockCreate).not.toHaveBeenCalled()
+    // Asserzione forte: prova l'early-return di auto-debrief.ts:297 (nessun segnale),
+    // che avviene PRIMA di getActiveProject. Asserire su setLastDebriefAt sarebbe
+    // passato anche se il gate a valle avesse fatto il lavoro al posto dell'early-return.
+    // NB: l'id conversazione è dedicato perché consumeToolSignals tiene uno store
+    // module-level: riusare 'conv-1' importava i segnali lasciati dai test precedenti.
     expect(mockGetActiveProject).not.toHaveBeenCalled()
   })
 

@@ -44,12 +44,27 @@ describe('appendToSent', () => {
     // Contratto: appendToSent throw qualsiasi errore IMAP. sendEmailInternal
     // wrappa la chiamata in try/catch per non rollbackare la SMTP send già
     // andata a buon fine (vedi email-send.spec.ts test atomicità).
+    // Il mock deve esporre anche mailboxSubscribe e getMailboxLock: append-sent.ts
+    // prova 3 volte (con \\Seen → senza flag → dopo SELECT lock) e solo l'ultimo
+    // errore finisce nel messaggio. Senza getMailboxLock il test falliva su
+    // "client.getMailboxLock is not a function", cioè non arrivava mai a
+    // esercitare il caso permission/quota che dice di coprire.
+    const release = vi.fn()
     const client = {
       list: vi.fn().mockResolvedValue([{ path: 'Sent' }]),
       append: vi.fn().mockRejectedValue(new Error('NO Permission denied')),
+      mailboxSubscribe: vi.fn().mockResolvedValue(undefined),
+      getMailboxLock: vi.fn().mockResolvedValue({ release }),
     }
     ;(openImap as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(client)
-    await expect(appendToSent('info', Buffer.from('raw'))).rejects.toThrow(/Permission denied/)
+    // Asserisce sia il wrapper sia la CAUSA originale: asserire solo
+    // /IMAP APPEND failed/ renderebbe il test vacuo (passerebbe per qualunque
+    // guasto, mock rotto incluso).
+    await expect(appendToSent('info', Buffer.from('raw'))).rejects.toThrow(
+      /IMAP APPEND failed[\s\S]*Permission denied/,
+    )
+    expect(client.append).toHaveBeenCalledTimes(3)
+    expect(release).toHaveBeenCalled()
     expect(closeImap).toHaveBeenCalled()
   })
 })

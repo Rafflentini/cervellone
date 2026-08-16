@@ -27,6 +27,18 @@ vi.mock('@/lib/supabase', () => ({
   },
 }))
 
+vi.mock('@/lib/supabase-server', () => ({
+  getSupabaseServer: vi.fn(() => ({
+    from: vi.fn(() => ({
+      insert: vi.fn(() => ({
+        select: vi.fn(() => mockInsert()),
+      })),
+      select: mockSelect,
+      delete: mockDelete,
+    })),
+  })),
+}))
+
 // Patch chaining
 beforeEach(() => {
   vi.clearAllMocks()

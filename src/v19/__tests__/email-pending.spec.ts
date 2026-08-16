@@ -48,6 +48,12 @@ vi.mock('@/lib/supabase', () => ({
   },
 }))
 
+vi.mock('@/lib/supabase-server', () => ({
+  getSupabaseServer: vi.fn(() => ({
+    from: (...args: unknown[]) => fromSpy(...args),
+  })),
+}))
+
 import {
   markPendingSent,
   markPendingCancelled,

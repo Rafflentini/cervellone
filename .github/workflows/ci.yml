@@ -1,0 +1,49 @@
+name: CI
+
+# Rete di sicurezza minima: typecheck + test unit su ogni push e PR.
+# Prima del 17/08/2026 non esisteva alcuna CI: gli 8 errori di `tsc --noEmit`
+# in pdf-generator.test.ts sono sopravvissuti da maggio ad agosto senza che
+# nulla li segnalasse, e la suite unit era rossa (36 test) per chiunque non
+# avesse le env esportate in shell.
+#
+# NON impostare questi job come required status check finché il bot che mergia
+# le PR non è stato adeguato: bloccherebbe il suo loop di merge autonomo.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Una PR che riceve più push annulla i run vecchi invece di accodarli.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck + unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # Le env reali non servono: vitest.setup.ts inietta stub finti.
+      # Se un test dovesse chiedere una credenziale vera, è un bug del test.
+      - name: Unit tests
+        run: npx vitest run

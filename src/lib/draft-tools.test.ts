@@ -8,7 +8,7 @@ function makeBuilder() {
   const builder: Record<string, unknown> = {}
   const self = () => builder
   // metodi che ritornano il builder (chaining)
-  for (const m of ['select', 'update', 'insert', 'eq', 'order']) builder[m] = self
+  for (const m of ['select', 'update', 'insert', 'eq', 'neq', 'order']) builder[m] = self
   // terminali che risolvono il risultato
   builder.single = () => Promise.resolve(nextResult)
   builder.maybeSingle = () => Promise.resolve(nextResult)
