@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isRaffica, RAFFICA_THRESHOLD, shouldSendRafficaAck } from './upload-flow'
+import { isRaffica, RAFFICA_THRESHOLD, shouldSendRafficaAck, isPhotoLikeDocument, photoMimeFromFilename } from './upload-flow'
 
 describe('isRaffica', () => {
   it('1-3 file → NON raffica (si analizza)', () => {
@@ -38,5 +38,45 @@ describe('shouldSendRafficaAck (throttle 30s)', () => {
     const t = 2_000_000
     expect(shouldSendRafficaAck('chat-X', t)).toBe(true)
     expect(shouldSendRafficaAck('chat-Y', t)).toBe(true)
+  })
+})
+
+// Dal cantiere si usa spesso "Invia come file" (iPhone) per non comprimere: la foto arriva
+// come message.document e finiva su Drive SENZA riga cervellone_foto_pending → archivia_foto
+// non l'avrebbe mai vista.
+describe('isPhotoLikeDocument', () => {
+  it('image/jpeg + IMG_4821.JPG → true', () => {
+    expect(isPhotoLikeDocument({ mime_type: 'image/jpeg', file_name: 'IMG_4821.JPG' })).toBe(true)
+  })
+  it('image/heic → true', () => {
+    expect(isPhotoLikeDocument({ mime_type: 'image/heic', file_name: 'IMG_4821.HEIC' })).toBe(true)
+  })
+  it('application/pdf + DVR.pdf → false', () => {
+    expect(isPhotoLikeDocument({ mime_type: 'application/pdf', file_name: 'DVR.pdf' })).toBe(false)
+  })
+  it('application/octet-stream + IMG_4821.jpg → true (mime indovinato male, estensione decide)', () => {
+    expect(isPhotoLikeDocument({ mime_type: 'application/octet-stream', file_name: 'IMG_4821.jpg' })).toBe(true)
+  })
+  it('octet-stream senza estensione immagine → false', () => {
+    expect(isPhotoLikeDocument({ mime_type: 'application/octet-stream', file_name: 'archivio.zip' })).toBe(false)
+    expect(isPhotoLikeDocument({ mime_type: 'application/octet-stream', file_name: 'senza-estensione' })).toBe(false)
+  })
+  it('mime assente → decide l\'estensione', () => {
+    expect(isPhotoLikeDocument({ file_name: 'foto.jfif' })).toBe(true)
+    expect(isPhotoLikeDocument({ file_name: 'contratto.docx' })).toBe(false)
+    expect(isPhotoLikeDocument({})).toBe(false)
+  })
+})
+
+describe('photoMimeFromFilename', () => {
+  it('deduce il mime immagine dall\'estensione', () => {
+    expect(photoMimeFromFilename('IMG_4821.JPG')).toBe('image/jpeg')
+    expect(photoMimeFromFilename('a.heic')).toBe('image/heic')
+    expect(photoMimeFromFilename('a.jfif')).toBe('image/jpeg')
+  })
+  it('non-immagine → null', () => {
+    expect(photoMimeFromFilename('DVR.pdf')).toBeNull()
+    expect(photoMimeFromFilename('senza-estensione')).toBeNull()
+    expect(photoMimeFromFilename(null)).toBeNull()
   })
 })

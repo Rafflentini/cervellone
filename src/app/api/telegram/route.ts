@@ -127,9 +127,45 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true })
       }
 
+      // Dal cantiere si usa "Invia come file" (iPhone) per non comprimere: la foto arriva
+      // come message.document. Se la trattassimo da documento finirebbe su Drive SENZA riga
+      // cervellone_foto_pending → `archivia_foto` non la vedrebbe mai. Instradala all'ingest foto.
+      const { isPhotoLikeDocument, photoMimeFromFilename } = await import('@/lib/upload-flow')
+      const documentIsPhoto = isPhotoLikeDocument({
+        mime_type: message.document.mime_type,
+        file_name: message.document.file_name,
+      })
+
       // AUTO-ARCHIVE: salva sempre il file originale su Drive prima di passarlo al LLM
       let archivedDriveLink: string | null = null
-      if (fileData && message.document.file_size && message.document.file_size < 32 * 1024 * 1024) {
+      if (documentIsPhoto && (!message.document.file_size || message.document.file_size < 32 * 1024 * 1024)) {
+        try {
+          const { ingestPhotoUpload, formatFotoIngestWarning } = await import('@/lib/foto-ingest')
+          const rawMime: string = typeof message.document.mime_type === 'string' ? message.document.mime_type : ''
+          const photoFilename: string = message.document.file_name || fileData.fileName
+          const photoMime = rawMime.toLowerCase().startsWith('image/')
+            ? rawMime
+            : (photoMimeFromFilename(photoFilename) ?? photoMimeFromFilename(fileData.fileName) ?? fileData.mimeType)
+          const ingested = await ingestPhotoUpload({
+            canale: 'telegram',
+            chatId: chatIdToUuid(chatId),
+            items: [{ buffer: Buffer.from(fileData.buffer), mimeType: photoMime, filename: photoFilename }],
+          })
+          for (const rec of ingested.records) {
+            turnImageRefs.push({ driveFileId: rec.driveFileId, filename: rec.filename, driveUrl: rec.driveUrl })
+          }
+          archivedDriveLink = ingested.records[0]?.driveUrl ?? null
+          if (archivedDriveLink) console.log(`[TG-ARCHIVE] foto-come-file=${photoFilename} → ${archivedDriveLink}`)
+          const warn = formatFotoIngestWarning(ingested)
+          if (warn) await sendTelegramMessage(chatId, warn).catch(() => {})
+        } catch (err) {
+          console.error('[TG-ARCHIVE] foto-come-file ingest failed:', err instanceof Error ? err.message : err)
+          await sendTelegramMessage(
+            chatId,
+            '⚠️ Errore durante l\'archiviazione della foto inviata come file: *non risulta salvata*. La rimandi, per favore.',
+          ).catch(() => {})
+        }
+      } else if (fileData && message.document.file_size && message.document.file_size < 32 * 1024 * 1024) {
         try {
           const { uploadBinaryToDrive, getTelegramInboxFolderId } = await import('@/lib/drive')
           const folderId = await getTelegramInboxFolderId()
@@ -168,26 +204,45 @@ export async function POST(request: NextRequest) {
       await sendTyping(chatId)
       const largest = message.photo[message.photo.length - 1]
       const fileData = await downloadTelegramFile(largest.file_id)
-      if (fileData) {
+      if (!fileData) {
+        // BUCO STORICO (mancava l'else): token assente, getFile fallito o CDN Telegram 5xx
+        // facevano sparire la foto SENZA un solo messaggio. Ora si dice, e si dice la verità:
+        // non è salvata da nessuna parte, va rimandata.
+        await sendTelegramMessage(
+          chatId,
+          '⚠️ Non riesco a scaricare la foto da Telegram: *NON è stata salvata*. La rimandi, per favore.',
+        )
+        if (!userText) {
+          userText = "L'utente ha inviato una foto ma il download da Telegram è fallito: la foto NON è stata salvata né archiviata. Diglielo e chiedi di rimandarla."
+        }
+        fileDescription = 'foto (download da Telegram fallito)'
+      } else {
         // AUTO-ARCHIVE + record persistente foto_pending (parità con web): la foto è SUBITO su Drive.
         let archivedDriveLink: string | null = null
         if (!largest.file_size || largest.file_size < 32 * 1024 * 1024) {
           try {
-            const { ingestPhotoUpload } = await import('@/lib/foto-ingest')
+            const { ingestPhotoUpload, formatFotoIngestWarning } = await import('@/lib/foto-ingest')
             const ingested = await ingestPhotoUpload({
               canale: 'telegram',
               chatId: chatIdToUuid(chatId),
               items: [{ buffer: Buffer.from(fileData.buffer), mimeType: fileData.mimeType, filename: fileData.fileName }],
             })
             // Memoria immagini: raccogli TUTTI i ref Drive ingeriti in questo turno.
-            for (const rec of ingested) {
+            for (const rec of ingested.records) {
               turnImageRefs.push({ driveFileId: rec.driveFileId, filename: rec.filename, driveUrl: rec.driveUrl })
             }
-            const [rec] = ingested
+            const [rec] = ingested.records
             archivedDriveLink = rec?.driveUrl ?? null
             if (archivedDriveLink) console.log(`[TG-ARCHIVE] file=${fileData.fileName} → ${archivedDriveLink}`)
+            // Ciò che NON è entrato va detto PRIMA della risposta normale.
+            const warn = formatFotoIngestWarning(ingested)
+            if (warn) await sendTelegramMessage(chatId, warn).catch(() => {})
           } catch (err) {
             console.error('[TG-AUTOARCHIVE] photo archive failed:', err instanceof Error ? err.message : err)
+            await sendTelegramMessage(
+              chatId,
+              '⚠️ Errore durante l\'archiviazione della foto: *non risulta salvata*. La rimandi, per favore.',
+            ).catch(() => {})
           }
         }
 

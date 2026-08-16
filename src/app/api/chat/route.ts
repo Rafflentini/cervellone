@@ -88,8 +88,8 @@ export async function POST(request: NextRequest) {
     )
     if (imgs.length > 0) {
       try {
-        const { ingestPhotoUpload } = await import('@/lib/foto-ingest')
-        const recs = await ingestPhotoUpload({
+        const { ingestPhotoUpload, hasFotoIngestProblems } = await import('@/lib/foto-ingest')
+        const res = await ingestPhotoUpload({
           canale: 'web',
           chatId: conversationId ?? null,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -99,11 +99,22 @@ export async function POST(request: NextRequest) {
             filename: `web-${Date.now()}-${i}.jpg`,
           })),
         })
-        uploadedImageRefs = recs.map((r) => ({
+        uploadedImageRefs = res.records.map((r) => ({
           driveFileId: r.driveFileId,
           filename: r.filename,
           driveUrl: r.driveUrl,
         }))
+        // Le foto che NON sono entrate non spariscono in silenzio: restano a log con il motivo
+        // (fatal = Inbox Drive giu, orphans = byte su Drive senza riga → archivia_foto non le vede).
+        if (hasFotoIngestProblems(res)) {
+          console.error('[FOTO-INGEST web] ingest NON pulito:', JSON.stringify({
+            caricate: res.records.length,
+            fatal: res.fatal ?? null,
+            orfane: res.orphans.map(o => ({ filename: o.filename, driveFileId: o.driveFileId })),
+            scartate: res.skipped.map(s => s.filename),
+            fallite: res.failed.map(f => f.filename),
+          }))
+        }
       } catch (err) {
         console.error('[FOTO-INGEST web] errore:', err instanceof Error ? err.message : err)
       }
