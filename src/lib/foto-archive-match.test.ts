@@ -8,6 +8,7 @@ import {
   significantTokens,
   commessaNumbers,
   isMoveSuccess,
+  pickTopScored,
   type FolderMatch,
 } from './foto-archive-match'
 
@@ -253,5 +254,49 @@ describe('isMoveSuccess', () => {
     expect(isMoveSuccess('🔒 scrittura non consentita')).toBe(false)
     expect(isMoveSuccess('File aggiornato')).toBe(false)
     expect(isMoveSuccess('')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pickTopScored — la scelta della cartella foto ANNIDATA (BFS).
+// La BFS parte dai figli diretti, quindi senza la soglia riaccettava esattamente
+// ciò che pickFotoFolder aveva appena scartato: la protezione di B9 restava
+// inerte proprio nel caso che doveva coprire.
+// ---------------------------------------------------------------------------
+describe('pickTopScored (cartella foto annidata)', () => {
+  const c = (name: string, score: number) => ({ id: name, name, score })
+
+  it('un solo candidato SOTTO soglia → non sceglie, lo restituisce per la domanda', () => {
+    // "05_Impianto Fotovoltaico" arriva qui con score 0: in una commessa
+    // fotovoltaico le foto di cantiere finivano fra gli schemi elettrici.
+    const { match, tied } = pickTopScored([c('05_Impianto Fotovoltaico', 0)])
+    expect(match).toBeUndefined()
+    expect(tied.map(x => x.name)).toEqual(['05_Impianto Fotovoltaico'])
+  })
+
+  it('un solo candidato SOPRA soglia → sceglie', () => {
+    const { match } = pickTopScored([c('08_Foto cantiere', 80)])
+    expect(match?.name).toBe('08_Foto cantiere')
+  })
+
+  it('vince il punteggio più alto, non l ordine di arrivo', () => {
+    const { match } = pickTopScored([c('03_Rilievo fotografico', 70), c('08_Foto cantiere', 80)])
+    expect(match?.name).toBe('08_Foto cantiere')
+  })
+
+  it('vero pareggio sopra soglia → NON sceglie, chiede con entrambi i candidati', () => {
+    const { match, tied } = pickTopScored([c('Foto cantiere', 80), c('Foto lavori', 80)])
+    expect(match).toBeUndefined()
+    expect(tied.map(x => x.name)).toEqual(['Foto cantiere', 'Foto lavori'])
+  })
+
+  it('nessun candidato → nessuna scelta e nessun candidato da mostrare', () => {
+    expect(pickTopScored([])).toEqual({ tied: [] })
+  })
+
+  it('non muta l array ricevuto (il sort lavora su una copia)', () => {
+    const input = [c('a', 10), c('b', 90)]
+    pickTopScored(input)
+    expect(input.map(x => x.name)).toEqual(['a', 'b'])
   })
 })

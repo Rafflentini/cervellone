@@ -12,7 +12,6 @@ import { supabase } from './supabase'
 import { splitRecentOlder, clusterByTime, type PendingRow } from './foto-archive-pending'
 // Logica pura di matching (testata in foto-archive-match.test.ts).
 import {
-  FOTO_FOLDER_MIN_SCORE,
   normalizeName,
   significantTokens,
   commessaNumbers,
@@ -20,6 +19,7 @@ import {
   matchNamedFolder,
   scoreFotoFolder,
   pickFotoFolder,
+  pickTopScored,
   hasFotoFolder,
   isFotoFolderName,
   isMoveSuccess,
@@ -139,14 +139,7 @@ async function findFotoFolderDeep(
 // Stessa soglia di pickFotoFolder: senza, un candidato debole scartato tra i figli
 // diretti verrebbe riaccettato qui (la BFS parte proprio dai figli diretti).
 function pickFotoCandidate(candidates: FotoCandidate[]): { match?: FotoCandidate; tied: FotoCandidate[] } {
-  if (candidates.length === 0) return { tied: [] }
-  const ranked = [...candidates].sort((a, b) => b.score - a.score)
-  const topScore = ranked[0].score
-  const tied = ranked.filter(c => c.score === topScore)
-  // Sotto soglia non si sceglie: si chiede all'Ingegnere elencando i candidati.
-  if (topScore < FOTO_FOLDER_MIN_SCORE) return { tied }
-  if (tied.length === 1) return { match: ranked[0], tied }
-  return { tied }
+  return pickTopScored(candidates)
 }
 
 function sanitizeFolderSegment(value: string): string {

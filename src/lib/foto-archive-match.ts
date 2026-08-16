@@ -205,6 +205,24 @@ export function hasFotoFolder(folders: FolderMatch[]): boolean {
   return folders.some(f => isFotoFolderName(f.name))
 }
 
+// Stessa regola di pickFotoFolder, ma su candidati che portano già il punteggio
+// calcolato (la BFS annidata somma un bonus per il genitore). Vive qui, e non
+// dentro foto-archive-tools, perché è pura: lasciarla là la rendeva l'unico pezzo
+// della catena di scelta non coperto da test, proprio mentre le si affidava la
+// soglia che impedisce di archiviare in "05_Impianto Fotovoltaico".
+export function pickTopScored<T extends { score: number }>(
+  candidates: T[],
+): { match?: T; tied: T[] } {
+  if (candidates.length === 0) return { tied: [] }
+  const ranked = [...candidates].sort((a, b) => b.score - a.score)
+  const topScore = ranked[0].score
+  const tied = ranked.filter(c => c.score === topScore)
+  // Sotto soglia non si sceglie: il chiamante elenca i candidati e chiede.
+  if (topScore < FOTO_FOLDER_MIN_SCORE) return { tied }
+  if (tied.length === 1) return { match: ranked[0], tied }
+  return { tied }
+}
+
 // moveFile (drive.ts) ora rilegge i parent e VERIFICA lo spostamento: in caso di
 // fallimento ritorna SEMPRE una stringa che inizia con "Errore" (verifica/permessi)
 // oppure "🔒" (policy). Un successo verificato contiene "spostato nella nuova cartella".
