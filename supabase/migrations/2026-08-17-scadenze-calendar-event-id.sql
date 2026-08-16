@@ -27,16 +27,39 @@ alter table public.cervellone_scadenze
 comment on column public.cervellone_scadenze.calendar_event_id is
   'ID evento Google Calendar creato da registra_scadenza. Serve a cancellare/aggiornare il vecchio evento quando la scadenza viene sostituita, invece di lasciarlo in agenda con i suoi reminder.';
 
--- La chiave di identità di una scadenza è soggetto + tipo_documento + categoria,
--- tutti normalizzati (lower+trim), e vale solo fra le righe ATTIVE: le storiche
--- 'sostituito'/'archiviato' devono poter coesistere quante sono.
+-- ─────────────────────────────────────────────────────────────────────────────
+-- INDICE UNICO: RIMOSSO DA QUESTA MIGRATION. NON aggiungerlo così com'è.
 --
--- ATTENZIONE PRIMA DI APPLICARLA: se in tabella ci sono GIÀ duplicati attivi
--- (probabile, visto che fino a oggi il match su tipo_documento era
--- case-sensitive e 'DURC' vs 'Durc' non si sostituivano), la create index
--- fallisce. Trovarli con:
+-- La prima stesura creava un indice unico parziale sulla chiave normalizzata
+-- (soggetto, tipo_documento, categoria) fra le sole righe attive, per chiudere
+-- la race di `marcaSostituite`. È INCOMPATIBILE con il codice in produzione, e
+-- applicarlo romperebbe le registrazioni invece di proteggerle:
 --
---   select lower(trim(soggetto))               as sogg,
+--   `registraScadenzaCore` fa **INSERT prima** e marca `sostituito` **dopo**
+--   (scadenze-tools.ts). È l'ordine che chiude il P0 di perdita dati: se si
+--   sostituisse prima e l'INSERT fallisse, la scadenza vecchia sarebbe già
+--   morta e la nuova non esisterebbe.
+--
+--   Con l'indice attivo, ogni RINNOVO ha per un istante due righe attive con la
+--   stessa chiave — la vecchia e la nuova appena inserita — quindi l'INSERT
+--   viola l'unicità e il tool risponde "Errore inserimento scadenza": la
+--   scadenza non verrebbe registrata affatto.
+--
+-- I due meccanismi si escludono a vicenda finché la scrittura resta su due
+-- round-trip PostgREST separati. L'ordine INSERT-prima vale molto di più:
+-- protegge da una perdita silenziosa, mentre l'indice proteggerebbe da una race
+-- che richiede due registrazioni concorrenti sulla stessa chiave.
+--
+-- PER AVERE ENTRAMBI serve una RPC Postgres che faccia INSERT + UPDATE in
+-- un'unica transazione (a quel punto l'unicità si può imporre, perché non
+-- esiste più l'istante intermedio con due righe attive). È il lavoro giusto,
+-- ma è un intervento a sé.
+--
+-- Utile comunque sapere se ci sono duplicati attivi già in tabella — probabile,
+-- perché fino al 17/08/2026 il match su tipo_documento era case-sensitive e
+-- 'DURC' vs 'Durc' non si sostituivano:
+--
+--   select lower(trim(soggetto))                    as sogg,
 --          lower(trim(coalesce(tipo_documento,''))) as tipo,
 --          lower(trim(coalesce(categoria,'')))      as cat,
 --          count(*), array_agg(id order by created_at)
@@ -45,13 +68,6 @@ comment on column public.cervellone_scadenze.calendar_event_id is
 --   group by 1,2,3
 --   having count(*) > 1;
 --
--- e chiudere le più vecchie di ogni gruppo (stato='sostituito'), tenendo la più
--- recente, PRIMA di creare l'indice.
-
-create unique index if not exists uq_scadenze_attive_chiave
-  on public.cervellone_scadenze (
-    lower(trim(soggetto)),
-    lower(trim(coalesce(tipo_documento, ''))),
-    lower(trim(coalesce(categoria, '')))
-  )
-  where stato = 'attivo';
+-- Sono righe che oggi mandano promemoria doppi: vanno bonificate a mano
+-- (tenere la più recente, portare le altre a stato='sostituito').
+-- ─────────────────────────────────────────────────────────────────────────────
