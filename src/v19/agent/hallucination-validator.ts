@@ -6,7 +6,12 @@
  *
  * V19 valida runtime: scansiona la risposta finale del modello per URL Drive;
  * se trova URL non corrispondenti a file realmente esistenti, lancia
- * HallucinationError. Il route handler trasforma in re-prompt automatico.
+ * HallucinationError.
+ *
+ * Il checker di default interroga DAVVERO Google Drive (`files.get`): prima era
+ * uno stub `return true`, quindi il validatore non invalidava mai nulla.
+ * Chiamanti: `src/v19/agent/loop.ts` e — path di produzione Telegram —
+ * `src/lib/agent-job.ts`, che invece di rilanciare appende un avviso all'utente.
  *
  * Spec: docs/superpowers/specs/2026-05-09-cervellone-v19-rifondazione.md sez. 5.3
  */
@@ -61,15 +66,75 @@ export async function runHallucinationValidator(
 }
 
 /**
- * Default checker: marca tutti gli URL come "non verificabili" (no-throw)
- * finché il drive client wrapper V19 non è disponibile. Sostituire in
- * produzione con un checker che chiama Google Drive API HEAD.
+ * Status HTTP di un errore gaxios/googleapis, senza `any`.
+ * (`classifyGoogleError` non espone lo status: qui serve solo per isolare il 404.)
  */
-async function defaultDriveChecker(_fileId: string): Promise<boolean> {
-  // Placeholder: in produzione sostituire con client Drive vero.
-  // Per ora ritorna true (non blocca) per evitare falsi positivi.
-  // Vedi tools/v19/drive-checker.ts (TODO post-foundation).
-  return true
+function httpStatusOf(err: unknown): number | undefined {
+  if (typeof err !== 'object' || err === null) return undefined
+  const rec = err as Record<string, unknown>
+  if (typeof rec.status === 'number') return rec.status
+  // gaxios: `code` è numerico solo per errori API-level (AIP-193)
+  if (typeof rec.code === 'number') return rec.code
+  const response = rec.response
+  if (typeof response === 'object' && response !== null) {
+    const status = (response as Record<string, unknown>).status
+    if (typeof status === 'number') return status
+  }
+  return undefined
+}
+
+/**
+ * Checker Drive VERO.
+ *
+ * Semantica deliberata — è il cuore del fix:
+ *   - `files.get` riuscito                 → `true`  (il file esiste)
+ *   - 404 / file non trovato               → `false` (allucinazione: il bot ha
+ *                                            citato un file che non ha prodotto)
+ *   - 401/403/rete/quota/token morto       → LANCIA. Il chiamante tratta il caso
+ *                                            come "non verificabile" e prosegue.
+ *
+ * Il terzo ramo è quello che evita il danno peggiore: un refresh token Google
+ * scaduto renderebbe TUTTI i link "inesistenti" e l'utente vedrebbe un avviso
+ * di allucinazione su file perfettamente reali. La classificazione la fa
+ * `classifyGoogleError` (google-token-health), non una euristica locale.
+ *
+ * Auth: SOLO `getAuthorizedClient()` — lo stesso client OAuth che drive.ts prova
+ * per primo. NIENTE fallback Service Account (a differenza di drive.ts): il SA è
+ * un principal DIVERSO che non vede i file dell'utente e risponderebbe 404 su
+ * file esistenti, cioè esattamente il falso positivo che stiamo evitando.
+ *
+ * Import dinamici: costo zero quando il testo non contiene link Drive (il
+ * chiamante non entra mai qui) ed evita i side-effect a load-time di
+ * supabase-server nel modulo v19 (stesso motivo documentato in drive.ts).
+ */
+export async function defaultDriveChecker(fileId: string): Promise<boolean> {
+  const [{ google }, { getAuthorizedClient }, tokenHealth] = await Promise.all([
+    import('googleapis'),
+    import('@/lib/google-oauth'),
+    import('@/lib/google-token-health'),
+  ])
+
+  // Può lanciare GoogleAuthDeadError: si propaga → "non verificabile".
+  const auth = await getAuthorizedClient()
+  if (!auth) {
+    throw new Error(
+      '[v19/hallucination-validator] nessun client OAuth Google: esistenza file non verificabile',
+    )
+  }
+
+  const drive = google.drive({ version: 'v3', auth })
+  try {
+    await drive.files.get({ fileId, fields: 'id', supportsAllDrives: true })
+    return true
+  } catch (err) {
+    if (err instanceof tokenHealth.GoogleAuthDeadError) throw err
+    const kind = tokenHealth.classifyGoogleError(err)
+    // dead/scope/config = auth rotta; transient = rete o quota. Mai "inesistente".
+    if (tokenHealth.isFatalGoogleAuthKind(kind) || kind === 'transient') throw err
+    if (httpStatusOf(err) === 404) return false
+    // Sconosciuto: nel dubbio NON accusiamo il bot di allucinare.
+    throw err
+  }
 }
 
 /** Estrai tutti gli URL Drive/Docs trovati in un testo. */

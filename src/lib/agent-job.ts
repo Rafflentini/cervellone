@@ -39,6 +39,8 @@ import {
   sendTelegramMessageWithId,
 } from '@/lib/telegram-helpers'
 import { safeSupabase } from '@/lib/resilience'
+import { runHallucinationValidator, extractDriveUrls } from '@/v19/agent/hallucination-validator'
+import { HallucinationError } from '@/v19/agent/types'
 
 /**
  * Input SERIALIZZABILE del job agent (sicuro da passare a un workflow WDK).
@@ -74,6 +76,75 @@ export type AgentJobHooks = {
    * (identico ordine all'originale). Nel path durable: assente.
    */
   onStreamSettled?: () => void
+}
+
+/**
+ * ── Guardia anti-allucinazione (link Drive promessi e mai prodotti) ──
+ *
+ * Il validatore esisteva già (src/v19/agent/hallucination-validator.ts) ma era
+ * cablato SOLO in src/v19/agent/loop.ts, che non è il path di produzione:
+ * Telegram passa di qui. Senza questo blocco la difesa era testo nel system
+ * prompt e nient'altro.
+ *
+ * Politica deliberata: NON blocchiamo e NON ri-promptiamo. Un re-prompt
+ * automatico su un turno già completato rischia loop e costi; un blocco
+ * farebbe sparire una risposta magari corretta al 95%. Avvisiamo e basta.
+ */
+const HALLUCINATION_CHECK_TIMEOUT_MS = 8_000
+
+const HALLUCINATION_WARNING =
+  '⚠️ Attenzione: un link a un file Drive citato in questo messaggio non risulta esistente. ' +
+  'Non fidarti di quel link.'
+
+const CHECK_TIMED_OUT = Symbol('hallucination-check-timeout')
+
+/**
+ * Ritorna il testo da inviare, con l'avviso in testa se un link Drive citato
+ * non esiste. Non lancia MAI: la verifica non può far fallire il turno.
+ *
+ * Perché l'avviso va IN TESTA e non in coda: sopra i 4000 caratteri il testo
+ * viene spezzato (edit del placeholder + messaggi successivi). In coda l'avviso
+ * finirebbe nell'ultimo spezzone di una cascata che l'utente spesso non scorre;
+ * in testa è nel messaggio principale, quello che legge di sicuro.
+ */
+async function annotateHallucinatedLinks(text: string): Promise<string> {
+  // Costo ZERO senza link Drive: niente timer, niente import, niente rete.
+  if (extractDriveUrls(text).length === 0) return text
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    // Normalizzata a un valore risolto: così una reject tardiva (dopo il
+    // timeout) non diventa una unhandled rejection.
+    const validation: Promise<unknown> = runHallucinationValidator(text).then(
+      () => null,
+      (err: unknown) => err,
+    )
+    const timeout = new Promise<symbol>((resolve) => {
+      timer = setTimeout(() => resolve(CHECK_TIMED_OUT), HALLUCINATION_CHECK_TIMEOUT_MS)
+    })
+
+    const outcome = await Promise.race([validation, timeout])
+
+    if (outcome === CHECK_TIMED_OUT) {
+      // maxDuration è 800s ma il turno ha già consumato tempo: meglio un
+      // messaggio senza avviso che un turno scaduto.
+      console.warn('[agent-job] hallucination check: timeout, invio senza verifica')
+      return text
+    }
+    if (outcome instanceof HallucinationError) {
+      console.error('[agent-job] link Drive ALLUCINATO nella risposta:', outcome.url)
+      return `${HALLUCINATION_WARNING}\n\n${text}`
+    }
+    if (outcome) {
+      console.warn('[agent-job] hallucination check non concluso (ignorato):', outcome)
+    }
+    return text
+  } catch (err) {
+    console.warn('[agent-job] hallucination check: errore inatteso (ignorato):', err)
+    return text
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 export async function runAgentJob(
@@ -186,16 +257,22 @@ export async function runAgentJob(
   }
 
   const finalText = textParts.join('\n\n') || fullResponse
+
+  // Verifica che i link Drive citati esistano DAVVERO, prima di spedirli.
+  // `outgoingText` = finalText (+ eventuale avviso). Volutamente NON usato per
+  // captureArtifact più sotto: l'avviso non deve finire nelle bozze salvate.
+  const outgoingText = await annotateHallucinatedLinks(finalText)
+
   if (placeholderMsgId) {
-    if (finalText.length <= 4000) {
-      await editTelegramMessage(chatId, placeholderMsgId, finalText)
+    if (outgoingText.length <= 4000) {
+      await editTelegramMessage(chatId, placeholderMsgId, outgoingText)
     } else {
-      await editTelegramMessage(chatId, placeholderMsgId, finalText.slice(0, 4000))
-      const remaining = finalText.slice(4000)
+      await editTelegramMessage(chatId, placeholderMsgId, outgoingText.slice(0, 4000))
+      const remaining = outgoingText.slice(4000)
       if (remaining.trim()) await sendTelegramMessage(chatId, remaining)
     }
   } else {
-    await sendTelegramMessage(chatId, finalText)
+    await sendTelegramMessage(chatId, outgoingText)
   }
 
   // Salva conoscenza file
