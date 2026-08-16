@@ -6,4 +6,151 @@ exports[`caratterizzazione studio-tecnico > cerca_prezziario — output stabile 
 BAS25_E.03.068.01 | Calcestruzzo Rck 30 in opera | mc | €204.49"
 `;
 
-exports[`caratterizzazione studio-tecnico > genera_preventivo_completo — comportamento stabile 1`] = `"THREW: Cannot read properties of undefined (reading 'toLowerCase')"`;
+exports[`caratterizzazione studio-tecnico > genera_preventivo_completo — comportamento stabile 1`] = `
+"PREVENTIVO, CME E QUADRO ECONOMICO GENERATI CON SUCCESSO.
+
+PREVENTIVO (prezzi di mercato):
+~~~document
+<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
+    .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
+    .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
+    h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
+    table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
+    th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
+    tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
+    .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
+    code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:10px}
+    .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
+    .info-box{background:#f8f9fa;padding:10px;border-radius:6px;border-left:3px solid #1e3a5f}
+    .info-box strong{display:block;font-size:10px;color:#666;margin-bottom:2px}
+  </style></head><body>
+    <div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>
+    <h2>PREVENTIVO ESTIMATIVO N. PREV-2026-5500</h2>
+    <div class="info-grid">
+      <div class="info-box"><strong>Committente</strong>Test Cliente</div>
+      <div class="info-box"><strong>Cantiere</strong>Villa dAgri</div>
+      <div class="info-box"><strong>Comune</strong>Villa dAgri</div>
+      <div class="info-box"><strong>Data</strong>2026-08-14</div>
+    </div>
+    <p style="margin:10px 0"><strong>Oggetto:</strong> Getto calcestruzzo</p>
+    <table><thead><tr><th>N.</th><th>Lavorazione</th><th>U.M.</th><th>Q.tà</th><th>P.U.</th><th>Importo</th></tr></thead>
+    <tbody>
+    <tr>
+      <td>1</td>
+      <td>calcestruzzo</td>
+      <td class="center">mc</td>
+      <td class="right">10</td>
+      <td class="right">€ 0,00</td>
+      <td class="right"><strong>€ 0,00</strong></td>
+    </tr>
+      <tr class="total-row"><td colspan="5">Subtotale lavori</td><td class="right">€ 0,00</td></tr>
+      <tr><td colspan="5">Spese generali (15%)</td><td class="right">€ 0,00</td></tr>
+      <tr><td colspan="5">Utile impresa (10%)</td><td class="right">€ 0,00</td></tr>
+      <tr class="total-row"><td colspan="5">Imponibile</td><td class="right">€ 0,00</td></tr>
+      <tr><td colspan="5">IVA (10%)</td><td class="right">€ 0,00</td></tr>
+      <tr class="total-row" style="font-size:14px"><td colspan="5">TOTALE COMPLESSIVO</td><td class="right">€ 0,00</td></tr>
+    </tbody></table>
+    <div class="footer">Restruktura S.r.l. — Validità offerta: 60 giorni — Condizioni: 30% firma, 40% SAL, 30% collaudo</div>
+  </body></html>
+~~~
+
+CME (prezziario ufficiale basilicata 2025):
+~~~document
+<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
+    .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
+    .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
+    h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
+    table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
+    th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
+    tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
+    .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
+    code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:10px}</style></head><body>
+    <div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>
+    <h2>COMPUTO METRICO ESTIMATIVO</h2>
+    <p><strong>Committente:</strong> Test Cliente | <strong>Comune:</strong> Villa dAgri | <strong>Data:</strong> 2026-08-14</p>
+    <p style="margin:5px 0"><strong>Oggetto:</strong> Getto calcestruzzo</p>
+    <p style="margin:5px 0;font-size:11px"><strong>Prezziario:</strong> Regione Basilicata 2025</p>
+
+    <table>
+      <thead><tr><th>N°</th><th>Codice</th><th>Descrizione</th><th>U.M.</th><th>Q.tà</th><th>P.U.</th><th>Importo</th></tr></thead>
+      <tbody>
+        
+    <tr>
+      <td>1</td>
+      <td><code>BAS25_E.03.068.01</code></td>
+      <td>Calcestruzzo Rck 30 in opera</td>
+      <td class="center">mc</td>
+      <td class="right">10</td>
+      <td class="right">€ 204,49</td>
+      <td class="right"><strong>€ 2044,90</strong></td>
+    </tr>
+        <tr class="total-row" style="font-size:13px">
+          <td colspan="6">TOTALE LAVORI A BASE D'ASTA</td>
+          <td class="right">€ 2044,90</td>
+        </tr>
+      </tbody>
+    </table>
+
+    
+
+    <div class="footer">
+      Restruktura S.r.l. — Conforme a DPR 207/2010 Art. 32 e D.Lgs. 36/2023<br>
+      I Nuovi Prezzi (N.P.) sono soggetti a verifica del R.U.P.
+    </div>
+  </body></html>
+~~~
+
+QUADRO ECONOMICO:
+~~~document
+<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#222;padding:30px}
+    .header{background:linear-gradient(135deg,#0f172a,#1e3a5f);color:#fff;padding:20px;border-radius:8px;margin-bottom:20px}
+    .header h1{font-size:20px;margin-bottom:4px}.header p{font-size:11px;opacity:0.8}
+    h2{color:#1e3a5f;font-size:16px;margin:20px 0 10px;border-bottom:2px solid #1e3a5f;padding-bottom:4px}
+    table{width:100%;border-collapse:collapse;margin:10px 0}th,td{border:1px solid #ddd;padding:6px 8px;font-size:11px}
+    th{background:#1e3a5f;color:#fff;text-align:left}.right{text-align:right}.center{text-align:center}
+    tr:nth-child(even){background:#f8f9fa}.total-row{background:#e8f0fe;font-weight:bold}
+    .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
+    code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:10px}</style></head><body>
+    <div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>
+    <h2>QUADRO ECONOMICO</h2>
+    <p><strong>Committente:</strong> Test Cliente | <strong>Comune:</strong> Villa dAgri | <strong>Data:</strong> 2026-08-14</p>
+    <p style="margin:5px 0"><strong>Oggetto:</strong> Getto calcestruzzo</p>
+    <p style="margin:5px 0;font-size:11px">Art. 16 DPR 207/2010 — Rif. CME allegato</p>
+
+    <table>
+      <tbody>
+        <tr><td colspan="2"><strong>A) LAVORI</strong></td><td></td></tr>
+        <tr><td style="padding-left:20px" colspan="2">a.1) Lavori a base d'asta (da CME)</td><td class="right">€ 2044,90</td></tr>
+        <tr><td style="padding-left:20px" colspan="2">a.2) Oneri della sicurezza (non soggetti a ribasso, 3%)</td><td class="right">€ 61,35</td></tr>
+        <tr class="total-row"><td colspan="2">TOTALE A) LAVORI</td><td class="right">€ 2106,25</td></tr>
+
+        <tr><td colspan="2"><strong>B) SOMME A DISPOSIZIONE DELL'AMMINISTRAZIONE</strong></td><td></td></tr>
+        <tr><td style="padding-left:20px" colspan="2">b.1) Spese tecniche (progettazione, DL, coordinamento sicurezza, 10%)</td><td class="right">€ 204,49</td></tr>
+        <tr><td style="padding-left:20px" colspan="2">b.2) Imprevisti (5%)</td><td class="right">€ 102,25</td></tr>
+        <tr class="total-row"><td colspan="2">TOTALE B) SOMME A DISPOSIZIONE</td><td class="right">€ 306,74</td></tr>
+
+        <tr><td colspan="2"><strong>C) IVA</strong></td><td></td></tr>
+        <tr><td style="padding-left:20px" colspan="2">c.1) IVA su lavori (10%)</td><td class="right">€ 210,63</td></tr>
+        <tr><td style="padding-left:20px" colspan="2">c.2) IVA su somme a disposizione (10%)</td><td class="right">€ 30,67</td></tr>
+
+        <tr class="total-row" style="font-size:14px"><td colspan="2">TOTALE GENERALE (A + B + C)</td><td class="right">€ 2654,29</td></tr>
+      </tbody>
+    </table>
+
+    <div class="footer">
+      Restruktura S.r.l. — Le percentuali sono indicative e soggette a verifica del R.U.P.<br>
+      Le somme a disposizione saranno adeguate in fase di progettazione esecutiva.
+    </div>
+  </body></html>
+~~~
+
+RIEPILOGO:
+- Totale preventivo (mercato): € 0,00
+- Totale CME (lavori a base d'asta): € 2044,90
+- Differenza preventivo/CME: € -2044,90 (-100.0%)
+- Totale Quadro Economico: € 2654,29
+- Voci trovate nel prezziario: 1/1
+- Nuovi Prezzi: 0 (nessuno)
+
+IMPORTANTE: questi documenti sono ora salvati e NON possono essere rigenerati. Se servono modifiche, specificare esattamente quali voci o quantità cambiare."
+`;

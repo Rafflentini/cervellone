@@ -48,7 +48,11 @@ describe('caratterizzazione studio-tecnico', () => {
       committente: 'Test Cliente',
       comune: 'Villa dAgri',
       descrizione_lavoro: 'Getto calcestruzzo',
-      lavorazioni: [{ descrizione: 'calcestruzzo', quantita: 10, unita: 'mc' }],
+      // 'um', non 'unita': è il nome che dichiara l'input_schema del tool
+      // (studio-tecnico.ts:131, ed è pure required). Con 'unita' la funzione
+      // esplodeva su un undefined e lo snapshot catturava "THREW: ...", cioè
+      // caratterizzava un crash invece della pipeline preventivo.
+      lavorazioni: [{ descrizione: 'calcestruzzo', quantita: 10, um: 'mc' }],
       regione: 'basilicata',
     }, 'conv-test'))
     expect(out).toMatchSnapshot()

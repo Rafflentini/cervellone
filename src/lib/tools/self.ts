@@ -134,7 +134,13 @@ export async function executeSelfTools(name: string, input: Record<string, unkno
         configMap[row.key] = row.value
       }
 
-      const { getAllToolNames } = await import('../tools')
+      // Percorso assoluto e NON '../tools': da src/lib/tools/self.ts quello relativo
+      // può risolvere sia a src/lib/tools.ts sia alla directory src/lib/tools/, e
+      // funziona solo perché quest'ultima non ha un index.ts. Aggiungerne uno —
+      // mossa naturale dopo un refactor come questo — farebbe puntare l'import al
+      // barrel, con getAllToolNames undefined e cervellone_info rotto a runtime.
+      // Il typecheck non lo intercetterebbe se il barrel ri-esportasse i moduli.
+      const { getAllToolNames } = await import('@/lib/tools')
       const toolNames = getAllToolNames()
 
       return `🧠 CERVELLONE — CONFIGURAZIONE ATTUALE
