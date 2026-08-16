@@ -1,0 +1,9 @@
+# core.autocrlf=true checka fuori i file con CRLF, ma vitest riscrive gli snapshot
+# con LF: risultato, dopo OGNI `vitest run` git segnala
+# src/lib/tools/__snapshots__/*.snap come modificato con un diff VUOTO.
+#
+# Non è cosmetico: un agente che fa `git add -A` dopo i test si porta dentro quel
+# file per sbaglio, e uno snapshot di caratterizzazione committato per errore è
+# esattamente il modo in cui una regressione passa inosservata.
+# Tenendoli a LF su disco, il churn sparisce.
+*.snap text eol=lf
