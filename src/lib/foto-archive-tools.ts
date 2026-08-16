@@ -10,6 +10,21 @@ import {
 } from './drive'
 import { supabase } from './supabase'
 import { splitRecentOlder, clusterByTime, type PendingRow } from './foto-archive-pending'
+// Logica pura di matching (testata in foto-archive-match.test.ts).
+import {
+  normalizeName,
+  significantTokens,
+  commessaNumbers,
+  matchNamedFolderScored,
+  matchNamedFolder,
+  scoreFotoFolder,
+  pickFotoFolder,
+  pickTopScored,
+  hasFotoFolder,
+  isFotoFolderName,
+  isMoveSuccess,
+  type FolderMatch,
+} from './foto-archive-match'
 
 interface ToolDefinition {
   name: string
@@ -31,10 +46,7 @@ interface FotoPendingRow {
   created_at: string
 }
 
-type FolderMatch = { id: string; name: string }
-
 const OPEN_STATI: FotoStato[] = ['in_attesa', 'da_archiviare', 'errore']
-const FOTO_FOLDER_RE = /foto|fotograf/i
 const INVALID_FOLDER_CHARS_RE = /[\\/:*?"<>|]/g
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
@@ -59,141 +71,6 @@ function cleanString(value: unknown): string | undefined {
 function parseAmbito(value: unknown): Ambito | undefined {
   const ambito = cleanString(value)?.toLowerCase()
   return ambito === 'cantiere' || ambito === 'progetto' ? ambito : undefined
-}
-
-function normalizeName(value: string): string {
-  return value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLocaleLowerCase('it-IT')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-// Stopword italiane + parole "di servizio" frequenti nei nomi commessa: non sono
-// token significativi e NON devono contribuire all'overlap (altrimenti "Comune di X"
-// e "Comune di Y" matcherebbero su "comune").
-const MATCH_STOPWORDS = new Set([
-  'comune', 'comunale', 'di', 'del', 'della', 'dei', 'delle', 'dello', 'da', 'in',
-  'progetto', 'progetti', 'lavori', 'lavoro', 'cantiere', 'cantieri', 'srl', 's.r.l',
-  'spa', 's.p.a', 'sas', 'snc', 'ditta', 'impresa', 'sig', 'sig.ra', 'e', 'a', 'il',
-  'la', 'lo', 'gli', 'le', 'per', 'con', 'scia', 'cila', 'cilas', 'permesso', 'pdc',
-])
-
-const COMMESSA_RE = /\d{4}-\d{3}/
-
-function significantTokens(value: string): string[] {
-  return normalizeName(value)
-    .replace(COMMESSA_RE, ' ')
-    .split(/[\s_\-.,/()]+/)
-    .map(t => t.replace(/[^a-z0-9]/g, ''))
-    .filter(t => t.length >= 3 && !MATCH_STOPWORDS.has(t))
-}
-
-function commessaNumbers(value: string): string[] {
-  return normalizeName(value).match(/\d{4}-\d{3}/g) ?? []
-}
-
-// Forza del match cartella, dalla più affidabile alla più debole:
-//  - 'numero'  → match sul numero commessa NNNN-NNN (prova più affidabile);
-//  - 'esatto'  → substring esatto bidirezionale tra query e nome cartella;
-//  - 'debole'  → SOLO overlap di token significativi (può essere la commessa sbagliata).
-// Un match 'debole' NON deve far procedere in silenzio: il chiamante chiede conferma.
-type MatchStrength = 'numero' | 'esatto' | 'debole'
-type ScoredFolderMatch = FolderMatch & { strength: MatchStrength }
-
-/**
- * Match commessa/progetto CONSERVATIVO con FORZA del match. Una cartella è candidata se:
- *  (a) il numero commessa NNNN-NNN nella query compare nel nome cartella → strength 'numero'; OPPURE
- *  (b) la query è interamente contenuta nel nome cartella (substring storico) → strength 'esatto'; OPPURE
- *  (c) c'è overlap di ALMENO 2 token significativi tra query e nome cartella → strength 'debole'.
- * NON sceglie mai: ritorna l'elenco dei candidati con la loro forza. Il chiamante
- * disambigua se >1, e chiede conferma se l'unico match è 'debole'.
- * Preferisce conservatività: se non c'è prova sufficiente, non matcha (→ "non_trovata"
- * o richiesta di conferma) invece di agganciare la cartella sbagliata.
- */
-function matchNamedFolderScored(folders: FolderMatch[], query: string): ScoredFolderMatch[] {
-  const normalizedQuery = normalizeName(query)
-  const queryNums = commessaNumbers(query)
-  const queryTokens = new Set(significantTokens(query))
-
-  // (a) Match forte sul numero commessa: se presente nella query e in un nome cartella,
-  // è la prova più affidabile. Se almeno una cartella matcha sul numero, restringi SOLO
-  // a quelle (evita falsi positivi da overlap testuale su altre commesse).
-  if (queryNums.length > 0) {
-    const byNumber = folders.filter(folder => {
-      const folderNums = commessaNumbers(folder.name)
-      return folderNums.some(n => queryNums.includes(n))
-    })
-    if (byNumber.length > 0) {
-      return byNumber.map(folder => ({ ...folder, strength: 'numero' as const }))
-    }
-  }
-
-  const out: ScoredFolderMatch[] = []
-  for (const folder of folders) {
-    const normalizedName = normalizeName(folder.name)
-
-    // (b) substring esatto della query (comportamento storico, conservativo).
-    if (normalizedQuery.length >= 3 && normalizedName.includes(normalizedQuery)) {
-      out.push({ ...folder, strength: 'esatto' })
-      continue
-    }
-
-    // (c) overlap di >=2 token significativi → match DEBOLE (potrebbe essere la
-    // commessa sbagliata: stesso comune/committente, oggetto diverso).
-    const folderTokens = significantTokens(folder.name)
-    let overlap = 0
-    let weak = false
-    for (const t of folderTokens) {
-      if (queryTokens.has(t)) {
-        overlap += 1
-        if (overlap >= 2) { weak = true; break }
-      }
-    }
-    if (weak) out.push({ ...folder, strength: 'debole' })
-  }
-  return out
-}
-
-/**
- * Variante retro-compatibile: ritorna solo le cartelle (senza forza), per i call-site
- * che disambiguano solo sul numero di candidati (hint cartella foto, livello cliente).
- * Il match radice della commessa usa invece matchNamedFolderScored per la forza.
- */
-function matchNamedFolder(folders: FolderMatch[], query: string): FolderMatch[] {
-  return matchNamedFolderScored(folders, query).map(({ id, name }) => ({ id, name }))
-}
-
-// Punteggio per scegliere la sottocartella foto quando piu candidate matchano
-// la FOTO_FOLDER_RE (frequente nella struttura numerata 00-12 dei cantieri).
-// Toglie la numerazione iniziale (es. "08_", "08 -", "08.") prima di valutare.
-function scoreFotoFolder(name: string): number {
-  const n = normalizeName(name)
-  const stripped = n.replace(/^\d+\s*[_\-.)]*\s*/, '')
-  if (stripped === 'foto') return 100
-  if (/documentazione fotografica/.test(n)) return 90
-  if (/fotografic/.test(n)) return 80
-  if (/\bfoto\b/.test(n)) return 70
-  if (/foto/.test(n)) return 60
-  return 0
-}
-
-// Sceglie la cartella foto fra le sottocartelle. In caso di piu candidate usa
-// un ranking deterministico; disambigua solo se c'e un vero pareggio di punteggio.
-function pickFotoFolder(subfolders: FolderMatch[]): { match?: FolderMatch; candidates: FolderMatch[] } {
-  const candidates = subfolders.filter(f => FOTO_FOLDER_RE.test(f.name))
-  if (candidates.length === 0) return { candidates: [] }
-  if (candidates.length === 1) return { match: candidates[0], candidates }
-  const ranked = [...candidates].sort((a, b) => scoreFotoFolder(b.name) - scoreFotoFolder(a.name))
-  const topScore = scoreFotoFolder(ranked[0].name)
-  const topTied = ranked.filter(f => scoreFotoFolder(f.name) === topScore)
-  if (topTied.length === 1) return { match: ranked[0], candidates }
-  return { candidates: topTied }
-}
-
-function hasFotoFolder(folders: FolderMatch[]): boolean {
-  return folders.some(f => FOTO_FOLDER_RE.test(f.name))
 }
 
 // Parole che indicano un contesto "giusto" per la cartella foto (es. dentro
@@ -231,7 +108,7 @@ async function findFotoFolderDeep(
         continue
       }
       for (const child of children) {
-        if (FOTO_FOLDER_RE.test(child.name)) {
+        if (isFotoFolderName(child.name)) {
           // Bonus se il genitore suggerisce un contesto foto/direzione.
           const parentBonus = FOTO_PARENT_HINT_RE.test(node.name) ? 5 : 0
           found.push({
@@ -259,14 +136,10 @@ async function findFotoFolderDeep(
 }
 
 // Sceglie tra i candidati BFS in modo deterministico, disambigua solo su pareggio.
+// Stessa soglia di pickFotoFolder: senza, un candidato debole scartato tra i figli
+// diretti verrebbe riaccettato qui (la BFS parte proprio dai figli diretti).
 function pickFotoCandidate(candidates: FotoCandidate[]): { match?: FotoCandidate; tied: FotoCandidate[] } {
-  if (candidates.length === 0) return { tied: [] }
-  if (candidates.length === 1) return { match: candidates[0], tied: candidates }
-  const ranked = [...candidates].sort((a, b) => b.score - a.score)
-  const topScore = ranked[0].score
-  const tied = ranked.filter(c => c.score === topScore)
-  if (tied.length === 1) return { match: ranked[0], tied }
-  return { tied }
+  return pickTopScored(candidates)
 }
 
 function sanitizeFolderSegment(value: string): string {
@@ -275,21 +148,6 @@ function sanitizeFolderSegment(value: string): string {
 
 function todayRomeISO(): string {
   return new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' })
-}
-
-// moveFile (drive.ts) ora rilegge i parent e VERIFICA lo spostamento: in caso di
-// fallimento ritorna SEMPRE una stringa che inizia con "Errore" (verifica/permessi)
-// oppure "🔒" (policy). Un successo verificato contiene "spostato nella nuova cartella".
-// Il rilevamento qui è quindi un AND di due condizioni positive, non solo l'assenza
-// di parole d'errore: così un cambio di wording non può far passare un esito ambiguo.
-function isMoveSuccess(result: string): boolean {
-  if (!result || typeof result !== 'string') return false
-  const normalized = result.toLocaleLowerCase('it-IT')
-  if (normalized.startsWith('errore')) return false
-  if (result.startsWith('🔒')) return false
-  if (normalized.includes('scrittura non consentita')) return false
-  if (normalized.includes('non risulta spostato')) return false
-  return normalized.includes('spostato nella nuova cartella')
 }
 
 function parseHeaderColumns(sheetText: string): string[] {
@@ -440,7 +298,7 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     // Tieni solo i match che sono davvero cartelle foto: l'hint ("documentazione
     // fotografica") non deve poter puntare a una cartella "Documentazione" (documenti).
     const hintMatches = matchNamedFolder(subjectSubfolders, cartellaFotoHint)
-      .filter(folder => FOTO_FOLDER_RE.test(folder.name))
+      .filter(folder => isFotoFolderName(folder.name))
     if (hintMatches.length === 1) {
       fotoFolder = hintMatches[0]
     } else if (hintMatches.length > 1) {
