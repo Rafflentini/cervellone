@@ -39,6 +39,13 @@ interface ScadenzaWrite {
 
 const DEFAULT_STATO: ScadenzaStato = 'attivo'
 const VALID_STATI: ScadenzaStato[] = ['attivo', 'sostituito', 'archiviato']
+// Postgres rifiuta i NUL byte (\u0000) dentro text/varchar: capitano nel testo
+// estratto da OCR/PDF e farebbero fallire l'INSERT a meta operazione.
+const NUL_BYTE = /\u0000/g
+// reminder_days finisce in una colonna int4: oltre questo range Postgres alza
+// "integer out of range" e l'INSERT esplode. 365 giorni = un anno di anticipo,
+// piu che sufficiente per DURC/visite/attestati.
+const MAX_REMINDER_DAYS = 365
 
 function ok(payload: Record<string, unknown>): string {
   return JSON.stringify({ ok: true, ...payload })
@@ -52,20 +59,24 @@ function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
+function stripNul(value: string): string {
+  return value.replace(NUL_BYTE, '')
+}
+
 function cleanString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
+  const trimmed = stripNul(value).trim()
   return trimmed ? trimmed : undefined
 }
 
 function normalizeSubject(value: string): string {
-  return value.replace(/\s+/g, ' ').trim()
+  return stripNul(value).replace(/\s+/g, ' ').trim()
 }
 
 function nullableString(value: unknown): string | null | undefined {
   if (value === null) return null
   if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
+  const trimmed = stripNul(value).trim()
   return trimmed ? trimmed : null
 }
 
@@ -113,10 +124,31 @@ function parseStato(value: unknown): { value?: ScadenzaStato; error?: string } {
   return { error: `stato deve essere uno tra: ${VALID_STATI.join(', ')}.` }
 }
 
+/**
+ * Valida una data ISO con round-trip: non basta la forma `\d{4}-\d{2}-\d{2}`,
+ * perche `2026-13-07` e `2026-02-31` passerebbero il tool e verrebbero rifiutate
+ * da Postgres a meta operazione. Ricostruiamo la data in UTC e verifichiamo che
+ * riformattata dia ESATTAMENTE la stringa in input: cosi l'errore e chiaro e
+ * arriva prima di qualsiasi scrittura.
+ */
 function parseDate(value: unknown, field: string): { value?: string; error?: string } {
   const date = cleanString(value)
   if (!date) return {}
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: `${field} deve essere nel formato YYYY-MM-DD.` }
+
+  const year = Number(date.slice(0, 4))
+  const month = Number(date.slice(5, 7))
+  const day = Number(date.slice(8, 10))
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+  const roundTrip = [
+    String(parsed.getUTCFullYear()).padStart(4, '0'),
+    String(parsed.getUTCMonth() + 1).padStart(2, '0'),
+    String(parsed.getUTCDate()).padStart(2, '0'),
+  ].join('-')
+  if (Number.isNaN(parsed.getTime()) || roundTrip !== date) {
+    return { error: `${field}: la data ${date} non esiste (usa il formato YYYY-MM-DD con mese 01-12 e giorno valido).` }
+  }
+
   return { value: date }
 }
 
@@ -130,8 +162,28 @@ function addDaysISO(days: number): string {
   return now.toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' })
 }
 
-function sameSubject(left: string, right: string): boolean {
-  return normalizeSubject(left).toLocaleLowerCase('it-IT') === normalizeSubject(right).toLocaleLowerCase('it-IT')
+/**
+ * Chiave di confronto per capire se due righe sono "la stessa scadenza".
+ * Case-insensitive e whitespace-insensitive su TUTTE le componenti della chiave
+ * (soggetto, tipo_documento, categoria): `tipo_documento` arriva testuale
+ * dall'LLM, quindi "DURC" / "Durc" / "durc" devono valere lo stesso.
+ */
+function normalizeKey(value: string | null | undefined): string {
+  if (!value) return ''
+  return normalizeSubject(value).toLocaleLowerCase('it-IT')
+}
+
+/**
+ * Pattern ILIKE tollerante agli spazi per filtrare LATO SERVER.
+ * E deliberatamente un SOVRAINSIEME (i token sono uniti da `%`): serve solo a
+ * non scaricare tutte le righe attive — la selezione esatta la fa comunque
+ * `normalizeKey` in JS. Cosi anche oltre il row-cap di PostgREST la riga da
+ * sostituire resta dentro la pagina.
+ */
+function ilikePattern(value: string): string {
+  const tokens = normalizeSubject(value).split(' ').filter(Boolean)
+  if (tokens.length === 0) return '%'
+  return `%${tokens.join('%')}%`
 }
 
 function summarize(row: ScadenzaRow): Record<string, unknown> {
@@ -175,7 +227,9 @@ function parseWriteFields(input: Record<string, unknown>, allowStato: boolean): 
   if ('reminder_days' in source) {
     const parsed = parseInteger(source.reminder_days, 'reminder_days')
     if (parsed.error) return { error: parsed.error }
-    if (parsed.value !== undefined && parsed.value < 0) return { error: 'reminder_days deve essere >= 0.' }
+    if (parsed.value !== undefined && (parsed.value < 0 || parsed.value > MAX_REMINDER_DAYS)) {
+      return { error: `reminder_days deve essere un intero tra 0 e ${MAX_REMINDER_DAYS} (ricevuto ${parsed.value}).` }
+    }
     if (parsed.value !== undefined) fields.reminder_days = parsed.value
   }
 
@@ -213,32 +267,13 @@ async function registraScadenza(input: Record<string, unknown>): Promise<string>
     stato: DEFAULT_STATO,
   }
 
-  const tipoDocumento = insertFields.tipo_documento ?? null
-  let existingQuery = supabase
-    .from('cervellone_scadenze')
-    .select('id, soggetto, tipo_documento')
-    .eq('stato', 'attivo')
-
-  existingQuery = tipoDocumento === null
-    ? existingQuery.is('tipo_documento', null)
-    : existingQuery.eq('tipo_documento', tipoDocumento)
-
-  const { data: existingData, error: existingError } = await existingQuery
-  if (existingError) return fail(`Errore ricerca scadenza esistente: ${existingError.message}`)
-
-  const existingRows = (existingData ?? []) as Pick<ScadenzaRow, 'id' | 'soggetto' | 'tipo_documento'>[]
-  const replacedIds = existingRows
-    .filter(row => sameSubject(row.soggetto, soggetto))
-    .map(row => row.id)
-
-  if (replacedIds.length > 0) {
-    const { error: updateError } = await supabase
-      .from('cervellone_scadenze')
-      .update({ stato: 'sostituito', updated_at: new Date().toISOString() })
-      .in('id', replacedIds)
-    if (updateError) return fail(`Errore sostituzione scadenza precedente: ${updateError.message}`)
-  }
-
+  // ORDINE VOLUTO: prima l'INSERT della nuova scadenza, POI la sostituzione
+  // delle vecchie. Se si sostituisse prima e l'INSERT fallisse (data invalida,
+  // valore fuori range, vincolo DB), la vecchia sarebbe gia 'sostituito' e la
+  // nuova non esisterebbe: la scadenza sparirebbe da lista_scadenze e dal cron
+  // promemoria (che filtra stato='attivo') senza che nessuno se ne accorga.
+  // Con questo ordine il caso peggiore e una riga DUPLICATA — visibile e
+  // recuperabile — invece di ZERO righe.
   const { data, error } = await supabase
     .from('cervellone_scadenze')
     .insert(insertFields)
@@ -247,6 +282,16 @@ async function registraScadenza(input: Record<string, unknown>): Promise<string>
 
   if (error) return fail(`Errore inserimento scadenza: ${error.message}`)
   const created = data as Pick<ScadenzaRow, 'id' | 'reminder_days'> | null
+
+  const sostituzione: SostituzioneResult = created?.id
+    ? await marcaSostituite({
+        nuovoId: created.id,
+        soggetto,
+        tipoDocumento: insertFields.tipo_documento ?? null,
+        categoria: insertFields.categoria ?? null,
+      })
+    : { ids: [] }
+  const replacedIds = sostituzione.ids
 
   // 2026-07-22: scrive la scadenza anche su Google Calendar. BEST-EFFORT:
   // la registrazione in DB è già andata a buon fine, quindi un errore Calendar
@@ -262,7 +307,86 @@ async function registraScadenza(input: Record<string, unknown>): Promise<string>
     reminderDays: created?.reminder_days ?? insertFields.reminder_days,
   })
 
-  return ok({ id: created?.id, sostituite: replacedIds, calendar })
+  return ok({
+    id: created?.id,
+    sostituite: replacedIds,
+    calendar,
+    ...(sostituzione.warning ? { avviso: sostituzione.warning } : {}),
+  })
+}
+
+interface SostituzioneResult {
+  ids: string[]
+  warning?: string
+}
+
+/**
+ * Marca 'sostituito' le scadenze attive precedenti che sono LA STESSA scadenza
+ * di quella appena inserita. Chiamata SOLO dopo un INSERT riuscito.
+ *
+ * Chiave di sostituzione = soggetto + tipo_documento + categoria, tutti
+ * normalizzati (lower + spazi collassati):
+ *  - senza normalizzare `tipo_documento` "DURC"/"Durc"/"durc" erano tre tipi
+ *    diversi → il rinnovo non sostituiva nulla → due righe attive, due mail dal
+ *    cron, due eventi in agenda;
+ *  - senza `categoria` nella chiave, registrare l'attestato ponteggi di Mario
+ *    Rossi marcava 'sostituito' il suo attestato antincendio (l'estrattore li
+ *    etichetta entrambi "attestato formazione").
+ *
+ * Best-effort: un errore qui NON invalida l'INSERT gia riuscito, viene
+ * riportato come `avviso` (peggior caso: una riga duplicata, visibile).
+ */
+async function marcaSostituite(opts: {
+  nuovoId: string
+  soggetto: string
+  tipoDocumento: string | null
+  categoria: string | null
+}): Promise<SostituzioneResult> {
+  let existingQuery = supabase
+    .from('cervellone_scadenze')
+    .select('id, soggetto, tipo_documento, categoria')
+    .eq('stato', 'attivo')
+    .neq('id', opts.nuovoId)
+    // Filtro lato server anche sul soggetto: prima si scaricavano TUTTE le
+    // righe attive con quel tipo_documento e si filtrava in JS, quindi oltre il
+    // row-cap di PostgREST la riga da sostituire poteva restare fuori pagina.
+    .ilike('soggetto', ilikePattern(opts.soggetto))
+
+  existingQuery = opts.tipoDocumento === null
+    ? existingQuery.is('tipo_documento', null)
+    : existingQuery.ilike('tipo_documento', ilikePattern(opts.tipoDocumento))
+
+  const { data: existingData, error: existingError } = await existingQuery
+  if (existingError) {
+    return { ids: [], warning: `Scadenza registrata, ma la ricerca delle precedenti e fallita (${existingError.message}): controlla eventuali duplicati con lista_scadenze.` }
+  }
+
+  const existingRows = (existingData ?? []) as Pick<ScadenzaRow, 'id' | 'soggetto' | 'tipo_documento' | 'categoria'>[]
+  const soggettoKey = normalizeKey(opts.soggetto)
+  const tipoKey = normalizeKey(opts.tipoDocumento)
+  const categoriaKey = normalizeKey(opts.categoria)
+
+  const replacedIds = existingRows
+    .filter(row =>
+      row.id !== opts.nuovoId &&
+      normalizeKey(row.soggetto) === soggettoKey &&
+      normalizeKey(row.tipo_documento) === tipoKey &&
+      normalizeKey(row.categoria) === categoriaKey,
+    )
+    .map(row => row.id)
+
+  if (replacedIds.length === 0) return { ids: [] }
+
+  const { error: updateError } = await supabase
+    .from('cervellone_scadenze')
+    .update({ stato: 'sostituito', updated_at: new Date().toISOString() })
+    .in('id', replacedIds)
+
+  if (updateError) {
+    return { ids: [], warning: `Scadenza registrata, ma la precedente non e stata marcata come sostituita (${updateError.message}): restano due righe attive, chiudi la vecchia con chiudi_scadenza.` }
+  }
+
+  return { ids: replacedIds }
 }
 
 /**
@@ -402,15 +526,15 @@ export async function executeScadenzeTool(name: string, input: Record<string, un
 export const SCADENZE_TOOLS: ToolDefinition[] = [
   {
     name: 'registra_scadenza',
-    description: 'Registra una scadenza documentale/operativa in cervellone_scadenze. Se esiste gia una scadenza attiva con stesso soggetto e tipo_documento, la marca come sostituita e crea la nuova. Crea AUTOMATICAMENTE anche un evento sul Google Calendar di restruktura.drive (best-effort: se il Calendar non e disponibile la scadenza viene comunque registrata; il campo "calendar" nella risposta indica l\'esito).',
+    description: 'Registra una scadenza documentale/operativa in cervellone_scadenze. Se esiste gia una scadenza attiva con stesso soggetto, tipo_documento E categoria (confronto senza distinzione di maiuscole), la marca come sostituita DOPO aver creato la nuova. ATTENZIONE: due documenti dello stesso tipo per la stessa persona (es. tre attestati di formazione di Mario Rossi) vanno distinti con categoria diversa, altrimenti il piu recente sostituisce il precedente. Crea AUTOMATICAMENTE anche un evento sul Google Calendar di restruktura.drive (best-effort: se il Calendar non e disponibile la scadenza viene comunque registrata; il campo "calendar" nella risposta indica l\'esito).',
     input_schema: {
       type: 'object' as const,
       properties: {
         soggetto: { type: 'string', description: 'Persona, azienda, mezzo o cantiere a cui si riferisce la scadenza.' },
         categoria: { type: 'string', description: 'Categoria opzionale, es. personale, automezzi, cantiere, azienda.' },
         tipo_documento: { type: 'string', description: 'Tipo documento opzionale, es. DURC, patente, revisione, assicurazione.' },
-        data_scadenza: { type: 'string', description: 'Data in formato YYYY-MM-DD.' },
-        reminder_days: { type: 'number', description: 'Giorni prima della scadenza in cui inviare il promemoria. Default DB: 5.' },
+        data_scadenza: { type: 'string', description: 'Data in formato YYYY-MM-DD. Deve essere una data reale (mese 01-12, giorno esistente).' },
+        reminder_days: { type: 'number', description: 'Giorni prima della scadenza in cui inviare il promemoria, intero tra 0 e 365. Default DB: 5.' },
         recipients: { type: 'array', items: { type: 'string' }, description: 'Email destinatari promemoria. Default DB: info@restruktura.it e raffaele.lentini@restruktura.it.' },
         drive_file_id: { type: 'string', description: 'ID file Drive collegato, opzionale.' },
         drive_url: { type: 'string', description: 'URL file Drive collegato, opzionale.' },
