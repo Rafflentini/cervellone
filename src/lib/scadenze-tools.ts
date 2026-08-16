@@ -174,14 +174,36 @@ function normalizeKey(value: string | null | undefined): string {
 }
 
 /**
+ * Escapa i metacaratteri LIKE dentro un TOKEN (non nei `%` che noi aggiungiamo
+ * come separatori).
+ *
+ * SCELTA (2026-08): escapiamo nel pattern invece di ripulire `normalizeSubject`.
+ * Strippare il backslash dal soggetto sarebbe stato piu corto ma avrebbe
+ * (a) mutato il valore persistito e (b) lasciato comunque fuori le righe GIA in
+ * DB che il backslash ce l'hanno davvero (`Ditta A\B Srl`): il pattern ripulito
+ * `%Ditta%AB%Srl%` non le matcherebbe. Escapando invece il pattern resta
+ * fedele al dato salvato e la riga vecchia viene ritrovata.
+ *
+ * Perche serve: in LIKE/ILIKE il backslash e l'ESCAPE di default, quindi il
+ * soggetto `Ditta A\B Srl` produceva `%Ditta%A\B%Srl%` dove `\B` diventa una
+ * `B` letterale e la riga NON matchava piu → under-match, cioe esattamente il
+ * bug che la sostituzione deve evitare. `%` e `_` non erano rotti (allargavano
+ * il pattern, innocuo) ma escaparli e comunque piu preciso: il filtro resta un
+ * sovrainsieme dell'uguaglianza esatta perche i token restano uniti da `%`.
+ */
+function escapeLike(token: string): string {
+  return token.replace(/[\\%_]/g, match => `\\${match}`)
+}
+
+/**
  * Pattern ILIKE tollerante agli spazi per filtrare LATO SERVER.
  * E deliberatamente un SOVRAINSIEME (i token sono uniti da `%`): serve solo a
  * non scaricare tutte le righe attive — la selezione esatta la fa comunque
  * `normalizeKey` in JS. Cosi anche oltre il row-cap di PostgREST la riga da
  * sostituire resta dentro la pagina.
  */
-function ilikePattern(value: string): string {
-  const tokens = normalizeSubject(value).split(' ').filter(Boolean)
+export function ilikePattern(value: string): string {
+  const tokens = normalizeSubject(value).split(' ').filter(Boolean).map(escapeLike)
   if (tokens.length === 0) return '%'
   return `%${tokens.join('%')}%`
 }
@@ -307,11 +329,17 @@ async function registraScadenza(input: Record<string, unknown>): Promise<string>
     reminderDays: created?.reminder_days ?? insertFields.reminder_days,
   })
 
+  // `sostituite: []` da solo e AMBIGUO: vale sia "non c'era nulla da
+  // sostituire" (caso normale) sia "la sostituzione e fallita dopo un INSERT
+  // riuscito" (restano due righe attive → due mail dal cron). Con l'array vuoto
+  // il modello leggeva ok:true e dichiarava la registrazione pulita. Quando c'e
+  // un warning emettiamo quindi un campo esplicito `sostituzione: "fallita"`
+  // accanto all'`avviso`, cosi i due casi non sono piu confondibili.
   return ok({
     id: created?.id,
     sostituite: replacedIds,
+    ...(sostituzione.warning ? { sostituzione: 'fallita', avviso: sostituzione.warning } : {}),
     calendar,
-    ...(sostituzione.warning ? { avviso: sostituzione.warning } : {}),
   })
 }
 
@@ -526,13 +554,13 @@ export async function executeScadenzeTool(name: string, input: Record<string, un
 export const SCADENZE_TOOLS: ToolDefinition[] = [
   {
     name: 'registra_scadenza',
-    description: 'Registra una scadenza documentale/operativa in cervellone_scadenze. Se esiste gia una scadenza attiva con stesso soggetto, tipo_documento E categoria (confronto senza distinzione di maiuscole), la marca come sostituita DOPO aver creato la nuova. ATTENZIONE: due documenti dello stesso tipo per la stessa persona (es. tre attestati di formazione di Mario Rossi) vanno distinti con categoria diversa, altrimenti il piu recente sostituisce il precedente. Crea AUTOMATICAMENTE anche un evento sul Google Calendar di restruktura.drive (best-effort: se il Calendar non e disponibile la scadenza viene comunque registrata; il campo "calendar" nella risposta indica l\'esito).',
+    description: 'Registra una scadenza documentale/operativa in cervellone_scadenze. CHIAVE DI IDENTITA della scadenza = soggetto + tipo_documento + categoria (confronto senza distinzione di maiuscole ne di spazi): se esiste gia una scadenza attiva con la stessa chiave, viene marcata come sostituita DOPO aver creato la nuova. Quindi: al RINNOVO dello stesso documento ripeti la chiave IDENTICA (stessa categoria di prima), altrimenti restano due righe attive e arrivano due promemoria; per due documenti DIVERSI dello stesso tipo e dello stesso soggetto (es. tre attestati di formazione di Mario Rossi) usa categorie DIVERSE (es. antincendio / primo soccorso / ponteggi), altrimenti il piu recente cancella il precedente. Crea AUTOMATICAMENTE anche un evento sul Google Calendar di restruktura.drive (best-effort: se il Calendar non e disponibile la scadenza viene comunque registrata; il campo "calendar" nella risposta indica l\'esito). ESITO — REGOLA FERREA: se la risposta contiene il campo "avviso" (e "sostituzione":"fallita") la registrazione NON e pulita, restano due righe attive: riporta l\'avviso TESTUALMENTE all\'Ingegnere e proponi di chiudere la vecchia con chiudi_scadenza. Non dire mai solo "scadenza registrata" quando c\'e un avviso.',
     input_schema: {
       type: 'object' as const,
       properties: {
         soggetto: { type: 'string', description: 'Persona, azienda, mezzo o cantiere a cui si riferisce la scadenza.' },
-        categoria: { type: 'string', description: 'Categoria opzionale, es. personale, automezzi, cantiere, azienda.' },
-        tipo_documento: { type: 'string', description: 'Tipo documento opzionale, es. DURC, patente, revisione, assicurazione.' },
+        categoria: { type: 'string', description: 'Fa parte della CHIAVE DI IDENTITA della scadenza (insieme a soggetto e tipo_documento). Va ripetuta IDENTICA a ogni rinnovo dello stesso documento — se cambia (o se la ometti) il rinnovo non sostituisce il vecchio e restano due righe attive. Serve a distinguere documenti diversi dello stesso tipo dello stesso soggetto: es. "antincendio" vs "ponteggi" per due attestati di formazione di Mario Rossi, "polizza RCA" vs "polizza kasko" per lo stesso mezzo. Se il documento e unico per quel soggetto va bene una macro-area (personale, automezzi, cantiere, azienda), purche sempre la stessa.' },
+        tipo_documento: { type: 'string', description: 'Tipo documento, es. DURC, patente, revisione, assicurazione. Fa parte della CHIAVE DI IDENTITA: ripetilo identico a ogni rinnovo dello stesso documento.' },
         data_scadenza: { type: 'string', description: 'Data in formato YYYY-MM-DD. Deve essere una data reale (mese 01-12, giorno esistente).' },
         reminder_days: { type: 'number', description: 'Giorni prima della scadenza in cui inviare il promemoria, intero tra 0 e 365. Default DB: 5.' },
         recipients: { type: 'array', items: { type: 'string' }, description: 'Email destinatari promemoria. Default DB: info@restruktura.it e raffaele.lentini@restruktura.it.' },
@@ -559,16 +587,16 @@ export const SCADENZE_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'aggiorna_scadenza',
-    description: 'Aggiorna una scadenza per id. Accetta i campi modificabili top-level oppure dentro campi.',
+    description: 'Aggiorna una scadenza per id. Accetta i campi modificabili top-level oppure dentro campi. Applica le stesse validazioni di registra_scadenza: data_scadenza deve essere una data REALE in formato YYYY-MM-DD e reminder_days un intero tra 0 e 365, altrimenti l\'aggiornamento viene rifiutato senza scrivere nulla. NB: soggetto/tipo_documento/categoria sono la chiave di identita della scadenza — cambiarli qui la scollega dai rinnovi futuri.',
     input_schema: {
       type: 'object' as const,
       properties: {
         id: { type: 'string', description: 'UUID della scadenza.' },
         soggetto: { type: 'string' },
-        categoria: { type: 'string' },
-        tipo_documento: { type: 'string' },
-        data_scadenza: { type: 'string', description: 'YYYY-MM-DD' },
-        reminder_days: { type: 'number' },
+        categoria: { type: 'string', description: 'Parte della chiave di identita (vedi registra_scadenza).' },
+        tipo_documento: { type: 'string', description: 'Parte della chiave di identita (vedi registra_scadenza).' },
+        data_scadenza: { type: 'string', description: 'Data in formato YYYY-MM-DD. Deve essere una data reale (mese 01-12, giorno esistente).' },
+        reminder_days: { type: 'number', description: 'Giorni prima della scadenza in cui inviare il promemoria, intero tra 0 e 365.' },
         recipients: { type: 'array', items: { type: 'string' } },
         drive_file_id: { type: 'string' },
         drive_url: { type: 'string' },

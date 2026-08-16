@@ -110,6 +110,8 @@ interface ParsedResult {
   error?: string
   id?: string
   sostituite?: string[]
+  sostituzione?: string
+  avviso?: string
   calendar?: string
 }
 
@@ -277,15 +279,6 @@ describe('registra_scadenza — chiave di sostituzione (BUG 2)', () => {
     expect(res.sostituite).toEqual(['durc-1'])
   })
 
-  it('filtra il soggetto lato server (niente scan+filtro JS oltre il row-cap PostgREST)', async () => {
-    const res = await registra({ ...BASE, tipo_documento: 'DURC' })
-    expect(res.ok).toBe(true)
-    const select = mockOps.find(op => op.op === 'select')
-    expect(select).toBeDefined()
-    const filterCols = (select?.filters ?? []).map(f => String(f.args[0]))
-    expect(filterCols).toContain('soggetto')
-  })
-
   it('over-match: due "attestato formazione" con categoria diversa NON si sostituiscono', async () => {
     // Mario Rossi ha 3 attestati (antincendio, primo soccorso, ponteggi) e
     // l estrattore li etichetta tutti "attestato formazione". Registrare quello
@@ -343,5 +336,165 @@ describe('registra_scadenza — chiave di sostituzione (BUG 2)', () => {
     })
 
     expect(res.sostituite).toEqual(['att-1'])
+  })
+})
+
+/**
+ * Il vecchio test "filtra il soggetto lato server" era TAUTOLOGICO: guardava
+ * solo che *un* filtro puntasse alla colonna `soggetto`, mai il pattern, e il
+ * mock ignora comunque i filtri — sarebbe passato identico con `'%zzz%'`.
+ * Qui il pattern lo ispezioniamo davvero, sia in unita che come argomento
+ * realmente passato a `.ilike()`.
+ */
+describe('ilikePattern — pattern ILIKE lato server', () => {
+  async function pattern(value: string): Promise<string> {
+    const { ilikePattern } = await import('./scadenze-tools')
+    return ilikePattern(value)
+  }
+
+  it('unisce i token con % (sovrainsieme tollerante agli spazi)', async () => {
+    expect(await pattern('Mario Rossi')).toBe('%Mario%Rossi%')
+    expect(await pattern('  Mario   Rossi  ')).toBe('%Mario%Rossi%')
+  })
+
+  it('token singolo e stringa vuota', async () => {
+    expect(await pattern('Restruktura')).toBe('%Restruktura%')
+    expect(await pattern('   ')).toBe('%')
+  })
+
+  it('escapa il backslash: senza escape la riga NON matcherebbe piu', async () => {
+    // In LIKE/ILIKE `\` e l'escape di default: `%Ditta%A\B%Srl%` fa diventare
+    // `\B` una `B` letterale e la riga `Ditta A\B Srl` resta fuori dal filtro
+    // → under-match, cioe il rinnovo non sostituisce nulla. Serve `\\`.
+    const p = await pattern('Ditta A\\B Srl')
+    expect(p).toBe('%Ditta%A\\\\B%Srl%')
+    expect(p).not.toBe('%Ditta%A\\B%Srl%')
+  })
+
+  it('escapa anche i metacaratteri % e _ dentro il token', async () => {
+    expect(await pattern('Ditta 100% Srl')).toBe('%Ditta%100\\%%Srl%')
+    expect(await pattern('AB_123')).toBe('%AB\\_123%')
+  })
+
+  it('apostrofi e trattini restano letterali (nessun metacarattere LIKE)', async () => {
+    expect(await pattern("D'Amico Sud-Est")).toBe("%D'Amico%Sud-Est%")
+  })
+
+  it('e il pattern che finisce davvero nel filtro .ilike lato server', async () => {
+    const res = await registra({ soggetto: 'Ditta A\\B Srl', data_scadenza: '2027-06-17', tipo_documento: 'DURC' })
+    expect(res.ok).toBe(true)
+
+    const select = mockOps.find(op => op.op === 'select')
+    const soggettoFilter = (select?.filters ?? []).find(f => f.method === 'ilike' && f.args[0] === 'soggetto')
+    expect(soggettoFilter).toBeDefined()
+    expect(soggettoFilter?.args[1]).toBe(await pattern('Ditta A\\B Srl'))
+  })
+})
+
+describe('registra_scadenza — esito non ambiguo quando la sostituzione fallisce', () => {
+  it('UPDATE fallito dopo INSERT riuscito → ok:true ma avviso + sostituzione:"fallita"', async () => {
+    // Caso peggiore accettato dal fix di ordine: la nuova riga esiste, la
+    // vecchia NON e stata chiusa → due righe attive, due mail dal cron. Deve
+    // essere DISTINGUIBILE da "non c'era nulla da sostituire", altrimenti il
+    // modello legge sostituite:[] e dichiara la registrazione pulita.
+    mockHandler = (op) => {
+      if (op.op === 'insert') return { data: { id: 'durc-2', reminder_days: 5 }, error: null }
+      if (op.op === 'select') {
+        return {
+          data: [{ id: 'durc-1', soggetto: 'Restruktura Srl', tipo_documento: 'DURC', categoria: 'azienda' }],
+          error: null,
+        }
+      }
+      if (op.op === 'update') return { data: null, error: { message: 'could not serialize access due to concurrent update' } }
+      return { data: null, error: null }
+    }
+
+    const res = await registra({
+      soggetto: 'Restruktura Srl',
+      data_scadenza: '2026-12-31',
+      tipo_documento: 'DURC',
+      categoria: 'azienda',
+    })
+
+    expect(res.ok).toBe(true)
+    expect(res.id).toBe('durc-2')
+    expect(res.sostituite).toEqual([])
+    expect(res.sostituzione).toBe('fallita')
+    expect(res.avviso).toBeDefined()
+    expect(res.avviso).toContain('concurrent update')
+    expect(res.avviso).toMatch(/chiudi_scadenza/)
+    // L UPDATE e stato tentato davvero sulla riga giusta.
+    const marked = sostituzioneOps()
+    expect(marked).toHaveLength(1)
+    expect(marked[0].filters.find(f => f.method === 'in')?.args[1]).toEqual(['durc-1'])
+  })
+
+  it('SELECT delle precedenti fallito → ok:true ma avviso + sostituzione:"fallita", nessun UPDATE', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'insert') return { data: { id: 'durc-2', reminder_days: 5 }, error: null }
+      if (op.op === 'select') return { data: null, error: { message: 'statement timeout' } }
+      return { data: null, error: null }
+    }
+
+    const res = await registra({
+      soggetto: 'Restruktura Srl',
+      data_scadenza: '2026-12-31',
+      tipo_documento: 'DURC',
+      categoria: 'azienda',
+    })
+
+    expect(res.ok).toBe(true)
+    expect(res.id).toBe('durc-2')
+    expect(res.sostituite).toEqual([])
+    expect(res.sostituzione).toBe('fallita')
+    expect(res.avviso).toContain('statement timeout')
+    expect(res.avviso).toMatch(/lista_scadenze/)
+    expect(sostituzioneOps()).toHaveLength(0)
+  })
+
+  it('nessuna precedente da sostituire → sostituite:[] SENZA avviso ne sostituzione', async () => {
+    // Il controcaso: qui sostituite:[] significa davvero "tutto a posto".
+    const res = await registra({ ...BASE, tipo_documento: 'DURC', categoria: 'azienda' })
+    expect(res.ok).toBe(true)
+    expect(res.sostituite).toEqual([])
+    expect(res.sostituzione).toBeUndefined()
+    expect(res.avviso).toBeUndefined()
+  })
+})
+
+describe('SCADENZE_TOOLS — le istruzioni all LLM sono allineate al codice', () => {
+  async function toolByName(name: string) {
+    const { SCADENZE_TOOLS } = await import('./scadenze-tools')
+    const tool = SCADENZE_TOOLS.find(t => t.name === name)
+    expect(tool).toBeDefined()
+    return tool!
+  }
+
+  function propDescription(tool: { input_schema: Record<string, unknown> }, prop: string): string {
+    const props = tool.input_schema.properties as Record<string, { description?: string }>
+    return props[prop]?.description ?? ''
+  }
+
+  it('categoria e documentata come parte della chiave, non come macro-area libera', async () => {
+    const tool = await toolByName('registra_scadenza')
+    const desc = propDescription(tool, 'categoria')
+    expect(desc).toMatch(/CHIAVE DI IDENTITA/)
+    expect(desc).toMatch(/IDENTICA/)
+    expect(desc).toMatch(/rinnovo/i)
+    // e la description del tool non deve contraddirla
+    expect(tool.description).toMatch(/CHIAVE DI IDENTITA/)
+  })
+
+  it('la description di registra_scadenza obbliga a riportare il campo avviso', async () => {
+    const tool = await toolByName('registra_scadenza')
+    expect(tool.description).toMatch(/avviso/)
+    expect(tool.description).toMatch(/TESTUALMENTE/)
+  })
+
+  it('aggiorna_scadenza dichiara le validazioni condivise con parseWriteFields', async () => {
+    const tool = await toolByName('aggiorna_scadenza')
+    expect(tool.description).toMatch(/365/)
+    expect(propDescription(tool, 'reminder_days')).toMatch(/365/)
+    expect(propDescription(tool, 'data_scadenza')).toMatch(/data reale|reale/i)
   })
 })
