@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { APP_PASSWORD } from './app-password'
 
 test.describe('Login Page', () => {
   test.beforeEach(async ({ page }) => {
@@ -36,7 +37,7 @@ test.describe('Login Page', () => {
   test('password corretta fa redirect a /chat', async ({ page }) => {
     await page.goto('/login')
 
-    await page.fill('input[type="password"]', 'Raffaele2026!')
+    await page.fill('input[type="password"]', APP_PASSWORD)
     await page.click('button[type="submit"]')
 
     await page.waitForURL('**/chat')

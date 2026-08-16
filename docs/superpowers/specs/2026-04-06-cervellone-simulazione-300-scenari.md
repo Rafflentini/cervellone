@@ -1721,7 +1721,7 @@ SERVE: Sanitizzazione HTML nel renderer del pannello anteprima (DOMPurify)
 
 [265] SCENARIO: Utente tenta brute force sulla password dell'app
 ATTESO: Lockout dopo N tentativi
-ATTUALE: Non funziona -- l'autenticazione e una password singola (`Raffaele2026!`) in un cookie. Nessun rate limiting sul login
+ATTUALE: Non funziona -- l'autenticazione e una password singola (`<APP_PASSWORD>`) in un cookie. Nessun rate limiting sul login
 PROBLEMA: Nessun rate limiting; password in chiaro confrontata
 SERVE: Rate limiting su login; password hashing; possibilmente auth Supabase
 

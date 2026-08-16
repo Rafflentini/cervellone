@@ -981,7 +981,7 @@ Da Telegram, dal proprio account autorizzato:
 
 - [ ] **Step 6: Smoke test Web (manuale)**
 
-Aprire il preview URL in browser, login con `Raffaele2026!`, inviare un messaggio normale. Atteso: streaming visibile.
+Aprire il preview URL in browser, login con `<APP_PASSWORD>`, inviare un messaggio normale. Atteso: streaming visibile.
 
 - [ ] **Step 7: Riportare il webhook Telegram alla produzione (importante!)**
 

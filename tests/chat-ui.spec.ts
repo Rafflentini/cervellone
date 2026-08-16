@@ -1,9 +1,10 @@
 import { test, expect } from '@playwright/test'
+import { APP_PASSWORD } from './app-password'
 
 // Helper per autenticarsi
 async function login(page: import('@playwright/test').Page) {
   await page.goto('/login')
-  await page.fill('input[type="password"]', 'Raffaele2026!')
+  await page.fill('input[type="password"]', APP_PASSWORD)
   await page.click('button[type="submit"]')
   await page.waitForURL('**/chat')
 }
