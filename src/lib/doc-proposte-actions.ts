@@ -2,6 +2,7 @@ import { supabase } from '@/lib/supabase'
 import { getEmailBody } from '@/v19/tools/email/get-email-body'
 import type { AccountKey } from '@/v19/tools/email/config'
 import { DRIVE_FOLDERS, getOrCreatePathFolders, uploadBinaryToDrive } from '@/lib/drive'
+import { registraScadenzaCore } from '@/lib/scadenze-tools'
 
 type ActionResult = { ok: boolean; message: string }
 
@@ -71,40 +72,41 @@ async function rememberDriveUrl(id: string, driveUrl: string): Promise<void> {
   if (error) throw new Error(`Errore aggiornamento link Drive proposta: ${error.message}`)
 }
 
-async function ensureScadenza(proposta: ProposalRow, categoria: string, driveUrl: string): Promise<void> {
-  const soggetto = proposta.soggetto || 'Vari'
-  const tipoDocumento = proposta.tipo_documento || 'documento'
+/**
+ * Registra la scadenza della proposta confermata.
+ *
+ * 2026-08: NON scrive piu su cervellone_scadenze per conto suo. Prima era il
+ * SECONDO scrittore della tabella e faceva un INSERT diretto: niente evento in
+ * agenda, niente sostituzione della scadenza precedente, niente validazione
+ * della data, niente strip dei NUL byte. Il suo dedup era `.eq` case-sensitive
+ * su soggetto+data+drive_url+tipo_documento, cioe lo stesso bug corretto in
+ * registra_scadenza — e questo e il flusso AUTOMATICO (mail-sentinella →
+ * proposta → /conferma), quello che gira senza che l'Ingegnere digiti nulla.
+ *
+ * Ora delega a `registraScadenzaCore`, che e la stessa identica logica del
+ * path manuale. Nessun dedup locale: se la stessa proposta viene confermata due
+ * volte, la sostituzione per chiave (soggetto + tipo_documento + categoria)
+ * chiude la riga precedente invece di lasciarne due attive.
+ *
+ * Ritorna la nota Calendar quando l'evento NON e stato creato, cosi il
+ * messaggio di conferma non promette un'agenda che non e stata aggiornata.
+ */
+async function ensureScadenza(proposta: ProposalRow, categoria: string, driveUrl: string): Promise<string | null> {
   const dataScadenza = proposta.data_scadenza
   if (!dataScadenza) throw new Error('La proposta non contiene una data_scadenza valida.')
 
-  let existingQuery = supabase
-    .from('cervellone_scadenze')
-    .select('id')
-    .eq('soggetto', soggetto)
-    .eq('data_scadenza', dataScadenza)
-    .eq('drive_url', driveUrl)
-    .limit(1)
+  const esito = await registraScadenzaCore({
+    soggetto: proposta.soggetto || 'Vari',
+    categoria,
+    tipo_documento: proposta.tipo_documento || 'documento',
+    data_scadenza: dataScadenza,
+    drive_url: driveUrl,
+  })
 
-  existingQuery = tipoDocumento
-    ? existingQuery.eq('tipo_documento', tipoDocumento)
-    : existingQuery.is('tipo_documento', null)
-
-  const { data: existing, error: existingError } = await existingQuery
-  if (existingError) throw new Error(`Errore verifica scadenza esistente: ${existingError.message}`)
-  if ((existing ?? []).length > 0) return
-
-  const { error } = await supabase
-    .from('cervellone_scadenze')
-    .insert({
-      soggetto,
-      categoria,
-      tipo_documento: tipoDocumento,
-      data_scadenza: dataScadenza,
-      drive_url: driveUrl,
-      stato: 'attivo',
-    })
-
-  if (error) throw new Error(`Errore registrazione scadenza: ${error.message}`)
+  if (!esito.ok) throw new Error(`Errore registrazione scadenza: ${esito.error ?? 'causa sconosciuta'}`)
+  // La sostituzione fallita non invalida la scadenza (e gia in DB), ma va detta.
+  if (esito.avviso) return esito.avviso
+  return esito.calendarOk ? null : esito.calendarNota
 }
 
 export async function confirmProposta(id: string): Promise<ActionResult> {
@@ -160,7 +162,7 @@ export async function confirmProposta(id: string): Promise<ActionResult> {
       await rememberDriveUrl(proposta.id, driveUrl)
     }
 
-    await ensureScadenza(proposta, categoria, driveUrl)
+    const scadenzaAvviso = await ensureScadenza(proposta, categoria, driveUrl)
 
     const { data: updatedRows, error: updateError } = await supabase
       .from('cervellone_doc_proposte')
@@ -174,9 +176,10 @@ export async function confirmProposta(id: string): Promise<ActionResult> {
       return { ok: false, message: 'Proposta gia elaborata da un altro canale.' }
     }
 
+    const base = `Archiviato in ${pathSegments.join('/')} e scadenza ${proposta.data_scadenza} registrata.`
     return {
       ok: true,
-      message: `Archiviato in ${pathSegments.join('/')} e scadenza ${proposta.data_scadenza} registrata.`,
+      message: scadenzaAvviso ? `${base} ⚠️ ${scadenzaAvviso}` : base,
     }
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) }
