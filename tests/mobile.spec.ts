@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { APP_PASSWORD } from './app-password'
 
 // Questi test usano il progetto "mobile" (Pixel 5 viewport)
 test.describe('Mobile UI', () => {
@@ -6,7 +7,7 @@ test.describe('Mobile UI', () => {
 
   async function login(page: import('@playwright/test').Page) {
     await page.goto('/login')
-    await page.fill('input[type="password"]', 'Raffaele2026!')
+    await page.fill('input[type="password"]', APP_PASSWORD)
     await page.click('button[type="submit"]')
     await page.waitForURL('**/chat')
   }

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { APP_PASSWORD } from './app-password'
 
 test.describe('API Endpoints', () => {
   test.describe('Auth API', () => {
@@ -11,7 +12,7 @@ test.describe('API Endpoints', () => {
 
     test('POST /api/auth con password corretta ritorna 200 e set cookie', async ({ request }) => {
       const res = await request.post('/api/auth', {
-        data: { password: 'Raffaele2026!' },
+        data: { password: APP_PASSWORD },
       })
       expect(res.status()).toBe(200)
       const body = await res.json()
@@ -25,7 +26,7 @@ test.describe('API Endpoints', () => {
     test('DELETE /api/auth cancella il cookie', async ({ request }) => {
       // Prima autentica
       await request.post('/api/auth', {
-        data: { password: 'Raffaele2026!' },
+        data: { password: APP_PASSWORD },
       })
 
       const res = await request.delete('/api/auth')
@@ -42,7 +43,7 @@ test.describe('API Endpoints', () => {
     test('GET /api/conversations con auth ritorna lista', async ({ request }) => {
       // Autentica
       await request.post('/api/auth', {
-        data: { password: 'Raffaele2026!' },
+        data: { password: APP_PASSWORD },
       })
 
       const res = await request.get('/api/conversations')
