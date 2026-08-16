@@ -30,8 +30,8 @@ function makeMockBrowser(opts: {
   pdf?: ReturnType<typeof vi.fn>
   close?: ReturnType<typeof vi.fn>
 } = {}) {
-  const setContent = opts.setContent ?? vi.fn(async () => undefined)
-  const pdf = opts.pdf ?? vi.fn(async () => mockPdfBytes)
+  const setContent = opts.setContent ?? vi.fn(async (_html: string) => undefined)
+  const pdf = opts.pdf ?? vi.fn(async (_opts: Record<string, unknown>) => mockPdfBytes)
   const closePage = vi.fn(async () => undefined)
   const closeBrowser = opts.close ?? vi.fn(async () => undefined)
   return {
@@ -60,35 +60,35 @@ describe('generatePdfFromHtml', () => {
   })
 
   it('wraps HTML fragment with boilerplate when missing <html>', async () => {
-    const setContent = vi.fn(async () => undefined)
+    const setContent = vi.fn(async (_html: string) => undefined)
     vi.mocked(puppeteer.launch).mockResolvedValueOnce(makeMockBrowser({ setContent }) as never)
 
     await generatePdfFromHtml('<p>frammento</p>', 'Test')
 
-    const passedHtml = setContent.mock.calls[0][0] as string
+    const passedHtml = setContent.mock.calls[0][0]
     expect(passedHtml).toContain('<!DOCTYPE html>')
     expect(passedHtml).toContain('<title>Test</title>')
     expect(passedHtml).toContain('<p>frammento</p>')
   })
 
   it('does NOT double-wrap if HTML already has <html> tag', async () => {
-    const setContent = vi.fn(async () => undefined)
+    const setContent = vi.fn(async (_html: string) => undefined)
     vi.mocked(puppeteer.launch).mockResolvedValueOnce(makeMockBrowser({ setContent }) as never)
 
     const fullDoc = '<!DOCTYPE html><html><head><title>Mio</title></head><body>x</body></html>'
     await generatePdfFromHtml(fullDoc, 'Ignored')
 
-    const passedHtml = setContent.mock.calls[0][0] as string
+    const passedHtml = setContent.mock.calls[0][0]
     expect(passedHtml).toBe(fullDoc)
   })
 
   it('escapes HTML in title to prevent injection', async () => {
-    const setContent = vi.fn(async () => undefined)
+    const setContent = vi.fn(async (_html: string) => undefined)
     vi.mocked(puppeteer.launch).mockResolvedValueOnce(makeMockBrowser({ setContent }) as never)
 
     await generatePdfFromHtml('<p>x</p>', 'Doc <script>alert(1)</script>')
 
-    const passedHtml = setContent.mock.calls[0][0] as string
+    const passedHtml = setContent.mock.calls[0][0]
     expect(passedHtml).toContain('Doc &lt;script&gt;alert(1)&lt;/script&gt;')
     expect(passedHtml).not.toContain('<title>Doc <script>')
   })
@@ -108,13 +108,13 @@ describe('generatePdfFromHtml', () => {
   })
 
   it('uses A4 + printBackground + margins + footer template', async () => {
-    const pdf = vi.fn(async () => mockPdfBytes)
+    const pdf = vi.fn(async (_opts: Record<string, unknown>) => mockPdfBytes)
     vi.mocked(puppeteer.launch).mockResolvedValueOnce(makeMockBrowser({ pdf }) as never)
 
     await generatePdfFromHtml('<p>x</p>', 'T')
 
     expect(pdf).toHaveBeenCalledOnce()
-    const opts = pdf.mock.calls[0][0] as Record<string, unknown>
+    const opts = pdf.mock.calls[0][0]
     expect(opts.format).toBe('A4')
     expect(opts.printBackground).toBe(true)
     expect(opts.displayHeaderFooter).toBe(true)
