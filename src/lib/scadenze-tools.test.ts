@@ -883,3 +883,125 @@ describe('lista_scadenze — troncamento dichiarato (BUG B)', () => {
     expect(tool.description).toMatch(/NON e completa|non e completa/i)
   })
 })
+
+/**
+ * BUG C — `aggiorna_scadenza` faceva un solo UPDATE per id, senza mai
+ * verificare se la nuova terna soggetto+tipo_documento+categoria (la CHIAVE DI
+ * IDENTITA) andasse a sbattere su una riga gia attiva. Risultato: due righe
+ * attive identiche, due promemoria dal cron, due eventi in agenda.
+ *
+ * DECISIONE DI DESIGN pinnata da questi test: rilevare e AVVISARE, mai
+ * cancellare. Chiamare `marcaSostituite` da un UPDATE significherebbe che
+ * correggere un refuso nel soggetto puo far sparire in silenzio la scadenza di
+ * qualcun altro — lo stesso P0 chiuso la notte del 17 ago.
+ */
+describe('aggiorna_scadenza — collisione di chiave segnalata, non risolta (BUG C)', () => {
+  const AGGIORNATA = {
+    id: 'target', soggetto: 'Mario Rossi', categoria: 'ponteggi',
+    tipo_documento: 'attestato formazione', data_scadenza: '2029-03-01', reminder_days: 5,
+    recipients: [], drive_file_id: null, drive_url: null, note: null,
+    stato: 'attivo', updated_at: '2026-08-17T00:00:00Z',
+  }
+  const GIA_ESISTENTE = {
+    id: 'gia-esistente', soggetto: 'Mario Rossi',
+    tipo_documento: 'attestato formazione', categoria: 'Ponteggi',
+  }
+
+  it('aggiorna_scadenza segnala la collisione quando il cambio di chiave duplica una scadenza attiva (BUG C)', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'update') return { data: AGGIORNATA, error: null }
+      if (op.op === 'select') return { data: [GIA_ESISTENTE], error: null }
+      return { data: null, error: null }
+    }
+
+    const res = await callTool('aggiorna_scadenza', { id: 'target', categoria: 'ponteggi' })
+
+    expect(res.ok).toBe(true)
+    expect(res.collisione).toEqual(['gia-esistente'])
+    expect(res.avviso).toBeDefined()
+    expect(res.avviso).toMatch(/chiudi_scadenza/)
+  })
+
+  it('aggiorna_scadenza NON marca sostituito nessuno: la collisione si segnala, non si cancella (BUG C)', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'update') return { data: AGGIORNATA, error: null }
+      if (op.op === 'select') return { data: [GIA_ESISTENTE], error: null }
+      return { data: null, error: null }
+    }
+
+    await callTool('aggiorna_scadenza', { id: 'target', categoria: 'ponteggi' })
+
+    // nessun UPDATE con stato:'sostituito' deve essere partito
+    expect(sostituzioneOps()).toHaveLength(0)
+    // e l'unico UPDATE e quello sulla riga bersaglio
+    expect(updateOps()).toHaveLength(1)
+  })
+
+  it('aggiorna_scadenza non cerca collisioni quando la chiave non cambia (BUG C - controprova)', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'update') return { data: { ...AGGIORNATA, data_scadenza: '2030-01-01' }, error: null }
+      return { data: [], error: null }
+    }
+
+    const res = await callTool('aggiorna_scadenza', { id: 'target', data_scadenza: '2030-01-01' })
+
+    expect(res.ok).toBe(true)
+    expect(res.collisione).toBeUndefined()
+    // nessuna SELECT indipendente di ricerca chiave
+    expect(mockOps.filter(op => op.op === 'select')).toHaveLength(0)
+  })
+
+  it('aggiorna_scadenza resta ok quando la nuova chiave e libera (BUG C)', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'update') return { data: { ...AGGIORNATA, categoria: 'antincendio' }, error: null }
+      if (op.op === 'select') return { data: [], error: null }
+      return { data: null, error: null }
+    }
+
+    const res = await callTool('aggiorna_scadenza', { id: 'target', categoria: 'antincendio' })
+
+    expect(res.ok).toBe(true)
+    expect(res.collisione).toBeUndefined()
+    expect(res.avviso).toBeUndefined()
+  })
+
+  it('la ricerca collisioni esclude la riga appena aggiornata e filtra lato server (BUG C)', async () => {
+    const { ilikePattern } = await import('./scadenze-tools')
+    mockHandler = (op) => {
+      if (op.op === 'update') return { data: AGGIORNATA, error: null }
+      if (op.op === 'select') return { data: [], error: null }
+      return { data: null, error: null }
+    }
+
+    await callTool('aggiorna_scadenza', { id: 'target', categoria: 'ponteggi' })
+
+    const select = mockOps.find(op => op.op === 'select')
+    expect(select).toBeDefined()
+    expect(select?.filters.find(f => f.method === 'eq' && f.args[0] === 'stato')?.args[1]).toBe('attivo')
+    expect(select?.filters.find(f => f.method === 'neq' && f.args[0] === 'id')?.args[1]).toBe('target')
+    expect(select?.filters.find(f => f.method === 'ilike' && f.args[0] === 'soggetto')?.args[1])
+      .toBe(ilikePattern('Mario Rossi'))
+  })
+
+  it('una riga con categoria DIVERSA non e una collisione (BUG C - controprova)', async () => {
+    // L'ilike lato server e un sovrainsieme e NON filtra affatto la categoria:
+    // la selezione esatta sulla terna la deve fare normalizeKey in JS.
+    mockHandler = (op) => {
+      if (op.op === 'update') return { data: AGGIORNATA, error: null }
+      if (op.op === 'select') return { data: [{ ...GIA_ESISTENTE, categoria: 'antincendio' }], error: null }
+      return { data: null, error: null }
+    }
+
+    const res = await callTool('aggiorna_scadenza', { id: 'target', categoria: 'ponteggi' })
+
+    expect(res.ok).toBe(true)
+    expect(res.collisione).toBeUndefined()
+  })
+
+  it('la description di aggiorna_scadenza istruisce l LLM sul campo collisione', async () => {
+    const { SCADENZE_TOOLS } = await import('./scadenze-tools')
+    const tool = SCADENZE_TOOLS.find(t => t.name === 'aggiorna_scadenza')!
+    expect(tool.description).toMatch(/collisione/)
+    expect(tool.description).toMatch(/chiudi_scadenza/)
+  })
+})

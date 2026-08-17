@@ -639,6 +639,51 @@ async function listaScadenze(input: Record<string, unknown>): Promise<string> {
   })
 }
 
+/**
+ * Cerca ALTRE righe attive che, dopo un aggiornamento, avrebbero la stessa
+ * chiave di identita della riga appena modificata.
+ *
+ * NON marca nulla: si limita a riportare gli id. E deliberato. `marcaSostituite`
+ * fa sparire righe da lista_scadenze e dal cron: applicarla a un UPDATE
+ * significherebbe che correggere un refuso nel soggetto puo cancellare in
+ * silenzio la scadenza di qualcun altro. Vale qui la stessa regola dell'INSERT
+ * (vedi il commento sull'ORDINE VOLUTO): una riga duplicata e un fastidio
+ * visibile e recuperabile con chiudi_scadenza, zero righe no.
+ */
+async function trovaCollisioniChiave(opts: {
+  id: string
+  soggetto: string
+  tipoDocumento: string | null
+  categoria: string | null
+}): Promise<string[]> {
+  let query = supabase
+    .from('cervellone_scadenze')
+    .select('id, soggetto, tipo_documento, categoria')
+    .eq('stato', 'attivo')
+    .neq('id', opts.id)
+    .ilike('soggetto', ilikePattern(opts.soggetto))
+
+  query = opts.tipoDocumento === null
+    ? query.is('tipo_documento', null)
+    : query.ilike('tipo_documento', ilikePattern(opts.tipoDocumento))
+
+  const { data, error } = await query
+  if (error) return []
+
+  const soggettoKey = normalizeKey(opts.soggetto)
+  const tipoKey = normalizeKey(opts.tipoDocumento)
+  const categoriaKey = normalizeKey(opts.categoria)
+
+  return ((data ?? []) as Pick<ScadenzaRow, 'id' | 'soggetto' | 'tipo_documento' | 'categoria'>[])
+    .filter(row =>
+      row.id !== opts.id &&
+      normalizeKey(row.soggetto) === soggettoKey &&
+      normalizeKey(row.tipo_documento) === tipoKey &&
+      normalizeKey(row.categoria) === categoriaKey,
+    )
+    .map(row => row.id)
+}
+
 async function aggiornaScadenza(input: Record<string, unknown>): Promise<string> {
   const id = cleanString(input.id)
   if (!id) return fail('id obbligatorio.')
@@ -660,7 +705,31 @@ async function aggiornaScadenza(input: Record<string, unknown>): Promise<string>
   if (error) return fail(`Errore aggiornamento scadenza: ${error.message}`, { id })
   if (!data) return fail('Scadenza non trovata.', { id })
 
-  return ok({ scadenza: summarize(data as ScadenzaRow) })
+  const aggiornata = data as ScadenzaRow
+
+  // La chiave di identita e soggetto+tipo_documento+categoria: se l'update ne
+  // ha toccata anche solo una, la riga puo essere finita addosso a un'altra
+  // scadenza attiva. Si controlla SOLO in quel caso: aggiornare data o note
+  // non deve costare una query in piu.
+  const chiaveToccata = 'soggetto' in fields || 'tipo_documento' in fields || 'categoria' in fields
+  const collisione = chiaveToccata
+    ? await trovaCollisioniChiave({
+        id: aggiornata.id,
+        soggetto: aggiornata.soggetto,
+        tipoDocumento: aggiornata.tipo_documento ?? null,
+        categoria: aggiornata.categoria ?? null,
+      })
+    : []
+
+  if (collisione.length > 0) {
+    return ok({
+      scadenza: summarize(aggiornata),
+      collisione,
+      avviso: `Attenzione: ora ci sono ${collisione.length + 1} scadenze attive con la stessa chiave (stesso soggetto, tipo documento e categoria). Il cron mandera un promemoria per ciascuna. Chiudi quella di troppo con chiudi_scadenza.`,
+    })
+  }
+
+  return ok({ scadenza: summarize(aggiornata) })
 }
 
 async function chiudiScadenza(input: Record<string, unknown>): Promise<string> {
@@ -741,7 +810,7 @@ export const SCADENZE_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'aggiorna_scadenza',
-    description: 'Aggiorna una scadenza per id. Accetta i campi modificabili top-level oppure dentro campi. Applica le stesse validazioni di registra_scadenza: data_scadenza deve essere una data REALE in formato YYYY-MM-DD e reminder_days un intero tra 0 e 365, altrimenti l\'aggiornamento viene rifiutato senza scrivere nulla. NB: soggetto/tipo_documento/categoria sono la chiave di identita della scadenza — cambiarli qui la scollega dai rinnovi futuri.',
+    description: 'Aggiorna una scadenza per id. Accetta i campi modificabili top-level oppure dentro campi. Applica le stesse validazioni di registra_scadenza: data_scadenza deve essere una data REALE in formato YYYY-MM-DD e reminder_days un intero tra 0 e 365, altrimenti l\'aggiornamento viene rifiutato senza scrivere nulla. NB: soggetto/tipo_documento/categoria sono la chiave di identita della scadenza — cambiarli qui la scollega dai rinnovi futuri. Se dopo l\'aggiornamento torna `collisione`, ci sono piu scadenze attive identiche: riportalo all\'utente e proponi chiudi_scadenza su quella di troppo.',
     input_schema: {
       type: 'object' as const,
       properties: {
