@@ -998,6 +998,50 @@ describe('aggiorna_scadenza — collisione di chiave segnalata, non risolta (BUG
     expect(res.collisione).toBeUndefined()
   })
 
+  // FIX 7 — nessuna fixture aveva `tipo_documento: null`, quindi il ramo
+  // `query.is('tipo_documento', null)` era MORTO: mutarlo in `ilike` non
+  // uccideva nessun test. In produzione una scadenza senza tipo documento
+  // (`ilike '%%'` NON matcha NULL in Postgres) non avrebbe MAI avuto la
+  // collisione rilevata, e il cron avrebbe mandato due promemoria identici
+  // senza che nessuno lo segnalasse.
+  it('con tipo_documento NULL cerca le collisioni con is(null), non con ilike (BUG C / FIX 7)', async () => {
+    const SENZA_TIPO = { ...AGGIORNATA, tipo_documento: null }
+    const GEMELLA_SENZA_TIPO = { id: 'gemella', soggetto: 'Mario  Rossi', tipo_documento: null, categoria: 'Ponteggi' }
+    mockHandler = (op) => {
+      if (op.op === 'update') return { data: SENZA_TIPO, error: null }
+      if (op.op === 'select') return { data: [GEMELLA_SENZA_TIPO], error: null }
+      return { data: null, error: null }
+    }
+
+    const res = await callTool('aggiorna_scadenza', { id: 'target', categoria: 'ponteggi' })
+
+    const select = mockOps.find(op => op.op === 'select')
+    expect(select).toBeDefined()
+    // NULL si interroga con IS NULL: un ilike su una colonna NULL non matcha mai.
+    expect(select?.filters.find(f => f.method === 'is' && f.args[0] === 'tipo_documento')?.args[1])
+      .toBe(null)
+    expect(select?.filters.some(f => f.method === 'ilike' && f.args[0] === 'tipo_documento')).toBe(false)
+
+    // E la collisione va davvero rilevata, non solo interrogata bene.
+    expect(res.ok).toBe(true)
+    expect(res.collisione).toEqual(['gemella'])
+    expect(res.avviso).toMatch(/chiudi_scadenza/)
+  })
+
+  it('con tipo_documento valorizzato resta un ilike, non un is(null) (FIX 7 - controprova)', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'update') return { data: AGGIORNATA, error: null }
+      if (op.op === 'select') return { data: [], error: null }
+      return { data: null, error: null }
+    }
+
+    await callTool('aggiorna_scadenza', { id: 'target', categoria: 'ponteggi' })
+
+    const select = mockOps.find(op => op.op === 'select')
+    expect(select?.filters.some(f => f.method === 'is' && f.args[0] === 'tipo_documento')).toBe(false)
+    expect(select?.filters.some(f => f.method === 'ilike' && f.args[0] === 'tipo_documento')).toBe(true)
+  })
+
   it('la description di aggiorna_scadenza istruisce l LLM sul campo collisione', async () => {
     const { SCADENZE_TOOLS } = await import('./scadenze-tools')
     const tool = SCADENZE_TOOLS.find(t => t.name === 'aggiorna_scadenza')!
