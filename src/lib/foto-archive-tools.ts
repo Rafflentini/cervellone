@@ -4,6 +4,7 @@ import {
   listSubfolders,
   getOrCreatePathFolders,
   moveFile,
+  getFileParents,
   readSheet,
   appendSheet,
   DrivePolicyError,
@@ -45,6 +46,10 @@ interface FotoPendingRow {
   lavorazione: string | null
   stato: FotoStato
   created_at: string
+  // Cartella in cui la foto DOVEVA finire, scritta PRIMA del move. Su una riga
+  // ancora aperta e la traccia di un tentativo gia partito: va letta (e quindi
+  // selezionata dal DB, vedi fetchOpenPending) o la riconciliazione non parte mai.
+  target_folder_id: string | null
 }
 
 const OPEN_STATI: FotoStato[] = ['in_attesa', 'da_archiviare', 'errore']
@@ -169,7 +174,7 @@ function parseHeaderColumns(sheetText: string): string[] {
 async function fetchOpenPending(conversationId: string): Promise<{ rows: FotoPendingRow[]; error?: string }> {
   const { data, error } = await supabase
     .from('cervellone_foto_pending')
-    .select('id, drive_file_id, filename, ambito, soggetto, lavorazione, stato, created_at')
+    .select('id, drive_file_id, filename, ambito, soggetto, lavorazione, stato, created_at, target_folder_id')
     .eq('chat_id', conversationId)
     .in('stato', OPEN_STATI)
     .order('created_at', { ascending: true })
@@ -419,6 +424,14 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     rowsToArchive = [...rowsToArchive, ...(older as FotoPendingRow[])]
   }
 
+  // Foto recenti (<48h) rimaste in attesa perche NON selezionate dal gruppo.
+  // Non sono coperte da `notaOrfani`, che guarda solo le >48h: senza questo
+  // conteggio il messaggio dichiarava "tutte archiviate" mentre i cluster
+  // precedenti restavano in_attesa e l'utente non li cercava piu.
+  const recentiNonArchiviate = gruppoScelta === 'ultimo'
+    ? clusters.slice(0, -1).reduce((n, c) => n + c.length, 0)
+    : 0
+
   if (rowsToArchive.length === 0) {
     return fail({
       stato: 'nessuna_foto_recente',
@@ -454,15 +467,62 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   // solo lo stato DB è disallineato. NON è una foto "in attesa": non va riprovata né
   // marcata 'errore' (rimuoverebbe l'allineamento col file già fisicamente archiviato).
   let erroriDb = 0
+  // Righe che erano GIÀ fisicamente nella loro cartella (move riuscito in un
+  // tentativo precedente, update di stato fallito): qui si riallinea solo il DB.
+  let riconciliate = 0
 
   for (const row of rowsToArchive) {
+    // Una riga ancora aperta ma con target_folder_id valorizzato ha gia avuto un
+    // tentativo di archiviazione: il move puo essere riuscito e solo l'update di
+    // stato fallito. Prima di rispostarla si guarda dove sta DAVVERO il file —
+    // altrimenti la si strappa dalla commessa giusta.
+    if (row.target_folder_id) {
+      let parents: string[] | null = null
+      try {
+        parents = await getFileParents(row.drive_file_id)
+      } catch (err) {
+        // FAIL-CLOSED. Se Drive non risponde non sappiamo dove sia il file, e
+        // `target_folder_id` da solo e un'intenzione, non una prova: rispostare
+        // alla cieca sarebbe esattamente il bug che questo blocco esiste per
+        // impedire (strappare la foto dalla commessa giusta). La riga resta in
+        // attesa — visibile e recuperabile — e il file non si tocca.
+        console.error(
+          `[archivia_foto] verifica parent non riuscita per foto ${row.id} (${row.drive_file_id}): ${err instanceof Error ? err.message : err} — NON rispostata`,
+        )
+        erroriMove += 1
+        continue
+      }
+      if (parents.includes(row.target_folder_id)) {
+        const { error: fixError } = await supabase
+          .from('cervellone_foto_pending')
+          .update({ stato: 'archiviata', updated_at: new Date().toISOString() })
+          .eq('id', row.id)
+        if (fixError) { erroriDb += 1 } else { riconciliate += 1 }
+        continue
+      }
+    }
+
+    // Dichiarazione d'intento PRIMA del move: se questa scrittura non passa, non
+    // si sposta niente. Meglio una foto onestamente in attesa che un file spostato
+    // di cui il DB non conserva traccia.
+    const { error: intentError } = await supabase
+      .from('cervellone_foto_pending')
+      .update({ target_folder_id: targetId })
+      .eq('id', row.id)
+    if (intentError) {
+      erroriMove += 1
+      console.error(
+        `[archivia_foto] intento non scrivibile per foto ${row.id}: ${intentError.message} — move NON eseguito`,
+      )
+      continue
+    }
+
     const moveResult = await moveFile(row.drive_file_id, targetId)
     if (isMoveSuccess(moveResult)) {
       const { error: updateError } = await supabase
         .from('cervellone_foto_pending')
         .update({
           stato: 'archiviata',
-          target_folder_id: targetId,
           ambito,
           soggetto: subjectFolder.name,
           lavorazione: lavorazione ?? null,
@@ -497,7 +557,12 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   const restano = erroriMove
   const path = `${pathPrefix}/${fotoPathPrefix}${fotoFolder.name}/${segment}`
   const notaDb = erroriDb > 0
-    ? ` (${erroriDb} foto spostate ma stato non aggiornato — sono GIÀ nella cartella, nessuna azione necessaria)`
+    ? ` (${erroriDb} foto spostate ma stato non aggiornato — sono GIÀ nella cartella e verranno riconciliate al prossimo tentativo, non verranno rispostate)`
+    : ''
+  // Righe già fisicamente archiviate in un tentativo precedente: NON sono finite
+  // in `path` (il loro target era un altro), quindi non vanno confuse con `spostate`.
+  const notaRiconciliate = riconciliate > 0
+    ? ` (${riconciliate} foto erano già state spostate in un tentativo precedente: stato DB riallineato, file NON toccato)`
     : ''
 
   // ESITO ONESTO: il modello NON deve poter annunciare "foto archiviate" se una foto
@@ -513,8 +578,9 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
       errori_db: erroriDb,
       totale,
       restano_in_attesa: restano,
+      riconciliate,
       path,
-      message: `Spostate ${spostate}/${totale} foto.${notaDb} ${restano} NON spostate e restano IN ATTESA (stato 'errore'). NON dichiarare l'archiviazione completata: riprova o segnala all'Ingegnere.`,
+      message: `Spostate ${spostate}/${totale} foto.${notaDb}${notaRiconciliate} ${restano} NON spostate e restano IN ATTESA. NON dichiarare l'archiviazione completata: riprova o segnala all'Ingegnere.`,
     })
   }
 
@@ -522,6 +588,18 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   const notaOrfani = (older.length > 0 && !includiVecchie)
     ? ` Nota: ci sono ${older.length} foto più vecchie di 48h non archiviate — se vanno qui, richiama con includi_vecchie:true.`
     : ''
+  const notaResidue = recentiNonArchiviate > 0
+    ? ` Restano ${recentiNonArchiviate} foto recenti NON archiviate (raffiche precedenti): richiama con gruppo:"tutti" se vanno nella stessa cartella.`
+    : ''
+
+  // Testa del messaggio. `spostate === 0` capita quando il batch era fatto solo di
+  // righe già archiviate in precedenza: "Tutte le 0 foto spostate" sarebbe assurdo.
+  const testa = spostate === 0
+    ? `Nessuna foto nuova da spostare in ${path}.`
+    : recentiNonArchiviate > 0
+      ? `Archiviate ${spostate} foto in ${path}.`
+      : `Tutte le ${spostate} foto spostate e verificate in ${path}.`
+
   // Tutti i move riusciti (anche se qualche update DB è fallito): archiviazione OK.
   return ok({
     archiviate: spostate,
@@ -529,8 +607,10 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     errori_db: erroriDb,
     totale,
     path,
+    riconciliate,
+    recenti_non_archiviate: recentiNonArchiviate,
     vecchie_non_archiviate: !includiVecchie ? older.length : 0,
-    message: `Tutte le ${spostate} foto spostate e verificate in ${path}.${notaDb}${notaOrfani}`,
+    message: `${testa}${notaDb}${notaRiconciliate}${notaResidue}${notaOrfani}`,
   })
 }
 
