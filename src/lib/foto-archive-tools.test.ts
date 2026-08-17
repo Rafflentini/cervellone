@@ -178,7 +178,15 @@ describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG
     created_at: minutiFa(1), ambito: null, soggetto: null,
     lavorazione: null, target_folder_id: null,
   }
+  // Tentativo precedente su un'ALTRA commessa (target-A = "Commessa Alfa"): il
+  // file e finito li. Serve ai test in cui la richiesta di ORA punta altrove.
   const rigaPendingConTarget = { ...rigaPending, target_folder_id: 'target-A' }
+  // Tentativo precedente sulla STESSA commessa che si sta richiedendo ora
+  // (target-B = "Beta Ristrutturazione"): move riuscito, update di stato fallito.
+  // E' la RETRY della stessa archiviazione — l'unico caso in cui riconciliare e
+  // chiudere la riga e' legittimo, perche' il file e' gia' esattamente dove
+  // l'Ingegnere lo sta mandando.
+  const rigaPendingStessoTarget = { ...rigaPending, target_folder_id: 'target-B' }
 
   it('non strappa dalla commessa giusta la foto gia spostata con update DB fallito (BUG F)', async () => {
     // ROUND 1: move OK, update stato fallito -> riga resta in_attesa
@@ -326,9 +334,11 @@ describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG
   // archiviata e ri-proposta a ogni tentativo successivo.
 
   it('riallinea il DB della foto gia spostata: la UPDATE di riconciliazione parte davvero (BUG F)', async () => {
-    getFileParents.mockResolvedValue(['target-A'])
+    // RETRY della STESSA archiviazione: il file e gia in target-B, che e proprio
+    // la cartella che "Beta Ristrutturazione" risolve adesso.
+    getFileParents.mockResolvedValue(['target-B'])
     getOrCreatePathFolders.mockResolvedValue('target-B')
-    mockHandler = (op) => (op.op === 'select' ? { data: [rigaPendingConTarget], error: null } : { data: null, error: null })
+    mockHandler = (op) => (op.op === 'select' ? { data: [rigaPendingStessoTarget], error: null } : { data: null, error: null })
 
     const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
       ambito: 'cantiere', nome: 'Beta Ristrutturazione',
@@ -343,7 +353,8 @@ describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG
       o.filters.some(f => f.method === 'eq' && f.args[0] === 'id' && f.args[1] === 'row-1'))
     expect(updates).toHaveLength(1)
     expect((updates[0].payload as Record<string, unknown>).stato).toBe('archiviata')
-    // e NON riscrive target_folder_id: il file e in target-A, non in target-B.
+    // e NON riscrive target_folder_id: era gia corretto, la riconciliazione
+    // tocca SOLO lo stato. Riscriverlo mascherebbe un eventuale disallineamento.
     expect(updates[0].payload).not.toHaveProperty('target_folder_id')
 
     expect(res.ok).toBe(true)
@@ -359,11 +370,13 @@ describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG
   })
 
   it('in un batch misto le riconciliate NON finiscono nel conteggio delle spostate (BUG F)', async () => {
+    // Una riga da riconciliare (retry della stessa archiviazione) + una foto mai
+    // toccata: la prima si chiude senza move, la seconda si sposta.
     const nuova = { ...rigaPending, id: 'row-2', drive_file_id: 'file-2', created_at: minutiFa(2) }
-    getFileParents.mockResolvedValue(['target-A'])
+    getFileParents.mockResolvedValue(['target-B'])
     getOrCreatePathFolders.mockResolvedValue('target-B')
     mockHandler = (op) =>
-      (op.op === 'select' ? { data: [rigaPendingConTarget, nuova], error: null } : { data: null, error: null })
+      (op.op === 'select' ? { data: [rigaPendingStessoTarget, nuova], error: null } : { data: null, error: null })
 
     const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
       ambito: 'cantiere', nome: 'Beta Ristrutturazione',
@@ -382,15 +395,18 @@ describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG
 
   // FIX 3 — il fallimento della riconciliazione veniva riciclato in `spostate`
   // via `erroriDb`, e quindi anche in notaDb ("sono GIÀ nella cartella"). Ma
-  // quelle righe NON sono in `path`: sono nella cartella del tentativo vecchio
-  // e restano aperte. Caso limite: batch di sole riconciliazioni fallite → il
-  // messaggio diceva "Tutte le N foto spostate e verificate in {path}" mentre
-  // non si era mosso un file.
+  // quelle righe restano APERTE: `archivia_foto` non ha chiuso niente e le
+  // riproporra al tentativo successivo, quindi contarle fra le spostate ORA e
+  // una bugia. Caso limite: batch di sole riconciliazioni fallite → il messaggio
+  // diceva "Tutte le N foto spostate e verificate in {path}" mentre non si era
+  // mosso un file.
   it('riconciliazione fallita: non conta come foto spostata (FIX 3 - caso limite)', async () => {
-    getFileParents.mockResolvedValue(['target-A'])
+    // Retry della stessa archiviazione, ma stavolta anche il riallineamento del
+    // DB fallisce: la riga resta aperta.
+    getFileParents.mockResolvedValue(['target-B'])
     getOrCreatePathFolders.mockResolvedValue('target-B')
     mockHandler = (op) => {
-      if (op.op === 'select') return { data: [rigaPendingConTarget], error: null }
+      if (op.op === 'select') return { data: [rigaPendingStessoTarget], error: null }
       const payload = op.payload as Record<string, unknown> | undefined
       if (op.op === 'update' && payload?.stato === 'archiviata') {
         return { data: null, error: { message: 'PostgREST 503' } }
