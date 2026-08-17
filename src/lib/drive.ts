@@ -578,6 +578,54 @@ export async function getFileParents(fileId: string): Promise<string[]> {
   return res.data.parents || []
 }
 
+/**
+ * Nomi della catena di cartelle che porta a `folderId`, dal piu ESTERNO al piu
+ * INTERNO (es. ['Villa Alfa', '03_Foto', '2026-08-17']), risalendo il PRIMO
+ * parent per al massimo `maxLevels` livelli.
+ *
+ * Serve solo a scrivere un messaggio leggibile all'Ingegnere: un id Drive non
+ * gli dice niente. Per questo e BEST-EFFORT — qualunque errore ritorna quello
+ * che ha raccolto fin li (anche `[]`) e NON lancia MAI: un messaggio meno
+ * ricco e sempre meglio di un'archiviazione che esplode.
+ */
+export async function getFolderPathNames(folderId: string, maxLevels = 3): Promise<string[]> {
+  const names: string[] = []
+  if (!folderId) return names
+  try {
+    const drive = await getDrive()
+    // Annotata: il ciclo assegna `currentId` dal risultato di `drive.files.get()`.
+    let currentId: string | undefined = folderId
+    const visti = new Set<string>()
+
+    for (let livello = 0; livello < maxLevels && currentId; livello++) {
+      // Guardia anti-ciclo: Drive non dovrebbe mai produrre un anello di parent,
+      // ma un loop infinito su un messaggio informativo sarebbe assurdo.
+      if (visti.has(currentId)) break
+      visti.add(currentId)
+
+      // Params in una variabile ANNOTATA a parte: inlinandoli, il tipo di `res`
+      // dipenderebbe da `currentId`, che sul back-edge del loop dipende da `res`
+      // → tsc alza TS7022 ('res' implicitly has type any). Stessa cura di
+      // listSubfolders poche centinaia di righe sopra.
+      const params: { fileId: string; fields: string; supportsAllDrives: boolean } = {
+        fileId: currentId,
+        fields: 'name, parents',
+        supportsAllDrives: true,
+      }
+      const res = await drive.files.get(params)
+
+      const name = res.data.name
+      if (name) names.unshift(name)
+      currentId = res.data.parents?.[0] || undefined
+    }
+  } catch (err) {
+    console.error(
+      `[DRIVE] getFolderPathNames(${folderId}): risalita interrotta, path parziale (${names.length} livelli) — ${err instanceof Error ? err.message : err}`,
+    )
+  }
+  return names
+}
+
 // Sposta un file/cartella
 export async function moveFile(fileId: string, newParentId: string): Promise<string> {
   try {
