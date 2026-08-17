@@ -16,6 +16,9 @@ import type { NextRequest } from 'next/server'
 const rangeCalls: Array<[number, number]> = []
 // Pagine che il "server" restituisce.
 let pagine: unknown[][] = []
+// Se valorizzata, il "server" restituisce SEMPRE questa pagina piena: simula
+// un server che non smette mai di avere righe (o un range che non avanza).
+let paginaInfinita: unknown[] | null = null
 
 function makeBuilder() {
   let ranged = false
@@ -28,6 +31,9 @@ function makeBuilder() {
     return builder
   }
   builder.then = (resolve: (v: unknown) => void) => {
+    if (paginaInfinita) {
+      return Promise.resolve({ data: paginaInfinita, error: null }).then(resolve)
+    }
     // Senza .range() si simula il row-cap di PostgREST: solo la prima pagina.
     const idx = ranged ? rangeCalls.length - 1 : 0
     return Promise.resolve({ data: pagine[idx] ?? [], error: null }).then(resolve)
@@ -61,6 +67,7 @@ function riga(i: number) {
 beforeEach(() => {
   vi.clearAllMocks()
   rangeCalls.length = 0
+  paginaInfinita = null
   process.env.CRON_SECRET = 'test-secret'
 })
 
@@ -89,6 +96,32 @@ describe('cron scadenze', () => {
 
     expect(rangeCalls).toEqual([[0, 499]])
     expect(body.checked).toBe(3)
+  })
+
+  it('non gira all infinito se le pagine non finiscono mai, e lo dichiara', async () => {
+    // Server che restituisce sempre una pagina piena: senza tetto il loop
+    // interroga il DB indefinitamente dentro una route con maxDuration 120.
+    paginaInfinita = Array.from({ length: 500 }, (_, i) => riga(i))
+
+    const { GET } = await import('./route')
+    const res = await GET(cronRequest())
+    const body = await res.json()
+
+    expect(body.ok).toBe(true)
+    expect(rangeCalls.length).toBe(40)
+    expect(rangeCalls[39]).toEqual([19500, 19999])
+    // Il tetto e comunque un troncamento: va dichiarato, non subito in silenzio.
+    expect(body.troncato).toBe(true)
+  })
+
+  it('non dichiara troncamento quando le pagine finiscono (controprova)', async () => {
+    pagine = [Array.from({ length: 3 }, (_, i) => riga(i))]
+
+    const { GET } = await import('./route')
+    const res = await GET(cronRequest())
+    const body = await res.json()
+
+    expect(body.troncato).toBe(false)
   })
 
   it('rifiuta la richiesta senza il CRON_SECRET giusto', async () => {

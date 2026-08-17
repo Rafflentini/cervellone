@@ -172,9 +172,23 @@ export async function GET(req: NextRequest) {
     // risposta riporterebbe il conteggio della pagina troncata come se fosse
     // il totale. Nessun umano legge l'output del cron: qui non basta segnalare
     // il troncamento, vanno processate tutte.
+    // Tetto di sicurezza: 40 pagine x 500 = 20.000 scadenze attive future.
+    // Serve perche un `for(;;)` che interroga il DB sta dentro una route con
+    // maxDuration 120: se il server continuasse a rispondere con pagine piene
+    // (o se un range non avanzasse) il cron ciclerebbe fino al timeout, e un
+    // cron che va in timeout e un cron che non manda promemoria.
+    // Il tetto e a sua volta un troncamento: si dichiara in risposta.
     const PAGINA = 500
+    const MAX_PAGINE = 40
     const rows: ScadenzaRow[] = []
-    for (let offset = 0; ; offset += PAGINA) {
+    let troncato = false
+    for (let pagina = 0; ; pagina++) {
+      if (pagina >= MAX_PAGINE) {
+        troncato = true
+        console.error(`[cron/scadenze] tetto di ${MAX_PAGINE} pagine raggiunto: lette ${rows.length} scadenze, potrebbero essercene altre`)
+        break
+      }
+      const offset = pagina * PAGINA
       const { data, error } = await supabase
         .from('cervellone_scadenze')
         .select('id, soggetto, categoria, tipo_documento, data_scadenza, reminder_days, recipients, drive_url, reminders_sent')
@@ -211,6 +225,7 @@ export async function GET(req: NextRequest) {
       ok: true,
       today,
       checked: rows.length,
+      troncato,
       reminded: reminded.length,
       details: reminded,
     })
