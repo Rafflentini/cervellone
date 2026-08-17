@@ -743,6 +743,98 @@ describe('prepara_cartella — anti-duplicato oltre le 500 righe', () => {
     expect(appendSheet).toHaveBeenCalledTimes(1)
   })
 
+  it('due token distinti in comune bastano a chiedere conferma, senza numero uguale', async () => {
+    // Confine dell'overlap pinnato anche DALL'ALTO: senza questo si poteva
+    // alzare la soglia a 3, o buttare via del tutto i match deboli, e la suite
+    // restava verde. Qui il numero commessa e diverso: blocca solo l'overlap.
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: {
+        Commessa: '2032-001',
+        Comune: 'Potenza',                    // token 1, condiviso con le righe 1-100
+        Committente: 'Zeta Immobiliare',
+        Oggetto: 'Rifacimento tetto',         // token 2: 'rifacimento'
+      },
+    }, 'chat-1'))!)
+
+    expect(res.need).toBe('conferma_duplicato')
+    expect(res.candidati_numero_uguale).toHaveLength(0)
+    expect(res.candidati.length).toBeGreaterThan(0)
+    expect(appendSheet).not.toHaveBeenCalled()
+  })
+
+  it('trova l intestazione nella forma REALE del Registro (titolo, vuota, header alla 3)', async () => {
+    // Il Registro vero ha titolo alla riga 1, una riga vuota, l'header alla 3 e
+    // i dati dalla 4a (documentato in drive.ts). Nessuna fixture lo riproduceva:
+    // tutte avevano l'header alla riga 1, quindi RIGHE_INTESTAZIONE poteva
+    // valere 1 e nessuno se ne accorgeva — proprio la finestra da cui dipende
+    // tutto il fix.
+    readSheet.mockImplementation(async () => {
+      const righe = [
+        ['REGISTRO CANTIERI'],
+        [],
+        HEADER,
+        ['2024-010', 'Lavello', 'Alfa Costruzioni', 'Consolidamento'],
+      ]
+      return `${righe.length} righe:\n${righe.map((r, i) => `Riga ${i + 1}: ${r.join(' | ')}`).join('\n')}`
+    })
+
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: { Commessa: '2033-001', Comune: 'Venosa', Committente: 'Omega Srl', Oggetto: 'Nuovo capannone' },
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(true)
+    expect(appendSheet).toHaveBeenCalledTimes(1)
+  })
+
+  it('la finestra di 10 righe ne comprende davvero 10: header esattamente alla decima', async () => {
+    // Pinna l'off-by-one: la prima riga del testo di readSheet e il conteggio
+    // ("N righe:"), non una riga del foglio. Senza questo test, RIGHE_INTESTAZIONE
+    // = 10 poteva valerne 9 e nessuna fixture se ne accorgeva.
+    readSheet.mockImplementation(async () => {
+      const righe = [
+        ...Array.from({ length: 9 }, (_, i) => [`preambolo ${i + 1}`]),
+        HEADER,                                    // riga 10 esatta
+        ['2024-011', 'Lavello', 'Alfa Costruzioni', 'Consolidamento'],
+      ]
+      return `${righe.length} righe:\n${righe.map((r, i) => `Riga ${i + 1}: ${r.join(' | ')}`).join('\n')}`
+    })
+
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: { Commessa: '2034-001', Comune: 'Venosa', Committente: 'Omega Srl', Oggetto: 'Nuovo capannone' },
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(true)
+    expect(appendSheet).toHaveBeenCalledTimes(1)
+  })
+
+  it('se l intestazione non e nelle prime righe lo dice, invece di chiedere valori assurdi', async () => {
+    // Header oltre la finestra (o preambolo con celle multiriga): il codice
+    // falliva chiuso ma chiedeva all'utente il valore per una colonna chiamata
+    // "REGISTRO CANTIERI" — lo stesso depistaggio che il commit precedente
+    // aveva tolto dal ramo d'errore.
+    readSheet.mockImplementation(async () => {
+      const righe = [
+        ...Array.from({ length: 12 }, () => ['REGISTRO CANTIERI']),
+        HEADER,
+        ['2024-010', 'Lavello', 'Alfa Costruzioni', 'Consolidamento'],
+      ]
+      return `${righe.length} righe:\n${righe.map((r, i) => `Riga ${i + 1}: ${r.join(' | ')}`).join('\n')}`
+    })
+
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: { Commessa: '2033-002', Comune: 'Venosa', Committente: 'Omega Srl', Oggetto: 'Nuovo capannone' },
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(false)
+    expect(res.need).not.toBe('valori')
+    expect(res.error).toMatch(/intestazione/i)
+    expect(appendSheet).not.toHaveBeenCalled()
+  })
+
   it('lo stesso token ripetuto nella riga non vale come due token in comune', async () => {
     // "Comune: Potenza | Committente: Comune di Potenza" e la forma NORMALE del
     // Registro in Basilicata: 'potenza' compare due volte nella stessa riga.

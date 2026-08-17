@@ -780,8 +780,17 @@ async function preparaCartella(input: Record<string, unknown>): Promise<string> 
   const areaIntestazione = sheetFull.split('\n').slice(0, RIGHE_INTESTAZIONE + 1).join('\n')
   const colonne = parseHeaderColumns(areaIntestazione)
 
-  if (!colonne.length) {
-    return fail({ error: 'intestazione Registro non leggibile', sheet_preview: sheetFull.slice(0, 2000) })
+  // Una sola colonna non e un'intestazione: e il titolo del preambolo. Succede
+  // se l'header sta piu in basso della finestra, o se una cella del preambolo
+  // contiene a-capo interni (in Sheets si fanno con alt+invio) che spostano
+  // tutte le righe di testo. Senza questo controllo si finiva nel ramo
+  // `mancanti` e si chiedeva all'utente il valore per una colonna chiamata
+  // "REGISTRO CANTIERI": lo stesso depistaggio tolto poco sopra dal ramo errore.
+  if (colonne.length < 2) {
+    return fail({
+      error: `intestazione Registro non trovata nelle prime ${RIGHE_INTESTAZIONE} righe`,
+      sheet_preview: sheetFull.slice(0, 2000),
+    })
   }
 
   const mancanti = colonne.filter(col => valori[col] === undefined || valori[col] === null || String(valori[col]).trim() === '')
