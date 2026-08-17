@@ -150,7 +150,9 @@ describe('archivia_foto — residuo del gruppo (BUG E)', () => {
     expect(moveFile).toHaveBeenCalledTimes(2)          // la selezione resta corretta
     expect(res.recenti_non_archiviate).toBe(3)         // oggi: undefined
     expect(res.message).not.toMatch(/^Tutte le/)       // oggi: "Tutte le 2 foto..."
-    expect(res.message).toContain('3')
+    // NON `toContain('3')`: passava per coincidenza (nessun altro '3' nella
+    // fixture) e sarebbe rimasto verde anche con il conteggio sbagliato.
+    expect(res.message).toMatch(/Restano 3 foto recenti NON archiviate \(raffiche precedenti\)/)
   })
 
   it('archivia_foto gruppo:tutti resta invariato (BUG E - controprova)', async () => {
