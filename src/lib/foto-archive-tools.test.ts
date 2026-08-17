@@ -296,6 +296,68 @@ describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG
     expect(res.restano_in_attesa).toBe(1)
   })
 
+  // ── La META che mancava del BUG F ─────────────────────────────────────────
+  // Il BUG F ha due meta: (a) NON rispostare il file, (b) RIALLINEARE il DB.
+  // Sopra e testata solo la (a): si poteva cancellare la UPDATE
+  // {stato:'archiviata'} del ramo riconciliazione e restare verdi, mentre in
+  // produzione la foto restava `in_attesa` per sempre — invisibile come
+  // archiviata e ri-proposta a ogni tentativo successivo.
+
+  it('riallinea il DB della foto gia spostata: la UPDATE di riconciliazione parte davvero (BUG F)', async () => {
+    getFileParents.mockResolvedValue(['target-A'])
+    getOrCreatePathFolders.mockResolvedValue('target-B')
+    mockHandler = (op) => (op.op === 'select' ? { data: [rigaPendingConTarget], error: null } : { data: null, error: null })
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Beta Ristrutturazione',
+    }, 'chat-1'))!)
+
+    // (a) il file NON si tocca
+    expect(moveFile).not.toHaveBeenCalled()
+
+    // (b) il DB si riallinea, sulla riga giusta e col payload giusto
+    const updates = mockOps.filter(o =>
+      o.table === 'cervellone_foto_pending' && o.op === 'update' &&
+      o.filters.some(f => f.method === 'eq' && f.args[0] === 'id' && f.args[1] === 'row-1'))
+    expect(updates).toHaveLength(1)
+    expect((updates[0].payload as Record<string, unknown>).stato).toBe('archiviata')
+    // e NON riscrive target_folder_id: il file e in target-A, non in target-B.
+    expect(updates[0].payload).not.toHaveProperty('target_folder_id')
+
+    expect(res.ok).toBe(true)
+    expect(res.riconciliate).toBe(1)
+    expect(res.errori_db).toBe(0)
+    // La riconciliata NON e una foto spostata ORA: `archiviate` deve restare 0.
+    expect(res.archiviate).toBe(0)
+    // Ramo `spostate === 0`, altrimenti mai esercitato: "Tutte le 0 foto
+    // spostate e verificate" sarebbe una bugia.
+    expect(res.message).toMatch(/^Nessuna foto nuova da spostare in Beta Ristrutturazione\/Foto\//)
+    expect(res.message).toMatch(/1 foto erano gi\S+ state spostate in un tentativo precedente/)
+    expect(res.message).toMatch(/file NON toccato/)
+  })
+
+  it('in un batch misto le riconciliate NON finiscono nel conteggio delle spostate (BUG F)', async () => {
+    const nuova = { ...rigaPending, id: 'row-2', drive_file_id: 'file-2', created_at: minutiFa(2) }
+    getFileParents.mockResolvedValue(['target-A'])
+    getOrCreatePathFolders.mockResolvedValue('target-B')
+    mockHandler = (op) =>
+      (op.op === 'select' ? { data: [rigaPendingConTarget, nuova], error: null } : { data: null, error: null })
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Beta Ristrutturazione',
+    }, 'chat-1'))!)
+
+    // Solo la riga senza tentativo precedente viene spostata.
+    expect(moveFile).toHaveBeenCalledTimes(1)
+    expect(moveFile).toHaveBeenCalledWith('file-2', 'target-B')
+
+    expect(res.ok).toBe(true)
+    expect(res.totale).toBe(2)
+    expect(res.archiviate).toBe(1)     // solo la nuova
+    expect(res.riconciliate).toBe(1)   // la vecchia, contata a parte
+    expect(res.message).toMatch(/^Tutte le 1 foto spostate e verificate in /)
+  })
+
   it('guardia: move fallito resta un errore onesto (BUG F - anti-regressione)', async () => {
     moveFile.mockResolvedValue('Errore: il file NON risulta spostato nella cartella di destinazione.')
     mockHandler = (op) => {
