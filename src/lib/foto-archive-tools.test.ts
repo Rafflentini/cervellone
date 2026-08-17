@@ -12,10 +12,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // ── Mock Drive ──────────────────────────────────────────────────────────────
 // `vi.hoisted`: le factory di `vi.mock` sono issate sopra le const del modulo,
 // quindi i mock devono nascere li dentro o si prende un TDZ.
-const { moveFile, listSubfolders, getOrCreatePathFolders } = vi.hoisted(() => ({
+const { moveFile, listSubfolders, getOrCreatePathFolders, getFileParents } = vi.hoisted(() => ({
   moveFile: vi.fn(async (_fileId: string, _target: string) => 'File spostato nella nuova cartella'),
   listSubfolders: vi.fn(async (_folderId: string) => [] as Array<{ id: string; name: string }>),
   getOrCreatePathFolders: vi.fn(async (_parent: string, _segments: string[]) => 'target-folder'),
+  getFileParents: vi.fn(async (_fileId: string) => [] as string[]),
 }))
 
 vi.mock('./drive', () => ({
@@ -24,6 +25,7 @@ vi.mock('./drive', () => ({
   listSubfolders,
   getOrCreatePathFolders,
   moveFile,
+  getFileParents,
   readSheet: vi.fn(async () => []),
   appendSheet: vi.fn(),
   DrivePolicyError: class extends Error {},
@@ -114,6 +116,7 @@ beforeEach(() => {
 
   moveFile.mockResolvedValue('File spostato nella nuova cartella')
   getOrCreatePathFolders.mockResolvedValue('target-folder')
+  getFileParents.mockResolvedValue([])
   listSubfolders.mockImplementation(async (folderId: string) => {
     if (folderId === 'root-cantieri') {
       return [
@@ -161,5 +164,150 @@ describe('archivia_foto — residuo del gruppo (BUG E)', () => {
     expect(moveFile).toHaveBeenCalledTimes(5)
     expect(res.recenti_non_archiviate).toBe(0)
     expect(res.message).toMatch(/^Tutte le 5/)
+  })
+})
+
+describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG F)', () => {
+  const rigaPending = {
+    id: 'row-1', drive_file_id: 'file-1', filename: 'IMG_1.jpg', stato: 'in_attesa',
+    created_at: minutiFa(1), ambito: null, soggetto: null,
+    lavorazione: null, target_folder_id: null,
+  }
+  const rigaPendingConTarget = { ...rigaPending, target_folder_id: 'target-A' }
+
+  it('non strappa dalla commessa giusta la foto gia spostata con update DB fallito (BUG F)', async () => {
+    // ROUND 1: move OK, update stato fallito -> riga resta in_attesa
+    mockHandler = (op) => {
+      if (op.op === 'select') return { data: [rigaPending], error: null }
+      const payload = op.payload as Record<string, unknown> | undefined
+      if (op.op === 'update' && payload?.stato === 'archiviata') {
+        return { data: null, error: { message: 'PostgREST 503' } }
+      }
+      return { data: null, error: null }
+    }
+    getOrCreatePathFolders.mockResolvedValue('target-A')
+
+    const r1 = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Commessa Alfa',
+    }, 'chat-1'))!)
+    expect(r1.errori_db).toBe(1)
+    expect(moveFile).toHaveBeenCalledWith('file-1', 'target-A')
+
+    // ROUND 2: altra commessa, stessa chat. Il file E GIA in target-A su Drive.
+    moveFile.mockClear()
+    getFileParents.mockResolvedValue(['target-A'])
+    getOrCreatePathFolders.mockResolvedValue('target-B')
+    mockHandler = (op) => {
+      if (op.op === 'select') return { data: [rigaPendingConTarget], error: null }
+      return { data: null, error: null }
+    }
+
+    await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Beta Ristrutturazione',
+    }, 'chat-1')
+
+    // OGGI ROSSO: il file viene spostato in target-B, strappato dalla commessa giusta.
+    expect(moveFile).not.toHaveBeenCalledWith('file-1', 'target-B')
+  })
+
+  // Test STRUTTURALE, non comportamentale: il mock Supabase non filtra le
+  // colonne, quindi la fixture arriva completa comunque e i test di
+  // riconciliazione resterebbero verdi anche togliendo `target_folder_id`
+  // dalla select. In produzione PostgREST restituirebbe invece il campo
+  // `undefined` e la riconciliazione non partirebbe MAI. Va pinnato qui.
+  it('fetchOpenPending chiede target_folder_id al DB (BUG F - prerequisito)', async () => {
+    mockHandler = (op) => (op.op === 'select' ? { data: [rigaPending], error: null } : { data: null, error: null })
+
+    await executeFotoArchiveTool('archivia_foto', { ambito: 'cantiere', nome: 'Commessa Alfa' }, 'chat-1')
+
+    const select = mockOps.find(o => o.table === 'cervellone_foto_pending' && o.op === 'select')
+    expect(select).toBeDefined()
+    expect(String(select!.columns)).toContain('target_folder_id')
+  })
+
+  it('scrive target_folder_id PRIMA di spostare, cosi un update fallito lascia una traccia (BUG F)', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'select') return { data: [rigaPending], error: null }
+      return { data: null, error: null }
+    }
+    getOrCreatePathFolders.mockResolvedValue('target-A')
+
+    await executeFotoArchiveTool('archivia_foto', { ambito: 'cantiere', nome: 'Commessa Alfa' }, 'chat-1')
+
+    const updates = mockOps.filter(o =>
+      o.table === 'cervellone_foto_pending' && o.op === 'update' &&
+      o.filters.some(f => f.method === 'eq' && f.args[1] === 'row-1'))
+    // OGGI ROSSO: oggi e esattamente 1 (solo quello finale).
+    expect(updates.length).toBeGreaterThanOrEqual(2)
+    expect(updates[0].payload).toEqual({ target_folder_id: 'target-A' })
+  })
+
+  it('non sposta se non riesce nemmeno a dichiarare l intento (BUG F - fail fast)', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'select') return { data: [rigaPending], error: null }
+      const payload = op.payload as Record<string, unknown> | undefined
+      if (op.op === 'update' && payload && 'target_folder_id' in payload && !('stato' in payload)) {
+        return { data: null, error: { message: 'PostgREST 503' } }
+      }
+      return { data: null, error: null }
+    }
+    getOrCreatePathFolders.mockResolvedValue('target-A')
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Commessa Alfa',
+    }, 'chat-1'))!)
+
+    expect(moveFile).not.toHaveBeenCalled()
+    expect(res.restano_in_attesa).toBe(1)
+  })
+
+  it('riprova normalmente se il file NON risulta gia spostato (BUG F - controprova)', async () => {
+    // target_folder_id valorizzato ma il file su Drive e altrove: il move non era avvenuto.
+    getFileParents.mockResolvedValue(['inbox-telegram'])
+    mockHandler = (op) => {
+      if (op.op === 'select') return { data: [rigaPendingConTarget], error: null }
+      return { data: null, error: null }
+    }
+    getOrCreatePathFolders.mockResolvedValue('target-B')
+
+    await executeFotoArchiveTool('archivia_foto', { ambito: 'cantiere', nome: 'Beta Ristrutturazione' }, 'chat-1')
+
+    expect(moveFile).toHaveBeenCalledWith('file-1', 'target-B')
+  })
+
+  // Scostamento deliberato dal piano, che qui prescriveva `.catch(() => [])`:
+  // con quella variante un errore transitorio di Drive fa cadere il codice nel
+  // ramo "non e mai stata spostata" e il file viene rispostato alla cieca —
+  // cioe' esattamente il BUG F, resuscitato su un errore di rete. Senza prova
+  // non si tocca il file.
+  it('non sposta la foto se la verifica su Drive fallisce (BUG F - fail closed)', async () => {
+    getFileParents.mockRejectedValue(new Error('Drive 503'))
+    mockHandler = (op) => {
+      if (op.op === 'select') return { data: [rigaPendingConTarget], error: null }
+      return { data: null, error: null }
+    }
+    getOrCreatePathFolders.mockResolvedValue('target-B')
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Beta Ristrutturazione',
+    }, 'chat-1'))!)
+
+    expect(moveFile).not.toHaveBeenCalled()
+    expect(res.restano_in_attesa).toBe(1)
+  })
+
+  it('guardia: move fallito resta un errore onesto (BUG F - anti-regressione)', async () => {
+    moveFile.mockResolvedValue('Errore: il file NON risulta spostato nella cartella di destinazione.')
+    mockHandler = (op) => {
+      if (op.op === 'select') return { data: [rigaPending], error: null }
+      return { data: null, error: null }
+    }
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Commessa Alfa',
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(false)
+    expect(res.restano_in_attesa).toBe(1)
   })
 })

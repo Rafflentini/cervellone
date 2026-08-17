@@ -550,6 +550,21 @@ export async function createFolder(name: string, parentId: string): Promise<stri
   }
 }
 
+/**
+ * Parent correnti di un file. Serve a distinguere "foto mai spostata" da "foto
+ * gia spostata ma con lo stato DB rimasto indietro": senza questa verifica
+ * `target_folder_id` e solo una dichiarazione d'intento, non una prova.
+ */
+export async function getFileParents(fileId: string): Promise<string[]> {
+  const drive = await getDrive()
+  const res = await drive.files.get({
+    fileId,
+    fields: 'parents',
+    supportsAllDrives: true,
+  })
+  return res.data.parents || []
+}
+
 // Sposta un file/cartella
 export async function moveFile(fileId: string, newParentId: string): Promise<string> {
   try {
