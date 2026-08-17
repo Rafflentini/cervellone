@@ -754,8 +754,21 @@ async function preparaCartella(input: Record<string, unknown>): Promise<string> 
   if (!Object.keys(valori).length) return fail({ need: 'valori' })
 
   const sheetId = ambito === 'cantiere' ? SHEETS.REGISTRO_CANTIERI : SHEETS.REGISTRO_PROGETTI
-  // Leggi abbastanza righe per il controllo anti-duplicato (header + dati).
-  const sheetFull = await readSheet(sheetId, 'A1:Z500')
+  // Range APERTO, senza tetto di riga. Con 'A1:Z500' il guardrail anti-duplicato
+  // confrontava la nuova commessa con le sole prime 500 righe: oltre quelle il
+  // Registro era invisibile al controllo e la commessa gia esistente veniva
+  // creata una seconda volta, senza avviso. E la stessa malattia di
+  // listSubfolders fermo a 200, con un esito peggiore: li si diceva
+  // 'non_trovata' (visibile), qui si duplica in silenzio.
+  const sheetFull = await readSheet(sheetId, 'A:Z')
+
+  // `readSheet` NON lancia: in caso di errore ritorna una STRINGA d'errore.
+  // Senza riconoscerla si finiva nel ramo sotto, che dice "intestazione non
+  // leggibile" e manda a cercare il problema nel posto sbagliato.
+  if (sheetFull.toLocaleLowerCase('it-IT').startsWith('errore')) {
+    return fail({ error: `Registro non leggibile: ${sheetFull}` })
+  }
+
   const colonne = parseHeaderColumns(sheetFull)
 
   if (!colonne.length) {

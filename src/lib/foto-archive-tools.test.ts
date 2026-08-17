@@ -12,12 +12,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // ── Mock Drive ──────────────────────────────────────────────────────────────
 // `vi.hoisted`: le factory di `vi.mock` sono issate sopra le const del modulo,
 // quindi i mock devono nascere li dentro o si prende un TDZ.
-const { moveFile, listSubfolders, getOrCreatePathFolders, getFileParents, getFolderPathNames } = vi.hoisted(() => ({
+const { moveFile, listSubfolders, getOrCreatePathFolders, getFileParents, getFolderPathNames, readSheet, appendSheet } = vi.hoisted(() => ({
   moveFile: vi.fn(async (_fileId: string, _target: string) => 'File spostato nella nuova cartella'),
   listSubfolders: vi.fn(async (_folderId: string) => [] as Array<{ id: string; name: string }>),
   getOrCreatePathFolders: vi.fn(async (_parent: string, _segments: string[]) => 'target-folder'),
   getFileParents: vi.fn(async (_fileId: string) => [] as string[]),
   getFolderPathNames: vi.fn(async (_folderId: string, _maxLevels?: number) => [] as string[]),
+  // ATTENZIONE: `readSheet` VERA ritorna una STRINGA formattata ("N righe:\nRiga 1: …"),
+  // non un array. Il mock precedente era `async () => []` e nessun test esercitava
+  // prepara_cartella, quindi la discrepanza non e mai emersa: un mock che non
+  // somiglia alla realta non prova niente (stessa trappola del mock di sendEmailInternal).
+  readSheet: vi.fn(async (_sheetId: string, _range: string) => 'Foglio vuoto.'),
+  appendSheet: vi.fn(async (_sheetId: string, _range: string, _values: string[][]) => 'Riga aggiunta.'),
 }))
 
 vi.mock('./drive', () => ({
@@ -28,8 +34,8 @@ vi.mock('./drive', () => ({
   moveFile,
   getFileParents,
   getFolderPathNames,
-  readSheet: vi.fn(async () => []),
-  appendSheet: vi.fn(),
+  readSheet,
+  appendSheet,
   DrivePolicyError: class extends Error {},
 }))
 
@@ -120,6 +126,8 @@ beforeEach(() => {
   getOrCreatePathFolders.mockResolvedValue('target-folder')
   getFileParents.mockResolvedValue([])
   getFolderPathNames.mockResolvedValue([])
+  readSheet.mockResolvedValue('Foglio vuoto.')
+  appendSheet.mockResolvedValue('Riga aggiunta.')
   listSubfolders.mockImplementation(async (folderId: string) => {
     if (folderId === 'root-cantieri') {
       return [
@@ -615,5 +623,97 @@ describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG
 
     expect(res.ok).toBe(false)
     expect(res.restano_in_attesa).toBe(1)
+  })
+})
+
+// ── prepara_cartella: il Registro letto per intero ──────────────────────────
+// Il guardrail anti-duplicato confrontava la nuova commessa con le sole righe
+// lette da `readSheet(sheetId, 'A1:Z500')`. Oltre la 500esima riga il Registro
+// era invisibile al controllo: la commessa esistente non veniva trovata e ne
+// nasceva una DUPLICATA, senza alcun avviso. Stessa malattia del BUG D
+// (listSubfolders fermo a 200), con un esito peggiore: li si diceva
+// 'non_trovata', qui si crea in silenzio.
+describe('prepara_cartella — anti-duplicato oltre le 500 righe', () => {
+  const HEADER = ['Commessa', 'Comune', 'Committente', 'Oggetto']
+
+  // 600 righe dati: la commessa da riconoscere sta alla 550esima, cioe' FUORI
+  // dalle prime 500 righe del foglio (header incluso).
+  const DATI = Array.from({ length: 600 }, (_, i) => {
+    const n = i + 1
+    return n === 550
+      ? ['2026-550', 'Potenza', 'Ferrovie Appulo Lucane', 'Rifacimento copertura']
+      : [`2026-${String(n).padStart(3, '0')}`, `ComuneX${n}`, `ClienteX${n}`, `LavoroX${n}`]
+  })
+
+  // Simula il comportamento REALE dell'API Sheets: un range con un tetto di riga
+  // ('A1:Z500') restituisce solo quelle righe; un range aperto ('A:Z') le da tutte.
+  function foglioPerRange(range: string): string {
+    const tetto = /[A-Z](\d+)\s*$/.exec(range)
+    const limite = tetto ? Number(tetto[1]) : Number.POSITIVE_INFINITY
+    const tutte = [HEADER, ...DATI]
+    const righe = tutte.slice(0, limite)
+    const corpo = righe.map((r, i) => `Riga ${i + 1}: ${r.join(' | ')}`).join('\n')
+    return `${righe.length} righe:\n${corpo}`
+  }
+
+  const NUOVA_COMMESSA = {
+    ambito: 'cantiere',
+    valori: {
+      Commessa: '2026-550',
+      Comune: 'Potenza',
+      Committente: 'Ferrovie Appulo Lucane',
+      Oggetto: 'Rifacimento copertura',
+    },
+  }
+
+  beforeEach(() => {
+    readSheet.mockImplementation(async (_sheetId: string, range: string) => foglioPerRange(range))
+  })
+
+  it('trova il duplicato anche se sta oltre la 500esima riga del Registro', async () => {
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', NUOVA_COMMESSA, 'chat-1'))!)
+
+    expect(res.ok).toBe(false)
+    expect(res.need).toBe('conferma_duplicato')
+    expect(res.candidati.join(' ')).toContain('2026-550')
+    // e soprattutto: NON ha scritto niente nel Registro
+    expect(appendSheet).not.toHaveBeenCalled()
+  })
+
+  it('chiede il Registro senza tetto di riga', async () => {
+    await executeFotoArchiveTool('prepara_cartella', NUOVA_COMMESSA, 'chat-1')
+
+    const range = readSheet.mock.calls[0][1]
+    expect(range).not.toMatch(/\d/)
+  })
+
+  it('crea la commessa quando non ci sono simili (controprova)', async () => {
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: {
+        Commessa: '2029-999',
+        Comune: 'Matera',
+        Committente: 'Nuovo Cliente Srl',
+        Oggetto: 'Ristrutturazione palazzina',
+      },
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(true)
+    expect(appendSheet).toHaveBeenCalledTimes(1)
+  })
+
+  it('un Registro illeggibile non viene scambiato per una intestazione mancante', async () => {
+    // `readSheet` NON lancia: ritorna una stringa d'errore. Senza riconoscerla,
+    // il codice la trattava come un foglio dall'header incomprensibile e diceva
+    // all'utente di sistemare l'intestazione, mandandolo a cercare il problema
+    // dove non era.
+    readSheet.mockResolvedValue('Errore leggendo il foglio: Error: quota exceeded')
+
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', NUOVA_COMMESSA, 'chat-1'))!)
+
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/quota exceeded/)
+    expect(res.error).not.toMatch(/intestazione/i)
+    expect(appendSheet).not.toHaveBeenCalled()
   })
 })
