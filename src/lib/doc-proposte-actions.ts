@@ -38,6 +38,90 @@ function sanitizeSegment(value: string | null | undefined, fallback: string): st
   return cleaned || fallback
 }
 
+/**
+ * Tipi documento che per NATURA esistono in una sola copia valida per soggetto:
+ * ne arriva uno nuovo solo quando il precedente e scaduto o sta per scadere,
+ * quindi (soggetto + tipo) identifica UN documento e il nuovo sostituisce
+ * davvero il vecchio.
+ *
+ * E' una ALLOWLIST, non una denylist, e la direzione conta: un tipo che manca
+ * da questa lista non viene sostituito, quindi restano due righe attive — due
+ * promemoria dal cron, visibili, chiudibili con chiudi_scadenza. Un tipo di
+ * troppo, al contrario, cancellerebbe in silenzio la scadenza di un altro
+ * documento. Il costo di una dimenticanza e quindi rumore, mai perdita di dati:
+ * aggiungere una voce e sicuro, toglierne una no.
+ *
+ * Restano deliberatamente FUORI i tipi di cui un soggetto puo detenere piu
+ * documenti diversi contemporaneamente, che sono esattamente quelli su cui il
+ * flusso automatico cancellava: "attestato formazione" (antincendio, ponteggi,
+ * primo soccorso, preposto...), "polizza" (RCT, RCO, infortuni), "certificato",
+ * "contratto".
+ */
+const TIPI_UNICI_PER_SOGGETTO = [
+  'durc',
+  'visura',
+  'visura camerale',
+  'revisione',
+  'bollo',
+  'idoneita alla mansione',
+  'idoneita sanitaria',
+  'visita medica',
+]
+
+/** Fallback usati quando l'estrattore non ha riconosciuto il campo. */
+const SOGGETTO_FALLBACK = 'Vari'
+const TIPO_FALLBACK = 'documento'
+
+/** lower + accenti rimossi + separatori collassati: "Idoneità alla mansione" → "idoneita alla mansione". */
+function normalizzaTipo(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('it-IT')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function tipoUnicoPerSoggetto(tipo: string): boolean {
+  const normalizzato = normalizzaTipo(tipo)
+  if (!normalizzato) return false
+  return TIPI_UNICI_PER_SOGGETTO.some(voce => normalizzato === voce || normalizzato.startsWith(`${voce} `))
+}
+
+/**
+ * La chiave di sostituzione (soggetto + tipo_documento + categoria) identifica
+ * UN SOLO documento di questa proposta?
+ *
+ * Serve perche in questo path la `categoria` e la costante 'Documenti' (non c'e
+ * nessun LLM che la scelga, e la cartella Drive di destinazione e sempre
+ * quella): la chiave a tre componenti si riduce di fatto a due, e la terza —
+ * quella che nel path manuale distingue l'attestato antincendio di Mario Rossi
+ * dal suo attestato ponteggi — non discrimina nulla. Con `soggetto` e
+ * `tipo_documento` a loro volta caduti sui fallback, la chiave diventa la
+ * costante ('Vari', 'documento', 'Documenti') e due documenti qualunque si
+ * annullano a vicenda.
+ *
+ * Chiediamo quindi tre prove positive, tutte e tre necessarie:
+ *  1. l'estrattore ha letto un soggetto vero (non il fallback);
+ *  2. ha letto un tipo vero (non il fallback);
+ *  3. quel tipo esiste in una sola copia per soggetto (TIPI_UNICI_PER_SOGGETTO).
+ *
+ * In dubbio si risponde `false`: la scadenza si aggiunge senza cancellare
+ * niente. E la stessa gerarchia di rischi dell'ordine INSERT-prima in
+ * registraScadenzaCore — riga duplicata (visibile) >> riga sparita (silenziosa).
+ * Il punto 3 e quello che conta di piu qui, perche il flusso automatico
+ * auto-conferma dopo 3 solleciti senza risposta: nessun umano vede la
+ * sostituzione al momento in cui avviene.
+ */
+function chiaveDiSostituzioneAffidabile(proposta: ProposalRow): boolean {
+  const soggetto = sanitizeSegment(proposta.soggetto, '')
+  const tipo = sanitizeSegment(proposta.tipo_documento, '')
+  if (!soggetto || !tipo) return false
+  if (normalizzaTipo(soggetto) === normalizzaTipo(SOGGETTO_FALLBACK)) return false
+  if (normalizzaTipo(tipo) === normalizzaTipo(TIPO_FALLBACK)) return false
+  return tipoUnicoPerSoggetto(tipo)
+}
+
 function attachmentName(attachment: AttachmentWithContent, index: number): string {
   const name = attachment.filename?.trim()
   return name || `allegato-${index + 1}`
@@ -84,9 +168,21 @@ async function rememberDriveUrl(id: string, driveUrl: string): Promise<void> {
  * proposta → /conferma), quello che gira senza che l'Ingegnere digiti nulla.
  *
  * Ora delega a `registraScadenzaCore`, che e la stessa identica logica del
- * path manuale. Nessun dedup locale: se la stessa proposta viene confermata due
- * volte, la sostituzione per chiave (soggetto + tipo_documento + categoria)
- * chiude la riga precedente invece di lasciarne due attive.
+ * path manuale: validazione della data, cap su reminder_days, strip dei NUL,
+ * evento in agenda.
+ *
+ * MA la sostituzione della scadenza precedente NON viene concessa a scatola
+ * chiusa. Unificando i due path si era ereditata anche la `marcaSostituite`, che
+ * qui girava su una chiave quasi costante — `categoria` e la costante
+ * 'Documenti', e soggetto/tipo cadono sui fallback appena l'estrattore non
+ * legge il documento. Risultato: la conferma di un documento marcava
+ * 'sostituito' quello precedente di un ALTRO documento, che spariva da
+ * lista_scadenze e dal cron promemoria (entrambi filtrano stato='attivo').
+ * Il secondo attestato di formazione di Mario Rossi cancellava il primo.
+ *
+ * Ora la sostituzione parte solo se `chiaveDiSostituzioneAffidabile` la
+ * autorizza; altrimenti la nuova scadenza si aggiunge e le due righe restano
+ * entrambe attive.
  *
  * Ritorna la nota Calendar quando l'evento NON e stato creato, cosi il
  * messaggio di conferma non promette un'agenda che non e stata aggiornata.
@@ -95,13 +191,16 @@ async function ensureScadenza(proposta: ProposalRow, categoria: string, driveUrl
   const dataScadenza = proposta.data_scadenza
   if (!dataScadenza) throw new Error('La proposta non contiene una data_scadenza valida.')
 
-  const esito = await registraScadenzaCore({
-    soggetto: proposta.soggetto || 'Vari',
-    categoria,
-    tipo_documento: proposta.tipo_documento || 'documento',
-    data_scadenza: dataScadenza,
-    drive_url: driveUrl,
-  })
+  const esito = await registraScadenzaCore(
+    {
+      soggetto: proposta.soggetto || SOGGETTO_FALLBACK,
+      categoria,
+      tipo_documento: proposta.tipo_documento || TIPO_FALLBACK,
+      data_scadenza: dataScadenza,
+      drive_url: driveUrl,
+    },
+    { sostituisciPrecedenti: chiaveDiSostituzioneAffidabile(proposta) },
+  )
 
   if (!esito.ok) throw new Error(`Errore registrazione scadenza: ${esito.error ?? 'causa sconosciuta'}`)
   // La sostituzione fallita non invalida la scadenza (e gia in DB), ma va detta.

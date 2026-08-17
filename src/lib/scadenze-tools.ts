@@ -289,7 +289,38 @@ export interface RegistraScadenzaEsito {
   calendarNota: string
 }
 
-export async function registraScadenzaCore(input: Record<string, unknown>): Promise<RegistraScadenzaEsito> {
+/**
+ * Opzioni di registrazione decise dal CHIAMANTE, non dall'input.
+ *
+ * Sono un secondo parametro e NON campi di `input` di proposito: `input` del
+ * path manuale arriva testualmente dal modello, e una leva che disattiva una
+ * scrittura distruttiva non deve essere pilotabile da un LLM (ne da un
+ * documento che il modello ha appena letto).
+ */
+export interface RegistraScadenzaOpzioni {
+  /**
+   * `false` = NON marcare 'sostituito' nessuna riga precedente: la nuova
+   * scadenza si aggiunge e basta.
+   *
+   * Serve a chi registra con una chiave (soggetto + tipo_documento +
+   * categoria) che NON identifica un solo documento. La sostituzione e
+   * distruttiva e silenziosa — la riga 'sostituito' sparisce da lista_scadenze
+   * e dal cron promemoria, che filtrano stato='attivo' — quindi su una chiave
+   * ambigua cancellerebbe la scadenza di un ALTRO documento. Due righe attive
+   * sono invece un fastidio visibile (due promemoria) e recuperabile con
+   * chiudi_scadenza: e la stessa scelta gia fatta con l'ordine INSERT-prima.
+   *
+   * Default `true`: il path manuale (registra_scadenza) non cambia
+   * comportamento.
+   */
+  sostituisciPrecedenti?: boolean
+}
+
+export async function registraScadenzaCore(
+  input: Record<string, unknown>,
+  opzioni: RegistraScadenzaOpzioni = {},
+): Promise<RegistraScadenzaEsito> {
+  const sostituisciPrecedenti = opzioni.sostituisciPrecedenti !== false
   const rejected = (error: string): RegistraScadenzaEsito => ({
     ok: false,
     error,
@@ -332,7 +363,7 @@ export async function registraScadenzaCore(input: Record<string, unknown>): Prom
   if (error) return rejected(`Errore inserimento scadenza: ${error.message}`)
   const created = data as Pick<ScadenzaRow, 'id'> | null
 
-  const sostituzione: SostituzioneResult = created?.id
+  const sostituzione: SostituzioneResult = created?.id && sostituisciPrecedenti
     ? await marcaSostituite({
         nuovoId: created.id,
         soggetto,
@@ -409,6 +440,10 @@ interface SostituzioneResult {
  *
  * Best-effort: un errore qui NON invalida l'INSERT gia riuscito, viene
  * riportato come `avviso` (peggior caso: una riga duplicata, visibile).
+ *
+ * NON viene chiamata quando il chiamante dichiara la chiave inaffidabile
+ * (`sostituisciPrecedenti: false`): con una chiave che non identifica un solo
+ * documento questa funzione cancellerebbe la scadenza di un altro documento.
  */
 async function marcaSostituite(opts: {
   nuovoId: string

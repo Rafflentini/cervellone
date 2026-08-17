@@ -139,17 +139,32 @@ vi.mock('@/lib/drive', () => ({
   uploadBinaryToDrive: vi.fn(async () => ({ id: 'file-id', webViewLink: 'https://drive.example/durc.pdf' })),
 }))
 
+/**
+ * ATTENZIONE al valore di ritorno: `createCalendarForScadenza` considera
+ * l'evento creato SOLO se la risposta inizia con '✅' (scadenze-tools.ts).
+ * Il mock rispondeva 'OK Evento creato...' — quindi in ogni test `calendarOk`
+ * era false e il ramo di SUCCESSO non veniva mai eseguito: si asseriva che la
+ * chiamata partiva, mai che l'esito veniva letto bene. Ora il default e la
+ * risposta vera del tool, e `calendarImpl` permette di simulare il fallimento.
+ */
+const CALENDAR_OK = '✅ Evento creato sul Google Calendar (primary).'
+let calendarImpl: () => Promise<string> = async () => CALENDAR_OK
 const calendarCalls: { name: string; input: Record<string, unknown> }[] = []
 vi.mock('./calendar-tools', () => ({
   executeCalendarTool: async (name: string, input: Record<string, unknown>) => {
     calendarCalls.push({ name, input })
-    return 'OK Evento creato sul Google Calendar'
+    return calendarImpl()
   },
   CALENDAR_TOOLS: [],
 }))
 
 function scadenzeOps(kind: MockOpKind): MockOp[] {
   return mockOps.filter(op => op.table === 'cervellone_scadenze' && op.op === kind)
+}
+
+/** Gli UPDATE che marcano 'sostituito' — cioe le cancellazioni silenziose. */
+function sostituzioni(): MockOp[] {
+  return scadenzeOps('update').filter(op => (op.payload as { stato?: string } | undefined)?.stato === 'sostituito')
 }
 
 async function conferma(): Promise<{ ok: boolean; message: string }> {
@@ -160,6 +175,7 @@ async function conferma(): Promise<{ ok: boolean; message: string }> {
 beforeEach(() => {
   mockOps.length = 0
   calendarCalls.length = 0
+  calendarImpl = async () => CALENDAR_OK
   scadenzeEsistenti = []
   proposta = {
     id: 'proposta-1',
@@ -190,6 +206,23 @@ describe('confirmProposta — la scadenza automatica passa dalla stessa logica d
     // Il difetto centrale: il flusso automatico non finiva MAI in agenda.
     expect(calendarCalls).toHaveLength(1)
     expect(calendarCalls[0].name).toBe('calendar_create_event')
+    // RAMO DI SUCCESSO del Calendar: con la risposta vera del tool ('✅ ...')
+    // l'esito e calendarOk=true, quindi il messaggio NON porta l'avviso. Prima
+    // il mock rispondeva 'OK Evento creato...' e questo ramo non girava mai.
+    expect(res.message).toBe('Archiviato in Documenti/Restruktura Srl e scadenza 2027-01-31 registrata.')
+    expect(res.message).not.toContain('⚠️')
+  })
+
+  it("evento in agenda NON creato → la conferma lo dice invece di promettere un'agenda aggiornata", async () => {
+    // Controprova del test sopra: se il ramo di successo non fosse davvero
+    // distinto da quello di fallimento, questa asserzione non potrebbe passare.
+    calendarImpl = async () => 'Errore: scope calendar non autorizzato'
+
+    const res = await conferma()
+
+    expect(res.ok).toBe(true)
+    expect(res.message).toContain('⚠️')
+    expect(res.message).toContain('Calendar non aggiornato')
   })
 
   it('data inesistente (2027-02-31) → rifiutata PRIMA di scrivere su cervellone_scadenze', async () => {
@@ -214,12 +247,8 @@ describe('confirmProposta — la scadenza automatica passa dalla stessa logica d
     const res = await conferma()
     expect(res.ok).toBe(true)
 
-    const sostituzioni = scadenzeOps('update').filter(op => {
-      const payload = op.payload as { stato?: string }
-      return payload?.stato === 'sostituito'
-    })
-    expect(sostituzioni).toHaveLength(1)
-    expect(sostituzioni[0].filters.find(f => f.method === 'in')?.args[1]).toEqual(['durc-vecchio'])
+    expect(sostituzioni()).toHaveLength(1)
+    expect(sostituzioni()[0].filters.find(f => f.method === 'in')?.args[1]).toEqual(['durc-vecchio'])
   })
 
   it('i NUL byte del soggetto estratto da OCR non arrivano a Postgres', async () => {
@@ -231,5 +260,80 @@ describe('confirmProposta — la scadenza automatica passa dalla stessa logica d
     const payload = scadenzeOps('insert')[0].payload as { soggetto?: string }
     expect(payload.soggetto).toBe('Restruktura Srl')
     expect(payload.soggetto).not.toContain('\u0000')
+  })
+})
+
+/**
+ * P0 — la sostituzione ereditata dal path manuale cancellava scadenze NON
+ * correlate.
+ *
+ * Qui la chiave di sostituzione (soggetto + tipo_documento + categoria) e quasi
+ * costante: `categoria` e hardcoded 'Documenti' e soggetto/tipo cadono su
+ * 'Vari'/'documento' appena l'estrattore non legge il documento. La riga marcata
+ * 'sostituito' sparisce da lista_scadenze e dal cron promemoria (entrambi
+ * filtrano stato='attivo'), e la conferma puo arrivare da
+ * `autoMemorizePendingProposals` dopo 3 solleciti senza risposta: nessun umano
+ * vede la cancellazione nel momento in cui avviene.
+ */
+describe('confirmProposta — la sostituzione non scatta su una chiave che non identifica un documento (P0)', () => {
+  it('due attestati DIVERSI dello stesso dipendente restano due righe ATTIVE', async () => {
+    // Mario Rossi manda l'attestato antincendio, poi quello ponteggi.
+    // L'estrattore etichetta entrambi 'attestato formazione' e la categoria e la
+    // costante 'Documenti': la chiave e identica. Prima del fix la conferma del
+    // secondo marcava 'sostituito' il primo, e la formazione antincendio scaduta
+    // non sarebbe mai piu stata segnalata.
+    proposta.soggetto = 'Mario Rossi'
+    proposta.tipo_documento = 'attestato formazione'
+    scadenzeEsistenti = [
+      { id: 'attestato-antincendio', soggetto: 'Mario Rossi', tipo_documento: 'attestato formazione', categoria: 'Documenti' },
+    ]
+
+    const res = await conferma()
+
+    expect(res.ok).toBe(true)
+    // La nuova scadenza c'e...
+    expect(scadenzeOps('insert')).toHaveLength(1)
+    // ...e la precedente non e stata toccata: due righe attive, non una
+    // cancellazione silenziosa.
+    expect(sostituzioni()).toHaveLength(0)
+    // Nemmeno la ricerca delle candidate parte: su una chiave cosi non esiste
+    // nessuna riga che si possa marcare in sicurezza.
+    expect(scadenzeOps('select')).toHaveLength(0)
+  })
+
+  it('soggetto e tipo NULL (fallback Vari/documento): due documenti qualunque non si annullano a vicenda', async () => {
+    // scadenza-extract.ts ammette soggetto e tipo_documento null, ed e proprio la
+    // popolazione che il cron auto-conferma senza intervento umano.
+    proposta.soggetto = null
+    proposta.tipo_documento = null
+    scadenzeEsistenti = [
+      { id: 'documento-precedente', soggetto: 'Vari', tipo_documento: 'documento', categoria: 'Documenti' },
+    ]
+
+    const res = await conferma()
+
+    expect(res.ok).toBe(true)
+    const payload = scadenzeOps('insert')[0].payload as { soggetto?: string; tipo_documento?: string }
+    expect(payload.soggetto).toBe('Vari')
+    expect(payload.tipo_documento).toBe('documento')
+    expect(sostituzioni()).toHaveLength(0)
+    expect(scadenzeOps('select')).toHaveLength(0)
+  })
+
+  it('rinnovo dello STESSO documento: la precedente viene ancora sostituita', async () => {
+    // Controprova: il comportamento buono non deve regredire. Il DURC esiste in
+    // una sola copia valida per impresa, quindi (soggetto + tipo) identifica un
+    // documento e il rinnovo sostituisce davvero il precedente.
+    proposta.soggetto = 'Restruktura Srl'
+    proposta.tipo_documento = 'DURC'
+    scadenzeEsistenti = [
+      { id: 'durc-2026', soggetto: 'restruktura  srl', tipo_documento: 'durc', categoria: 'documenti' },
+    ]
+
+    const res = await conferma()
+
+    expect(res.ok).toBe(true)
+    expect(sostituzioni()).toHaveLength(1)
+    expect(sostituzioni()[0].filters.find(f => f.method === 'in')?.args[1]).toEqual(['durc-2026'])
   })
 })
