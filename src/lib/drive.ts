@@ -285,19 +285,63 @@ export async function findFoldersByName(query: string): Promise<Array<{ id: stri
 }
 
 // Elenca SOLO le sottocartelle dirette di una cartella (ritorno strutturato).
+// PAGINATA: `files.list` tronca alla pageSize senza dirlo e con orderBy:'name'
+// il taglio e deterministico — oltre la 200esima sparivano tutte le cartelle
+// alfabeticamente successive. Effetto reale: una commessa esistente risultava
+// 'non_trovata' e la foto finiva in attesa o in una commessa duplicata.
 export async function listSubfolders(folderId: string): Promise<Array<{ id: string; name: string }>> {
   const drive = await getDrive()
-  const res = await drive.files.list({
-    q: `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-    fields: 'files(id, name)',
-    orderBy: 'name',
-    pageSize: 200,
-    supportsAllDrives: true,
-    includeItemsFromAllDrives: true,
-  })
-  return (res.data.files || [])
-    .filter((f): f is { id: string; name: string } => Boolean(f.id && f.name))
-    .map(f => ({ id: f.id, name: f.name }))
+  const out: Array<{ id: string; name: string }> = []
+  let pageToken: string | undefined = undefined
+  // Cap di sicurezza: 20 pagine x 200 = 4000 sottocartelle. Oltre, meglio una
+  // lista troncata che un loop infinito su un token che non avanza mai.
+  // MA un troncamento silenzioso e lo STESSO bug che questa funzione ha appena
+  // chiuso (lista tagliata -> commessa 'non_trovata'), solo spostato piu in la:
+  // se il tetto scatta va detto, non subito in silenzio.
+  const MAX_PAGINE = 20
+
+  for (let pagina = 0; pagina < MAX_PAGINE; pagina++) {
+    // Params in una variable ANNOTATA a parte: inlinandoli, il tipo di `res`
+    // dipenderebbe da `pageToken`, che sul back-edge del loop dipende da `res`
+    // → tsc alza TS7022 ('res' implicitly has type any).
+    const params: {
+      q: string
+      fields: string
+      orderBy: string
+      pageSize: number
+      supportsAllDrives: boolean
+      includeItemsFromAllDrives: boolean
+      pageToken?: string
+    } = {
+      q: `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      fields: 'nextPageToken, files(id, name)',
+      orderBy: 'name',
+      pageSize: 200,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+      ...(pageToken ? { pageToken } : {}),
+    }
+    const res = await drive.files.list(params)
+
+    for (const f of res.data.files || []) {
+      if (f.id && f.name) out.push({ id: f.id, name: f.name })
+    }
+
+    pageToken = res.data.nextPageToken || undefined
+    if (!pageToken) break
+  }
+
+  // Uscita dal loop con un pageToken ancora in mano = il tetto ha tagliato.
+  // La firma ritorna un array e non puo dichiarare il troncamento al chiamante:
+  // almeno lo si urla nei log, invece di restituire una lista parziale che
+  // sembra completa.
+  if (pageToken) {
+    console.error(
+      `[DRIVE] listSubfolders(${folderId}): tetto di ${MAX_PAGINE} pagine raggiunto, lista TRONCATA a ${out.length} sottocartelle — potrebbero mancarne altre (una commessa esistente puo risultare 'non_trovata')`,
+    )
+  }
+
+  return out
 }
 
 // FIX W1.3 Task 2: ricerca per CONTENUTO testuale (full-text indexed da Drive)
@@ -517,6 +561,69 @@ export async function createFolder(name: string, parentId: string): Promise<stri
   } catch (err) {
     return `Errore creando la cartella: ${err}`
   }
+}
+
+/**
+ * Parent correnti di un file. Serve a distinguere "foto mai spostata" da "foto
+ * gia spostata ma con lo stato DB rimasto indietro": senza questa verifica
+ * `target_folder_id` e solo una dichiarazione d'intento, non una prova.
+ */
+export async function getFileParents(fileId: string): Promise<string[]> {
+  const drive = await getDrive()
+  const res = await drive.files.get({
+    fileId,
+    fields: 'parents',
+    supportsAllDrives: true,
+  })
+  return res.data.parents || []
+}
+
+/**
+ * Nomi della catena di cartelle che porta a `folderId`, dal piu ESTERNO al piu
+ * INTERNO (es. ['Villa Alfa', '03_Foto', '2026-08-17']), risalendo il PRIMO
+ * parent per al massimo `maxLevels` livelli.
+ *
+ * Serve solo a scrivere un messaggio leggibile all'Ingegnere: un id Drive non
+ * gli dice niente. Per questo e BEST-EFFORT — qualunque errore ritorna quello
+ * che ha raccolto fin li (anche `[]`) e NON lancia MAI: un messaggio meno
+ * ricco e sempre meglio di un'archiviazione che esplode.
+ */
+export async function getFolderPathNames(folderId: string, maxLevels = 3): Promise<string[]> {
+  const names: string[] = []
+  if (!folderId) return names
+  try {
+    const drive = await getDrive()
+    // Annotata: il ciclo assegna `currentId` dal risultato di `drive.files.get()`.
+    let currentId: string | undefined = folderId
+    const visti = new Set<string>()
+
+    for (let livello = 0; livello < maxLevels && currentId; livello++) {
+      // Guardia anti-ciclo: Drive non dovrebbe mai produrre un anello di parent,
+      // ma un loop infinito su un messaggio informativo sarebbe assurdo.
+      if (visti.has(currentId)) break
+      visti.add(currentId)
+
+      // Params in una variabile ANNOTATA a parte: inlinandoli, il tipo di `res`
+      // dipenderebbe da `currentId`, che sul back-edge del loop dipende da `res`
+      // → tsc alza TS7022 ('res' implicitly has type any). Stessa cura di
+      // listSubfolders poche centinaia di righe sopra.
+      const params: { fileId: string; fields: string; supportsAllDrives: boolean } = {
+        fileId: currentId,
+        fields: 'name, parents',
+        supportsAllDrives: true,
+      }
+      const res = await drive.files.get(params)
+
+      const name = res.data.name
+      if (name) names.unshift(name)
+      currentId = res.data.parents?.[0] || undefined
+    }
+  } catch (err) {
+    console.error(
+      `[DRIVE] getFolderPathNames(${folderId}): risalita interrotta, path parziale (${names.length} livelli) — ${err instanceof Error ? err.message : err}`,
+    )
+  }
+  return names
 }
 
 // Sposta un file/cartella

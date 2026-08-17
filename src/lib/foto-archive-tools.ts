@@ -4,6 +4,8 @@ import {
   listSubfolders,
   getOrCreatePathFolders,
   moveFile,
+  getFileParents,
+  getFolderPathNames,
   readSheet,
   appendSheet,
   DrivePolicyError,
@@ -45,6 +47,10 @@ interface FotoPendingRow {
   lavorazione: string | null
   stato: FotoStato
   created_at: string
+  // Cartella in cui la foto DOVEVA finire, scritta PRIMA del move. Su una riga
+  // ancora aperta e la traccia di un tentativo gia partito: va letta (e quindi
+  // selezionata dal DB, vedi fetchOpenPending) o la riconciliazione non parte mai.
+  target_folder_id: string | null
 }
 
 const OPEN_STATI: FotoStato[] = ['in_attesa', 'da_archiviare', 'errore']
@@ -169,7 +175,7 @@ function parseHeaderColumns(sheetText: string): string[] {
 async function fetchOpenPending(conversationId: string): Promise<{ rows: FotoPendingRow[]; error?: string }> {
   const { data, error } = await supabase
     .from('cervellone_foto_pending')
-    .select('id, drive_file_id, filename, ambito, soggetto, lavorazione, stato, created_at')
+    .select('id, drive_file_id, filename, ambito, soggetto, lavorazione, stato, created_at, target_folder_id')
     .eq('chat_id', conversationId)
     .in('stato', OPEN_STATI)
     .order('created_at', { ascending: true })
@@ -213,6 +219,9 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     gruppoRaw === 'ultimo' || gruppoRaw === 'tutti' ? gruppoRaw : undefined
   // L'Ingegnere ha esplicitamente chiesto di includere anche le foto più vecchie (>48h).
   const includiVecchie = input.includi_vecchie === true || input.includi_vecchie === 'true'
+  // Autorizzazione esplicita a SPOSTARE una foto che risulta gia archiviata in
+  // un'ALTRA cartella. Si usa solo dopo un need:'conferma_ricollocazione'.
+  const ricolloca = input.ricolloca === true || input.ricolloca === 'true'
 
   if (!ambito) return fail({ need: 'ambito' })
   if (!nome) return fail({ error: 'nome richiesto' })
@@ -419,6 +428,14 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     rowsToArchive = [...rowsToArchive, ...(older as FotoPendingRow[])]
   }
 
+  // Foto recenti (<48h) rimaste in attesa perche NON selezionate dal gruppo.
+  // Non sono coperte da `notaOrfani`, che guarda solo le >48h: senza questo
+  // conteggio il messaggio dichiarava "tutte archiviate" mentre i cluster
+  // precedenti restavano in_attesa e l'utente non li cercava piu.
+  const recentiNonArchiviate = gruppoScelta === 'ultimo'
+    ? clusters.slice(0, -1).reduce((n, c) => n + c.length, 0)
+    : 0
+
   if (rowsToArchive.length === 0) {
     return fail({
       stato: 'nessuna_foto_recente',
@@ -454,15 +471,103 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   // solo lo stato DB è disallineato. NON è una foto "in attesa": non va riprovata né
   // marcata 'errore' (rimuoverebbe l'allineamento col file già fisicamente archiviato).
   let erroriDb = 0
+  // Righe che erano GIÀ fisicamente nella loro cartella (move riuscito in un
+  // tentativo precedente, update di stato fallito): qui si riallinea solo il DB.
+  let riconciliate = 0
+  // Riconciliazione TENTATA e FALLITA: il file sta nella cartella di un
+  // tentativo PRECEDENTE (non in `path`) e la riga resta aperta. Contarlo in
+  // `erroriDb` — e quindi in `spostate` e in notaDb ("sono GIÀ nella cartella")
+  // — sarebbe una bugia su due fronti: la foto non e in `path` e non e chiusa.
+  // Caso limite reale: batch fatto di sole riconciliazioni fallite → il
+  // messaggio diceva "Tutte le N foto spostate e verificate in {path}" mentre
+  // non si era mosso nulla.
+  let erroriRiconciliazione = 0
+  // Righe la cui foto e VERIFICATAMENTE gia in una cartella DIVERSA da quella
+  // richiesta ora. Non si toccano e non si chiudono senza `ricolloca:true`.
+  const daRicollocare: FotoPendingRow[] = []
 
   for (const row of rowsToArchive) {
+    // Una riga ancora aperta ma con target_folder_id valorizzato ha gia avuto un
+    // tentativo di archiviazione: il move puo essere riuscito e solo l'update di
+    // stato fallito. Prima di rispostarla si guarda dove sta DAVVERO il file —
+    // altrimenti la si strappa dalla commessa giusta.
+    if (row.target_folder_id) {
+      let parents: string[] | null = null
+      try {
+        parents = await getFileParents(row.drive_file_id)
+      } catch (err) {
+        // FAIL-CLOSED. Se Drive non risponde non sappiamo dove sia il file, e
+        // `target_folder_id` da solo e un'intenzione, non una prova: rispostare
+        // alla cieca sarebbe esattamente il bug che questo blocco esiste per
+        // impedire (strappare la foto dalla commessa giusta). La riga resta in
+        // attesa — visibile e recuperabile — e il file non si tocca.
+        console.error(
+          `[archivia_foto] verifica parent non riuscita per foto ${row.id} (${row.drive_file_id}): ${err instanceof Error ? err.message : err} — NON rispostata`,
+        )
+        erroriMove += 1
+        continue
+      }
+      if (parents.includes(row.target_folder_id)) {
+        // Il file e provatamente nella cartella del tentativo precedente. Due
+        // situazioni molto diverse, che il codice NON puo distinguere da solo:
+        //
+        //  a) stessa cartella richiesta ora → e la RETRY della stessa richiesta:
+        //     riallinea il DB e chiudi (comportamento storico, invariato);
+        //
+        //  b) cartella DIVERSA → e una riga vecchia trascinata in un batch nuovo
+        //     (BUG F). Chiuderla qui la farebbe uscire da OPEN_STATI: la foto
+        //     resterebbe nella commessa precedente, sparirebbe dalle pendenti e
+        //     non sarebbe piu recuperabile via tool — mentre il messaggio nomina
+        //     solo `path`, cioe' una cartella dove la foto NON e. Serve il si'
+        //     esplicito dell'Ingegnere (`ricolloca:true`).
+        if (row.target_folder_id === targetId) {
+          const { error: fixError } = await supabase
+            .from('cervellone_foto_pending')
+            .update({ stato: 'archiviata', updated_at: new Date().toISOString() })
+            .eq('id', row.id)
+          if (fixError) {
+            erroriRiconciliazione += 1
+            console.error(
+              `[archivia_foto] riconciliazione fallita per foto ${row.id}: il file e gia in ${row.target_folder_id} ma lo stato DB non e aggiornabile (${fixError.message}) — la riga resta aperta`,
+            )
+          } else {
+            riconciliate += 1
+          }
+          continue
+        }
+        if (!ricolloca) {
+          console.error(
+            `[archivia_foto] foto ${row.id} risulta gia archiviata in ${row.target_folder_id}, diversa da ${targetId} richiesta ora — NON toccata, riga lasciata aperta in attesa di conferma`,
+          )
+          daRicollocare.push(row)
+          continue
+        }
+        // ricolloca:true → l'Ingegnere ha autorizzato lo spostamento: prosegui
+        // col percorso normale (intento + move), che riscrive target_folder_id.
+      }
+    }
+
+    // Dichiarazione d'intento PRIMA del move: se questa scrittura non passa, non
+    // si sposta niente. Meglio una foto onestamente in attesa che un file spostato
+    // di cui il DB non conserva traccia.
+    const { error: intentError } = await supabase
+      .from('cervellone_foto_pending')
+      .update({ target_folder_id: targetId })
+      .eq('id', row.id)
+    if (intentError) {
+      erroriMove += 1
+      console.error(
+        `[archivia_foto] intento non scrivibile per foto ${row.id}: ${intentError.message} — move NON eseguito`,
+      )
+      continue
+    }
+
     const moveResult = await moveFile(row.drive_file_id, targetId)
     if (isMoveSuccess(moveResult)) {
       const { error: updateError } = await supabase
         .from('cervellone_foto_pending')
         .update({
           stato: 'archiviata',
-          target_folder_id: targetId,
           ambito,
           soggetto: subjectFolder.name,
           lavorazione: lavorazione ?? null,
@@ -497,8 +602,66 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   const restano = erroriMove
   const path = `${pathPrefix}/${fotoPathPrefix}${fotoFolder.name}/${segment}`
   const notaDb = erroriDb > 0
-    ? ` (${erroriDb} foto spostate ma stato non aggiornato — sono GIÀ nella cartella, nessuna azione necessaria)`
+    ? ` (${erroriDb} foto spostate ma stato non aggiornato — sono GIÀ nella cartella e verranno riconciliate al prossimo tentativo, non verranno rispostate)`
     : ''
+  // Righe già fisicamente archiviate in un tentativo precedente: NON sono finite
+  // in `path` (il loro target era un altro), quindi non vanno confuse con `spostate`.
+  const notaRiconciliate = riconciliate > 0
+    ? ` (${riconciliate} foto erano già state spostate in un tentativo precedente: stato DB riallineato, file NON toccato)`
+    : ''
+  // Riconciliazione fallita: la foto È in `path` (il ramo scatta solo quando
+  // `target_folder_id === targetId`), ma la riga NON è chiusa. Va detto a parte,
+  // o il messaggio la conta fra le archiviate di questo giro — che non è vero:
+  // era già lì, e il DB continua a non saperlo.
+  const notaRiconciliazioneKo = erroriRiconciliazione > 0
+    ? ` (${erroriRiconciliazione} foto erano già state spostate in questa cartella in un tentativo precedente ma il riallineamento del DB è fallito: le righe restano APERTE e verranno riprovate)`
+    : ''
+
+  // CONFERMA RICOLLOCAZIONE: righe la cui foto sta, verificata, in un'ALTRA
+  // cartella. Non sono state toccate ne chiuse — restano aperte, visibili e
+  // recuperabili. Il messaggio deve dire DOVE sta la foto con un nome LEGGIBILE
+  // ("Villa Alfa/03_Foto/2026-08-17"): con un id Drive l'Ingegnere non puo
+  // decidere niente. La risalita dei nomi si paga solo qui, che e' il caso raro.
+  if (daRicollocare.length > 0) {
+    const dettagli = await Promise.all(daRicollocare.map(async row => {
+      const folderId = row.target_folder_id ?? ''
+      let dove = folderId || 'cartella sconosciuta'
+      try {
+        const nomi = await getFolderPathNames(folderId)
+        if (nomi.length > 0) dove = nomi.join('/')
+      } catch {
+        // getFolderPathNames e best-effort e non dovrebbe lanciare; se lo fa
+        // (mock, refactor, bug) si ripiega sull'id: un messaggio meno leggibile
+        // resta infinitamente meglio di un'archiviazione che esplode.
+      }
+      return { id: row.id, file: row.filename ?? row.drive_file_id, si_trova_in: dove }
+    }))
+    const elenco = dettagli.map(d => `"${d.file}" si trova in ${d.si_trova_in}`).join('; ')
+
+    return fail({
+      need: 'conferma_ricollocazione',
+      stato: 'ricollocazione_da_confermare',
+      da_ricollocare: dettagli,
+      archiviate: spostate,
+      errori_move: erroriMove,
+      errori_db: erroriDb,
+      riconciliate,
+      errori_riconciliazione: erroriRiconciliazione,
+      totale,
+      // `restano_in_attesa` resta il conteggio dei move da RIPROVARE. Le righe
+      // da ricollocare sono aperte anche loro ma non vanno riprovate: aspettano
+      // una decisione. Confonderle sarebbe l'ennesima mezza verita nel messaggio.
+      restano_in_attesa: restano,
+      path,
+      message: `${dettagli.length} foto risultano GIA archiviate in un'altra cartella e NON sono state toccate: ${elenco}.`
+        + ` Chiedi all'Ingegnere se vanno DAVVERO spostate in ${path}: se conferma, richiama archivia_foto con ricolloca:true.`
+        + ` Altrimenti restano dove sono — le righe restano aperte e recuperabili.`
+        + ` NON dichiarare queste foto archiviate in ${path}.`
+        + (spostate > 0 ? ` Le altre ${spostate} foto sono state spostate in ${path}.` : '')
+        + (erroriMove > 0 ? ` Inoltre ${erroriMove} foto NON sono state spostate e restano IN ATTESA.` : '')
+        + notaDb + notaRiconciliate + notaRiconciliazioneKo,
+    })
+  }
 
   // ESITO ONESTO: il modello NON deve poter annunciare "foto archiviate" se una foto
   // non è stata spostata (verificato lato moveFile). MA un fallimento del solo UPDATE DB
@@ -513,8 +676,10 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
       errori_db: erroriDb,
       totale,
       restano_in_attesa: restano,
+      riconciliate,
+      errori_riconciliazione: erroriRiconciliazione,
       path,
-      message: `Spostate ${spostate}/${totale} foto.${notaDb} ${restano} NON spostate e restano IN ATTESA (stato 'errore'). NON dichiarare l'archiviazione completata: riprova o segnala all'Ingegnere.`,
+      message: `Spostate ${spostate}/${totale} foto.${notaDb}${notaRiconciliate}${notaRiconciliazioneKo} ${restano} NON spostate e restano IN ATTESA. NON dichiarare l'archiviazione completata: riprova o segnala all'Ingegnere.`,
     })
   }
 
@@ -522,6 +687,24 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   const notaOrfani = (older.length > 0 && !includiVecchie)
     ? ` Nota: ci sono ${older.length} foto più vecchie di 48h non archiviate — se vanno qui, richiama con includi_vecchie:true.`
     : ''
+  const notaResidue = recentiNonArchiviate > 0
+    ? ` Restano ${recentiNonArchiviate} foto recenti NON archiviate (raffiche precedenti): richiama con gruppo:"tutti" se vanno nella stessa cartella.`
+    : ''
+
+  // Testa del messaggio. `spostate === 0` capita quando il batch era fatto solo di
+  // righe già archiviate in precedenza: "Tutte le 0 foto spostate" sarebbe assurdo.
+  // "Tutte" e improprio anche quando QUALCHE riga resta aperta: oltre alle recenti
+  // non selezionate, anche le riconciliazioni fallite (riga aperta, file altrove).
+  // Le righe da ricollocare non arrivano qui — hanno un return anticipato — ma il
+  // conteggio e incluso lo stesso, perche' "Tutte" non deve poter tornare vero se
+  // domani quel ramo smettesse di uscire prima.
+  const residuiAperti = recentiNonArchiviate + erroriRiconciliazione + daRicollocare.length
+  const testa = spostate === 0
+    ? `Nessuna foto nuova da spostare in ${path}.`
+    : residuiAperti > 0
+      ? `Archiviate ${spostate} foto in ${path}.`
+      : `Tutte le ${spostate} foto spostate e verificate in ${path}.`
+
   // Tutti i move riusciti (anche se qualche update DB è fallito): archiviazione OK.
   return ok({
     archiviate: spostate,
@@ -529,8 +712,11 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     errori_db: erroriDb,
     totale,
     path,
+    riconciliate,
+    errori_riconciliazione: erroriRiconciliazione,
+    recenti_non_archiviate: recentiNonArchiviate,
     vecchie_non_archiviate: !includiVecchie ? older.length : 0,
-    message: `Tutte le ${spostate} foto spostate e verificate in ${path}.${notaDb}${notaOrfani}`,
+    message: `${testa}${notaDb}${notaRiconciliate}${notaRiconciliazioneKo}${notaResidue}${notaOrfani}`,
   })
 }
 
@@ -634,7 +820,7 @@ export const FOTO_ARCHIVE_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'archivia_foto',
-    description: 'Archivia le foto pending della conversazione nella sottocartella Foto di un cantiere o progetto. Considera solo le foto caricate di recente (ultime 48h); se ci sono più gruppi temporali o foto vecchie non archiviate, torna need:"conferma_batch" e va richiamato indicando il gruppo.',
+    description: 'Archivia le foto pending della conversazione nella sottocartella Foto di un cantiere o progetto. Considera solo le foto caricate di recente (ultime 48h); se ci sono più gruppi temporali o foto vecchie non archiviate, torna need:"conferma_batch" e va richiamato indicando il gruppo. Se una foto risulta GIÀ archiviata in un\'ALTRA commessa torna need:"conferma_ricollocazione" indicando dove si trova: la foto NON viene toccata e va chiesto all\'Ingegnere se spostarla davvero.',
     input_schema: {
       type: 'object',
       properties: {
@@ -645,6 +831,7 @@ export const FOTO_ARCHIVE_TOOLS: ToolDefinition[] = [
         cartella_foto: { type: 'string', description: 'OPZIONALE — nome (anche parziale) della sottocartella foto da usare, es. "Documentazione Fotografica". Se omesso, viene rilevata automaticamente.' },
         gruppo: { type: 'string', enum: ['ultimo', 'tutti'], description: 'OPZIONALE — da usare SOLO dopo che il tool ha risposto need:"conferma_batch" e l\'Ingegnere ha confermato. "ultimo" = archivia solo la raffica di foto più recente; "tutti" = archivia tutte le foto caricate nelle ultime 48h.' },
         includi_vecchie: { type: 'boolean', description: 'OPZIONALE — true SOLO se l\'Ingegnere conferma esplicitamente di voler archiviare anche le foto più vecchie di 48h (segnalate nel campo "vecchie" della conferma). Default: le foto vecchie NON vengono toccate.' },
+        ricolloca: { type: 'boolean', description: 'OPZIONALE — da usare SOLO dopo che il tool ha risposto need:"conferma_ricollocazione" e l\'Ingegnere ha confermato di voler SPOSTARE le foto dalla commessa in cui si trovano già (indicata nel campo "da_ricollocare") a quella richiesta ora. Senza questo flag le foto già archiviate altrove NON vengono toccate e le loro righe restano aperte.' },
       },
       required: ['nome'],
     },

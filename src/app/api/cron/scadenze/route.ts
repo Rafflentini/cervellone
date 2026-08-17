@@ -167,18 +167,52 @@ export async function GET(req: NextRequest) {
   const today = todayISO()
 
   try {
-    const { data, error } = await supabase
-      .from('cervellone_scadenze')
-      .select('id, soggetto, categoria, tipo_documento, data_scadenza, reminder_days, recipients, drive_url, reminders_sent')
-      .eq('stato', 'attivo')
-      .gte('data_scadenza', today)
-      .order('data_scadenza', { ascending: true })
+    // PostgREST tronca al suo row-cap senza dirlo: senza paginare, oltre il cap
+    // le scadenze piu lontane non riceverebbero MAI il promemoria e il JSON di
+    // risposta riporterebbe il conteggio della pagina troncata come se fosse
+    // il totale. Nessun umano legge l'output del cron: qui non basta segnalare
+    // il troncamento, vanno processate tutte.
+    // Tetto di sicurezza: 40 pagine x 500 = 20.000 scadenze attive future.
+    // Serve perche un `for(;;)` che interroga il DB sta dentro una route con
+    // maxDuration 120: se il server continuasse a rispondere con pagine piene
+    // (o se un range non avanzasse) il cron ciclerebbe fino al timeout, e un
+    // cron che va in timeout e un cron che non manda promemoria.
+    // Il tetto e a sua volta un troncamento: si dichiara in risposta.
+    const PAGINA = 500
+    const MAX_PAGINE = 40
+    const rows: ScadenzaRow[] = []
+    let troncato = false
+    for (let pagina = 0; ; pagina++) {
+      if (pagina >= MAX_PAGINE) {
+        troncato = true
+        console.error(`[cron/scadenze] tetto di ${MAX_PAGINE} pagine raggiunto: lette ${rows.length} scadenze, potrebbero essercene altre`)
+        break
+      }
+      const offset = pagina * PAGINA
+      const { data, error } = await supabase
+        .from('cervellone_scadenze')
+        .select('id, soggetto, categoria, tipo_documento, data_scadenza, reminder_days, recipients, drive_url, reminders_sent')
+        .eq('stato', 'attivo')
+        .gte('data_scadenza', today)
+        .order('data_scadenza', { ascending: true })
+        // Tiebreaker OBBLIGATORIO: `data_scadenza` non e unica (un rinnovo di
+        // squadra ne mette dieci sullo stesso giorno) e `.range()` non ha
+        // isolamento fra una pagina e l'altra. Con un ordinamento non
+        // deterministico, due pari-merito a cavallo dell'offset possono
+        // arrivare due volte (doppia mail) o zero volte (nessuna mail: la
+        // stessa perdita silenziosa che la paginazione doveva chiudere).
+        .order('id', { ascending: true })
+        .range(offset, offset + PAGINA - 1)
 
-    if (error) {
-      return NextResponse.json({ ok: false, error: error.message }, { status: 500 })
+      if (error) {
+        return NextResponse.json({ ok: false, error: error.message }, { status: 500 })
+      }
+
+      const page = (data ?? []) as ScadenzaRow[]
+      rows.push(...page)
+      if (page.length < PAGINA) break
     }
 
-    const rows = (data ?? []) as ScadenzaRow[]
     const reminded: ReminderResult[] = []
 
     for (const row of rows) {
@@ -198,6 +232,7 @@ export async function GET(req: NextRequest) {
       ok: true,
       today,
       checked: rows.length,
+      troncato,
       reminded: reminded.length,
       details: reminded,
     })
