@@ -9,6 +9,7 @@ import {
   DrivePolicyError,
 } from './drive'
 import { supabase } from './supabase'
+import { GoogleAuthDeadError } from './google-token-health'
 import { splitRecentOlder, clusterByTime, type PendingRow } from './foto-archive-pending'
 // Logica pura di matching (testata in foto-archive-match.test.ts).
 import {
@@ -433,6 +434,13 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   try {
     targetId = await getOrCreatePathFolders(fotoFolder.id, [segment])
   } catch (err) {
+    // Token Google morto: è un blocco vero quanto quello di policy, non un errore
+    // generico. Senza questo ramo il messaggio finiva nel catch-all e l'Ingegnere
+    // leggeva un errore tecnico invece della causa (e del link di riautorizzazione,
+    // che GoogleAuthDeadError si porta dietro nel messaggio).
+    if (err instanceof GoogleAuthDeadError) {
+      return fail({ stato: 'bloccata', message: err.message })
+    }
     if (err instanceof DrivePolicyError) {
       return fail({ stato: 'bloccata', message: err.message })
     }
