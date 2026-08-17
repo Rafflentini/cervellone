@@ -123,12 +123,26 @@ interface ParsedResult {
   avviso?: string
   calendar?: string
   calendar_ok?: boolean
+  count?: number
+  scadenze?: { id: string; soggetto: string; categoria: string | null }[]
+  troncato?: boolean
+  limite?: number
+  collisione?: string[]
+}
+
+/**
+ * Invoca un tool dello scadenzario e ne parsa il JSON.
+ * NB: il modulo si importa DINAMICAMENTE (come fa tutto il resto del file):
+ * i `vi.mock` sopra devono essere applicati prima del primo import reale.
+ */
+async function callTool(name: string, input: Record<string, unknown>): Promise<ParsedResult> {
+  const { executeScadenzeTool } = await import('./scadenze-tools')
+  const raw = await executeScadenzeTool(name, input)
+  return JSON.parse(raw ?? '{}') as ParsedResult
 }
 
 async function registra(input: Record<string, unknown>): Promise<ParsedResult> {
-  const { executeScadenzeTool } = await import('./scadenze-tools')
-  const raw = await executeScadenzeTool('registra_scadenza', input)
-  return JSON.parse(raw ?? '{}') as ParsedResult
+  return callTool('registra_scadenza', input)
 }
 
 function updateOps(): MockOp[] {
@@ -679,5 +693,122 @@ describe('registraScadenzaCore — opzione sostituisciPrecedenti (P0 chiave non 
     expect(esito.ok).toBe(true)
     expect(esito.sostituite).toEqual(['old-1'])
     expect(sostituzioneOps()).toHaveLength(1)
+  })
+})
+
+/**
+ * BUG A — `lista_scadenze` filtrava la categoria con uguaglianza binaria
+ * (`.eq`), mentre il path di SCRITTURA non normalizza il case: in DB
+ * convivono 'personale' e 'Personale'. Cercare 'Personale' non trovava le
+ * righe salvate 'personale'.
+ *
+ * NB: il mock Supabase NON filtra nulla, registra soltanto le operazioni.
+ * Per questo servono entrambe le forme di asserzione: quella comportamentale
+ * prova che la selezione esatta in JS esiste, quella strutturale che la query
+ * lato server e un SOVRAINSIEME (ilike) e non un `eq`.
+ */
+describe('lista_scadenze — filtro categoria case-insensitive (BUG A)', () => {
+  function riga(over: Record<string, unknown>) {
+    return {
+      id: 'x', soggetto: 'Mario Rossi', categoria: 'personale', tipo_documento: 'visita medica',
+      data_scadenza: '2027-01-01', reminder_days: 5, recipients: [], drive_file_id: null,
+      drive_url: null, note: null, stato: 'attivo', updated_at: '2026-08-17T00:00:00Z',
+      ...over,
+    }
+  }
+
+  it('lista_scadenze trova la categoria anche con case diverso (BUG A)', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'select') {
+        return {
+          data: [
+            riga({ id: 'a', categoria: 'personale' }),
+            riga({ id: 'b', soggetto: 'Fiat Ducato', categoria: 'Automezzi', tipo_documento: 'revisione', data_scadenza: '2027-02-01' }),
+          ],
+          error: null,
+        }
+      }
+      return { data: null, error: null }
+    }
+
+    const res = await callTool('lista_scadenze', { categoria: 'Personale' })
+
+    expect(res.ok).toBe(true)
+    expect(res.count).toBe(1)
+    expect(res.scadenze?.[0].id).toBe('a')
+  })
+
+  it('lista_scadenze tollera gli spazi interni nella categoria (BUG A)', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'select') {
+        return { data: [riga({ id: 'a', categoria: 'primo soccorso', tipo_documento: 'attestato' })], error: null }
+      }
+      return { data: null, error: null }
+    }
+
+    const res = await callTool('lista_scadenze', { categoria: ' Primo  Soccorso ' })
+
+    expect(res.count).toBe(1)
+  })
+
+  it('lista_scadenze scarta la categoria che NON coincide dopo la normalizzazione (BUG A)', async () => {
+    // L'ilike lato server e volutamente un sovrainsieme: `%ponteggi%` prende
+    // anche 'sub-ponteggi'. La selezione esatta la deve fare `normalizeKey`.
+    mockHandler = (op) => {
+      if (op.op === 'select') {
+        return {
+          data: [
+            riga({ id: 'a', categoria: 'Ponteggi' }),
+            riga({ id: 'b', categoria: 'sub-ponteggi' }),
+          ],
+          error: null,
+        }
+      }
+      return { data: null, error: null }
+    }
+
+    const res = await callTool('lista_scadenze', { categoria: 'ponteggi' })
+
+    expect(res.count).toBe(1)
+    expect(res.scadenze?.[0].id).toBe('a')
+  })
+
+  it('lista_scadenze filtra la categoria server-side con ilike, non con eq (BUG A)', async () => {
+    const { ilikePattern } = await import('./scadenze-tools')
+    mockHandler = (op) => (op.op === 'select' ? { data: [], error: null } : { data: null, error: null })
+
+    await callTool('lista_scadenze', { categoria: 'Personale' })
+
+    const select = mockOps.find(op => op.op === 'select')
+    expect(select?.filters.find(f => f.method === 'eq' && f.args[0] === 'categoria')).toBeUndefined()
+    expect(select?.filters.find(f => f.method === 'ilike' && f.args[0] === 'categoria')?.args[1])
+      .toBe(ilikePattern('Personale'))
+  })
+
+  it('lista_scadenze non scarta le righe quando la categoria non e richiesta (BUG A - controprova)', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'select') {
+        return {
+          data: [
+            riga({ id: 'a', categoria: 'personale' }),
+            riga({ id: 'b', soggetto: 'Fiat Ducato', categoria: null, tipo_documento: 'revisione' }),
+          ],
+          error: null,
+        }
+      }
+      return { data: null, error: null }
+    }
+
+    const res = await callTool('lista_scadenze', {})
+
+    expect(res.count).toBe(2)
+  })
+
+  it('la description del parametro categoria non promette piu un match esatto', async () => {
+    const { SCADENZE_TOOLS } = await import('./scadenze-tools')
+    const tool = SCADENZE_TOOLS.find(t => t.name === 'lista_scadenze')!
+    const props = tool.input_schema.properties as Record<string, { description?: string }>
+    expect(props.categoria?.description).toMatch(/case-insensitive/i)
+    expect(props.categoria?.description).not.toMatch(/esatta/i)
   })
 })

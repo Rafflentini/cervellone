@@ -168,7 +168,7 @@ function addDaysISO(days: number): string {
  * (soggetto, tipo_documento, categoria): `tipo_documento` arriva testuale
  * dall'LLM, quindi "DURC" / "Durc" / "durc" devono valere lo stesso.
  */
-function normalizeKey(value: string | null | undefined): string {
+export function normalizeKey(value: string | null | undefined): string {
   if (!value) return ''
   return normalizeSubject(value).toLocaleLowerCase('it-IT')
 }
@@ -591,8 +591,14 @@ async function listaScadenze(input: Record<string, unknown>): Promise<string> {
   // diventa una `B` letterale → la riga esiste ma non viene trovata.
   if (soggetto) query = query.ilike('soggetto', ilikePattern(soggetto))
 
+  // Filtro categoria case- e whitespace-insensitive. Stessa dottrina di
+  // `marcaSostituite`: ILIKE lato server come SOVRAINSIEME (per non scaricare
+  // tutte le righe attive) + selezione esatta in JS con `normalizeKey`, perche
+  // `%ponteggi%` da solo prenderebbe anche "sub-ponteggi".
+  // NB: il path di scrittura non normalizza il case, quindi in DB convivono
+  // 'personale' e 'Personale': il filtro deve tollerarli entrambi.
   const categoria = cleanString(input.categoria)
-  if (categoria) query = query.eq('categoria', categoria)
+  if (categoria) query = query.ilike('categoria', ilikePattern(categoria))
 
   const entroGiorni = parseInteger(input.entro_giorni, 'entro_giorni')
   if (entroGiorni.error) return fail(entroGiorni.error)
@@ -602,7 +608,12 @@ async function listaScadenze(input: Record<string, unknown>): Promise<string> {
   const { data, error } = await query
   if (error) return fail(`Errore lista scadenze: ${error.message}`)
 
-  const rows = (data ?? []) as ScadenzaRow[]
+  const allRows = (data ?? []) as ScadenzaRow[]
+  const categoriaKey = categoria ? normalizeKey(categoria) : null
+  const rows = categoriaKey === null
+    ? allRows
+    : allRows.filter(row => normalizeKey(row.categoria) === categoriaKey)
+
   return ok({
     today: todayISO(),
     count: rows.length,
@@ -703,7 +714,7 @@ export const SCADENZE_TOOLS: ToolDefinition[] = [
       type: 'object' as const,
       properties: {
         soggetto: { type: 'string', description: 'Filtro case-insensitive sul soggetto.' },
-        categoria: { type: 'string', description: 'Filtro categoria esatta.' },
+        categoria: { type: 'string', description: 'Filtro categoria, case-insensitive.' },
         stato: { type: 'string', enum: VALID_STATI, description: 'Default attivo.' },
         entro_giorni: { type: 'number', description: 'Mostra scadenze con data_scadenza <= oggi + N giorni.' },
       },
