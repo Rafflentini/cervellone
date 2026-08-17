@@ -743,24 +743,45 @@ describe('prepara_cartella — anti-duplicato oltre le 500 righe', () => {
     expect(appendSheet).toHaveBeenCalledTimes(1)
   })
 
-  it('due token distinti in comune bastano a chiedere conferma, senza numero uguale', async () => {
-    // Confine dell'overlap pinnato anche DALL'ALTO: senza questo si poteva
-    // alzare la soglia a 3, o buttare via del tutto i match deboli, e la suite
-    // restava verde. Qui il numero commessa e diverso: blocca solo l'overlap.
+  it('una QUASI-COPIA chiede conferma anche col numero commessa diverso', async () => {
+    // Il caso realistico di duplicato: stessa commessa reinserita con un numero
+    // nuovo. Committente raro ('Ferrovie Appulo Lucane', 1 riga su 600) + stesso
+    // comune + stesso lavoro: quasi tutta l'informazione della nuova riga e gia
+    // nel Registro. Qui `numMatch` non aiuta, deve prenderla il peso.
     const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
       ambito: 'cantiere',
       valori: {
-        Commessa: '2032-001',
-        Comune: 'Potenza',                    // token 1, condiviso con le righe 1-100
-        Committente: 'Zeta Immobiliare',
-        Oggetto: 'Rifacimento tetto',         // token 2: 'rifacimento'
+        Commessa: '2032-002',                 // numero DIVERSO dalla riga 550
+        Comune: 'Potenza',
+        Committente: 'Ferrovie Appulo Lucane',
+        Oggetto: 'Rifacimento copertura',
       },
     }, 'chat-1'))!)
 
     expect(res.need).toBe('conferma_duplicato')
     expect(res.candidati_numero_uguale).toHaveLength(0)
-    expect(res.candidati.length).toBeGreaterThan(0)
+    expect(res.candidati.join(' ')).toContain('Ferrovie Appulo Lucane')
     expect(appendSheet).not.toHaveBeenCalled()
+  })
+
+  it('due token comunissimi NON bastano piu a gridare al duplicato', async () => {
+    // CAMBIO DI CONTRATTO deliberato. La vecchia regola era "2 token distinti in
+    // comune": 'potenza' + 'rifacimento' compaiono in 100+ righe e bloccavano
+    // ogni commessa nuova nel comune capoluogo. Col peso IDF quei due token
+    // valgono poco e il committente mai visto ('Zeta Immobiliare') pesa molto:
+    // la maggior parte dell'informazione della nuova riga NON e nel Registro.
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: {
+        Commessa: '2032-001',
+        Comune: 'Potenza',                    // comune, 100+ righe
+        Committente: 'Zeta Immobiliare',      // mai visto
+        Oggetto: 'Rifacimento tetto',         // 'rifacimento' comune
+      },
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(true)
+    expect(appendSheet).toHaveBeenCalledTimes(1)
   })
 
   it('trova l intestazione nella forma REALE del Registro (titolo, vuota, header alla 3)', async () => {

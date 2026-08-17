@@ -18,6 +18,9 @@ import {
   normalizeName,
   significantTokens,
   commessaNumbers,
+  tokenWeights,
+  similarityRatio,
+  SOGLIA_DUPLICATO,
   matchNamedFolderScored,
   matchNamedFolder,
   scoreFotoFolder,
@@ -802,8 +805,14 @@ async function preparaCartella(input: Record<string, unknown>): Promise<string> 
   if (!confermaDuplicato) {
     const nuovaRigaText = colonne.map(col => String(valori[col] ?? '').trim()).join(' ')
     const nuoviNums = commessaNumbers(nuovaRigaText)
-    const nuoviTokens = new Set(significantTokens(nuovaRigaText))
     const esistenti = parseRegistroDataRows(sheetFull, colonne)
+
+    // Pesi IDF calcolati SUL REGISTRO STESSO: contare i token in comune li
+    // trattava tutti uguali, e in Basilicata `potenza` compare in centinaia di
+    // righe mentre `lucane` in due. Col conteggio semplice il guardrail
+    // bloccava OGNI nuova commessa (misurato: 30 su 30 scorrelate), e un
+    // guardrail che grida sempre viene poi ignorato.
+    const pesi = tokenWeights(esistenti)
 
     const forti: string[] = []
     const deboli: string[] = []
@@ -814,16 +823,9 @@ async function preparaCartella(input: Record<string, unknown>): Promise<string> 
         forti.push(rigaText.slice(0, 200))
         continue
       }
-      // `new Set`: senza deduplicare i token della riga esistente, UNO SOLO
-      // ripetuto bastava per arrivare a overlap 2. In Basilicata la coppia
-      // "Comune: Potenza | Committente: Comune di Potenza" e la norma, quindi
-      // ogni nuova commessa a Potenza risultava simile a ogni riga vecchia di
-      // Potenza. L'overlap deve contare token DISTINTI in comune.
-      let overlap = 0
-      for (const t of new Set(significantTokens(rigaText))) {
-        if (nuoviTokens.has(t)) overlap += 1
+      if (similarityRatio(nuovaRigaText, rigaText, pesi, esistenti.length) >= SOGLIA_DUPLICATO) {
+        deboli.push(rigaText.slice(0, 200))
       }
-      if (overlap >= 2) deboli.push(rigaText.slice(0, 200))
     }
 
     // ORDINE: prima i match sul NUMERO commessa, che sono la prova forte.

@@ -55,6 +55,97 @@ export function commessaNumbers(value: string): string[] {
   return normalizeName(value).match(COMMESSA_RE) ?? []
 }
 
+/**
+ * Peso di ogni token, calcolato SUL REGISTRO STESSO (IDF).
+ *
+ * Contare i token in comune li tratta tutti uguali, e non lo sono: in un
+ * Registro di Basilicata `potenza` compare in centinaia di righe e non prova
+ * niente, `lucane` in due e prova quasi tutto. Contandoli alla pari il
+ * guardrail anti-duplicato scattava su OGNI nuova commessa (misurato: 30 su 30
+ * scorrelate bloccate), e un guardrail che grida sempre viene disattivato per
+ * abitudine — esito peggiore del bug che chiude.
+ *
+ * `MATCH_STOPWORDS` provava a fare lo stesso lavoro a mano, ma una lista fissa
+ * non puo sapere che a Potenza si chiama `potenza` e a Matera `matera`: il peso
+ * va dedotto dai dati, non deciso in anticipo. Le stopword restano perche
+ * tolgono rumore prima del conteggio, non in alternativa a questo.
+ */
+export function tokenWeights(righe: string[]): Map<string, number> {
+  const frequenza = new Map<string, number>()
+  for (const riga of righe) {
+    // `new Set`: un token ripetuto NELLA STESSA riga ("Potenza | Comune di
+    // Potenza") non deve pesare doppio.
+    for (const t of new Set(significantTokens(riga))) {
+      frequenza.set(t, (frequenza.get(t) ?? 0) + 1)
+    }
+  }
+  const n = righe.length
+  const pesi = new Map<string, number>()
+  for (const [t, f] of frequenza) pesi.set(t, Math.log((n + 1) / (f + 1)))
+  return pesi
+}
+
+/**
+ * Quanta parte dell'informazione della NUOVA commessa e gia presente in una
+ * riga esistente: 0 = niente in comune, 1 = la riga esistente contiene tutto.
+ *
+ * E un RAPPORTO, non una somma, e la differenza non e estetica. Una somma di
+ * pesi cresce con `log(N)` e va confrontata con una soglia che dipende dalla
+ * dimensione del Registro; misurato, una soglia proporzionale al peso massimo
+ * teorico dava il 61% di falsi positivi a 150 righe e perdeva il 40% dei
+ * duplicati a 2000 (quando il vocabolario si satura nessun token e piu raro e
+ * la soglia diventa irraggiungibile). Il rapporto e invece adimensionale:
+ * la stessa soglia vale per un Registro nuovo e per uno da diecimila righe.
+ *
+ * I token della nuova commessa MAI visti nel Registro pesano al massimo e
+ * finiscono solo al denominatore: un committente mai visto abbassa il rapporto,
+ * ed e giusto — e la prova piu forte che la commessa non c'e ancora.
+ */
+export function similarityRatio(
+  nuovaText: string,
+  rigaText: string,
+  pesi: Map<string, number>,
+  righeRegistro: number,
+): number {
+  const nuovi = new Set(significantTokens(nuovaText))
+  if (nuovi.size === 0) return 0
+  const pesoMai = Math.log(righeRegistro + 1)
+  const rigaTok = new Set(significantTokens(rigaText))
+
+  let totale = 0
+  let comune = 0
+  for (const t of nuovi) {
+    const w = pesi.get(t) ?? pesoMai
+    totale += w
+    if (rigaTok.has(t)) comune += w
+  }
+  return totale > 0 ? comune / totale : 0
+}
+
+/**
+ * Sopra questo rapporto si chiede conferma.
+ *
+ * CALIBRATO su Registri sintetici in stile Basilicata da 40 a 2000 righe,
+ * misurando tre popolazioni: commesse nuove scorrelate (falsi positivi),
+ * duplicati esatti reinseriti col numero cambiato, e QUASI-COPIE (stesso comune
+ * e stesso committente, lavoro descritto diversamente) — che sono il caso
+ * realistico, non quello esatto.
+ *
+ *   soglia | falsi positivi (N=150 / 600) | quasi-copie prese (N=150 / 600)
+ *     0.50 |            84% / 57%         |          100% / 100%
+ *     0.60 |            13% /  0%         |           93% / 100%   <- scelta
+ *     0.65 |             8% /  0%         |           83% /  98%
+ *     0.75 |             0% /  0%         |           73% /  90%
+ *
+ * Scelto 0.60 e non un valore piu alto perche i due errori non costano uguale:
+ * un falso positivo costa una domanda di conferma, un falso negativo costa una
+ * commessa DUPLICATA sul Drive — cioe' esattamente il bug che il guardrail
+ * esiste per impedire. Non e un numero da limare quando un caso non piace:
+ * abbassarlo riporta la saturazione che rendeva il guardrail decorativo
+ * (a 0.50 blocca l'84% delle commesse legittime), alzarlo nasconde duplicati.
+ */
+export const SOGLIA_DUPLICATO = 0.6
+
 // Forza del match cartella, dalla più affidabile alla più debole:
 //  - 'numero'  → match sul numero commessa NNNN-NNN (prova più affidabile);
 //  - 'esatto'  → la query compare per intero nel nome cartella e finisce su un

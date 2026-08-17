@@ -9,6 +9,9 @@ import {
   commessaNumbers,
   isMoveSuccess,
   pickTopScored,
+  tokenWeights,
+  similarityRatio,
+  SOGLIA_DUPLICATO,
   type FolderMatch,
 } from './foto-archive-match'
 
@@ -298,5 +301,104 @@ describe('pickTopScored (cartella foto annidata)', () => {
     const input = [c('a', 10), c('b', 90)]
     pickTopScored(input)
     expect(input.map(x => x.name)).toEqual(['a', 'b'])
+  })
+})
+
+// ── Peso dei token e somiglianza fra commesse ───────────────────────────────
+describe('tokenWeights / similarityRatio', () => {
+  const REGISTRO = [
+    '2020-001 Potenza Rossi Srl Rifacimento copertura',
+    '2020-002 Potenza Bianchi Spa Rifacimento copertura',
+    '2020-003 Potenza Lombardi Rifacimento copertura',
+    '2020-004 Matera Ferrovie Appulo Lucane Adeguamento sismico',
+  ]
+
+  it('un token frequente pesa meno di uno raro', () => {
+    const pesi = tokenWeights(REGISTRO)
+    // 'potenza' sta in 3 righe su 4, 'lucane' in 1.
+    expect(pesi.get('potenza')!).toBeLessThan(pesi.get('lucane')!)
+  })
+
+  it('lo stesso token ripetuto nella riga conta una volta sola', () => {
+    const pesi = tokenWeights(['2020-005 Potenza Comune di Potenza Demolizione'])
+    // Con 1 riga: frequenza 1 → log(2/2) = 0. Se contasse due volte sarebbe 2.
+    expect(pesi.get('potenza')).toBeCloseTo(Math.log(2 / 2), 6)
+  })
+
+  it('la riga identica ha somiglianza piena', () => {
+    const pesi = tokenWeights(REGISTRO)
+    const r = similarityRatio(REGISTRO[3], REGISTRO[3], pesi, REGISTRO.length)
+    expect(r).toBeCloseTo(1, 6)
+  })
+
+  it('un committente mai visto abbassa la somiglianza: e la prova che la commessa non c e', () => {
+    const pesi = tokenWeights(REGISTRO)
+    const conNuovo = similarityRatio('2030-001 Potenza Zeta Immobiliare Rifacimento copertura', REGISTRO[0], pesi, REGISTRO.length)
+    const conNoto = similarityRatio('2030-001 Potenza Rossi Srl Rifacimento copertura', REGISTRO[0], pesi, REGISTRO.length)
+    expect(conNuovo).toBeLessThan(conNoto)
+  })
+
+  it('non esplode sul Registro vuoto o su una riga senza token', () => {
+    expect(similarityRatio('2030-001 Venosa Alfa', 'qualcosa', tokenWeights([]), 0)).toBe(0)
+    expect(similarityRatio('', 'x', tokenWeights(REGISTRO), 4)).toBe(0)
+  })
+})
+
+// Questo e IL test che protegge la calibrazione: senza, si puo tornare a un
+// guardrail che blocca tutto (o che non blocca niente) e la suite resta verde.
+// Il bug originale non era "manca un controllo", era "il controllo grida
+// sempre": e un difetto STATISTICO, e va misurato su una popolazione.
+describe('SOGLIA_DUPLICATO — calibrazione', () => {
+  const COMUNI = ['Potenza', 'Matera', 'Melfi', 'Lavello', 'Venosa', 'Tito', 'Bernalda', 'Policoro']
+  const LAVORI = ['Rifacimento copertura', 'Manutenzione straordinaria', 'Ristrutturazione edilizia', 'Nuova costruzione', 'Demolizione capannone']
+  const COGNOMI = ['Rossi', 'Bianchi', 'Lombardi', 'Santoro', 'Coviello', 'Telesca', 'Summa', 'Pace']
+
+  // PRNG deterministico: Math.random renderebbe il test instabile.
+  let seed = 12345
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff }
+  const pick = <T,>(a: T[]) => a[Math.floor(rnd() * a.length)]
+
+  function scenario(n: number) {
+    seed = 12345
+    const registro = Array.from({ length: n }, (_, i) =>
+      `${2015 + (i % 11)}-${String((i % 900) + 1).padStart(3, '0')} ${pick(COMUNI)} ${pick(COGNOMI)} ${pick(LAVORI)}`)
+    const pesi = tokenWeights(registro)
+    const bloccata = (nuova: string) =>
+      registro.some(r => similarityRatio(nuova, r, pesi, registro.length) >= SOGLIA_DUPLICATO)
+    return { registro, bloccata }
+  }
+
+  it('NON blocca la maggioranza delle commesse nuove e scorrelate (anti-saturazione)', () => {
+    const { bloccata } = scenario(400)
+    const nuove = Array.from({ length: 100 }, (_, i) =>
+      `2030-${String(i + 1).padStart(3, '0')} ${pick(COMUNI)} Studio${i}Xq Progetti ${pick(LAVORI)}`)
+
+    const bloccate = nuove.filter(bloccata).length
+    // Prima dei pesi era 100%. Il numero esatto puo muoversi, ma se torna sopra
+    // un terzo il guardrail e di nuovo rumore e verra ignorato.
+    expect(bloccate / nuove.length).toBeLessThan(0.34)
+  })
+
+  it('blocca le QUASI-COPIE: stesso comune e committente, lavoro descritto diversamente', () => {
+    const { registro, bloccata } = scenario(400)
+    // NON copie identiche col solo numero cambiato — quelle hanno somiglianza 1
+    // e le prenderebbe qualunque soglia, anche una tarata cosi in alto da
+    // lasciar passare tutto il resto. Il caso realistico e la stessa commessa
+    // reinserita con l'oggetto scritto in un altro modo.
+    const quasiCopie = registro.slice(0, 40).map((r, i) => {
+      const c = r.split(' ')
+      const comune = c[1]
+      const cognome = c[2]
+      return `2031-${String(i + 1).padStart(3, '0')} ${comune} ${cognome} ${pick(LAVORI)}`
+    })
+
+    const prese = quasiCopie.filter(bloccata).length
+    expect(prese / quasiCopie.length).toBeGreaterThan(0.9)
+  })
+
+  it('la calibrazione regge anche su un Registro piccolo', () => {
+    const { registro, bloccata } = scenario(40)
+    const copie = registro.slice(0, 20).map((r, i) => `2031-${String(i + 1).padStart(3, '0')} ${r.split(' ').slice(1).join(' ')}`)
+    expect(copie.filter(bloccata).length / copie.length).toBeGreaterThan(0.9)
   })
 })
