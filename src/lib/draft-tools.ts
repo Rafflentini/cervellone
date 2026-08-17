@@ -14,7 +14,7 @@
  */
 import { getSupabaseServer } from './supabase-server'
 import { generatePdfFromHtml } from './pdf-generator'
-import { assertWriteAllowed, uploadBinaryToDrive, DrivePolicyError } from './drive'
+import { assertWriteAllowed, uploadBinaryToDrive, describeWriteCheckFailure } from './drive'
 
 /** Path relativo del link pubblico di un documento. Il chiamante compone l'host. */
 function docPath(id: string): string {
@@ -236,8 +236,10 @@ export async function saveDraftPdfToDrive(id: string, folderId: string): Promise
   try {
     await assertWriteAllowed(folderId)
   } catch (err) {
-    if (err instanceof DrivePolicyError) return `🔒 ${err.message}`
-    return `Cartella ${folderId} non scrivibile: ${err instanceof Error ? err.message : String(err)}`
+    // NON dire "cartella non scrivibile" a occhi chiusi: su token Google morto
+    // la cartella è scrivibilissima e il messaggio manderebbe l'utente a
+    // cercare permessi inesistenti. describeWriteCheckFailure separa le cause.
+    return describeWriteCheckFailure(err, `Cartella ${folderId} non scrivibile`)
   }
 
   // 4. Carica il PDF su Drive

@@ -21,7 +21,7 @@
  */
 
 import { getSupabaseServer } from './supabase-server'
-import { sendTelegramMessage } from './telegram-helpers'
+import { sendTelegramMessageChecked } from './telegram-helpers'
 
 export type GoogleErrorKind = 'dead' | 'scope' | 'config' | 'transient' | 'other'
 
@@ -183,6 +183,20 @@ export function classifyGoogleError(err: unknown): GoogleErrorKind {
   return 'other'
 }
 
+/**
+ * Come `classifyGoogleError`, ma riconosce anche un `GoogleAuthDeadError` GIÀ
+ * costruito.
+ *
+ * Serve perché il messaggio di GoogleAuthDeadError è il testo italiano di
+ * riautorizzazione: `invalid_grant` non ci compare, quindi riclassificarlo dal
+ * messaggio darebbe 'other'. Chiunque intercetti un errore che può venire da
+ * `getAuthorizedClient()` deve usare QUESTA, non `classifyGoogleError` nuda.
+ */
+export function googleAuthKindOf(err: unknown): GoogleErrorKind {
+  if (err instanceof GoogleAuthDeadError) return err.kind
+  return classifyGoogleError(err)
+}
+
 export type FatalGoogleAuthKind = Extract<GoogleErrorKind, 'dead' | 'scope' | 'config'>
 
 /** Solo questi tre meritano un alert: gli altri sono rumore o assenza di credenziali. */
@@ -228,9 +242,15 @@ let lastNotifyAt = 0
 /**
  * Alert una-tantum "token Google morto".
  *
- * Ordine deliberato (copiato da gmail-alerts/route.ts:36-49): prima il send,
- * il flag SOLO dopo un send riuscito — un Telegram giù non deve bruciare il
- * latch lasciando l'utente senza mai sapere che deve riautorizzare.
+ * Ordine deliberato: prima il send, il flag SOLO dopo un send RIUSCITO — un
+ * Telegram giù non deve bruciare il latch lasciando l'utente senza mai sapere
+ * che deve riautorizzare.
+ *
+ * "Riuscito" va verificato, non sperato: `sendTelegramMessage` non rigetta mai
+ * (senza token fa `return` muto, su 4xx/429 la fetch risolve comunque), quindi
+ * un `try/catch` da solo sarebbe codice morto e il flag verrebbe scritto anche
+ * su un messaggio mai recapitato → latch permanente, nessun alert mai più.
+ * Si usa perciò `sendTelegramMessageChecked`, che riporta l'esito.
  */
 export async function markGoogleTokenDead(kind: GoogleErrorKind): Promise<void> {
   if (!isFatalGoogleAuthKind(kind)) return
@@ -259,10 +279,14 @@ export async function markGoogleTokenDead(kind: GoogleErrorKind): Promise<void> 
       return
     }
 
+    let delivered = false
     try {
-      await sendTelegramMessage(adminChat, ALERT_TEXT[kind])
+      delivered = await sendTelegramMessageChecked(adminChat, ALERT_TEXT[kind])
     } catch (err) {
       console.error('[GOOGLE-HEALTH] alert send failed:', err instanceof Error ? err.message : String(err))
+    }
+    if (!delivered) {
+      console.error('[GOOGLE-HEALTH] alert NON recapitato: flag non scritto, si riproverà')
       lastNotifyAt = 0 // send fallito: il prossimo tentativo deve poter riprovare
       return
     }

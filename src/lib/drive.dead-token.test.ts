@@ -29,6 +29,14 @@ vi.mock('googleapis', () => ({
   },
 }))
 
+// loadWritableRoots(): nessuna radice consentita ⇒ assertWriteAllowed deve
+// risalire l'ancestry, e per farlo chiama getDrive() (che su token morto esplode).
+vi.mock('./supabase', () => ({
+  supabase: {
+    from: () => ({ select: () => ({ eq: async () => ({ data: [], error: null }) }) }),
+  },
+}))
+
 beforeEach(() => {
   vi.clearAllMocks()
   process.env.GOOGLE_SERVICE_ACCOUNT_KEY = '{}'
@@ -53,6 +61,41 @@ describe('drive.ts su token Google morto', () => {
 
     expect(GoogleAuthCtor).not.toHaveBeenCalled()
     expect(driveFactory).not.toHaveBeenCalled()
+  })
+
+  /**
+   * assertWriteAllowed() chiama getDrive() FUORI dal try che converte tutto in
+   * DrivePolicyError (deliberatamente: un token morto non è una cartella
+   * proibita). Quindi GoogleAuthDeadError esce grezzo e i catch che testano
+   * `instanceof DrivePolicyError` cadono nel ramo generico: prima del fix
+   * l'utente leggeva "cartella non scrivibile" / "Errore verifica permessi",
+   * falso e fuorviante. Ora la causa vera arriva a destinazione.
+   */
+  it('createFolder dice "token", non "verifica permessi"', async () => {
+    mockGetAuthorizedClient.mockRejectedValue(new GoogleAuthDeadError('dead'))
+
+    const { createFolder } = await import('./drive')
+    const out = await createFolder('Nuova', '1fPrUX_GTZVYITQVk-CW0VuXSGs1Db3If')
+
+    expect(out).toContain('Token Google scaduto')
+    expect(out).toContain('https://cervellone-five.vercel.app/api/auth/google')
+    expect(out).not.toContain('Errore verifica permessi')
+    expect(out).not.toContain('Scrittura non consentita')
+  })
+
+  it('describeWriteCheckFailure tiene separate le tre cause', async () => {
+    const { describeWriteCheckFailure, DrivePolicyError } = await import('./drive')
+
+    expect(describeWriteCheckFailure(new GoogleAuthDeadError('dead'), 'Cartella X non scrivibile'))
+      .toContain('Token Google scaduto')
+    expect(describeWriteCheckFailure(new GoogleAuthDeadError('dead'), 'Cartella X non scrivibile'))
+      .not.toContain('non scrivibile')
+
+    expect(describeWriteCheckFailure(new DrivePolicyError('abc'), 'Cartella X non scrivibile'))
+      .toContain('Scrittura non consentita')
+
+    expect(describeWriteCheckFailure(new Error('boom'), 'Cartella X non scrivibile'))
+      .toBe('Cartella X non scrivibile: boom')
   })
 
   it('un errore NON di autenticazione lascia intatto il fallback SA', async () => {

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { checkCriticalAlerts } from '@/lib/gmail-summary'
-import { sendTelegramMessage } from '@/lib/telegram-helpers'
+import { sendTelegramMessage, sendTelegramMessageChecked } from '@/lib/telegram-helpers'
 import { recordBotAction } from '@/lib/gmail-tools'
+import { googleAuthKindOf, isFatalGoogleAuthKind } from '@/lib/google-token-health'
 
 export const maxDuration = 60
 const GOOGLE_TOKEN_DEAD_KEY = 'google_token_dead'
@@ -33,10 +34,17 @@ async function notifyGoogleTokenDeadIfNeeded(): Promise<void> {
       return
     }
 
+    // Il flag va scritto SOLO dopo un invio verificato: sendTelegramMessage non
+    // rigetta mai, quindi un try/catch da solo brucerebbe il latch su un
+    // messaggio mai recapitato.
+    let delivered = false
     try {
-      await sendTelegramMessage(adminChat, GOOGLE_TOKEN_DEAD_ALERT)
+      delivered = await sendTelegramMessageChecked(adminChat, GOOGLE_TOKEN_DEAD_ALERT)
     } catch (err) {
       console.error('[CRON gmail-alerts] google token alert send failed:', err instanceof Error ? err.message : String(err))
+    }
+    if (!delivered) {
+      console.error('[CRON gmail-alerts] google token alert NON recapitato: flag non scritto')
       return
     }
 
@@ -83,8 +91,10 @@ export async function GET(req: NextRequest) {
     critical = await checkCriticalAlerts(sinceTs)
   } catch (err) {
     console.error('[CRON gmail-alerts] checkCriticalAlerts failed:', err instanceof Error ? err.message : String(err))
-    const msg = err instanceof Error ? err.message : String(err)
-    if (msg.toLowerCase().includes('invalid_grant')) {
+    // NON cercare 'invalid_grant' nel messaggio: getAuthorizedClient lancia
+    // GoogleAuthDeadError, il cui messaggio è il testo italiano di
+    // riautorizzazione. Il match su stringa renderebbe questo ramo irraggiungibile.
+    if (isFatalGoogleAuthKind(googleAuthKindOf(err))) {
       await notifyGoogleTokenDeadIfNeeded()
     }
     return NextResponse.json({ ok: false, error: 'check_failed' }, { status: 500 })

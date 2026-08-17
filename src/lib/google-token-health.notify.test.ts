@@ -22,7 +22,7 @@ vi.mock('./supabase-server', () => ({
 }))
 
 vi.mock('./telegram-helpers', () => ({
-  sendTelegramMessage: mockSend,
+  sendTelegramMessageChecked: mockSend,
 }))
 
 beforeEach(() => {
@@ -31,7 +31,7 @@ beforeEach(() => {
   vi.resetModules()
   mockMaybeSingle.mockResolvedValue({ data: null, error: null })
   mockUpsert.mockResolvedValue({ error: null })
-  mockSend.mockResolvedValue(undefined)
+  mockSend.mockResolvedValue(true) // invio verificato = recapitato
   process.env.ADMIN_CHAT_ID = '123456'
 })
 
@@ -65,6 +65,32 @@ describe('markGoogleTokenDead', () => {
     const [row, opts] = mockUpsert.mock.calls[0] as [Record<string, string>, Record<string, string>]
     expect(row).toEqual({ key: 'google_token_dead', value: 'true' })
     expect(opts).toEqual({ onConflict: 'key' })
+  })
+
+  // Test NON vacuo: il vecchio codice si affidava a un try/catch attorno a
+  // sendTelegramMessage, che non rigetta MAI (token assente ⇒ return muto,
+  // 4xx/429 ⇒ la fetch risolve comunque). Il catch era codice morto e il flag
+  // veniva scritto anche su un messaggio mai recapitato ⇒ latch permanente.
+  it('invio NON recapitato (ritorna false) ⇒ flag NON scritto (il latch non si brucia)', async () => {
+    mockSend.mockResolvedValue(false)
+    const { markGoogleTokenDead } = await import('./google-token-health')
+    await markGoogleTokenDead('dead')
+
+    expect(mockSend).toHaveBeenCalledTimes(1)
+    expect(mockUpsert).not.toHaveBeenCalled()
+  })
+
+  it('invio non recapitato ⇒ il tentativo successivo NON è throttlato (si riprova)', async () => {
+    mockSend.mockResolvedValue(false)
+    const { markGoogleTokenDead } = await import('./google-token-health')
+    await markGoogleTokenDead('dead')
+    expect(mockUpsert).not.toHaveBeenCalled()
+
+    // secondo giro: Telegram è tornato su
+    mockSend.mockResolvedValue(true)
+    await markGoogleTokenDead('dead')
+    expect(mockSend).toHaveBeenCalledTimes(2)
+    expect(mockUpsert).toHaveBeenCalledTimes(1)
   })
 
   it('send che RIFIUTA ⇒ flag NON scritto (il latch non si brucia)', async () => {
