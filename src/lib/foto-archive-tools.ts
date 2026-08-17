@@ -815,7 +815,7 @@ async function preparaCartella(input: Record<string, unknown>): Promise<string> 
     const pesi = tokenWeights(esistenti)
 
     const forti: string[] = []
-    const deboli: string[] = []
+    const deboliConScore: Array<{ testo: string; score: number }> = []
     for (const rigaText of esistenti) {
       const rigaNums = commessaNumbers(rigaText)
       const numMatch = nuoviNums.length > 0 && rigaNums.some(n => nuoviNums.includes(n))
@@ -823,10 +823,14 @@ async function preparaCartella(input: Record<string, unknown>): Promise<string> 
         forti.push(rigaText.slice(0, 200))
         continue
       }
-      if (similarityRatio(nuovaRigaText, rigaText, pesi, esistenti.length) >= SOGLIA_DUPLICATO) {
-        deboli.push(rigaText.slice(0, 200))
-      }
+      const score = similarityRatio(nuovaRigaText, rigaText, pesi, esistenti.length)
+      if (score >= SOGLIA_DUPLICATO) deboliConScore.push({ testo: rigaText.slice(0, 200), score })
     }
+    // I deboli si tagliano a 8 piu sotto: mostrarli in ordine di FOGLIO lasciava
+    // fuori i piu somiglianti, che e lo stesso fallimento gia corretto per i
+    // forti. Lo score e gia in mano, ordinarlo non costa niente.
+    deboliConScore.sort((a, b) => b.score - a.score)
+    const deboli = deboliConScore.map(d => d.testo)
 
     // ORDINE: prima i match sul NUMERO commessa, che sono la prova forte.
     // Con lo slice a 8 su una lista in ordine di foglio, su un Registro grande

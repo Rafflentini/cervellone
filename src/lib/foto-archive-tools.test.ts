@@ -743,11 +743,11 @@ describe('prepara_cartella — anti-duplicato oltre le 500 righe', () => {
     expect(appendSheet).toHaveBeenCalledTimes(1)
   })
 
-  it('una QUASI-COPIA chiede conferma anche col numero commessa diverso', async () => {
-    // Il caso realistico di duplicato: stessa commessa reinserita con un numero
-    // nuovo. Committente raro ('Ferrovie Appulo Lucane', 1 riga su 600) + stesso
-    // comune + stesso lavoro: quasi tutta l'informazione della nuova riga e gia
-    // nel Registro. Qui `numMatch` non aiuta, deve prenderla il peso.
+  it('una COPIA ESATTA col numero cambiato chiede conferma', async () => {
+    // NB: questa e una copia IDENTICA salvo il numero (somiglianza 1.0), quindi
+    // la prenderebbe qualunque soglia: non dice niente sulla taratura. Serve
+    // solo a provare che il ramo pesato esiste e che `numMatch` non e l'unica
+    // via. Il caso che tara davvero la soglia e il LIMITE NOTO qui sotto.
     const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
       ambito: 'cantiere',
       valori: {
@@ -762,6 +762,31 @@ describe('prepara_cartella — anti-duplicato oltre le 500 righe', () => {
     expect(res.candidati_numero_uguale).toHaveLength(0)
     expect(res.candidati.join(' ')).toContain('Ferrovie Appulo Lucane')
     expect(appendSheet).not.toHaveBeenCalled()
+  })
+
+  it('LIMITE NOTO: la quasi-copia con oggetto diverso oggi NON viene fermata', async () => {
+    // Test di CARATTERIZZAZIONE: pinna un difetto, non una virtu. Stesso comune
+    // e stesso committente raro della riga 550, ma il lavoro descritto in un
+    // altro modo — che e' il modo in cui i duplicati nascono davvero, perche'
+    // chi reinserisce sta riscrivendo a mano. Somiglianza misurata 0.596,
+    // appena sotto la soglia 0.60: passa.
+    //
+    // La causa e' che il rapporto normalizza SOLO sulla nuova riga, quindi ogni
+    // parola in piu che l'utente scrive abbassa il punteggio. La cura e'
+    // simmetrizzare (Dice pesato) e ricalibrare: vedi il commento su
+    // SOGLIA_DUPLICATO. Quando sara' fatto QUESTO TEST DEVE DIVENTARE ROSSO —
+    // e' il segnale che la cura ha funzionato, non una regressione.
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: {
+        Commessa: '2032-003',
+        Comune: 'Potenza',
+        Committente: 'Ferrovie Appulo Lucane',
+        Oggetto: 'Manutenzione straordinaria',
+      },
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(true)
   })
 
   it('due token comunissimi NON bastano piu a gridare al duplicato', async () => {

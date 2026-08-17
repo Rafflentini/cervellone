@@ -109,6 +109,9 @@ export function similarityRatio(
 ): number {
   const nuovi = new Set(significantTokens(nuovaText))
   if (nuovi.size === 0) return 0
+  // Registro vuoto: non c'e niente da duplicare. Va distinto dal caso
+  // "denominatore nullo" trattato in fondo, che invece significa il contrario.
+  if (righeRegistro <= 0) return 0
   const pesoMai = Math.log(righeRegistro + 1)
   const rigaTok = new Set(significantTokens(rigaText))
 
@@ -119,7 +122,12 @@ export function similarityRatio(
     totale += w
     if (rigaTok.has(t)) comune += w
   }
-  return totale > 0 ? comune / totale : 0
+  // Denominatore nullo = tutti i token della nuova riga compaiono in TUTTE le
+  // righe del Registro (peso IDF zero). Non e "somiglianza nulla": e il caso in
+  // cui la nuova riga non porta nessuna informazione che il Registro non abbia
+  // gia. Ritornare 0 sarebbe fail-open — la direzione che costa di piu — e
+  // lascerebbe creare un duplicato esatto su un Registro di una sola riga.
+  return totale > 0 ? comune / totale : 1
 }
 
 /**
@@ -140,9 +148,31 @@ export function similarityRatio(
  * Scelto 0.60 e non un valore piu alto perche i due errori non costano uguale:
  * un falso positivo costa una domanda di conferma, un falso negativo costa una
  * commessa DUPLICATA sul Drive — cioe' esattamente il bug che il guardrail
- * esiste per impedire. Non e un numero da limare quando un caso non piace:
- * abbassarlo riporta la saturazione che rendeva il guardrail decorativo
- * (a 0.50 blocca l'84% delle commesse legittime), alzarlo nasconde duplicati.
+ * esiste per impedire.
+ *
+ * ⚠️ LIMITI MISURATI DI QUESTA CALIBRAZIONE — leggerli prima di fidarsi dei
+ * numeri qui sopra, che valgono per una popolazione ottimistica:
+ *
+ *  1. La tabella vale se ogni nuova commessa ha un committente MAI VISTO. Con
+ *     clienti che tornano il rapporto e dominato da "il committente e gia nel
+ *     Registro si/no" e i falsi positivi risalgono: 200 clienti distinti → 27%,
+ *     60 → 57%, 20 → 95%, 8 → 100%. Uno studio con pochi clienti abituali
+ *     ritrova la saturazione.
+ *  2. Il rapporto normalizza SOLO sulla nuova riga, quindi non e simmetrico:
+ *     righe corte sovra-bloccano, righe lunghe sotto-bloccano. Su una riga da 4
+ *     token un solo token diverso costa 0.25-0.45 di rapporto, quindi 0.60
+ *     significa in pratica "3 token su 4 identici". Misurato: un typo nel
+ *     cognome (0.465), la ragione sociale scritta per esteso (0.548), tre
+ *     parole di dettaglio in piu (0.348) passano TUTTI — ed e proprio cosi che
+ *     nascono i duplicati, riscrivendo a mano.
+ *  3. La suite non distingue 0.50 da 0.70: la soglia e documentata, non
+ *     testata. I test la pinnano solo fuori dalla banda [0.46, 0.74].
+ *
+ * La cura per 1 e 2 e la stessa: simmetrizzare (Dice pesato,
+ * `2*comune / (totNuova + totRiga)`) e ricalibrare su una popolazione CON
+ * committenti ricorrenti. Finche non e fatto, questo guardrail e un
+ * miglioramento misurato rispetto al conteggio (che bloccava il 100%), non una
+ * soluzione.
  */
 export const SOGLIA_DUPLICATO = 0.6
 
