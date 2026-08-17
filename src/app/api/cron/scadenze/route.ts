@@ -195,6 +195,13 @@ export async function GET(req: NextRequest) {
         .eq('stato', 'attivo')
         .gte('data_scadenza', today)
         .order('data_scadenza', { ascending: true })
+        // Tiebreaker OBBLIGATORIO: `data_scadenza` non e unica (un rinnovo di
+        // squadra ne mette dieci sullo stesso giorno) e `.range()` non ha
+        // isolamento fra una pagina e l'altra. Con un ordinamento non
+        // deterministico, due pari-merito a cavallo dell'offset possono
+        // arrivare due volte (doppia mail) o zero volte (nessuna mail: la
+        // stessa perdita silenziosa che la paginazione doveva chiudere).
+        .order('id', { ascending: true })
         .range(offset, offset + PAGINA - 1)
 
       if (error) {

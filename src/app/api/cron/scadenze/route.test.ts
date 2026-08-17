@@ -261,6 +261,24 @@ describe('cron scadenze', () => {
     expect(body.details).toBeUndefined()
   })
 
+  // FIX 5 — `.range()` non ha isolamento fra pagine e `data_scadenza` non e una
+  // chiave d'ordinamento unica (un rinnovo di squadra ne mette dieci sullo
+  // stesso giorno): due pari-merito a cavallo dell'offset possono arrivare due
+  // volte (doppia mail) o zero volte (nessuna mail). Test strutturale: il
+  // tiebreaker deterministico e una proprieta della QUERY, non un
+  // comportamento osservabile da un mock che non simula un vero planner.
+  it('ordina per data_scadenza E per id: senza tiebreaker la paginazione perde righe (FIX 5)', async () => {
+    pagine = [Array.from({ length: 3 }, (_, i) => riga(i))]
+
+    const { GET } = await import('./route')
+    await GET(cronRequest())
+
+    expect(orderCalls).toEqual([
+      ['data_scadenza', { ascending: true }],
+      ['id', { ascending: true }],
+    ])
+  })
+
   it('rifiuta la richiesta senza il CRON_SECRET giusto', async () => {
     pagine = []
     const { GET } = await import('./route')
