@@ -358,6 +358,45 @@ describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG
     expect(res.message).toMatch(/^Tutte le 1 foto spostate e verificate in /)
   })
 
+  // FIX 3 — il fallimento della riconciliazione veniva riciclato in `spostate`
+  // via `erroriDb`, e quindi anche in notaDb ("sono GIÀ nella cartella"). Ma
+  // quelle righe NON sono in `path`: sono nella cartella del tentativo vecchio
+  // e restano aperte. Caso limite: batch di sole riconciliazioni fallite → il
+  // messaggio diceva "Tutte le N foto spostate e verificate in {path}" mentre
+  // non si era mosso un file.
+  it('riconciliazione fallita: non conta come foto spostata (FIX 3 - caso limite)', async () => {
+    getFileParents.mockResolvedValue(['target-A'])
+    getOrCreatePathFolders.mockResolvedValue('target-B')
+    mockHandler = (op) => {
+      if (op.op === 'select') return { data: [rigaPendingConTarget], error: null }
+      const payload = op.payload as Record<string, unknown> | undefined
+      if (op.op === 'update' && payload?.stato === 'archiviata') {
+        return { data: null, error: { message: 'PostgREST 503' } }
+      }
+      return { data: null, error: null }
+    }
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Beta Ristrutturazione',
+    }, 'chat-1'))!)
+
+    expect(moveFile).not.toHaveBeenCalled()
+    // La bugia del caso limite, per prima: e quello che legge l'Ingegnere.
+    expect(res.message).not.toMatch(/^Tutte le/)
+    expect(res.message).toMatch(/^Nessuna foto nuova da spostare in /)
+    expect(res.errori_riconciliazione).toBe(1)
+    expect(res.riconciliate).toBe(0)
+    // Contatore separato: NON deve travasare in erroriDb ne in `archiviate`.
+    expect(res.errori_db).toBe(0)
+    expect(res.archiviate).toBe(0)
+    expect(res.totale).toBe(1)
+    // E nemmeno la nota di erroriDb, che dichiara "sono GIÀ nella cartella".
+    expect(res.message).not.toMatch(/sono GI\S+ nella cartella/)
+    // Deve invece dirlo: restano aperte, il file non e in questa cartella.
+    expect(res.message).toMatch(/riallineamento del DB \S+ fallito/)
+    expect(res.message).toMatch(/restano APERTE/)
+  })
+
   it('guardia: move fallito resta un errore onesto (BUG F - anti-regressione)', async () => {
     moveFile.mockResolvedValue('Errore: il file NON risulta spostato nella cartella di destinazione.')
     mockHandler = (op) => {

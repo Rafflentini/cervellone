@@ -470,6 +470,14 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   // Righe che erano GIÀ fisicamente nella loro cartella (move riuscito in un
   // tentativo precedente, update di stato fallito): qui si riallinea solo il DB.
   let riconciliate = 0
+  // Riconciliazione TENTATA e FALLITA: il file sta nella cartella di un
+  // tentativo PRECEDENTE (non in `path`) e la riga resta aperta. Contarlo in
+  // `erroriDb` — e quindi in `spostate` e in notaDb ("sono GIÀ nella cartella")
+  // — sarebbe una bugia su due fronti: la foto non e in `path` e non e chiusa.
+  // Caso limite reale: batch fatto di sole riconciliazioni fallite → il
+  // messaggio diceva "Tutte le N foto spostate e verificate in {path}" mentre
+  // non si era mosso nulla.
+  let erroriRiconciliazione = 0
 
   for (const row of rowsToArchive) {
     // Una riga ancora aperta ma con target_folder_id valorizzato ha gia avuto un
@@ -497,7 +505,14 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
           .from('cervellone_foto_pending')
           .update({ stato: 'archiviata', updated_at: new Date().toISOString() })
           .eq('id', row.id)
-        if (fixError) { erroriDb += 1 } else { riconciliate += 1 }
+        if (fixError) {
+          erroriRiconciliazione += 1
+          console.error(
+            `[archivia_foto] riconciliazione fallita per foto ${row.id}: il file e gia in ${row.target_folder_id} ma lo stato DB non e aggiornabile (${fixError.message}) — la riga resta aperta`,
+          )
+        } else {
+          riconciliate += 1
+        }
         continue
       }
     }
@@ -564,6 +579,12 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   const notaRiconciliate = riconciliate > 0
     ? ` (${riconciliate} foto erano già state spostate in un tentativo precedente: stato DB riallineato, file NON toccato)`
     : ''
+  // Riconciliazione fallita: NON è una foto in `path` e NON è una foto chiusa.
+  // Va detto a parte, o il messaggio finisce per rivendicare un'archiviazione
+  // che non è avvenuta.
+  const notaRiconciliazioneKo = erroriRiconciliazione > 0
+    ? ` (${erroriRiconciliazione} foto erano già state spostate in un tentativo precedente ma il riallineamento del DB è fallito: NON sono in questa cartella e restano APERTE, verranno riprovate)`
+    : ''
 
   // ESITO ONESTO: il modello NON deve poter annunciare "foto archiviate" se una foto
   // non è stata spostata (verificato lato moveFile). MA un fallimento del solo UPDATE DB
@@ -579,8 +600,9 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
       totale,
       restano_in_attesa: restano,
       riconciliate,
+      errori_riconciliazione: erroriRiconciliazione,
       path,
-      message: `Spostate ${spostate}/${totale} foto.${notaDb}${notaRiconciliate} ${restano} NON spostate e restano IN ATTESA. NON dichiarare l'archiviazione completata: riprova o segnala all'Ingegnere.`,
+      message: `Spostate ${spostate}/${totale} foto.${notaDb}${notaRiconciliate}${notaRiconciliazioneKo} ${restano} NON spostate e restano IN ATTESA. NON dichiarare l'archiviazione completata: riprova o segnala all'Ingegnere.`,
     })
   }
 
@@ -608,9 +630,10 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     totale,
     path,
     riconciliate,
+    errori_riconciliazione: erroriRiconciliazione,
     recenti_non_archiviate: recentiNonArchiviate,
     vecchie_non_archiviate: !includiVecchie ? older.length : 0,
-    message: `${testa}${notaDb}${notaRiconciliate}${notaResidue}${notaOrfani}`,
+    message: `${testa}${notaDb}${notaRiconciliate}${notaRiconciliazioneKo}${notaResidue}${notaOrfani}`,
   })
 }
 
