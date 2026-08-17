@@ -24,11 +24,22 @@ vi.mock('./supabase-server', () => ({
 vi.mock('./pdf-generator', () => ({
   generatePdfFromHtml: vi.fn(async () => Buffer.from('%PDF-fake')),
 }))
-vi.mock('./drive', () => ({
-  uploadBinaryToDrive: vi.fn(async () => ({ id: 'file1', webViewLink: 'http://drive/file1' })),
-  assertWriteAllowed: vi.fn(async () => {}),
-  DrivePolicyError: class DrivePolicyError extends Error {},
+// googleapis mockato per rendere leggero `importActual('./drive')` qui sotto.
+vi.mock('googleapis', () => ({
+  google: { auth: { GoogleAuth: vi.fn() }, drive: vi.fn(), sheets: vi.fn(), docs: vi.fn() },
 }))
+// `describeWriteCheckFailure` e `DrivePolicyError` sono presi VERI da drive.ts:
+// il messaggio all'utente è esattamente ciò che questo test deve verificare,
+// stubbarlo lo renderebbe vacuo.
+vi.mock('./drive', async () => {
+  const actual = await vi.importActual<typeof import('./drive')>('./drive')
+  return {
+    uploadBinaryToDrive: vi.fn(async () => ({ id: 'file1', webViewLink: 'http://drive/file1' })),
+    assertWriteAllowed: vi.fn(async () => {}),
+    DrivePolicyError: actual.DrivePolicyError,
+    describeWriteCheckFailure: actual.describeWriteCheckFailure,
+  }
+})
 
 import {
   listRecentDrafts,
@@ -39,7 +50,8 @@ import {
   looksLikeHtml,
 } from './draft-tools'
 import { generatePdfFromHtml } from './pdf-generator'
-import { uploadBinaryToDrive } from './drive'
+import { uploadBinaryToDrive, assertWriteAllowed, DrivePolicyError } from './drive'
+import { GoogleAuthDeadError } from './google-token-health'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -112,6 +124,34 @@ describe('draft-tools', () => {
     expect(passed).toContain('&lt;subito&gt;')
     // niente tag raw non escapati del content originale
     expect(passed).not.toContain('<subito>')
+  })
+
+  /**
+   * Token Google morto: la cartella È scrivibile, non ci si arriva proprio.
+   * Prima del fix questo caso finiva nel ramo generico e rispondeva
+   * "Cartella folder1 non scrivibile" — falso, e manda l'utente a cercare
+   * permessi Drive inesistenti invece che a riautorizzare.
+   */
+  it('saveDraftPdfToDrive su token morto dice "token", non "cartella non scrivibile"', async () => {
+    nextResult = { data: { name: 'POS', content: '<h1>POS</h1>', type: 'html' }, error: null }
+    vi.mocked(assertWriteAllowed).mockRejectedValueOnce(new GoogleAuthDeadError('dead'))
+
+    const r = await saveDraftPdfToDrive('x', 'folder1')
+
+    expect(r).toContain('Token Google scaduto')
+    expect(r).toContain('https://cervellone-five.vercel.app/api/auth/google')
+    expect(r).not.toContain('non scrivibile')
+    expect(uploadBinaryToDrive).not.toHaveBeenCalled()
+  })
+
+  it('saveDraftPdfToDrive su cartella davvero fuori policy dice ancora la policy', async () => {
+    nextResult = { data: { name: 'POS', content: '<h1>POS</h1>', type: 'html' }, error: null }
+    vi.mocked(assertWriteAllowed).mockRejectedValueOnce(new DrivePolicyError('folder1'))
+
+    const r = await saveDraftPdfToDrive('x', 'folder1')
+
+    expect(r).toContain('Scrittura non consentita')
+    expect(uploadBinaryToDrive).not.toHaveBeenCalled()
   })
 })
 

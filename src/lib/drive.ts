@@ -97,6 +97,24 @@ export class DrivePolicyError extends Error {
   }
 }
 
+/**
+ * Messaggio utente per un `assertWriteAllowed` fallito.
+ *
+ * Tre cause DIVERSE finiscono nello stesso catch e vanno dette per quello che
+ * sono:
+ *  - `GoogleAuthDeadError` — la cartella è scrivibilissima, è il TOKEN a essere
+ *    morto (`getDrive()` esplode prima di poter risalire l'ancestry). Dirgli
+ *    "cartella non scrivibile" manda l'utente a cercare permessi inesistenti.
+ *    Non lo convertiamo in DrivePolicyError: sarebbe la stessa bugia rovesciata.
+ *  - `DrivePolicyError` — cartella davvero fuori dal recinto.
+ *  - resto — errore infrastrutturale, si riporta col testo del chiamante.
+ */
+export function describeWriteCheckFailure(err: unknown, fallbackPrefix: string): string {
+  if (err instanceof GoogleAuthDeadError) return `🔑 ${err.message}`
+  if (err instanceof DrivePolicyError) return `🔒 ${err.message}`
+  return `${fallbackPrefix}: ${err instanceof Error ? err.message : String(err)}`
+}
+
 let _rootsCache: { ids: Set<string>; at: number } | null = null
 const ROOTS_TTL_MS = 30_000
 const _ancestryCache = new Map<string, { allowed: boolean; at: number }>()
@@ -137,6 +155,10 @@ export async function assertWriteAllowed(targetFolderId: string): Promise<void> 
     throw new DrivePolicyError(targetFolderId)
   }
 
+  // DELIBERATAMENTE fuori dal try sottostante: quel catch trasforma tutto in
+  // DrivePolicyError, e un token morto NON è una cartella non consentita.
+  // GoogleAuthDeadError deve propagarsi intatto — i chiamanti lo distinguono
+  // con describeWriteCheckFailure().
   const drive = await getDrive()
   let current = targetFolderId
   const seen = new Set<string>()
@@ -478,8 +500,7 @@ export async function createFolder(name: string, parentId: string): Promise<stri
   try {
     await assertWriteAllowed(parentId)
   } catch (err) {
-    if (err instanceof DrivePolicyError) return `🔒 ${err.message}`
-    return `Errore verifica permessi: ${err instanceof Error ? err.message : err}`
+    return describeWriteCheckFailure(err, 'Errore verifica permessi')
   }
   try {
     const drive = await getDrive()
@@ -503,8 +524,7 @@ export async function moveFile(fileId: string, newParentId: string): Promise<str
   try {
     await assertWriteAllowed(newParentId)
   } catch (err) {
-    if (err instanceof DrivePolicyError) return `🔒 ${err.message}`
-    return `Errore verifica permessi: ${err instanceof Error ? err.message : err}`
+    return describeWriteCheckFailure(err, 'Errore verifica permessi')
   }
   try {
     const drive = await getDrive()
@@ -547,8 +567,7 @@ export async function copyFile(fileId: string, newParentId: string, newName?: st
   try {
     await assertWriteAllowed(newParentId)
   } catch (err) {
-    if (err instanceof DrivePolicyError) return `🔒 ${err.message}`
-    return `Errore verifica permessi: ${err instanceof Error ? err.message : err}`
+    return describeWriteCheckFailure(err, 'Errore verifica permessi')
   }
   try {
     const drive = await getDrive()
@@ -609,8 +628,7 @@ export async function createDocument(name: string, content: string, folderId: st
   try {
     await assertWriteAllowed(folderId)
   } catch (err) {
-    if (err instanceof DrivePolicyError) return `🔒 ${err.message}`
-    return `Errore verifica permessi: ${err instanceof Error ? err.message : err}`
+    return describeWriteCheckFailure(err, 'Errore verifica permessi')
   }
   try {
     const drive = await getDrive()

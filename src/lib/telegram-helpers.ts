@@ -5,9 +5,7 @@
 
 const TELEGRAM_API = 'https://api.telegram.org/bot'
 
-export async function sendTelegramMessage(chatId: number, text: string) {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) return
+function splitTelegramText(text: string): string[] {
   const MAX_LEN = 4000
   const chunks: string[] = []
   if (text.length <= MAX_LEN) {
@@ -23,20 +21,61 @@ export async function sendTelegramMessage(chatId: number, text: string) {
       remaining = remaining.slice(cutAt).trimStart()
     }
   }
-  for (const chunk of chunks) {
-    await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
+  return chunks
+}
+
+/**
+ * Una POST /sendMessage. Ritorna `true` SOLO se Telegram ha accettato.
+ * Telegram risponde HTTP 200 con `{ok:false, description}` sugli errori
+ * applicativi (Markdown malformato, rate limit): `res.ok` da solo non basta,
+ * va letto il body. Un body illeggibile su HTTP 2xx si considera recapitato
+ * (nessuna prova del contrario).
+ */
+async function postTelegramMessage(token: string, payload: Record<string, unknown>): Promise<boolean> {
+  try {
+    const res = await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: chunk, parse_mode: 'Markdown' }),
-    }).catch(async () => {
-      // Fallback senza parse_mode se Markdown fallisce (caratteri speciali)
-      await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: chunk }),
-      }).catch(() => {})
+      body: JSON.stringify(payload),
     })
+    if (res && res.ok === false) return false
+    let body: unknown = null
+    try { body = await res.json() } catch { /* non JSON: ci si fida dello status */ }
+    return (body as { ok?: unknown } | null)?.ok !== false
+  } catch {
+    return false
   }
+}
+
+/**
+ * Come `sendTelegramMessage`, ma RIPORTA se il messaggio è stato davvero
+ * recapitato.
+ *
+ * Serve a chi latcha uno stato su "l'ho già detto all'utente" (vedi
+ * `markGoogleTokenDead`): `sendTelegramMessage` non rigetta MAI — senza token
+ * fa `return` muto e su 4xx/429 la fetch risolve comunque — quindi un
+ * `try/catch` attorno ad essa è codice morto e brucerebbe il latch su un
+ * messaggio mai arrivato.
+ *
+ * Ritorna `false` se manca il token o se anche un solo chunk non è passato.
+ */
+export async function sendTelegramMessageChecked(chatId: number, text: string): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return false
+  let delivered = true
+  for (const chunk of splitTelegramText(text)) {
+    const ok = await postTelegramMessage(token, { chat_id: chatId, text: chunk, parse_mode: 'Markdown' })
+    // Fallback senza parse_mode se Markdown fallisce (caratteri speciali)
+    if (!ok && !(await postTelegramMessage(token, { chat_id: chatId, text: chunk }))) {
+      delivered = false
+    }
+  }
+  return delivered
+}
+
+/** Invio "fire and forget": non rigetta mai, l'esito viene ignorato. */
+export async function sendTelegramMessage(chatId: number, text: string): Promise<void> {
+  await sendTelegramMessageChecked(chatId, text)
 }
 
 export async function sendTyping(chatId: number) {
