@@ -46,6 +46,13 @@ const NUL_BYTE = /\u0000/g
 // "integer out of range" e l'INSERT esplode. 365 giorni = un anno di anticipo,
 // piu che sufficiente per DURC/visite/attestati.
 const MAX_REMINDER_DAYS = 365
+/**
+ * Tetto esplicito per `lista_scadenze`. Senza `.limit()` il troncamento lo fa
+ * PostgREST al suo row-cap e nessuno se ne accorge: `count` riporterebbe il
+ * numero della pagina troncata e il modello lo leggerebbe come "sono tutte".
+ * Si chiede LIMITE+1 riga solo per sapere se ce n'erano altre.
+ */
+const LISTA_SCADENZE_LIMITE = 200
 
 function ok(payload: Record<string, unknown>): string {
   return JSON.stringify({ ok: true, ...payload })
@@ -168,7 +175,7 @@ function addDaysISO(days: number): string {
  * (soggetto, tipo_documento, categoria): `tipo_documento` arriva testuale
  * dall'LLM, quindi "DURC" / "Durc" / "durc" devono valere lo stesso.
  */
-function normalizeKey(value: string | null | undefined): string {
+export function normalizeKey(value: string | null | undefined): string {
   if (!value) return ''
   return normalizeSubject(value).toLocaleLowerCase('it-IT')
 }
@@ -583,6 +590,7 @@ async function listaScadenze(input: Record<string, unknown>): Promise<string> {
     .select('id, soggetto, categoria, tipo_documento, data_scadenza, reminder_days, recipients, drive_file_id, drive_url, note, stato, updated_at')
     .eq('stato', statoParsed.value ?? DEFAULT_STATO)
     .order('data_scadenza', { ascending: true })
+    .limit(LISTA_SCADENZE_LIMITE + 1)
 
   const rawSoggetto = cleanString(input.soggetto)
   const soggetto = rawSoggetto ? normalizeSubject(rawSoggetto) : undefined
@@ -591,8 +599,14 @@ async function listaScadenze(input: Record<string, unknown>): Promise<string> {
   // diventa una `B` letterale → la riga esiste ma non viene trovata.
   if (soggetto) query = query.ilike('soggetto', ilikePattern(soggetto))
 
+  // Filtro categoria case- e whitespace-insensitive. Stessa dottrina di
+  // `marcaSostituite`: ILIKE lato server come SOVRAINSIEME (per non scaricare
+  // tutte le righe attive) + selezione esatta in JS con `normalizeKey`, perche
+  // `%ponteggi%` da solo prenderebbe anche "sub-ponteggi".
+  // NB: il path di scrittura non normalizza il case, quindi in DB convivono
+  // 'personale' e 'Personale': il filtro deve tollerarli entrambi.
   const categoria = cleanString(input.categoria)
-  if (categoria) query = query.eq('categoria', categoria)
+  if (categoria) query = query.ilike('categoria', ilikePattern(categoria))
 
   const entroGiorni = parseInteger(input.entro_giorni, 'entro_giorni')
   if (entroGiorni.error) return fail(entroGiorni.error)
@@ -602,12 +616,72 @@ async function listaScadenze(input: Record<string, unknown>): Promise<string> {
   const { data, error } = await query
   if (error) return fail(`Errore lista scadenze: ${error.message}`)
 
-  const rows = (data ?? []) as ScadenzaRow[]
+  const allRows = (data ?? []) as ScadenzaRow[]
+  const categoriaKey = categoria ? normalizeKey(categoria) : null
+  const rows = categoriaKey === null
+    ? allRows
+    : allRows.filter(row => normalizeKey(row.categoria) === categoriaKey)
+
+  // `troncato` si misura sulla pagina SERVER (`allRows`), non sulle righe
+  // rimaste dopo il filtro categoria in JS: se il server ha tagliato, le altre
+  // righe della categoria cercata non sono mai arrivate: dichiarare
+  // `troncato:false` solo perche il filtro ha assottigliato la pagina
+  // rimetterebbe in piedi la bugia che questo campo esiste per togliere.
+  const troncato = allRows.length > LISTA_SCADENZE_LIMITE
+  const visibili = rows.length > LISTA_SCADENZE_LIMITE ? rows.slice(0, LISTA_SCADENZE_LIMITE) : rows
+
   return ok({
     today: todayISO(),
-    count: rows.length,
-    scadenze: rows.map(summarize),
+    count: visibili.length,
+    troncato,
+    limite: LISTA_SCADENZE_LIMITE,
+    scadenze: visibili.map(summarize),
   })
+}
+
+/**
+ * Cerca ALTRE righe attive che, dopo un aggiornamento, avrebbero la stessa
+ * chiave di identita della riga appena modificata.
+ *
+ * NON marca nulla: si limita a riportare gli id. E deliberato. `marcaSostituite`
+ * fa sparire righe da lista_scadenze e dal cron: applicarla a un UPDATE
+ * significherebbe che correggere un refuso nel soggetto puo cancellare in
+ * silenzio la scadenza di qualcun altro. Vale qui la stessa regola dell'INSERT
+ * (vedi il commento sull'ORDINE VOLUTO): una riga duplicata e un fastidio
+ * visibile e recuperabile con chiudi_scadenza, zero righe no.
+ */
+async function trovaCollisioniChiave(opts: {
+  id: string
+  soggetto: string
+  tipoDocumento: string | null
+  categoria: string | null
+}): Promise<string[]> {
+  let query = supabase
+    .from('cervellone_scadenze')
+    .select('id, soggetto, tipo_documento, categoria')
+    .eq('stato', 'attivo')
+    .neq('id', opts.id)
+    .ilike('soggetto', ilikePattern(opts.soggetto))
+
+  query = opts.tipoDocumento === null
+    ? query.is('tipo_documento', null)
+    : query.ilike('tipo_documento', ilikePattern(opts.tipoDocumento))
+
+  const { data, error } = await query
+  if (error) return []
+
+  const soggettoKey = normalizeKey(opts.soggetto)
+  const tipoKey = normalizeKey(opts.tipoDocumento)
+  const categoriaKey = normalizeKey(opts.categoria)
+
+  return ((data ?? []) as Pick<ScadenzaRow, 'id' | 'soggetto' | 'tipo_documento' | 'categoria'>[])
+    .filter(row =>
+      row.id !== opts.id &&
+      normalizeKey(row.soggetto) === soggettoKey &&
+      normalizeKey(row.tipo_documento) === tipoKey &&
+      normalizeKey(row.categoria) === categoriaKey,
+    )
+    .map(row => row.id)
 }
 
 async function aggiornaScadenza(input: Record<string, unknown>): Promise<string> {
@@ -631,7 +705,31 @@ async function aggiornaScadenza(input: Record<string, unknown>): Promise<string>
   if (error) return fail(`Errore aggiornamento scadenza: ${error.message}`, { id })
   if (!data) return fail('Scadenza non trovata.', { id })
 
-  return ok({ scadenza: summarize(data as ScadenzaRow) })
+  const aggiornata = data as ScadenzaRow
+
+  // La chiave di identita e soggetto+tipo_documento+categoria: se l'update ne
+  // ha toccata anche solo una, la riga puo essere finita addosso a un'altra
+  // scadenza attiva. Si controlla SOLO in quel caso: aggiornare data o note
+  // non deve costare una query in piu.
+  const chiaveToccata = 'soggetto' in fields || 'tipo_documento' in fields || 'categoria' in fields
+  const collisione = chiaveToccata
+    ? await trovaCollisioniChiave({
+        id: aggiornata.id,
+        soggetto: aggiornata.soggetto,
+        tipoDocumento: aggiornata.tipo_documento ?? null,
+        categoria: aggiornata.categoria ?? null,
+      })
+    : []
+
+  if (collisione.length > 0) {
+    return ok({
+      scadenza: summarize(aggiornata),
+      collisione,
+      avviso: `Attenzione: ora ci sono ${collisione.length + 1} scadenze attive con la stessa chiave (stesso soggetto, tipo documento e categoria). Il cron mandera un promemoria per ciascuna. Chiudi quella di troppo con chiudi_scadenza.`,
+    })
+  }
+
+  return ok({ scadenza: summarize(aggiornata) })
 }
 
 async function chiudiScadenza(input: Record<string, unknown>): Promise<string> {
@@ -698,12 +796,12 @@ export const SCADENZE_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'lista_scadenze',
-    description: 'Lista le scadenze con filtri opzionali. Default: solo stato attivo, ordinate per data_scadenza crescente.',
+    description: 'Lista le scadenze con filtri opzionali. Default: solo stato attivo, ordinate per data_scadenza crescente. Se `troncato` e true la lista NON e completa (fermata a `limite` righe): restringi con soggetto/categoria/entro_giorni invece di rispondere come se fossero tutte.',
     input_schema: {
       type: 'object' as const,
       properties: {
         soggetto: { type: 'string', description: 'Filtro case-insensitive sul soggetto.' },
-        categoria: { type: 'string', description: 'Filtro categoria esatta.' },
+        categoria: { type: 'string', description: 'Filtro categoria, case-insensitive.' },
         stato: { type: 'string', enum: VALID_STATI, description: 'Default attivo.' },
         entro_giorni: { type: 'number', description: 'Mostra scadenze con data_scadenza <= oggi + N giorni.' },
       },
@@ -712,7 +810,7 @@ export const SCADENZE_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'aggiorna_scadenza',
-    description: 'Aggiorna una scadenza per id. Accetta i campi modificabili top-level oppure dentro campi. Applica le stesse validazioni di registra_scadenza: data_scadenza deve essere una data REALE in formato YYYY-MM-DD e reminder_days un intero tra 0 e 365, altrimenti l\'aggiornamento viene rifiutato senza scrivere nulla. NB: soggetto/tipo_documento/categoria sono la chiave di identita della scadenza — cambiarli qui la scollega dai rinnovi futuri.',
+    description: 'Aggiorna una scadenza per id. Accetta i campi modificabili top-level oppure dentro campi. Applica le stesse validazioni di registra_scadenza: data_scadenza deve essere una data REALE in formato YYYY-MM-DD e reminder_days un intero tra 0 e 365, altrimenti l\'aggiornamento viene rifiutato senza scrivere nulla. NB: soggetto/tipo_documento/categoria sono la chiave di identita della scadenza — cambiarli qui la scollega dai rinnovi futuri. Se dopo l\'aggiornamento torna `collisione`, ci sono piu scadenze attive identiche: riportalo all\'utente e proponi chiudi_scadenza su quella di troppo.',
     input_schema: {
       type: 'object' as const,
       properties: {
