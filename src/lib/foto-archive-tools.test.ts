@@ -636,13 +636,18 @@ describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG
 describe('prepara_cartella — anti-duplicato oltre le 500 righe', () => {
   const HEADER = ['Commessa', 'Comune', 'Committente', 'Oggetto']
 
-  // 600 righe dati: la commessa da riconoscere sta alla 550esima, cioe' FUORI
-  // dalle prime 500 righe del foglio (header incluso).
+  // 600 righe dati, costruite per riprodurre il Registro reale:
+  //  - righe 1-100: match DEBOLI (stesso comune e stesso tipo di lavoro, commessa
+  //    diversa) — sono il rumore che precede la prova nell'ordine del foglio;
+  //  - riga 550: il duplicato VERO, stesso numero commessa, FUORI dalle prime 500;
+  //  - le altre: righe scorrelate.
+  // Senza i deboli davanti, un test sull'ordinamento non proverebbe niente:
+  // ordinare una lista che contiene un solo elemento riesce sempre.
   const DATI = Array.from({ length: 600 }, (_, i) => {
     const n = i + 1
-    return n === 550
-      ? ['2026-550', 'Potenza', 'Ferrovie Appulo Lucane', 'Rifacimento copertura']
-      : [`2026-${String(n).padStart(3, '0')}`, `ComuneX${n}`, `ClienteX${n}`, `LavoroX${n}`]
+    if (n === 550) return ['2026-550', 'Potenza', 'Ferrovie Appulo Lucane', 'Rifacimento copertura']
+    if (n <= 100) return [`2020-${String(n).padStart(3, '0')}`, 'Potenza', `ClienteX${n}`, 'Rifacimento copertura']
+    return [`2026-${String(n).padStart(3, '0')}`, `ComuneX${n}`, `ClienteX${n}`, `LavoroX${n}`]
   })
 
   // Simula il comportamento REALE dell'API Sheets: un range con un tetto di riga
@@ -683,8 +688,133 @@ describe('prepara_cartella — anti-duplicato oltre le 500 righe', () => {
   it('chiede il Registro senza tetto di riga', async () => {
     await executeFotoArchiveTool('prepara_cartella', NUOVA_COMMESSA, 'chat-1')
 
+    // Range di sole colonne, eventualmente qualificato col nome del tab.
+    // NON `not.toMatch(/\d/)`: vieterebbe anche 'Foglio1!A:Z', che e la
+    // convenzione documentata del repo.
     const range = readSheet.mock.calls[0][1]
-    expect(range).not.toMatch(/\d/)
+    expect(range).toMatch(/^([^!]+!)?[A-Z]+:[A-Z]+$/)
+  })
+
+  it('mostra per PRIMO il duplicato col numero commessa uguale', async () => {
+    // `slice(0, 8)` su una lista in ordine di foglio lasciava fuori il duplicato
+    // vero (riga 550) e mostrava 8 righe vecchie non correlate: il modello
+    // concludeva "non e un duplicato" e confermava. Il numero commessa e la
+    // prova forte e deve arrivare in cima.
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', NUOVA_COMMESSA, 'chat-1'))!)
+
+    expect(res.candidati[0]).toContain('2026-550')
+    expect(res.candidati_numero_uguale.join(' ')).toContain('2026-550')
+    expect(res.message).toMatch(/STESSO NUMERO COMMESSA/)
+  })
+
+  it('il numero commessa uguale basta a bloccare, anche senza nulla in comune', async () => {
+    // Ramo `numMatch` provato DA SOLO: comune, committente e oggetto non
+    // condividono un solo token con la riga 550.
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: {
+        Commessa: '2026-550',
+        Comune: 'Bernalda',
+        Committente: 'Zeta Immobiliare',
+        Oggetto: 'Manutenzione facciate',
+      },
+    }, 'chat-1'))!)
+
+    expect(res.need).toBe('conferma_duplicato')
+    expect(res.candidati_numero_uguale).toHaveLength(1)
+  })
+
+  it('un solo token in comune NON basta a gridare al duplicato', async () => {
+    // Soglia dell'overlap provata sul confine: con `>= 1` questo test muore.
+    // Un guardrail che scatta su un token solo blocca ogni commessa dello
+    // stesso comune, e un guardrail che scatta sempre viene disattivato per
+    // abitudine — esito peggiore del bug che chiude.
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: {
+        Commessa: '2029-999',
+        Comune: 'ComuneX200',          // unico token in comune, con la riga 200
+        Committente: 'Zeta Immobiliare',
+        Oggetto: 'Manutenzione facciate',
+      },
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(true)
+    expect(appendSheet).toHaveBeenCalledTimes(1)
+  })
+
+  it('lo stesso token ripetuto nella riga non vale come due token in comune', async () => {
+    // "Comune: Potenza | Committente: Comune di Potenza" e la forma NORMALE del
+    // Registro in Basilicata: 'potenza' compare due volte nella stessa riga.
+    // Contando i token NON deduplicati, quell'unico token distinto arrivava a
+    // overlap 2 e faceva scattare il guardrail su OGNI nuova commessa dello
+    // stesso comune — un guardrail che grida sempre viene poi ignorato.
+    readSheet.mockImplementation(async () => {
+      const righe = [HEADER, ['2018-005', 'Potenza', 'Comune di Potenza', 'Demolizione capannone']]
+      return `${righe.length} righe:\n${righe.map((r, i) => `Riga ${i + 1}: ${r.join(' | ')}`).join('\n')}`
+    })
+
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: {
+        Commessa: '2029-998',
+        Comune: 'Potenza',              // unico token DISTINTO in comune
+        Committente: 'Zeta Immobiliare',
+        Oggetto: 'Manutenzione facciate',
+      },
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(true)
+    expect(appendSheet).toHaveBeenCalledTimes(1)
+  })
+
+  it('non elegge a intestazione una riga dati con una colonna in piu', async () => {
+    // `parseHeaderColumns` sceglie la riga con PIU celle fra quelle che riceve.
+    // Col range aperto, una colonna "Note" aggiunta dopo e compilata solo dalle
+    // righe recenti farebbe vincere una riga DATI: prepara_cartella resterebbe
+    // bloccata per sempre a chiedere valori per colonne chiamate "2020-521".
+    readSheet.mockImplementation(async () => {
+      const righe = [
+        HEADER,
+        ...Array.from({ length: 600 }, (_, i) => {
+          const n = i + 1
+          const base = [`2020-${String(n).padStart(3, '0')}`, `Cx${n}`, `Kx${n}`, `Lx${n}`]
+          return n >= 520 ? [...base, `nota ${n}`] : base
+        }),
+      ]
+      return `${righe.length} righe:\n${righe.map((r, i) => `Riga ${i + 1}: ${r.join(' | ')}`).join('\n')}`
+    })
+
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: {
+        Commessa: '2031-001',
+        Comune: 'Venosa',
+        Committente: 'Omega Srl',
+        Oggetto: 'Nuovo capannone',
+      },
+    }, 'chat-1'))!)
+
+    // Se l'header fosse stato dedotto da una riga dati, qui avremmo
+    // need:'valori' con colonne assurde.
+    expect(res.need).not.toBe('valori')
+    expect(res.ok).toBe(true)
+  })
+
+  it('un foglio che CONTIENE la parola errore non e un foglio illeggibile', async () => {
+    // `startsWith`, non `includes`: un Oggetto tipo "Ripristino errore di quota"
+    // non deve far dichiarare illeggibile un Registro sano.
+    readSheet.mockImplementation(async () => {
+      const righe = [HEADER, ['2031-002', 'Rionero', 'Delta Spa', 'Ripristino errore di quota']]
+      return `${righe.length} righe:\n${righe.map((r, i) => `Riga ${i + 1}: ${r.join(' | ')}`).join('\n')}`
+    })
+
+    const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
+      ambito: 'cantiere',
+      valori: { Commessa: '2031-003', Comune: 'Venosa', Committente: 'Omega Srl', Oggetto: 'Nuovo capannone' },
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(true)
   })
 
   it('crea la commessa quando non ci sono simili (controprova)', async () => {

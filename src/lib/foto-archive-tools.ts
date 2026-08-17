@@ -769,7 +769,16 @@ async function preparaCartella(input: Record<string, unknown>): Promise<string> 
     return fail({ error: `Registro non leggibile: ${sheetFull}` })
   }
 
-  const colonne = parseHeaderColumns(sheetFull)
+  // L'intestazione si cerca SOLO nelle prime righe. `parseHeaderColumns` elegge
+  // header la riga con piu celle fra quelle che riceve: dandogli tutto il foglio
+  // (ora che il range e aperto) una riga DATI con una colonna in piu — una "Note"
+  // aggiunta dopo e compilata solo di recente — vincerebbe sull'header vero, e
+  // prepara_cartella resterebbe bloccata per sempre a chiedere valori per
+  // colonne che si chiamano "2020-521". Il Registro ha l'header entro le prime
+  // 3 righe (dati dalla 4a): 10 righe sono un margine abbondante.
+  const RIGHE_INTESTAZIONE = 10
+  const areaIntestazione = sheetFull.split('\n').slice(0, RIGHE_INTESTAZIONE + 1).join('\n')
+  const colonne = parseHeaderColumns(areaIntestazione)
 
   if (!colonne.length) {
     return fail({ error: 'intestazione Registro non leggibile', sheet_preview: sheetFull.slice(0, 2000) })
@@ -787,24 +796,41 @@ async function preparaCartella(input: Record<string, unknown>): Promise<string> 
     const nuoviTokens = new Set(significantTokens(nuovaRigaText))
     const esistenti = parseRegistroDataRows(sheetFull, colonne)
 
-    const simili: string[] = []
+    const forti: string[] = []
+    const deboli: string[] = []
     for (const rigaText of esistenti) {
       const rigaNums = commessaNumbers(rigaText)
       const numMatch = nuoviNums.length > 0 && rigaNums.some(n => nuoviNums.includes(n))
-      let overlap = 0
-      if (!numMatch) {
-        for (const t of significantTokens(rigaText)) {
-          if (nuoviTokens.has(t)) overlap += 1
-        }
+      if (numMatch) {
+        forti.push(rigaText.slice(0, 200))
+        continue
       }
-      if (numMatch || overlap >= 2) simili.push(rigaText.slice(0, 200))
+      // `new Set`: senza deduplicare i token della riga esistente, UNO SOLO
+      // ripetuto bastava per arrivare a overlap 2. In Basilicata la coppia
+      // "Comune: Potenza | Committente: Comune di Potenza" e la norma, quindi
+      // ogni nuova commessa a Potenza risultava simile a ogni riga vecchia di
+      // Potenza. L'overlap deve contare token DISTINTI in comune.
+      let overlap = 0
+      for (const t of new Set(significantTokens(rigaText))) {
+        if (nuoviTokens.has(t)) overlap += 1
+      }
+      if (overlap >= 2) deboli.push(rigaText.slice(0, 200))
     }
+
+    // ORDINE: prima i match sul NUMERO commessa, che sono la prova forte.
+    // Con lo slice a 8 su una lista in ordine di foglio, su un Registro grande
+    // il duplicato vero (magari alla riga 550) restava fuori dagli 8 mostrati:
+    // il modello vedeva otto righe palesemente non correlate, concludeva "non e
+    // un duplicato" e richiamava con conferma_duplicato:true. Il duplicato
+    // nasceva lo stesso, solo con una conferma di mezzo.
+    const simili = [...forti, ...deboli]
 
     if (simili.length > 0) {
       return fail({
         need: 'conferma_duplicato',
-        message: `Trovate ${simili.length} commesse SIMILI già nel Registro: potrebbe essere un DUPLICATO. Verifica con l'Ingegnere se la commessa esiste già (in tal caso usa archivia_foto su quella, non crearne una nuova). Per creare comunque, richiama prepara_cartella con conferma_duplicato:true.`,
+        message: `Trovate ${simili.length} commesse SIMILI già nel Registro${forti.length > 0 ? `, di cui ${forti.length} con lo STESSO NUMERO COMMESSA (prova forte: quasi certamente e' un duplicato)` : ''}: potrebbe essere un DUPLICATO. Verifica con l'Ingegnere se la commessa esiste già (in tal caso usa archivia_foto su quella, non crearne una nuova). Per creare comunque, richiama prepara_cartella con conferma_duplicato:true.`,
         candidati: simili.slice(0, 8),
+        candidati_numero_uguale: forti.slice(0, 8),
       })
     }
   }
