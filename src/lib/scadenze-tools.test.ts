@@ -636,3 +636,48 @@ describe('SCADENZE_TOOLS — le istruzioni all LLM sono allineate al codice', ()
     expect(propDescription(tool, 'data_scadenza')).toMatch(/data reale|reale/i)
   })
 })
+
+describe('registraScadenzaCore — opzione sostituisciPrecedenti (P0 chiave non distintiva)', () => {
+  const CANDIDATA = { id: 'old-1', soggetto: 'Mario Rossi', tipo_documento: 'attestato formazione', categoria: 'Documenti' }
+
+  it('sostituisciPrecedenti:false → INSERT sì, nessun UPDATE sostituito e nessuna ricerca delle precedenti', async () => {
+    // Chi registra con una chiave che non identifica un solo documento (il flusso
+    // mail-sentinella → proposta → conferma, dove `categoria` e una costante)
+    // deve poter aggiungere la scadenza SENZA marcare 'sostituito' una riga che
+    // e un ALTRO documento: quella sparirebbe da lista_scadenze e dal cron.
+    mockHandler = (op) => {
+      if (op.op === 'insert') return { data: { id: 'new-id', reminder_days: 5 }, error: null }
+      if (op.op === 'select') return { data: [CANDIDATA], error: null }
+      return { data: null, error: null }
+    }
+
+    const { registraScadenzaCore } = await import('./scadenze-tools')
+    const esito = await registraScadenzaCore(
+      { ...BASE, tipo_documento: 'attestato formazione', categoria: 'Documenti' },
+      { sostituisciPrecedenti: false },
+    )
+
+    expect(esito.ok).toBe(true)
+    expect(esito.id).toBe('new-id')
+    expect(esito.sostituite).toEqual([])
+    expect(esito.avviso).toBeUndefined()
+    expect(insertOps()).toHaveLength(1)
+    expect(sostituzioneOps()).toHaveLength(0)
+    expect(mockOps.filter(op => op.table === 'cervellone_scadenze' && op.op === 'select')).toHaveLength(0)
+  })
+
+  it('default (nessuna opzione) → la sostituzione resta attiva: il path manuale non cambia', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'insert') return { data: { id: 'new-id', reminder_days: 5 }, error: null }
+      if (op.op === 'select') return { data: [CANDIDATA], error: null }
+      return { data: null, error: null }
+    }
+
+    const { registraScadenzaCore } = await import('./scadenze-tools')
+    const esito = await registraScadenzaCore({ ...BASE, tipo_documento: 'attestato formazione', categoria: 'Documenti' })
+
+    expect(esito.ok).toBe(true)
+    expect(esito.sostituite).toEqual(['old-1'])
+    expect(sostituzioneOps()).toHaveLength(1)
+  })
+})
