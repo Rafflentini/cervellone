@@ -419,6 +419,14 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     rowsToArchive = [...rowsToArchive, ...(older as FotoPendingRow[])]
   }
 
+  // Foto recenti (<48h) rimaste in attesa perche NON selezionate dal gruppo.
+  // Non sono coperte da `notaOrfani`, che guarda solo le >48h: senza questo
+  // conteggio il messaggio dichiarava "tutte archiviate" mentre i cluster
+  // precedenti restavano in_attesa e l'utente non li cercava piu.
+  const recentiNonArchiviate = gruppoScelta === 'ultimo'
+    ? clusters.slice(0, -1).reduce((n, c) => n + c.length, 0)
+    : 0
+
   if (rowsToArchive.length === 0) {
     return fail({
       stato: 'nessuna_foto_recente',
@@ -522,6 +530,10 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   const notaOrfani = (older.length > 0 && !includiVecchie)
     ? ` Nota: ci sono ${older.length} foto più vecchie di 48h non archiviate — se vanno qui, richiama con includi_vecchie:true.`
     : ''
+  const notaResidue = recentiNonArchiviate > 0
+    ? ` Restano ${recentiNonArchiviate} foto recenti NON archiviate (raffiche precedenti): richiama con gruppo:"tutti" se vanno nella stessa cartella.`
+    : ''
+
   // Tutti i move riusciti (anche se qualche update DB è fallito): archiviazione OK.
   return ok({
     archiviate: spostate,
@@ -529,8 +541,11 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     errori_db: erroriDb,
     totale,
     path,
+    recenti_non_archiviate: recentiNonArchiviate,
     vecchie_non_archiviate: !includiVecchie ? older.length : 0,
-    message: `Tutte le ${spostate} foto spostate e verificate in ${path}.${notaDb}${notaOrfani}`,
+    message: recentiNonArchiviate > 0
+      ? `Archiviate ${spostate} foto in ${path}.${notaDb}${notaResidue}${notaOrfani}`
+      : `Tutte le ${spostate} foto spostate e verificate in ${path}.${notaDb}${notaOrfani}`,
   })
 }
 
