@@ -46,6 +46,13 @@ const NUL_BYTE = /\u0000/g
 // "integer out of range" e l'INSERT esplode. 365 giorni = un anno di anticipo,
 // piu che sufficiente per DURC/visite/attestati.
 const MAX_REMINDER_DAYS = 365
+/**
+ * Tetto esplicito per `lista_scadenze`. Senza `.limit()` il troncamento lo fa
+ * PostgREST al suo row-cap e nessuno se ne accorge: `count` riporterebbe il
+ * numero della pagina troncata e il modello lo leggerebbe come "sono tutte".
+ * Si chiede LIMITE+1 riga solo per sapere se ce n'erano altre.
+ */
+const LISTA_SCADENZE_LIMITE = 200
 
 function ok(payload: Record<string, unknown>): string {
   return JSON.stringify({ ok: true, ...payload })
@@ -583,6 +590,7 @@ async function listaScadenze(input: Record<string, unknown>): Promise<string> {
     .select('id, soggetto, categoria, tipo_documento, data_scadenza, reminder_days, recipients, drive_file_id, drive_url, note, stato, updated_at')
     .eq('stato', statoParsed.value ?? DEFAULT_STATO)
     .order('data_scadenza', { ascending: true })
+    .limit(LISTA_SCADENZE_LIMITE + 1)
 
   const rawSoggetto = cleanString(input.soggetto)
   const soggetto = rawSoggetto ? normalizeSubject(rawSoggetto) : undefined
@@ -614,10 +622,20 @@ async function listaScadenze(input: Record<string, unknown>): Promise<string> {
     ? allRows
     : allRows.filter(row => normalizeKey(row.categoria) === categoriaKey)
 
+  // `troncato` si misura sulla pagina SERVER (`allRows`), non sulle righe
+  // rimaste dopo il filtro categoria in JS: se il server ha tagliato, le altre
+  // righe della categoria cercata non sono mai arrivate: dichiarare
+  // `troncato:false` solo perche il filtro ha assottigliato la pagina
+  // rimetterebbe in piedi la bugia che questo campo esiste per togliere.
+  const troncato = allRows.length > LISTA_SCADENZE_LIMITE
+  const visibili = rows.length > LISTA_SCADENZE_LIMITE ? rows.slice(0, LISTA_SCADENZE_LIMITE) : rows
+
   return ok({
     today: todayISO(),
-    count: rows.length,
-    scadenze: rows.map(summarize),
+    count: visibili.length,
+    troncato,
+    limite: LISTA_SCADENZE_LIMITE,
+    scadenze: visibili.map(summarize),
   })
 }
 
@@ -709,7 +727,7 @@ export const SCADENZE_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'lista_scadenze',
-    description: 'Lista le scadenze con filtri opzionali. Default: solo stato attivo, ordinate per data_scadenza crescente.',
+    description: 'Lista le scadenze con filtri opzionali. Default: solo stato attivo, ordinate per data_scadenza crescente. Se `troncato` e true la lista NON e completa (fermata a `limite` righe): restringi con soggetto/categoria/entro_giorni invece di rispondere come se fossero tutte.',
     input_schema: {
       type: 'object' as const,
       properties: {

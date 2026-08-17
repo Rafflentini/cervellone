@@ -812,3 +812,74 @@ describe('lista_scadenze — filtro categoria case-insensitive (BUG A)', () => {
     expect(props.categoria?.description).not.toMatch(/esatta/i)
   })
 })
+
+/**
+ * BUG B — `lista_scadenze` non chiedeva alcun `.limit()`: il troncamento lo
+ * faceva PostgREST al suo row-cap, in silenzio, e `count` riportava il numero
+ * della pagina troncata. Il modello lo leggeva come "sono tutte".
+ */
+describe('lista_scadenze — troncamento dichiarato (BUG B)', () => {
+  function righe(n: number, over: Record<string, unknown> = {}) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `s-${i}`, soggetto: `Soggetto ${i}`, categoria: 'personale',
+      tipo_documento: 'attestato', data_scadenza: '2027-01-01', reminder_days: 5,
+      recipients: [], drive_file_id: null, drive_url: null, note: null,
+      stato: 'attivo', updated_at: '2026-08-17T00:00:00Z',
+      ...over,
+    }))
+  }
+
+  it('lista_scadenze chiede un limite esplicito al server (BUG B)', async () => {
+    mockHandler = (op) => (op.op === 'select' ? { data: [], error: null } : { data: null, error: null })
+
+    await callTool('lista_scadenze', {})
+
+    const select = mockOps.find(op => op.op === 'select')
+    expect(select?.filters.find(f => f.method === 'limit')).toBeDefined()
+  })
+
+  it('lista_scadenze segnala il troncamento invece di mentire sul conteggio (BUG B)', async () => {
+    // 201 righe = LIMITE(200) + 1: il server ne aveva altre.
+    mockHandler = (op) => (op.op === 'select' ? { data: righe(201), error: null } : { data: null, error: null })
+
+    const res = await callTool('lista_scadenze', {})
+
+    expect(res.troncato).toBe(true)
+    expect(res.limite).toBe(200)
+    expect(res.count).toBe(200)
+    expect(res.scadenze).toHaveLength(200)
+  })
+
+  it('lista_scadenze dichiara troncato:false quando la lista e completa (BUG B)', async () => {
+    mockHandler = (op) => (op.op === 'select' ? { data: righe(3), error: null } : { data: null, error: null })
+
+    const res = await callTool('lista_scadenze', {})
+
+    expect(res.troncato).toBe(false)
+    expect(res.count).toBe(3)
+  })
+
+  it('il troncamento resta dichiarato anche se il filtro categoria in JS assottiglia la pagina (BUG B)', async () => {
+    // Il server ha troncato (201 righe = LIMITE+1) e solo 2 sopravvivono al
+    // filtro categoria: le ALTRE righe 'antincendio' oltre il cap non sono mai
+    // arrivate. `troncato` deve dipendere dalla pagina SERVER, non dalle righe
+    // rimaste dopo la selezione in JS, altrimenti si torna a mentire.
+    const data = [
+      ...righe(2, { categoria: 'antincendio' }),
+      ...righe(199, { categoria: 'personale' }),
+    ]
+    mockHandler = (op) => (op.op === 'select' ? { data, error: null } : { data: null, error: null })
+
+    const res = await callTool('lista_scadenze', { categoria: 'antincendio' })
+
+    expect(res.count).toBe(2)
+    expect(res.troncato).toBe(true)
+  })
+
+  it('la description di lista_scadenze istruisce l LLM sul campo troncato', async () => {
+    const { SCADENZE_TOOLS } = await import('./scadenze-tools')
+    const tool = SCADENZE_TOOLS.find(t => t.name === 'lista_scadenze')!
+    expect(tool.description).toMatch(/troncato/)
+    expect(tool.description).toMatch(/NON e completa|non e completa/i)
+  })
+})
