@@ -167,18 +167,31 @@ export async function GET(req: NextRequest) {
   const today = todayISO()
 
   try {
-    const { data, error } = await supabase
-      .from('cervellone_scadenze')
-      .select('id, soggetto, categoria, tipo_documento, data_scadenza, reminder_days, recipients, drive_url, reminders_sent')
-      .eq('stato', 'attivo')
-      .gte('data_scadenza', today)
-      .order('data_scadenza', { ascending: true })
+    // PostgREST tronca al suo row-cap senza dirlo: senza paginare, oltre il cap
+    // le scadenze piu lontane non riceverebbero MAI il promemoria e il JSON di
+    // risposta riporterebbe il conteggio della pagina troncata come se fosse
+    // il totale. Nessun umano legge l'output del cron: qui non basta segnalare
+    // il troncamento, vanno processate tutte.
+    const PAGINA = 500
+    const rows: ScadenzaRow[] = []
+    for (let offset = 0; ; offset += PAGINA) {
+      const { data, error } = await supabase
+        .from('cervellone_scadenze')
+        .select('id, soggetto, categoria, tipo_documento, data_scadenza, reminder_days, recipients, drive_url, reminders_sent')
+        .eq('stato', 'attivo')
+        .gte('data_scadenza', today)
+        .order('data_scadenza', { ascending: true })
+        .range(offset, offset + PAGINA - 1)
 
-    if (error) {
-      return NextResponse.json({ ok: false, error: error.message }, { status: 500 })
+      if (error) {
+        return NextResponse.json({ ok: false, error: error.message }, { status: 500 })
+      }
+
+      const page = (data ?? []) as ScadenzaRow[]
+      rows.push(...page)
+      if (page.length < PAGINA) break
     }
 
-    const rows = (data ?? []) as ScadenzaRow[]
     const reminded: ReminderResult[] = []
 
     for (const row of rows) {
