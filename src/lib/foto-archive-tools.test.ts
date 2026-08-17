@@ -12,11 +12,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // ── Mock Drive ──────────────────────────────────────────────────────────────
 // `vi.hoisted`: le factory di `vi.mock` sono issate sopra le const del modulo,
 // quindi i mock devono nascere li dentro o si prende un TDZ.
-const { moveFile, listSubfolders, getOrCreatePathFolders, getFileParents } = vi.hoisted(() => ({
+const { moveFile, listSubfolders, getOrCreatePathFolders, getFileParents, getFolderPathNames } = vi.hoisted(() => ({
   moveFile: vi.fn(async (_fileId: string, _target: string) => 'File spostato nella nuova cartella'),
   listSubfolders: vi.fn(async (_folderId: string) => [] as Array<{ id: string; name: string }>),
   getOrCreatePathFolders: vi.fn(async (_parent: string, _segments: string[]) => 'target-folder'),
   getFileParents: vi.fn(async (_fileId: string) => [] as string[]),
+  getFolderPathNames: vi.fn(async (_folderId: string, _maxLevels?: number) => [] as string[]),
 }))
 
 vi.mock('./drive', () => ({
@@ -26,6 +27,7 @@ vi.mock('./drive', () => ({
   getOrCreatePathFolders,
   moveFile,
   getFileParents,
+  getFolderPathNames,
   readSheet: vi.fn(async () => []),
   appendSheet: vi.fn(),
   DrivePolicyError: class extends Error {},
@@ -117,6 +119,7 @@ beforeEach(() => {
   moveFile.mockResolvedValue('File spostato nella nuova cartella')
   getOrCreatePathFolders.mockResolvedValue('target-folder')
   getFileParents.mockResolvedValue([])
+  getFolderPathNames.mockResolvedValue([])
   listSubfolders.mockImplementation(async (folderId: string) => {
     if (folderId === 'root-cantieri') {
       return [
@@ -197,19 +200,36 @@ describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG
 
     // ROUND 2: altra commessa, stessa chat. Il file E GIA in target-A su Drive.
     moveFile.mockClear()
+    mockOps = []
     getFileParents.mockResolvedValue(['target-A'])
     getOrCreatePathFolders.mockResolvedValue('target-B')
+    getFolderPathNames.mockResolvedValue(['Commessa Alfa', 'Foto', '2026-08-17'])
     mockHandler = (op) => {
       if (op.op === 'select') return { data: [rigaPendingConTarget], error: null }
       return { data: null, error: null }
     }
 
-    await executeFotoArchiveTool('archivia_foto', {
+    const r2 = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
       ambito: 'cantiere', nome: 'Beta Ristrutturazione',
-    }, 'chat-1')
+    }, 'chat-1'))!)
 
-    // OGGI ROSSO: il file viene spostato in target-B, strappato dalla commessa giusta.
+    // Asserzione centrale del BUG F, invariata: il file NON si tocca.
     expect(moveFile).not.toHaveBeenCalledWith('file-1', 'target-B')
+
+    // CAMBIO DELIBERATO (fix P1): prima il codice riconciliava e CHIUDEVA la
+    // riga, anche se la cartella richiesta ora (target-B) non e quella dove il
+    // file sta davvero (target-A). Cosi la foto usciva da OPEN_STATI e non era
+    // piu recuperabile via tool, mentre il messaggio nominava solo target-B.
+    // Ora la riga resta aperta e il tool chiede conferma, dicendo il NOME della
+    // commessa dove la foto si trova per davvero.
+    const chiusure = mockOps.filter(o =>
+      o.table === 'cervellone_foto_pending' && o.op === 'update' &&
+      (o.payload as Record<string, unknown> | undefined)?.stato === 'archiviata' &&
+      o.filters.some(f => f.method === 'eq' && f.args[0] === 'id' && f.args[1] === 'row-1'))
+    expect(chiusure).toHaveLength(0)
+    expect(r2.ok).toBe(false)
+    expect(r2.need).toBe('conferma_ricollocazione')
+    expect(r2.message).toContain('Commessa Alfa/Foto/2026-08-17')
   })
 
   // Test STRUTTURALE, non comportamentale: il mock Supabase non filtra le
@@ -396,6 +416,173 @@ describe('archivia_foto — riga strappata dopo move OK + update DB fallito (BUG
     expect(res.message).not.toMatch(/sono GI\S+ nella cartella/)
     // Deve invece dirlo: restano aperte, il file non e in questa cartella.
     expect(res.message).toMatch(/riallineamento del DB \S+ fallito/)
+    expect(res.message).toMatch(/restano APERTE/)
+  })
+
+  // ── P1: la riconciliazione chiudeva righe di ALTRE commesse ────────────────
+  // Il blocco di riconciliazione non confrontava `row.target_folder_id` con la
+  // cartella richiesta ORA: bastava che il file fosse dove diceva la riga per
+  // chiuderla. Una riga vecchia trascinata in un batch nuovo veniva quindi
+  // marcata `archiviata` — usciva da OPEN_STATI, spariva dalle pendenti e non
+  // era piu recuperabile via tool — mentre la foto restava nella commessa
+  // precedente e il messaggio nominava solo la commessa nuova.
+  it('stessa cartella richiesta: riconcilia come prima (retry legittima, invariato)', async () => {
+    getFileParents.mockResolvedValue(['target-B'])
+    getOrCreatePathFolders.mockResolvedValue('target-B')
+    mockHandler = (op) =>
+      (op.op === 'select' ? { data: [{ ...rigaPending, target_folder_id: 'target-B' }], error: null } : { data: null, error: null })
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Beta Ristrutturazione',
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(true)
+    expect(res.riconciliate).toBe(1)
+    expect(moveFile).not.toHaveBeenCalled()
+
+    const updates = mockOps.filter(o =>
+      o.table === 'cervellone_foto_pending' && o.op === 'update' &&
+      o.filters.some(f => f.method === 'eq' && f.args[0] === 'id' && f.args[1] === 'row-1'))
+    expect(updates).toHaveLength(1)
+    expect((updates[0].payload as Record<string, unknown>).stato).toBe('archiviata')
+    // Il percorso normale non deve pagare chiamate Drive in piu: il nome
+    // leggibile della cartella serve SOLO nel ramo (raro) di ricollocazione.
+    expect(getFolderPathNames).not.toHaveBeenCalled()
+  })
+
+  it('cartella DIVERSA senza ricolloca: non chiude la riga e non tocca il file', async () => {
+    getFileParents.mockResolvedValue(['target-alfa'])
+    getOrCreatePathFolders.mockResolvedValue('target-beta')
+    getFolderPathNames.mockResolvedValue(['Commessa Alfa', 'Foto', '2026-08-17'])
+    mockHandler = (op) =>
+      (op.op === 'select' ? { data: [{ ...rigaPending, target_folder_id: 'target-alfa' }], error: null } : { data: null, error: null })
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Beta Ristrutturazione',
+    }, 'chat-1'))!)
+
+    // (a) il file resta dov'e
+    expect(moveFile).not.toHaveBeenCalledWith('file-1', 'target-beta')
+    expect(moveFile).not.toHaveBeenCalled()
+
+    // (b) la riga NON viene chiusa: deve restare in OPEN_STATI, o la foto
+    // diventa irrecuperabile via tool.
+    const chiusure = mockOps.filter(o =>
+      o.table === 'cervellone_foto_pending' && o.op === 'update' &&
+      (o.payload as Record<string, unknown> | undefined)?.stato === 'archiviata' &&
+      o.filters.some(f => f.method === 'eq' && f.args[0] === 'id' && f.args[1] === 'row-1'))
+    expect(chiusure).toHaveLength(0)
+
+    // (c) l'esito chiede conferma e dice DOVE sta davvero la foto, col NOME
+    // della commessa: un id Drive non dice niente all'Ingegnere.
+    expect(res.ok).toBe(false)
+    expect(res.need).toBe('conferma_ricollocazione')
+    expect(res.da_ricollocare).toHaveLength(1)
+    expect(res.da_ricollocare[0].id).toBe('row-1')
+    expect(res.da_ricollocare[0].si_trova_in).toBe('Commessa Alfa/Foto/2026-08-17')
+    expect(res.message).toContain('Commessa Alfa/Foto/2026-08-17')
+    expect(res.message).toContain('ricolloca:true')
+    expect(getFolderPathNames).toHaveBeenCalledWith('target-alfa')
+  })
+
+  it('cartella DIVERSA con ricolloca:true: sposta davvero e chiude la riga', async () => {
+    getFileParents.mockResolvedValue(['target-alfa'])
+    getOrCreatePathFolders.mockResolvedValue('target-beta')
+    mockHandler = (op) =>
+      (op.op === 'select' ? { data: [{ ...rigaPending, target_folder_id: 'target-alfa' }], error: null } : { data: null, error: null })
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Beta Ristrutturazione', ricolloca: true,
+    }, 'chat-1'))!)
+
+    expect(moveFile).toHaveBeenCalledWith('file-1', 'target-beta')
+    expect(res.ok).toBe(true)
+    expect(res.need).toBeUndefined()
+    expect(res.archiviate).toBe(1)
+    expect(res.riconciliate).toBe(0)
+
+    const updates = mockOps.filter(o =>
+      o.table === 'cervellone_foto_pending' && o.op === 'update' &&
+      o.filters.some(f => f.method === 'eq' && f.args[0] === 'id' && f.args[1] === 'row-1'))
+    // intento (target_folder_id riscritto sulla cartella nuova) + chiusura.
+    expect(updates.length).toBeGreaterThanOrEqual(2)
+    expect(updates[0].payload).toEqual({ target_folder_id: 'target-beta' })
+    expect((updates[updates.length - 1].payload as Record<string, unknown>).stato).toBe('archiviata')
+  })
+
+  it('batch misto: la foto nuova viene archiviata lo stesso, la ricollocazione resta da confermare', async () => {
+    const nuova = { ...rigaPending, id: 'row-2', drive_file_id: 'file-2', created_at: minutiFa(2) }
+    getFileParents.mockResolvedValue(['target-alfa'])
+    getOrCreatePathFolders.mockResolvedValue('target-beta')
+    getFolderPathNames.mockResolvedValue(['Commessa Alfa', 'Foto', '2026-08-17'])
+    mockHandler = (op) =>
+      (op.op === 'select'
+        ? { data: [{ ...rigaPending, target_folder_id: 'target-alfa' }, nuova], error: null }
+        : { data: null, error: null })
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Beta Ristrutturazione',
+    }, 'chat-1'))!)
+
+    // La foto nuova non deve restare ostaggio della riga da ricollocare.
+    expect(moveFile).toHaveBeenCalledTimes(1)
+    expect(moveFile).toHaveBeenCalledWith('file-2', 'target-beta')
+    expect(moveFile).not.toHaveBeenCalledWith('file-1', 'target-beta')
+
+    // Ma l'esito complessivo resta un `need`: serve la decisione dell'Ingegnere.
+    expect(res.ok).toBe(false)
+    expect(res.need).toBe('conferma_ricollocazione')
+    expect(res.totale).toBe(2)
+    expect(res.archiviate).toBe(1)          // solo row-2
+    expect(res.riconciliate).toBe(0)        // row-1 NON e stata riconciliata
+    expect(res.errori_move).toBe(0)
+    expect(res.da_ricollocare).toHaveLength(1)
+    expect(res.da_ricollocare[0].id).toBe('row-1')
+  })
+
+  it('se getFolderPathNames esplode, il ramo regge e ripiega sull id', async () => {
+    getFileParents.mockResolvedValue(['target-alfa'])
+    getOrCreatePathFolders.mockResolvedValue('target-beta')
+    getFolderPathNames.mockRejectedValue(new Error('Drive 500'))
+    mockHandler = (op) =>
+      (op.op === 'select' ? { data: [{ ...rigaPending, target_folder_id: 'target-alfa' }], error: null } : { data: null, error: null })
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Beta Ristrutturazione',
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(false)
+    expect(res.need).toBe('conferma_ricollocazione')
+    expect(res.da_ricollocare[0].si_trova_in).toBe('target-alfa')
+    expect(moveFile).not.toHaveBeenCalled()
+  })
+
+  it('"Tutte le N foto" non si dice se una riconciliazione e fallita', async () => {
+    const nuova = { ...rigaPending, id: 'row-2', drive_file_id: 'file-2', created_at: minutiFa(2) }
+    getFileParents.mockResolvedValue(['target-beta'])
+    getOrCreatePathFolders.mockResolvedValue('target-beta')
+    mockHandler = (op) => {
+      if (op.op === 'select') {
+        return { data: [{ ...rigaPending, target_folder_id: 'target-beta' }, nuova], error: null }
+      }
+      const payload = op.payload as Record<string, unknown> | undefined
+      const suRow1 = op.filters.some(f => f.method === 'eq' && f.args[0] === 'id' && f.args[1] === 'row-1')
+      if (op.op === 'update' && suRow1 && payload?.stato === 'archiviata') {
+        return { data: null, error: { message: 'PostgREST 503' } }
+      }
+      return { data: null, error: null }
+    }
+
+    const res = JSON.parse((await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Beta Ristrutturazione',
+    }, 'chat-1'))!)
+
+    expect(res.ok).toBe(true)
+    expect(res.archiviate).toBe(1)
+    expect(res.errori_riconciliazione).toBe(1)
+    // "Tutte" e falso: row-1 resta aperta.
+    expect(res.message).not.toMatch(/^Tutte le/)
+    expect(res.message).toMatch(/^Archiviate 1 foto in /)
     expect(res.message).toMatch(/restano APERTE/)
   })
 
