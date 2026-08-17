@@ -295,6 +295,9 @@ export async function listSubfolders(folderId: string): Promise<Array<{ id: stri
   let pageToken: string | undefined = undefined
   // Cap di sicurezza: 20 pagine x 200 = 4000 sottocartelle. Oltre, meglio una
   // lista troncata che un loop infinito su un token che non avanza mai.
+  // MA un troncamento silenzioso e lo STESSO bug che questa funzione ha appena
+  // chiuso (lista tagliata -> commessa 'non_trovata'), solo spostato piu in la:
+  // se il tetto scatta va detto, non subito in silenzio.
   const MAX_PAGINE = 20
 
   for (let pagina = 0; pagina < MAX_PAGINE; pagina++) {
@@ -326,6 +329,16 @@ export async function listSubfolders(folderId: string): Promise<Array<{ id: stri
 
     pageToken = res.data.nextPageToken || undefined
     if (!pageToken) break
+  }
+
+  // Uscita dal loop con un pageToken ancora in mano = il tetto ha tagliato.
+  // La firma ritorna un array e non puo dichiarare il troncamento al chiamante:
+  // almeno lo si urla nei log, invece di restituire una lista parziale che
+  // sembra completa.
+  if (pageToken) {
+    console.error(
+      `[DRIVE] listSubfolders(${folderId}): tetto di ${MAX_PAGINE} pagine raggiunto, lista TRONCATA a ${out.length} sottocartelle — potrebbero mancarne altre (una commessa esistente puo risultare 'non_trovata')`,
+    )
   }
 
   return out

@@ -60,6 +60,56 @@ describe('listSubfolders', () => {
     expect(result.map(f => f.name)).toContain('ZZZ Commessa 2026-201')
   })
 
+  // FIX 4 — il cap di 20 pagine usciva dal loop e faceva `return out` senza log,
+  // senza flag, senza modo per il chiamante di accorgersene: e la STESSA classe
+  // di bug che questa funzione ha appena chiuso (troncamento non dichiarato ->
+  // commessa 'non_trovata'), spostata da 200 a 4000. Nello stesso branch il cron
+  // il suo tetto lo logga E lo dichiara in risposta.
+  it('al tetto di 20 pagine si ferma E lo dichiara nei log (FIX 4)', async () => {
+    // Il "server" avrebbe 25 pagine: cosi il test distingue il tetto (20 chiamate)
+    // da un cap alzato/rimosso (25 chiamate, nessun log).
+    let n = 0
+    const mockList = vi.fn(async () => {
+      n += 1
+      return {
+        data: {
+          files: [{ id: `f${n}`, name: `Commessa ${String(n).padStart(3, '0')}` }],
+          ...(n < 25 ? { nextPageToken: `TK${n}` } : {}),
+        },
+      }
+    })
+    driveFactory.mockReturnValue({ files: { list: mockList } })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const { listSubfolders } = await import('./drive')
+    const result = await listSubfolders('root-id')
+
+    expect(mockList).toHaveBeenCalledTimes(20)
+    expect(result).toHaveLength(20)
+    const messaggi = errSpy.mock.calls.map(args => String(args[0]))
+    expect(messaggi.some(m => /listSubfolders/.test(m) && /TRONCATA/.test(m))).toBe(true)
+    expect(messaggi.some(m => m.includes('root-id') && m.includes('20 pagine'))).toBe(true)
+    errSpy.mockRestore()
+  })
+
+  it('sotto il tetto non grida al troncamento (FIX 4 - controprova)', async () => {
+    let n = 0
+    const mockList = vi.fn(async () => {
+      n += 1
+      return { data: { files: [{ id: `f${n}`, name: `C${n}` }], ...(n < 3 ? { nextPageToken: `TK${n}` } : {}) } }
+    })
+    driveFactory.mockReturnValue({ files: { list: mockList } })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const { listSubfolders } = await import('./drive')
+    const result = await listSubfolders('root-id')
+
+    expect(mockList).toHaveBeenCalledTimes(3)
+    expect(result).toHaveLength(3)
+    expect(errSpy.mock.calls.map(a => String(a[0])).some(m => /TRONCATA/.test(m))).toBe(false)
+    errSpy.mockRestore()
+  })
+
   it("si ferma quando non c'e nextPageToken (BUG D - controprova)", async () => {
     const mockList = vi.fn().mockResolvedValue({
       data: { files: [{ id: 'f1', name: 'Commessa A' }] },
