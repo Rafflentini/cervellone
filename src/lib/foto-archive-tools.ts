@@ -609,11 +609,12 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   const notaRiconciliate = riconciliate > 0
     ? ` (${riconciliate} foto erano già state spostate in un tentativo precedente: stato DB riallineato, file NON toccato)`
     : ''
-  // Riconciliazione fallita: NON è una foto in `path` e NON è una foto chiusa.
-  // Va detto a parte, o il messaggio finisce per rivendicare un'archiviazione
-  // che non è avvenuta.
+  // Riconciliazione fallita: la foto È in `path` (il ramo scatta solo quando
+  // `target_folder_id === targetId`), ma la riga NON è chiusa. Va detto a parte,
+  // o il messaggio la conta fra le archiviate di questo giro — che non è vero:
+  // era già lì, e il DB continua a non saperlo.
   const notaRiconciliazioneKo = erroriRiconciliazione > 0
-    ? ` (${erroriRiconciliazione} foto erano già state spostate in un tentativo precedente ma il riallineamento del DB è fallito: NON sono in questa cartella e restano APERTE, verranno riprovate)`
+    ? ` (${erroriRiconciliazione} foto erano già state spostate in questa cartella in un tentativo precedente ma il riallineamento del DB è fallito: le righe restano APERTE e verranno riprovate)`
     : ''
 
   // CONFERMA RICOLLOCAZIONE: righe la cui foto sta, verificata, in un'ALTRA
