@@ -789,6 +789,50 @@ describe('registra_scadenza — l id evento finisce sulla riga appena creata', (
   }, 20000)
 })
 
+/**
+ * `marcaSostituite` carica GIA le righe da sostituire con una SELECT. Chiedere
+ * la colonna li dentro fa arrivare i vecchi id evento nello STESSO round-trip:
+ * senza, servirebbe una seconda query solo per sapere cosa cancellare.
+ */
+describe('marcaSostituite — i vecchi id evento arrivano nello stesso round-trip', () => {
+  const VECCHIA = {
+    id: 'old-1',
+    soggetto: 'Mario Rossi',
+    tipo_documento: 'DURC',
+    categoria: 'azienda',
+    calendar_event_id: 'evt-vecchio',
+  }
+
+  it('la SELECT delle righe da sostituire chiede anche calendar_event_id', async () => {
+    mockHandler = (op) => {
+      if (op.op === 'insert') return { data: { id: 'new-id', reminder_days: 5 }, error: null }
+      if (op.op === 'select') return { data: [VECCHIA], error: null }
+      return { data: null, error: null }
+    }
+
+    await registra({ ...BASE, tipo_documento: 'DURC', categoria: 'azienda' })
+
+    const select = mockOps.find(op => op.op === 'select' && op.table === 'cervellone_scadenze')
+    expect(select).toBeDefined()
+    expect(select?.columns).toContain('calendar_event_id')
+  })
+
+  it('NON costa una query in piu: resta una sola SELECT', async () => {
+    // E' il motivo per cui la colonna va aggiunta a QUESTA select invece di
+    // farne una dedicata dopo. Se qualcuno "sistemasse" il codice con una
+    // seconda query, questo test lo dice.
+    mockHandler = (op) => {
+      if (op.op === 'insert') return { data: { id: 'new-id', reminder_days: 5 }, error: null }
+      if (op.op === 'select') return { data: [VECCHIA], error: null }
+      return { data: null, error: null }
+    }
+
+    await registra({ ...BASE, tipo_documento: 'DURC', categoria: 'azienda' })
+
+    expect(mockOps.filter(op => op.op === 'select' && op.table === 'cervellone_scadenze')).toHaveLength(1)
+  })
+})
+
 describe('lista_scadenze — filtro soggetto escapato (FIX 6)', () => {
   async function lista(input: Record<string, unknown>): Promise<ParsedResult> {
     const { executeScadenzeTool } = await import('./scadenze-tools')

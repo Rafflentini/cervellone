@@ -385,7 +385,7 @@ export async function registraScadenzaCore(
         tipoDocumento: insertFields.tipo_documento ?? null,
         categoria: insertFields.categoria ?? null,
       })
-    : { ids: [] }
+    : { ids: [], eventiDaCancellare: [] }
   const replacedIds = sostituzione.ids
 
   // 2026-07-22: scrive la scadenza anche su Google Calendar. BEST-EFFORT:
@@ -456,6 +456,15 @@ async function registraScadenza(input: Record<string, unknown>): Promise<string>
 
 interface SostituzioneResult {
   ids: string[]
+  /**
+   * Gli id degli eventi Google Calendar delle righe appena marcate
+   * 'sostituito' — solo quelle che un evento ce l'hanno davvero (le righe
+   * registrate prima del 2026-08-18 hanno `calendar_event_id` null).
+   *
+   * E un campo a parte e non un rimpiazzo di `ids`: `ids` finisce nell'esito
+   * verso l'LLM, questi no.
+   */
+  eventiDaCancellare: string[]
   warning?: string
 }
 
@@ -487,7 +496,10 @@ async function marcaSostituite(opts: {
 }): Promise<SostituzioneResult> {
   let existingQuery = supabase
     .from('cervellone_scadenze')
-    .select('id, soggetto, tipo_documento, categoria')
+    // `calendar_event_id` viaggia QUI e non in una query dedicata: queste sono
+    // gia le righe che stiamo per marcare 'sostituito', quindi i loro eventi da
+    // togliere dall'agenda arrivano senza un round-trip in piu.
+    .select('id, soggetto, tipo_documento, categoria, calendar_event_id')
     .eq('stato', 'attivo')
     .neq('id', opts.nuovoId)
     // Filtro lato server anche sul soggetto: prima si scaricavano TUTTE le
@@ -501,24 +513,27 @@ async function marcaSostituite(opts: {
 
   const { data: existingData, error: existingError } = await existingQuery
   if (existingError) {
-    return { ids: [], warning: `Scadenza registrata, ma la ricerca delle precedenti e fallita (${existingError.message}): controlla eventuali duplicati con lista_scadenze.` }
+    return { ids: [], eventiDaCancellare: [], warning: `Scadenza registrata, ma la ricerca delle precedenti e fallita (${existingError.message}): controlla eventuali duplicati con lista_scadenze.` }
   }
 
-  const existingRows = (existingData ?? []) as Pick<ScadenzaRow, 'id' | 'soggetto' | 'tipo_documento' | 'categoria'>[]
+  const existingRows = (existingData ?? []) as Pick<ScadenzaRow, 'id' | 'soggetto' | 'tipo_documento' | 'categoria' | 'calendar_event_id'>[]
   const soggettoKey = normalizeKey(opts.soggetto)
   const tipoKey = normalizeKey(opts.tipoDocumento)
   const categoriaKey = normalizeKey(opts.categoria)
 
-  const replacedIds = existingRows
-    .filter(row =>
-      row.id !== opts.nuovoId &&
-      normalizeKey(row.soggetto) === soggettoKey &&
-      normalizeKey(row.tipo_documento) === tipoKey &&
-      normalizeKey(row.categoria) === categoriaKey,
-    )
-    .map(row => row.id)
+  // ATTENZIONE: il filtro di identita VERO e questo, in JS. L'ILIKE lato server
+  // e deliberatamente un SOVRAINSIEME, quindi gli eventi da cancellare sono
+  // quelli delle righe che superano QUESTO filtro — prenderli dalla query
+  // grezza significherebbe togliere dall'agenda l'evento di un'altra scadenza.
+  const replacedRows = existingRows.filter(row =>
+    row.id !== opts.nuovoId &&
+    normalizeKey(row.soggetto) === soggettoKey &&
+    normalizeKey(row.tipo_documento) === tipoKey &&
+    normalizeKey(row.categoria) === categoriaKey,
+  )
+  const replacedIds = replacedRows.map(row => row.id)
 
-  if (replacedIds.length === 0) return { ids: [] }
+  if (replacedIds.length === 0) return { ids: [], eventiDaCancellare: [] }
 
   const { error: updateError } = await supabase
     .from('cervellone_scadenze')
@@ -526,10 +541,17 @@ async function marcaSostituite(opts: {
     .in('id', replacedIds)
 
   if (updateError) {
-    return { ids: [], warning: `Scadenza registrata, ma la precedente non e stata marcata come sostituita (${updateError.message}): restano due righe attive, chiudi la vecchia con chiudi_scadenza.` }
+    return { ids: [], eventiDaCancellare: [], warning: `Scadenza registrata, ma la precedente non e stata marcata come sostituita (${updateError.message}): restano due righe attive, chiudi la vecchia con chiudi_scadenza.` }
   }
 
-  return { ids: replacedIds }
+  // Solo le righe DAVVERO passate a 'sostituito': se l'UPDATE qui sopra
+  // fallisce le vecchie restano attive, e cancellarne l'evento lascerebbe una
+  // scadenza attiva senza voce in agenda.
+  const eventiDaCancellare = replacedRows
+    .map(row => row.calendar_event_id)
+    .filter((eventId): eventId is string => typeof eventId === 'string' && eventId.length > 0)
+
+  return { ids: replacedIds, eventiDaCancellare }
 }
 
 interface CalendarEsito {
