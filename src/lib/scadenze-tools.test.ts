@@ -641,7 +641,11 @@ describe('SCADENZE_TOOLS — le istruzioni all LLM sono allineate al codice', ()
     expect(tool!.description).not.toMatch(/Ideale per registrare scadenze/i)
     expect(tool!.description).toMatch(/registra_scadenza/)
     expect(tool!.description).toMatch(/appuntament|riunion/i)
-  })
+    // 20s e non i 5s di default: questo test fa un importActual REALE di
+    // ./calendar-tools, e nella suite intera (71 file in parallelo) la transform
+    // di un modulo vero supera i 5s sotto contesa di CPU. In isolamento passa
+    // sempre: il timeout stava misurando la macchina, non il codice.
+  }, 20000)
 
   it('aggiorna_scadenza dichiara le validazioni condivise con parseWriteFields', async () => {
     const tool = await toolByName('aggiorna_scadenza')
