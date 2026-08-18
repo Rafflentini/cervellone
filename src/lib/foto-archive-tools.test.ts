@@ -772,10 +772,12 @@ describe('prepara_cartella — anti-duplicato oltre le 500 righe', () => {
     // appena sotto la soglia 0.60: passa.
     //
     // La causa e' che il rapporto normalizza SOLO sulla nuova riga, quindi ogni
-    // parola in piu che l'utente scrive abbassa il punteggio. La cura e'
-    // simmetrizzare (Dice pesato) e ricalibrare: vedi il commento su
-    // SOGLIA_DUPLICATO. Quando sara' fatto QUESTO TEST DEVE DIVENTARE ROSSO —
-    // e' il segnale che la cura ha funzionato, non una regressione.
+    // parola in piu che l'utente scrive abbassa il punteggio.
+    //
+    // La cura ipotizzata a maggio (simmetrizzare con Dice pesato) e' stata
+    // misurata il 18 ago 2026 e REFUTATA: peggiora i falsi positivi sui clienti
+    // mai visti e non vince mai a parita' di FP. Questo test quindi NON deve
+    // diventare rosso per quella via. Resta un limite noto e accettato.
     const res = JSON.parse((await executeFotoArchiveTool('prepara_cartella', {
       ambito: 'cantiere',
       valori: {

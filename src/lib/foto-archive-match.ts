@@ -221,11 +221,28 @@ export function similarityRatio(
  *  3. La suite non distingue 0.50 da 0.70: la soglia e documentata, non
  *     testata. I test la pinnano solo fuori dalla banda [0.46, 0.74].
  *
- * La cura per 1 e 2 e la stessa: simmetrizzare (Dice pesato,
- * `2*comune / (totNuova + totRiga)`) e ricalibrare su una popolazione CON
- * committenti ricorrenti. Finche non e fatto, questo guardrail e un
- * miglioramento misurato rispetto al conteggio (che bloccava il 100%), non una
- * soluzione.
+ * ⛔ LA CURA "DICE PESATO" E' STATA MISURATA E REFUTATA (18 ago 2026).
+ * Simmetrizzare con `2*comune / (totNuova + totRiga)` sembra ovvio e non lo e':
+ * riapre i falsi positivi sui committenti mai visti, cioe' il difetto che la
+ * pesatura IDF esisteva per chiudere. E non e' un problema di taratura — il
+ * confronto A PARITA' DI FALSI POSITIVI (curva ROC, non soglia fissa) da' il
+ * rapporto attuale vincente o pari in 29 confronti su 30. La causa non e'
+ * `pesoMai` (toglierlo peggiora): e' che `totRiga` al denominatore diluisce
+ * qualunque penalita'. NON reimplementarla.
+ *
+ * Cio' che invece ha funzionato, senza toccare ne' formula ne' soglia, e'
+ * intervenire sui TOKEN: le parole generiche di forma societaria non pesano
+ * piu' al massimo, e un typo nel cognome non azzera piu' l'overlap. I due casi
+ * passano da 0%/65% a 100%/100%.
+ *
+ * ⚠️ RESTA APERTO, ed e' il problema piu' grande: su un Registro realistico
+ * (400 righe, ~20 committenti ricorrenti) il guardrail chiede conferma
+ * sull'87-92% delle commesse nuove e LEGITTIME di clienti che tornano. E' di
+ * nuovo saturo, per una via diversa da quella gia' curata: non il conteggio dei
+ * token, ma il fatto che il committente ricorrente da solo porta abbastanza
+ * peso. Misurato su registri SINTETICI: prima di intervenire va rifatto sul
+ * Registro VERO, dove le righe hanno piu' testo distintivo e il tasso potrebbe
+ * essere piu' basso.
  */
 export const SOGLIA_DUPLICATO = 0.6
 
