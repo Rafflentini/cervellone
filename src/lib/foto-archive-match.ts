@@ -94,6 +94,37 @@ export function tokenWeights(righe: string[]): Map<string, number> {
 }
 
 /**
+ * Peso di un match APPROSSIMATO. Non 1.0: se "quasi uguale" valesse quanto
+ * "uguale", il guardrail non potrebbe piu' distinguere la prova forte da quella
+ * debole. 0.7 e' il valore con cui e' stata misurata la calibrazione.
+ */
+export const FUZZY_WEIGHT = 0.7
+
+/**
+ * true se `a` e `b` distano al piu' `max` edit (Levenshtein).
+ * Early-exit sulla differenza di lunghezza: e' il caso piu' frequente.
+ */
+export function editDistanceAtMost(a: string, b: string, max: number): boolean {
+  if (a === b) return true
+  if (Math.abs(a.length - b.length) > max) return false
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    let minRiga = i
+    for (let j = 1; j <= b.length; j++) {
+      const costo = a[i - 1] === b[j - 1] ? 0 : 1
+      const v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + costo)
+      cur.push(v)
+      if (v < minRiga) minRiga = v
+    }
+    // Nessuna cella della riga e' entro `max`: nessun percorso potra' rientrarci.
+    if (minRiga > max) return false
+    prev = cur
+  }
+  return prev[b.length] <= max
+}
+
+/**
  * Quanta parte dell'informazione della NUOVA commessa e gia presente in una
  * riga esistente: 0 = niente in comune, 1 = la riga esistente contiene tutto.
  *
@@ -128,7 +159,21 @@ export function similarityRatio(
   for (const t of nuovi) {
     const w = pesi.get(t) ?? pesoMai
     totale += w
-    if (rigaTok.has(t)) comune += w
+    if (rigaTok.has(t)) {
+      comune += w
+      continue
+    }
+    // Typo: chi reinserisce sta riscrivendo a mano, e `Coviella` per `Coviello`
+    // azzerava l'overlap sul token che conta di piu'. Vale FUZZY_WEIGHT, non il
+    // peso pieno. Costo noto e misurato: due cognomi DIVERSI ma simili possono
+    // collidere — vedi il test di caratterizzazione sui cognomi confondibili.
+    const max = t.length >= 8 ? 2 : 1
+    for (const r of rigaTok) {
+      if (editDistanceAtMost(t, r, max)) {
+        comune += w * FUZZY_WEIGHT
+        break
+      }
+    }
   }
   // Denominatore nullo = tutti i token della nuova riga compaiono in TUTTE le
   // righe del Registro (peso IDF zero). Non e "somiglianza nulla": e il caso in

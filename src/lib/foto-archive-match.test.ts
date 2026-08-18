@@ -11,6 +11,7 @@ import {
   pickTopScored,
   tokenWeights,
   similarityRatio,
+  editDistanceAtMost,
   SOGLIA_DUPLICATO,
   type FolderMatch,
 } from './foto-archive-match'
@@ -357,6 +358,26 @@ describe('tokenWeights / similarityRatio', () => {
   it('le parole generiche di forma societaria non sono token significativi', () => {
     const t = significantTokens('Impresa Edile Rossi Societa a responsabilita limitata')
     expect(t).toEqual(['rossi'])
+  })
+
+  it('un typo nel cognome non fa perdere il match, ma vale meno di un match esatto', () => {
+    const registro = [...REGISTRO, '2020-005 Venosa Coviello Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    const conTypo = similarityRatio('2031-001 Venosa Coviella Rifacimento copertura', registro[4], pesi, registro.length)
+    const esatto = similarityRatio('2031-001 Venosa Coviello Rifacimento copertura', registro[4], pesi, registro.length)
+    expect(conTypo).toBeGreaterThanOrEqual(SOGLIA_DUPLICATO)
+    // Un match approssimato NON deve essere indistinguibile da uno esatto:
+    // se valesse il peso pieno, "quasi uguale" e "uguale" sarebbero la stessa prova.
+    expect(conTypo).toBeLessThan(esatto)
+  })
+
+  it('editDistanceAtMost: 1 per i token corti, 2 per quelli lunghi', () => {
+    expect(editDistanceAtMost('rossi', 'rossa', 1)).toBe(true)
+    expect(editDistanceAtMost('rossi', 'rosse', 1)).toBe(true)
+    expect(editDistanceAtMost('rossi', 'russo', 1)).toBe(false)
+    expect(editDistanceAtMost('coviello', 'coviella', 2)).toBe(true)
+    // early-exit sulla differenza di lunghezza
+    expect(editDistanceAtMost('abc', 'abcdefgh', 1)).toBe(false)
   })
 })
 
