@@ -420,6 +420,17 @@ export async function registraScadenzaCore(
     }
   }
 
+  // Le righe appena passate a 'sostituito' non sono piu scadenze: i loro
+  // eventi in agenda vanno tolti, altrimenti i reminder continuano a scattare
+  // per qualcosa che non esiste piu.
+  //
+  // Si cancella ANCHE se la creazione del nuovo evento e fallita: la vecchia
+  // riga e gia 'sostituito' in DB, quindi il suo promemoria e comunque
+  // SBAGLIATO — e un promemoria sbagliato e peggio di nessun promemoria. Il
+  // caso "evento nuovo assente" e gia segnalato da calendar_ok:false.
+  const notaCancellazione = await cancellaEventiSostituiti(sostituzione.eventiDaCancellare)
+  if (notaCancellazione) calendarNota = `${calendarNota} — ${notaCancellazione}`
+
   return {
     ok: true,
     id: created?.id,
@@ -658,6 +669,56 @@ async function createCalendarForScadenza(opts: {
   } catch (e) {
     return { ok: false, eventId: null, nota: `Calendar non aggiornato: ${e instanceof Error ? e.message : String(e)}` }
   }
+}
+
+/**
+ * Riconosce una cancellazione FALLITA, non una riuscita.
+ *
+ * 🔴 `deleteEvent` risponde `🗑 Evento <id> eliminato dal calendario.`
+ * (calendar-tools.ts:197) — NON `✅`, che e l'emoji della sola create. Riusare
+ * il check `startsWith('✅')` di `createCalendarForScadenza` darebbe per fallita
+ * OGNI cancellazione riuscita, e l'Ingegnere leggerebbe un avviso allarmante a
+ * ogni singolo rinnovo. Si guarda quindi il FALLIMENTO, che ha una forma
+ * stabile: `❌ Errore Calendar: ...` dal catch di `executeCalendarTool`,
+ * `⚠️ Manca event_id.` dalla validazione, oppure nessuna risposta.
+ */
+function deleteCalendarFallita(res: string | null | undefined): boolean {
+  if (typeof res !== 'string' || res.trim() === '') return true
+  return res.startsWith('❌') || res.startsWith('⚠️')
+}
+
+/**
+ * Toglie dall'agenda gli eventi delle scadenze appena marcate 'sostituito'.
+ * Ritorna una nota se qualcosa non e stato rimosso, `null` se e filato tutto.
+ *
+ * Best-effort come il resto del Calendar: la scadenza e gia in DB e un errore
+ * qui non la tocca. Ma il fallimento NON e silenzioso — un evento fantasma
+ * continua a far scattare i suoi reminder per una scadenza che non esiste piu,
+ * e chi lo riceve deve sapere perche'.
+ */
+async function cancellaEventiSostituiti(eventIds: string[]): Promise<string | null> {
+  if (eventIds.length === 0) return null
+
+  const falliti: string[] = []
+  try {
+    const { executeCalendarTool } = await import('./calendar-tools')
+    for (const eventId of eventIds) {
+      try {
+        const res = await withTimeout(
+          Promise.resolve(executeCalendarTool('calendar_delete_event', { event_id: eventId })),
+          CALENDAR_TIMEOUT_MS,
+        )
+        if (res === CALENDAR_TIMEOUT || deleteCalendarFallita(res)) falliti.push(eventId)
+      } catch {
+        falliti.push(eventId)
+      }
+    }
+  } catch (e) {
+    return `il vecchio evento NON e stato rimosso dall'agenda (${e instanceof Error ? e.message : String(e)}): cancellalo a mano, altrimenti arrivera un promemoria per una scadenza gia sostituita.`
+  }
+
+  if (falliti.length === 0) return null
+  return `ATTENZIONE: il vecchio evento NON e stato rimosso dall'agenda (${falliti.join(', ')}): cancellalo a mano, altrimenti arrivera un promemoria per una scadenza gia sostituita.`
 }
 
 async function listaScadenze(input: Record<string, unknown>): Promise<string> {
