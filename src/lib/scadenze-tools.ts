@@ -391,9 +391,18 @@ export async function registraScadenzaCore(
   // 2026-07-22: scrive la scadenza anche su Google Calendar. BEST-EFFORT:
   // la registrazione in DB è già andata a buon fine, quindi un errore Calendar
   // (scope/API/rete) NON deve far fallire la scadenza. Riusa executeCalendarTool.
-  // NB: se la stessa scadenza viene ri-registrata (path sostituzione), viene
-  // creato un nuovo evento; il vecchio evento NON viene rimosso (nessuna colonna
-  // calendar_event_id → niente dedup). Follow-up se diventa fastidioso.
+  //
+  // 2026-08-18: al RINNOVO il vecchio evento viene ora TOLTO dall'agenda.
+  // L'id dell'evento si estrae dalla risposta della create
+  // (`extractCalendarEventId`), si salva sulla riga (`calendar_event_id`) e
+  // `marcaSostituite` lo riporta indietro per le righe che passa a
+  // 'sostituito'; la cancellazione avviene qui sotto. Prima non accadeva e
+  // ogni rinnovo lasciava un evento fantasma coi suoi reminder.
+  //
+  // ⚠️ LIMITE NOTO: le righe registrate PRIMA del 2026-08-18 hanno
+  // `calendar_event_id` null — i loro eventi restano in agenda e vanno
+  // ripuliti A MANO. Non e recuperabile dal codice: l'id di quegli eventi non
+  // e stato salvato da nessuna parte.
   const calendar = await createCalendarForScadenza({
     soggetto,
     dataScadenza: parsedDate.value,
