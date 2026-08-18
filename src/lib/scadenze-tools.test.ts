@@ -1010,6 +1010,88 @@ describe('registra_scadenza — il vecchio evento esce dall agenda', () => {
     expect(deleteCalls()).toHaveLength(0)
   }, 20000)
 
+  it('delete che LANCIA → la scadenza resta registrata e l esito lo dice', async () => {
+    conRigheDaSostituire([VECCHIA])
+    const create = await rispostaRealeCreateEvent({
+      id: 'evt-nuovo', summary: 'Scadenza DURC: Mario Rossi', start: { date: '2027-06-17' },
+    })
+    calendarImpl = async (name) => {
+      if (name === 'calendar_delete_event') throw new Error('ECONNRESET')
+      return create
+    }
+
+    const res = await registra(NUOVA)
+
+    expect(res.ok).toBe(true)
+    expect(res.id).toBe('new-id')
+    expect(insertOps()).toHaveLength(1)
+    expect(res.calendar).toMatch(/vecchio evento/i)
+  }, 20000)
+
+  it('delete che non risponde → esce dal timeout, la scadenza resta registrata', async () => {
+    // Stessa malattia gia curata sulla create: senza timeout la richiesta
+    // resterebbe viva fino al kill di Vercel, con la scadenza gia in DB e
+    // l Ingegnere che vede morire il turno e ri-registra → duplicato.
+    conRigheDaSostituire([VECCHIA])
+    const create = await rispostaRealeCreateEvent({
+      id: 'evt-nuovo', summary: 'Scadenza DURC: Mario Rossi', start: { date: '2027-06-17' },
+    })
+    await import('./scadenze-tools') // i fake timer non devono correre durante gli import
+    calendarImpl = async (name) => name === 'calendar_delete_event'
+      ? new Promise<string>(() => {})
+      : create
+
+    vi.useFakeTimers()
+    try {
+      const pending = registra(NUOVA)
+      await vi.advanceTimersByTimeAsync(15_000)
+      const res = await pending
+
+      expect(res.ok).toBe(true)
+      expect(res.id).toBe('new-id')
+      expect(res.calendar).toMatch(/vecchio evento/i)
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 20000)
+
+  it('una delete che fallisce non impedisce le altre', async () => {
+    // Con due scadenze da sostituire, la prima che esplode non deve portarsi
+    // dietro la seconda: resterebbe in agenda un fantasma in piu, e l avviso
+    // direbbe di cancellarne uno solo.
+    conRigheDaSostituire([VECCHIA, { ...VECCHIA, id: 'old-2', calendar_event_id: 'evt-vecchio-2' }])
+    const create = await rispostaRealeCreateEvent({
+      id: 'evt-nuovo', summary: 'Scadenza DURC: Mario Rossi', start: { date: '2027-06-17' },
+    })
+    const actual = await vi.importActual<typeof import('./calendar-tools')>('./calendar-tools')
+    calendarImpl = async (name, input) => {
+      if (name !== 'calendar_delete_event') return create
+      if (input.event_id === 'evt-vecchio') throw new Error('ECONNRESET')
+      return (await actual.executeCalendarTool(name, input)) ?? ''
+    }
+
+    const res = await registra(NUOVA)
+
+    expect(deleteCalls().map(c => c.input.event_id)).toEqual(['evt-vecchio', 'evt-vecchio-2'])
+    // E l avviso nomina SOLO quello davvero rimasto in agenda.
+    expect(res.calendar).toContain('(evt-vecchio)')
+  }, 20000)
+
+  it('Calendar COMPLETAMENTE rotto → la scadenza e registrata lo stesso', async () => {
+    // La dottrina best-effort per intero: niente di cio che riguarda l agenda
+    // puo far fallire la registrazione di una scadenza.
+    conRigheDaSostituire([VECCHIA])
+    calendarImpl = async () => { throw new Error('ECONNRESET') }
+
+    const res = await registra(NUOVA)
+
+    expect(res.ok).toBe(true)
+    expect(res.id).toBe('new-id')
+    expect(res.sostituite).toEqual(['old-1'])
+    expect(insertOps()).toHaveLength(1)
+    expect(res.calendar_ok).toBe(false)
+  })
+
   it('senza righe sostituite non parte nessuna delete', async () => {
     conRigheDaSostituire([])
     await calendarRealeCreateEDelete('evt-nuovo')
