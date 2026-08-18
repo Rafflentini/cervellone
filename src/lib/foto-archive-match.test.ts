@@ -431,6 +431,12 @@ describe('tokenWeights / similarityRatio', () => {
     // Un match approssimato NON deve essere indistinguibile da uno esatto:
     // se valesse il peso pieno, "quasi uguale" e "uguale" sarebbero la stessa prova.
     expect(conTypo).toBeLessThan(esatto)
+    // VALORE PINNATO. Le due asserzioni qui sopra sono vere per FUZZY_WEIGHT da
+    // 0.25 a 1.0: da sole non proteggono il valore 0.7 con cui la calibrazione
+    // e' stata misurata. Misurato 18 ago 2026, dopo la separazione delle
+    // stopword e l'esclusione dei numeri dal fuzzy.
+    expect(esatto).toBeCloseTo(1, 6)
+    expect(conTypo).toBeCloseTo(0.8349, 3)
   })
 
   it('il fuzzy NON vale per i numeri: 2026 e 2025 sono anni diversi, non un refuso', () => {
@@ -472,6 +478,69 @@ describe('tokenWeights / similarityRatio', () => {
     expect(editDistanceAtMost('coviello', 'coviella', 2)).toBe(true)
     // early-exit sulla differenza di lunghezza
     expect(editDistanceAtMost('abc', 'abcdefgh', 1)).toBe(false)
+  })
+
+  it('editDistanceAtMost: `max` e davvero il tetto, non un parametro decorativo', () => {
+    // `coviella` dista 1 da `coviello`: passa anche con max 1, quindi NON prova
+    // niente sul valore di `max`. Serve una coppia a distanza ESATTAMENTE 2.
+    // `cuviella` vs `coviello`: o→u in posizione 2, o→a in posizione 8.
+    expect(editDistanceAtMost('coviello', 'cuviella', 2)).toBe(true)
+    expect(editDistanceAtMost('coviello', 'cuviella', 1)).toBe(false)
+  })
+
+  it('editDistanceAtMost: due stringhe identiche distano 0', () => {
+    // Sembra ovvio, ma il ramo `if (a === b) return true` non era coperto da
+    // nulla: invertirlo lasciava la suite verde.
+    expect(editDistanceAtMost('coviello', 'coviello', 0)).toBe(true)
+    expect(editDistanceAtMost('', '', 0)).toBe(true)
+  })
+
+  it('editDistanceAtMost: una differenza di lunghezza pari a `max` e ancora ammessa', () => {
+    // L'early-exit e' `> max`, non `>= max`: una lettera in piu' con max 1 e'
+    // esattamente il caso di una `o` finale mangiata, il refuso piu' comune.
+    expect(editDistanceAtMost('coviello', 'coviell', 1)).toBe(true)
+    expect(editDistanceAtMost('abc', 'abcd', 1)).toBe(true)
+    expect(editDistanceAtMost('abc', 'abcde', 1)).toBe(false)
+  })
+
+  it('la regola 8 caratteri vale anche DENTRO similarityRatio, non solo in isolamento', () => {
+    // Il test qui sopra passa `max` esplicito e quindi non tocca la regola
+    // `t.length >= 8 ? 2 : 1`. Qui la regola e' esercitata dal percorso vero.
+    const registro = [
+      ...REGISTRO,
+      '2020-005 Venosa Coviello Rifacimento copertura',   // committente da 8 lettere
+      '2020-006 Venosa Telesca Rifacimento copertura',    // committente da 7 lettere
+    ]
+    const pesi = tokenWeights(registro)
+    const r = (nuova: string, riga: string) => similarityRatio(nuova, riga, pesi, registro.length)
+
+    // 8 caratteri, distanza 2 → credito fuzzy: sta SOPRA il baseline senza
+    // nessuna somiglianza (stessa lunghezza, stesso `pesoMai`).
+    const lungoSimile = r('2031-001 Venosa Cuviella Rifacimento copertura', registro[4])
+    const lungoBaseline = r('2031-001 Venosa Zzzzzzzz Rifacimento copertura', registro[4])
+    expect(lungoSimile).toBeGreaterThan(lungoBaseline)
+
+    // 7 caratteri, distanza 2 → NESSUN credito: identico al baseline.
+    const cortoSimile = r('2031-002 Venosa Tulesco Rifacimento copertura', registro[5])
+    const cortoBaseline = r('2031-002 Venosa Zzzzzzz Rifacimento copertura', registro[5])
+    expect(cortoSimile).toBe(cortoBaseline)
+  })
+
+  it('un token nuovo prende il credito fuzzy UNA volta sola per riga', () => {
+    // Il `break` nel ramo fuzzy non e' un'ottimizzazione: senza, un token che
+    // somiglia a DUE parole della stessa riga incassa il credito due volte e il
+    // rapporto puo' superare 1.
+    const registro = [
+      ...REGISTRO,
+      '2020-005 Venosa Conti Conte Rifacimento copertura', // DUE token simili
+      '2020-006 Venosa Conti Rifacimento copertura',       // UNO solo
+    ]
+    const pesi = tokenWeights(registro)
+    const nuova = '2031-001 Venosa Conto Rifacimento copertura'
+    const conDue = similarityRatio(nuova, registro[4], pesi, registro.length)
+    const conUno = similarityRatio(nuova, registro[5], pesi, registro.length)
+    expect(conDue).toBe(conUno)
+    expect(conDue).toBeLessThanOrEqual(1)
   })
 
   it('COSTO NOTO: due cognomi DIVERSI ma simili possono collidere', () => {
