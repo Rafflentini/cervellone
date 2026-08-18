@@ -465,4 +465,42 @@ describe('SOGLIA_DUPLICATO — calibrazione', () => {
     const copie = registro.slice(0, 20).map((r, i) => `2031-${String(i + 1).padStart(3, '0')} ${r.split(' ').slice(1).join(' ')}`)
     expect(copie.filter(bloccata).length / copie.length).toBeGreaterThan(0.9)
   })
+
+  it('CARATTERIZZAZIONE: il cliente che torna viene bloccato spesso — limite noto', () => {
+    // Una commessa NUOVA e legittima di un committente gia' nel Registro. Il
+    // committente da solo porta abbastanza peso da superare la soglia: il
+    // guardrail chiede conferma anche quando non c'e' nessun duplicato.
+    // Misurato su registri sintetici: 87-92% a 400 righe. Il test NON pretende
+    // che sia risolto — pinna il tasso perche' un intervento futuro possa
+    // dimostrare di averlo abbassato, invece di dichiararlo.
+    const { registro, bloccata } = scenario(400)
+
+    // Il "cliente che torna" e' fatto di parole che il Registro CONOSCE gia':
+    // stesso comune, stesso committente, un lavoro del repertorio abituale. E'
+    // NUOVA la combinazione, non il vocabolario. Costruirlo invece con comune e
+    // lavoro INVENTATI misura un'altra popolazione: due token su tre mai visti
+    // prendono `pesoMai`, il rapporto crolla a 0.15 e i blocchi sono 0% —
+    // l'opposto del caso in esame. Misurato il 18 ago 2026, su main e su questo
+    // branch allo stesso modo.
+    const presenti = new Set(registro.map(r => r.split(' ').slice(1).join(' ')))
+    const combinazioniNuove: string[] = []
+    for (const comune of COMUNI) for (const cognome of COGNOMI) for (const lavoro of LAVORI) {
+      const combo = `${comune} ${cognome} ${lavoro}`
+      // Solo combinazioni ASSENTI dal Registro: non sono duplicati, sono
+      // commesse che l'Ingegnere ha il diritto di creare senza che gli si
+      // chieda niente. (Con 320 combinazioni possibili e 400 righe, il Registro
+      // ne contiene 233 e ne restano 87 libere: prenderle a caso fra tutte
+      // misurerebbe in gran parte duplicati veri, non clienti che tornano.)
+      if (!presenti.has(combo)) combinazioniNuove.push(combo)
+    }
+    const ricorrenti = combinazioniNuove.slice(0, 40)
+      .map((combo, i) => `2033-${String(i + 1).padStart(3, '0')} ${combo}`)
+    expect(ricorrenti).toHaveLength(40)
+
+    const bloccate = ricorrenti.filter(bloccata).length / ricorrenti.length
+    // Misurato: 100% (rapporto massimo medio 0.733). La soglia bassa e'
+    // volutamente un PAVIMENTO: chi un giorno abbassera' davvero il tasso fara'
+    // diventare rosso questo test, ed e' il segnale che deve riscriverlo.
+    expect(bloccate).toBeGreaterThan(0.2)
+  })
 })
