@@ -379,6 +379,33 @@ describe('tokenWeights / similarityRatio', () => {
     // early-exit sulla differenza di lunghezza
     expect(editDistanceAtMost('abc', 'abcdefgh', 1)).toBe(false)
   })
+
+  it('COSTO NOTO: due cognomi DIVERSI ma simili possono collidere', () => {
+    // Misurato: 6 coppie su 18 di cognomi italiani confondibili superano la
+    // soglia contro un cliente DIVERSO (Gallo/Gallu, Conti/Conte, Rizzo/Rizzi,
+    // Costa/Cesta, Fontana/Fontano, Barbieri/Barbiero).
+    // NON e' tarabile: "typo dello stesso cliente" e "cliente diverso col
+    // cognome simile" sono lo STESSO segnale, e nessuna soglia li separa.
+    // Accettato consapevolmente: l'esito e' una domanda di conferma in piu',
+    // mai una perdita di dati, mentre il falso negativo costa una commessa
+    // duplicata sul Drive.
+    expect(editDistanceAtMost('conti', 'conte', 1)).toBe(true)
+    expect(editDistanceAtMost('rizzo', 'rizzi', 1)).toBe(true)
+  })
+
+  it('LIMITE NOTO: le parole di dettaglio in piu nell oggetto restano invisibili', () => {
+    // Misurato 0% di riconoscimento in TUTTE le configurazioni provate
+    // (baseline e ogni combinazione di interventi sui token). L'unica cura
+    // sarebbe simmetrizzare la formula, e il Dice pesato e' stato misurato e
+    // REFUTATO: vedi il commento su SOGLIA_DUPLICATO.
+    const registro = [...REGISTRO, '2020-005 Venosa Coviello Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    const conDettagli = similarityRatio(
+      '2031-001 Venosa Coviello Rifacimento copertura con sostituzione lattoneria e pluviali esterni',
+      registro[4], pesi, registro.length,
+    )
+    expect(conDettagli).toBeLessThan(SOGLIA_DUPLICATO)
+  })
 })
 
 // Questo e IL test che protegge la calibrazione: senza, si puo tornare a un
