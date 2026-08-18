@@ -689,9 +689,15 @@ describe('SOGLIA_DUPLICATO — calibrazione', () => {
     expect(ricorrenti).toHaveLength(40)
 
     const bloccate = ricorrenti.filter(bloccata).length / ricorrenti.length
-    // Misurato: 100% (rapporto massimo medio 0.733). La soglia bassa e'
-    // volutamente un PAVIMENTO: chi un giorno abbassera' davvero il tasso fara'
-    // diventare rosso questo test, ed e' il segnale che deve riscriverlo.
-    expect(bloccate).toBeGreaterThan(0.2)
+    // Misurato 18 ago 2026: 100% (rapporto massimo medio 0.7335), invariato
+    // dopo la separazione delle stopword e l'esclusione dei numeri dal fuzzy.
+    //
+    // La soglia sta a 0.9 e NON piu' a 0.2: con 0.2 un intervento che portasse
+    // il tasso da 100% a 30% — una vittoria enorme — lasciava questo test
+    // VERDE, cioe' il segnale non scattava mai. Un test di caratterizzazione
+    // che non si accorge del miglioramento che dichiara di sorvegliare non
+    // sorveglia niente. Chi abbassa davvero il tasso lo trova rosso: e' il
+    // segnale che deve riscrivere il numero misurato, non allargare la banda.
+    expect(bloccate).toBeGreaterThan(0.9)
   })
 })
