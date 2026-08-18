@@ -33,6 +33,14 @@ const MATCH_STOPWORDS = new Set([
   'progetto', 'progetti', 'lavori', 'lavoro', 'cantiere', 'cantieri', 'srl', 's.r.l',
   'spa', 's.p.a', 'sas', 'snc', 'ditta', 'impresa', 'sig', 'sig.ra', 'e', 'a', 'il',
   'la', 'lo', 'gli', 'le', 'per', 'con', 'scia', 'cila', 'cilas', 'permesso', 'pdc',
+  // Parole generiche di forma societaria e di settore. Non identificano nessun
+  // committente: se restano "token significativi" e non compaiono nel Registro
+  // prendono `pesoMai` e affossano il rapporto proprio quando il cognome ha
+  // fatto match. Misurato: la ragione sociale per esteso passa da 0% a 100% di
+  // riconoscimento. NB: `srl`/`spa`/`sas`/`snc`/`ditta`/`impresa` erano gia'
+  // sopra — non erano loro il problema.
+  'societa', 'responsabilita', 'limitata', 'azioni', 'individuale',
+  'edile', 'edilizia', 'costruzioni', 'generale', 'generali',
 ])
 
 // Numero commessa NNNN-NNN. I lookaround impediscono che "2026-012" agganci

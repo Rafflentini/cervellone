@@ -342,6 +342,22 @@ describe('tokenWeights / similarityRatio', () => {
     expect(similarityRatio('2030-001 Venosa Alfa', 'qualcosa', tokenWeights([]), 0)).toBe(0)
     expect(similarityRatio('', 'x', tokenWeights(REGISTRO), 4)).toBe(0)
   })
+
+  it('la ragione sociale per esteso resta riconoscibile: le parole generiche non pesano', () => {
+    // Il duplicato nasce cosi': la stessa ditta reinserita scrivendo per esteso
+    // cio' che la prima volta era un'abbreviazione. Le parole in piu' non
+    // identificano NESSUN committente, quindi non devono affossare il rapporto.
+    const registro = [...REGISTRO, '2020-005 Venosa Coviello Srl Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    const esteso = '2031-001 Venosa Impresa Edile Coviello Societa a responsabilita limitata Rifacimento copertura'
+    const r = similarityRatio(esteso, registro[4], pesi, registro.length)
+    expect(r).toBeGreaterThanOrEqual(SOGLIA_DUPLICATO)
+  })
+
+  it('le parole generiche di forma societaria non sono token significativi', () => {
+    const t = significantTokens('Impresa Edile Rossi Societa a responsabilita limitata')
+    expect(t).toEqual(['rossi'])
+  })
 })
 
 // Questo e IL test che protegge la calibrazione: senza, si puo tornare a un
