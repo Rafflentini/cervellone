@@ -204,6 +204,30 @@ function insertOps(): MockOp[] {
   return mockOps.filter(op => op.op === 'insert')
 }
 
+/** Gli UPDATE che scrivono l'id dell'evento Calendar sulla riga. */
+function eventIdOps(): MockOp[] {
+  return updateOps().filter(op => {
+    const payload = op.payload as Record<string, unknown> | undefined
+    return payload !== undefined && 'calendar_event_id' in payload
+  })
+}
+
+/**
+ * Fa rispondere il finto Calendar con la stringa VERA di `createEvent` per
+ * quell'id. Passa dal modulo reale (vedi `rispostaRealeCreateEvent`) perche' un
+ * test che si inventa la risposta finirebbe per provare solo se stesso.
+ */
+async function calendarRispondeConEvento(id: string): Promise<string> {
+  const risposta = await rispostaRealeCreateEvent({
+    id,
+    summary: 'Scadenza DURC: Mario Rossi',
+    start: { date: '2027-06-17' },
+    htmlLink: 'https://www.google.com/calendar/event?eid=YWJj',
+  })
+  calendarImpl = async () => risposta
+  return risposta
+}
+
 const BASE = {
   soggetto: 'Mario Rossi',
   data_scadenza: '2027-06-17',
@@ -692,6 +716,76 @@ describe('extractCalendarEventId — l id dell evento non si butta piu', () => {
 
     const { extractCalendarEventId } = await import('./scadenze-tools')
     expect(extractCalendarEventId(risposta)).toBe('idvero123')
+  }, 20000)
+})
+
+/**
+ * Persistere l'id e' il ponte fra "l'evento e' stato creato" e "al rinnovo so
+ * quale evento cancellare". Senza questa scrittura il Task successivo non ha
+ * nulla da cui partire.
+ */
+describe('registra_scadenza — l id evento finisce sulla riga appena creata', () => {
+  it('Calendar OK → UPDATE calendar_event_id sulla riga nuova', async () => {
+    await calendarRispondeConEvento('evt-abc123')
+
+    const res = await registra({ ...BASE, tipo_documento: 'DURC' })
+
+    expect(res.ok).toBe(true)
+    expect(res.calendar_ok).toBe(true)
+
+    const scritture = eventIdOps()
+    expect(scritture).toHaveLength(1)
+    expect((scritture[0].payload as Record<string, unknown>).calendar_event_id).toBe('evt-abc123')
+    // Sulla riga APPENA CREATA, non su tutte quelle del soggetto.
+    expect(scritture[0].filters).toContainEqual({ method: 'eq', args: ['id', 'new-id'] })
+    // Stesso stile di `marcaSostituite`: updated_at esplicito.
+    expect((scritture[0].payload as Record<string, unknown>).updated_at).toEqual(expect.any(String))
+    expect(scritture[0].table).toBe('cervellone_scadenze')
+  }, 20000)
+
+  it('Calendar fallito → NESSUN update di calendar_event_id', async () => {
+    // Non deve scrivere `null` sopra un valore ne emettere un update inutile.
+    calendarImpl = async () => '❌ Errore Calendar: scope non autorizzato.'
+
+    const res = await registra({ ...BASE, tipo_documento: 'DURC' })
+
+    expect(res.ok).toBe(true)
+    expect(res.calendar_ok).toBe(false)
+    expect(eventIdOps()).toHaveLength(0)
+  })
+
+  it('Calendar OK ma senza id ricavabile → NESSUN update', async () => {
+    // E' il caso della fixture storica `'✅ Evento creato'`: risposta di
+    // successo, ma nessun id da salvare. Non deve produrre una scrittura.
+    calendarImpl = async () => CALENDAR_OK
+
+    const res = await registra({ ...BASE, tipo_documento: 'DURC' })
+
+    expect(res.calendar_ok).toBe(true)
+    expect(eventIdOps()).toHaveLength(0)
+  })
+
+  it('se la colonna non esiste (migration non applicata) la scadenza resta registrata e l esito lo DICE', async () => {
+    // Best-effort: l'UPDATE fallisce, ma la scadenza e' gia in DB. Il
+    // fallimento pero' non deve essere SILENZIOSO, altrimenti il rinnovo
+    // successivo non cancellera' nulla e nessuno sapra' perche'.
+    await calendarRispondeConEvento('evt-abc123')
+    mockHandler = (op) => {
+      if (op.op === 'insert') return { data: { id: 'new-id', reminder_days: 5 }, error: null }
+      if (op.op === 'update') return { data: null, error: { message: 'column "calendar_event_id" does not exist' } }
+      return { data: [], error: null }
+    }
+
+    const res = await registra({ ...BASE, tipo_documento: 'DURC' })
+
+    expect(res.ok).toBe(true)
+    expect(res.id).toBe('new-id')
+    expect(insertOps()).toHaveLength(1)
+    // Deve riportare il messaggio del DB E dire cosa comporta, altrimenti
+    // "id evento non salvato" non significa niente per chi legge.
+    expect(res.calendar).toMatch(/does not exist/)
+    expect(res.calendar).toMatch(/calendar_event_id/)
+    expect(res.calendar).toMatch(/restera in agenda/)
   }, 20000)
 })
 

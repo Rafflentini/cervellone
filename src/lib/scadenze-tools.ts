@@ -20,6 +20,13 @@ interface ScadenzaRow {
   drive_url: string | null
   note: string | null
   stato: ScadenzaStato
+  /**
+   * Id dell'evento Google Calendar creato per questa scadenza, `null` per le
+   * righe registrate prima del 2026-08-18 (e per quelle il cui evento non e'
+   * stato creato). Serve SOLO a cancellare il vecchio evento quando la scadenza
+   * viene sostituita: e' un id tecnico e resta fuori da `summarize()`.
+   */
+  calendar_event_id?: string | null
   updated_at?: string
 }
 
@@ -34,6 +41,7 @@ interface ScadenzaWrite {
   drive_url?: string | null
   note?: string | null
   stato?: ScadenzaStato
+  calendar_event_id?: string | null
   updated_at?: string
 }
 
@@ -393,13 +401,32 @@ export async function registraScadenzaCore(
     note: insertFields.note ?? null,
   })
 
+  let calendarNota = calendar.nota
+
+  // L'id dell'evento va scritto sulla riga: al RINNOVO e' l'unico modo per
+  // sapere quale evento togliere dall'agenda. Best-effort come tutto il resto
+  // del Calendar (la scadenza e' gia in DB, un errore qui non la tocca) ma NON
+  // silenzioso: se la colonna manca perche' la migration non e' stata
+  // applicata, questo e' l'unico punto in cui si vede — e senza avviso i
+  // rinnovi continuerebbero a lasciare eventi fantasma senza spiegazione.
+  if (created?.id && calendar.eventId) {
+    const { error: eventIdError } = await supabase
+      .from('cervellone_scadenze')
+      .update({ calendar_event_id: calendar.eventId, updated_at: new Date().toISOString() })
+      .eq('id', created.id)
+
+    if (eventIdError) {
+      calendarNota = `${calendarNota} — ATTENZIONE: id evento NON salvato (${eventIdError.message}), al prossimo rinnovo il vecchio evento restera in agenda.`
+    }
+  }
+
   return {
     ok: true,
     id: created?.id,
     sostituite: replacedIds,
     ...(sostituzione.warning ? { avviso: sostituzione.warning } : {}),
     calendarOk: calendar.ok,
-    calendarNota: calendar.nota,
+    calendarNota,
   }
 }
 
