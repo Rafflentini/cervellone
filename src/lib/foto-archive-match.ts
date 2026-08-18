@@ -35,12 +35,51 @@ const MATCH_STOPWORDS = new Set([
   'la', 'lo', 'gli', 'le', 'per', 'con', 'scia', 'cila', 'cilas', 'permesso', 'pdc',
 ])
 
+/**
+ * Parole generiche di forma societaria e di settore, tolte SOLO nel percorso
+ * del guardrail anti-duplicato (`escludiGeneriche: true`).
+ *
+ * Perche' un secondo insieme e non dieci voci in piu' in `MATCH_STOPWORDS`: i
+ * due consumatori di `significantTokens` hanno esigenze OPPOSTE.
+ *  - Guardrail (`tokenWeights` + `similarityRatio`): una parola generica mai
+ *    vista nel Registro prende `pesoMai` (il peso massimo) e finisce solo al
+ *    denominatore, affossando il rapporto proprio quando il cognome ha fatto
+ *    match. Misurato: la ragione sociale per esteso passa da 0% a 100% di
+ *    riconoscimento togliendole. NB: `srl`/`spa`/`sas`/`snc`/`ditta`/`impresa`
+ *    stanno gia' sopra — non erano loro il problema.
+ *  - Match cartelle (`matchNamedFolderScored`, regola (c)): serve overlap di
+ *    >=2 token, quindi ogni parola tolta ABBASSA l'overlap. Applicandole anche
+ *    li', "Rossi Costruzioni" smetteva di agganciare "2026-014 Costruzioni
+ *    Generali Rossi" → `non_trovata` → foto NON archiviate. Misurato su tre
+ *    casi il 18 ago 2026, tutti e tre persi.
+ *
+ * ⚠️ `generali` cancella un committente reale plausibile (Assicurazioni
+ * Generali): dopo la separazione il rischio resta confinato al guardrail, dove
+ * costa al massimo una conferma mancata e mai una cartella sbagliata. Per
+ * questo resta nell'elenco.
+ *
+ * ⚠️ L'elenco e' volutamente NON esaustivo sulle varianti morfologiche
+ * (`costruzioni` c'e', `costruzione` no; `edile`/`edilizia` ci sono, `edilizio`
+ * no): sono le forme misurate sui nomi commessa SINTETICI dei fixture di test
+ * (i tre casi qui sopra e i registri sintetici del piano), non su commesse
+ * reali. Aggiungerne altre cambia la calibrazione del guardrail e va
+ * rimisurato, non dedotto.
+ */
+const GENERIC_STOPWORDS = new Set([
+  'societa', 'responsabilita', 'limitata', 'azioni', 'individuale',
+  'edile', 'edilizia', 'costruzioni', 'generale', 'generali',
+])
+
+/** Opzioni di tokenizzazione. Vedi `GENERIC_STOPWORDS`. */
+export type TokenOptions = { escludiGeneriche?: boolean }
+
 // Numero commessa NNNN-NNN. I lookaround impediscono che "2026-012" agganci
 // "2026-0125" (commessa DIVERSA, con lo stesso prefisso). La regex è GLOBALE: va usata
 // solo con String#match / String#replace (che azzerano lastIndex), MAI con .test()/.exec().
 export const COMMESSA_RE = /(?<!\d)\d{4}-\d{3}(?!\d)/g
 
-export function significantTokens(value: string): string[] {
+export function significantTokens(value: string, opts?: TokenOptions): string[] {
+  const escludiGeneriche = opts?.escludiGeneriche === true
   return normalizeName(value)
     // Il flag /g e' essenziale: senza, viene rimosso solo il PRIMO numero commessa
     // e l'anno ('2026') resta un token significativo, producendo falsi match fra
@@ -48,7 +87,20 @@ export function significantTokens(value: string): string[] {
     .replace(COMMESSA_RE, ' ')
     .split(/[\s_\-.,/()]+/)
     .map(t => t.replace(/[^a-z0-9]/g, ''))
-    .filter(t => t.length >= 3 && !MATCH_STOPWORDS.has(t))
+    .filter(t => t.length >= 3 && !MATCH_STOPWORDS.has(t)
+      && !(escludiGeneriche && GENERIC_STOPWORDS.has(t)))
+}
+
+/**
+ * Tokenizzazione del percorso GUARDRAIL. Esiste come funzione unica, e non come
+ * opzione ripetuta ai tre call-site, perche' `tokenWeights` e `similarityRatio`
+ * DEVONO usare lo stesso vocabolario: pesare i token con un elenco e
+ * confrontarli con un altro darebbe pesi calcolati su parole che il confronto
+ * non vede mai (e viceversa `pesi.get(t)` cadrebbe su `pesoMai` per token che
+ * il Registro conosce benissimo).
+ */
+function guardrailTokens(value: string): string[] {
+  return significantTokens(value, { escludiGeneriche: true })
 }
 
 export function commessaNumbers(value: string): string[] {
@@ -75,7 +127,7 @@ export function tokenWeights(righe: string[]): Map<string, number> {
   for (const riga of righe) {
     // `new Set`: un token ripetuto NELLA STESSA riga ("Potenza | Comune di
     // Potenza") non deve pesare doppio.
-    for (const t of new Set(significantTokens(riga))) {
+    for (const t of new Set(guardrailTokens(riga))) {
       frequenza.set(t, (frequenza.get(t) ?? 0) + 1)
     }
   }
@@ -83,6 +135,37 @@ export function tokenWeights(righe: string[]): Map<string, number> {
   const pesi = new Map<string, number>()
   for (const [t, f] of frequenza) pesi.set(t, Math.log((n + 1) / (f + 1)))
   return pesi
+}
+
+/**
+ * Peso di un match APPROSSIMATO. Non 1.0: se "quasi uguale" valesse quanto
+ * "uguale", il guardrail non potrebbe piu' distinguere la prova forte da quella
+ * debole. 0.7 e' il valore con cui e' stata misurata la calibrazione.
+ */
+export const FUZZY_WEIGHT = 0.7
+
+/**
+ * true se `a` e `b` distano al piu' `max` edit (Levenshtein).
+ * Early-exit sulla differenza di lunghezza: e' il caso piu' frequente.
+ */
+export function editDistanceAtMost(a: string, b: string, max: number): boolean {
+  if (a === b) return true
+  if (Math.abs(a.length - b.length) > max) return false
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    let minRiga = i
+    for (let j = 1; j <= b.length; j++) {
+      const costo = a[i - 1] === b[j - 1] ? 0 : 1
+      const v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + costo)
+      cur.push(v)
+      if (v < minRiga) minRiga = v
+    }
+    // Nessuna cella della riga e' entro `max`: nessun percorso potra' rientrarci.
+    if (minRiga > max) return false
+    prev = cur
+  }
+  return prev[b.length] <= max
 }
 
 /**
@@ -107,20 +190,42 @@ export function similarityRatio(
   pesi: Map<string, number>,
   righeRegistro: number,
 ): number {
-  const nuovi = new Set(significantTokens(nuovaText))
+  const nuovi = new Set(guardrailTokens(nuovaText))
   if (nuovi.size === 0) return 0
   // Registro vuoto: non c'e niente da duplicare. Va distinto dal caso
   // "denominatore nullo" trattato in fondo, che invece significa il contrario.
   if (righeRegistro <= 0) return 0
   const pesoMai = Math.log(righeRegistro + 1)
-  const rigaTok = new Set(significantTokens(rigaText))
+  const rigaTok = new Set(guardrailTokens(rigaText))
 
   let totale = 0
   let comune = 0
   for (const t of nuovi) {
     const w = pesi.get(t) ?? pesoMai
     totale += w
-    if (rigaTok.has(t)) comune += w
+    if (rigaTok.has(t)) {
+      comune += w
+      continue
+    }
+    // Typo: chi reinserisce sta riscrivendo a mano, e `Coviella` per `Coviello`
+    // azzerava l'overlap sul token che conta di piu'. Vale FUZZY_WEIGHT, non il
+    // peso pieno. Costo noto e misurato: due cognomi DIVERSI ma simili possono
+    // collidere — vedi il test di caratterizzazione sui cognomi confondibili.
+    //
+    // I token con CIFRE ne sono esclusi: una cifra sbagliata non e' un refuso
+    // morfologico, e' un altro numero. Senza questo filtro `2026`~`2025`
+    // (anni diversi) e `110`~`100` (bonus diversi) prendevano credito fuzzy.
+    // I toponimi restano DENTRO di proposito, pur pagando `Ravello`~`Lavello`
+    // (due comuni reali): anche i comuni si scrivono con refusi, e il costo e'
+    // una conferma in piu', non un duplicato.
+    if (/\d/.test(t)) continue
+    const max = t.length >= 8 ? 2 : 1
+    for (const r of rigaTok) {
+      if (editDistanceAtMost(t, r, max)) {
+        comune += w * FUZZY_WEIGHT
+        break
+      }
+    }
   }
   // Denominatore nullo = tutti i token della nuova riga compaiono in TUTTE le
   // righe del Registro (peso IDF zero). Non e "somiglianza nulla": e il caso in
@@ -159,20 +264,77 @@ export function similarityRatio(
  *     60 → 57%, 20 → 95%, 8 → 100%. Uno studio con pochi clienti abituali
  *     ritrova la saturazione.
  *  2. Il rapporto normalizza SOLO sulla nuova riga, quindi non e simmetrico:
- *     righe corte sovra-bloccano, righe lunghe sotto-bloccano. Su una riga da 4
- *     token un solo token diverso costa 0.25-0.45 di rapporto, quindi 0.60
- *     significa in pratica "3 token su 4 identici". Misurato: un typo nel
- *     cognome (0.465), la ragione sociale scritta per esteso (0.548), tre
- *     parole di dettaglio in piu (0.348) passano TUTTI — ed e proprio cosi che
- *     nascono i duplicati, riscrivendo a mano.
+ *     righe corte sovra-bloccano, righe lunghe sotto-bloccano.
+ *
+ *     ⚠️ L'equivalenza "0.60 = 3 token su 4 identici", scritta qui fino al
+ *     17 ago 2026, NON VALE PIU' e non va usata per ragionare: il fuzzy ha
+ *     rotto il legame fra il rapporto e il numero di token IDENTICI. Misurato
+ *     18 ago 2026 sul fixture `REGISTRO` di foto-archive-match.test.ts
+ *     (5 righe, riga di confronto `2020-005 Venosa Coviello Rifacimento
+ *     copertura`):
+ *
+ *       caso                                  | pre-18 ago | oggi   | blocca?
+ *       3 token su 4 identici, 1 DIVERSO      |   0.5705   | 0.5705 |   no
+ *       3 su 4 identici, 1 con un typo        |   0.4495   | 0.8349 |   si
+ *       ZERO token identici, tutti "quasi"    |   0.0000   | 0.7000 |   si
+ *       ragione sociale per esteso            |   0.2633   | 1.0000 |   si
+ *       sei parole di dettaglio in piu        |   0.2633   | 0.2633 |   no
+ *
+ *     Cioe': una riga con TRE token su quattro identici non blocca, una con
+ *     ZERO token identici blocca. Le due parafrasi con cui i duplicati nascono
+ *     davvero (typo e ragione sociale per esteso) sono ora prese; le parole di
+ *     dettaglio in piu' restano invisibili (vedi il test `LIMITE NOTO`).
+ *
+ *     NB: i numeri "0.465 / 0.548 / 0.348" scritti qui in precedenza venivano
+ *     dall'harness sintetico di maggio, NON da questo fixture, e non erano
+ *     confrontabili con nient'altro nel file. Un numero senza la sua
+ *     popolazione non e' una misura.
  *  3. La suite non distingue 0.50 da 0.70: la soglia e documentata, non
  *     testata. I test la pinnano solo fuori dalla banda [0.46, 0.74].
+ *  4. `FUZZY_WEIGHT` (0.7) e' MAGGIORE di questa soglia, e non e' un dettaglio
+ *     di taratura: e' un corollario strutturale. Una riga in cui OGNI token
+ *     trova solo un match APPROSSIMATO vale esattamente 0.7000 e blocca —
+ *     con ZERO token in comune. Misurato 18 ago 2026 su
+ *     `Ravello Conte Rifacimenti coperture` contro
+ *     `Lavello Conti Rifacimento copertura`. E' accettato: una domanda di
+ *     conferma in piu' costa meno di una commessa duplicata sul Drive. Chi
+ *     abbassa `FUZZY_WEIGHT` sotto la soglia cambia QUESTO, non solo un peso:
+ *     il test di caratterizzazione "ZERO token identici" lo dichiara.
  *
- * La cura per 1 e 2 e la stessa: simmetrizzare (Dice pesato,
- * `2*comune / (totNuova + totRiga)`) e ricalibrare su una popolazione CON
- * committenti ricorrenti. Finche non e fatto, questo guardrail e un
- * miglioramento misurato rispetto al conteggio (che bloccava il 100%), non una
- * soluzione.
+ * ⛔ LA CURA "DICE PESATO" E' STATA MISURATA E REFUTATA (18 ago 2026).
+ * Simmetrizzare con `2*comune / (totNuova + totRiga)` sembra ovvio e non lo e':
+ * riapre i falsi positivi sui committenti mai visti, cioe' il difetto che la
+ * pesatura IDF esisteva per chiudere. E non e' un problema di taratura — il
+ * confronto A PARITA' DI FALSI POSITIVI (curva ROC, non soglia fissa) da' il
+ * rapporto attuale vincente o pari in 29 confronti su 30. La causa non e'
+ * `pesoMai` (toglierlo peggiora): e' che `totRiga` al denominatore diluisce
+ * qualunque penalita'. NON reimplementarla.
+ *
+ * Cio' che invece ha funzionato, senza toccare ne' formula ne' soglia, e'
+ * intervenire sui TOKEN: le parole generiche di forma societaria non pesano
+ * piu' al massimo, e un typo nel cognome non azzera piu' l'overlap. I due casi
+ * passano da 0%/65% a 100%/100%.
+ *
+ * ⚠️ RESTA APERTO, ed e' il problema piu' grande: il guardrail chiede conferma
+ * sulla quasi totalita' delle commesse nuove e LEGITTIME di clienti che
+ * tornano. E' di nuovo saturo, per una via diversa da quella gia' curata: non
+ * il conteggio dei token, ma il fatto che il committente ricorrente da solo
+ * porta abbastanza peso.
+ *
+ * DUE popolazioni, due numeri — entrambi citati di proposito, perche' un tasso
+ * senza la popolazione su cui e' stato misurato e' il difetto che ha prodotto
+ * l'asserzione sbagliata in questo stesso file:
+ *   - harness sintetico R×pool (R ∈ {150,400} righe, pool committenti
+ *     ∈ {200,20}), 18 ago 2026: 87-92%;
+ *   - generatore `scenario(400)` di foto-archive-match.test.ts (8 comuni ×
+ *     8 cognomi × 5 lavori = 320 combinazioni, 233 gia' nel Registro, le 87
+ *     libere sono i "clienti che tornano"), 18 ago 2026: 100%, con rapporto
+ *     massimo medio 0.7335. Vocabolario piu' povero → saturazione totale.
+ * Il test `CARATTERIZZAZIONE: il cliente che torna` pinna il SECONDO.
+ *
+ * Entrambi sono su registri SINTETICI: prima di intervenire va rifatto sul
+ * Registro VERO, dove le righe hanno piu' testo distintivo e il tasso potrebbe
+ * essere piu' basso.
  */
 export const SOGLIA_DUPLICATO = 0.6
 

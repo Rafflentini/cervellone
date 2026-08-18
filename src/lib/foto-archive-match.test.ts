@@ -11,7 +11,9 @@ import {
   pickTopScored,
   tokenWeights,
   similarityRatio,
+  editDistanceAtMost,
   SOGLIA_DUPLICATO,
+  FUZZY_WEIGHT,
   type FolderMatch,
 } from './foto-archive-match'
 
@@ -66,6 +68,49 @@ describe('matchNamedFolderScored — comportamento corretto da preservare', () =
 
   it('nessuna prova sufficiente → nessun candidato (non_trovata)', () => {
     expect(scored([f('2026-001 Palazzo Rossi')], 'Villa Verdi')).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// FUGA DI SCOPE — le stopword nate per il guardrail anti-duplicato non devono
+// restringere il MATCH DELLE CARTELLE.
+//
+// `significantTokens` serve DUE percorsi con esigenze OPPOSTE:
+//  - guardrail: una parola generica che il Registro non ha mai visto prende il
+//    peso massimo e affossa il rapporto → va tolta;
+//  - match cartelle: la regola (c) chiede >=2 token in comune, quindi ogni
+//    parola tolta ABBASSA l'overlap. Tolte 10 parole di settore, una cartella
+//    che agganciava con overlap 2 sparisce dai candidati → `non_trovata` → le
+//    foto NON vengono archiviate, che e' esattamente il fallimento che questo
+//    modulo esiste per impedire.
+// Per questo le parole generiche vivono in un insieme separato, applicato SOLO
+// nel percorso guardrail. Questi tre casi sono stati misurati rossi il 18 ago
+// 2026 con l'insieme unico.
+// ---------------------------------------------------------------------------
+describe('matchNamedFolderScored — le stopword del guardrail non restringono il match', () => {
+  it('"Rossi Costruzioni" aggancia ancora "2026-014 Costruzioni Generali Rossi"', () => {
+    expect(scored([f('2026-014 Costruzioni Generali Rossi')], 'Rossi Costruzioni')).toEqual([
+      ['2026-014 Costruzioni Generali Rossi', 'debole'],
+    ])
+  })
+
+  it('"Coviello Edile" aggancia ancora "2026-014 Impresa Edile Coviello - Venosa"', () => {
+    expect(scored([f('2026-014 Impresa Edile Coviello - Venosa')], 'Coviello Edile')).toEqual([
+      ['2026-014 Impresa Edile Coviello - Venosa', 'debole'],
+    ])
+  })
+
+  it('"Edilizia Potenza" aggancia ancora "2025-003 Edilizia Moderna Potenza"', () => {
+    expect(scored([f('2025-003 Edilizia Moderna Potenza')], 'Edilizia Potenza')).toEqual([
+      ['2025-003 Edilizia Moderna Potenza', 'debole'],
+    ])
+  })
+
+  it('il match cartelle conta le parole di settore, il guardrail no', () => {
+    // La stessa stringa, i due vocabolari. Se questo test diventa un unico
+    // elenco, il caso qui sopra torna rosso senza che nessuno se ne accorga.
+    expect(significantTokens('Costruzioni Generali Rossi')).toEqual(['costruzioni', 'generali', 'rossi'])
+    expect(significantTokens('Costruzioni Generali Rossi', { escludiGeneriche: true })).toEqual(['rossi'])
   })
 })
 
@@ -342,6 +387,230 @@ describe('tokenWeights / similarityRatio', () => {
     expect(similarityRatio('2030-001 Venosa Alfa', 'qualcosa', tokenWeights([]), 0)).toBe(0)
     expect(similarityRatio('', 'x', tokenWeights(REGISTRO), 4)).toBe(0)
   })
+
+  it('la ragione sociale per esteso resta riconoscibile: le parole generiche non pesano', () => {
+    // Il duplicato nasce cosi': la stessa ditta reinserita scrivendo per esteso
+    // cio' che la prima volta era un'abbreviazione. Le parole in piu' non
+    // identificano NESSUN committente, quindi non devono affossare il rapporto.
+    const registro = [...REGISTRO, '2020-005 Venosa Coviello Srl Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    const esteso = '2031-001 Venosa Impresa Edile Coviello Societa a responsabilita limitata Rifacimento copertura'
+    const r = similarityRatio(esteso, registro[4], pesi, registro.length)
+    expect(r).toBeGreaterThanOrEqual(SOGLIA_DUPLICATO)
+  })
+
+  it('le parole generiche di forma societaria non sono token del guardrail', () => {
+    const t = significantTokens('Impresa Edile Rossi Societa a responsabilita limitata', { escludiGeneriche: true })
+    expect(t).toEqual(['rossi'])
+  })
+
+  it('COERENZA: peso e confronto usano lo STESSO vocabolario', () => {
+    // Se `tokenWeights` escludesse le parole generiche e `similarityRatio` no
+    // (o viceversa), i pesi sarebbero calcolati su un elenco e i token
+    // confrontati su un altro: `pesi.get('edile')` cadrebbe su `pesoMai` e la
+    // riga confrontata CON SE STESSA smetterebbe di valere 1.
+    const registro = [...REGISTRO, '2020-005 Venosa Edile Coviello Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    expect(pesi.has('edile')).toBe(false)
+    expect(pesi.get('coviello')).toBeGreaterThan(0)
+    expect(similarityRatio(registro[4], registro[4], pesi, registro.length)).toBeCloseTo(1, 6)
+    // E le parole generiche in piu' nella nuova riga non spostano nulla.
+    const conGeneriche = similarityRatio(
+      '2031-001 Venosa Edile Edilizia Costruzioni Coviello Rifacimento copertura',
+      registro[4], pesi, registro.length,
+    )
+    expect(conGeneriche).toBeCloseTo(1, 6)
+  })
+
+  it('un typo nel cognome non fa perdere il match, ma vale meno di un match esatto', () => {
+    const registro = [...REGISTRO, '2020-005 Venosa Coviello Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    const conTypo = similarityRatio('2031-001 Venosa Coviella Rifacimento copertura', registro[4], pesi, registro.length)
+    const esatto = similarityRatio('2031-001 Venosa Coviello Rifacimento copertura', registro[4], pesi, registro.length)
+    expect(conTypo).toBeGreaterThanOrEqual(SOGLIA_DUPLICATO)
+    // Un match approssimato NON deve essere indistinguibile da uno esatto:
+    // se valesse il peso pieno, "quasi uguale" e "uguale" sarebbero la stessa prova.
+    expect(conTypo).toBeLessThan(esatto)
+    // VALORE PINNATO. Le due asserzioni qui sopra sono vere per FUZZY_WEIGHT da
+    // 0.25 a 1.0: da sole non proteggono il valore 0.7 con cui la calibrazione
+    // e' stata misurata. Misurato 18 ago 2026, dopo la separazione delle
+    // stopword e l'esclusione dei numeri dal fuzzy.
+    expect(esatto).toBeCloseTo(1, 6)
+    expect(conTypo).toBeCloseTo(0.8349, 3)
+  })
+
+  it('il fuzzy NON vale per i numeri: 2026 e 2025 sono anni diversi, non un refuso', () => {
+    // Una cifra sbagliata non e' un refuso morfologico: e' un ALTRO numero.
+    // `2026`~`2025` (distanza 1) e `110`~`100` (distanza 1) prendevano credito
+    // fuzzy, cioe' il guardrail trattava l'anno o il bonus fiscale sbagliato
+    // come "quasi lo stesso".
+    // Prova: un anno adiacente e un numero del tutto scorrelato devono valere
+    // ESATTAMENTE lo stesso (entrambi mai visti → stesso `pesoMai`, entrambi
+    // senza credito). Se il fuzzy li distinguesse, i due rapporti divergono.
+    const registro = [...REGISTRO, '2020-005 Venosa Coviello Superbonus 110 anno 2025']
+    const pesi = tokenWeights(registro)
+    const base = '2031-001 Venosa Coviello Superbonus'
+    const annoAdiacente = similarityRatio(`${base} 110 anno 2026`, registro[4], pesi, registro.length)
+    const annoScorrelato = similarityRatio(`${base} 110 anno 7788`, registro[4], pesi, registro.length)
+    expect(annoAdiacente).toBe(annoScorrelato)
+
+    const bonusAdiacente = similarityRatio(`${base} 100 anno 2025`, registro[4], pesi, registro.length)
+    const bonusScorrelato = similarityRatio(`${base} 774 anno 2025`, registro[4], pesi, registro.length)
+    expect(bonusAdiacente).toBe(bonusScorrelato)
+  })
+
+  it('il fuzzy resta attivo sui comuni: anche i toponimi si scrivono con refusi', () => {
+    // Scelta consapevole e NON simmetrica al caso dei numeri: `Ravello` e
+    // `Lavello` sono due comuni REALI a distanza 1, quindi qui il fuzzy paga
+    // anche un falso positivo. Costa una conferma; toglierlo costerebbe i
+    // duplicati nati riscrivendo il comune a mano.
+    const registro = [...REGISTRO, '2020-005 Lavello Coviello Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    const conRefuso = similarityRatio('2031-001 Ravello Coviello Rifacimento copertura', registro[4], pesi, registro.length)
+    const conAltroComune = similarityRatio('2031-001 Bernalda Coviello Rifacimento copertura', registro[4], pesi, registro.length)
+    expect(conRefuso).toBeGreaterThan(conAltroComune)
+  })
+
+  it('editDistanceAtMost: 1 per i token corti, 2 per quelli lunghi', () => {
+    expect(editDistanceAtMost('rossi', 'rossa', 1)).toBe(true)
+    expect(editDistanceAtMost('rossi', 'rosse', 1)).toBe(true)
+    expect(editDistanceAtMost('rossi', 'russo', 1)).toBe(false)
+    expect(editDistanceAtMost('coviello', 'coviella', 2)).toBe(true)
+    // early-exit sulla differenza di lunghezza
+    expect(editDistanceAtMost('abc', 'abcdefgh', 1)).toBe(false)
+  })
+
+  it('editDistanceAtMost: `max` e davvero il tetto, non un parametro decorativo', () => {
+    // `coviella` dista 1 da `coviello`: passa anche con max 1, quindi NON prova
+    // niente sul valore di `max`. Serve una coppia a distanza ESATTAMENTE 2.
+    // `cuviella` vs `coviello`: o→u in posizione 2, o→a in posizione 8.
+    expect(editDistanceAtMost('coviello', 'cuviella', 2)).toBe(true)
+    expect(editDistanceAtMost('coviello', 'cuviella', 1)).toBe(false)
+  })
+
+  it('editDistanceAtMost: due stringhe identiche distano 0', () => {
+    // Sembra ovvio, ma il ramo `if (a === b) return true` non era coperto da
+    // nulla: invertirlo lasciava la suite verde.
+    expect(editDistanceAtMost('coviello', 'coviello', 0)).toBe(true)
+    expect(editDistanceAtMost('', '', 0)).toBe(true)
+  })
+
+  it('editDistanceAtMost: una differenza di lunghezza pari a `max` e ancora ammessa', () => {
+    // L'early-exit e' `> max`, non `>= max`: una lettera in piu' con max 1 e'
+    // esattamente il caso di una `o` finale mangiata, il refuso piu' comune.
+    expect(editDistanceAtMost('coviello', 'coviell', 1)).toBe(true)
+    expect(editDistanceAtMost('abc', 'abcd', 1)).toBe(true)
+    expect(editDistanceAtMost('abc', 'abcde', 1)).toBe(false)
+  })
+
+  it('la regola 8 caratteri vale anche DENTRO similarityRatio, non solo in isolamento', () => {
+    // Il test qui sopra passa `max` esplicito e quindi non tocca la regola
+    // `t.length >= 8 ? 2 : 1`. Qui la regola e' esercitata dal percorso vero.
+    const registro = [
+      ...REGISTRO,
+      '2020-005 Venosa Coviello Rifacimento copertura',   // committente da 8 lettere
+      '2020-006 Venosa Telesca Rifacimento copertura',    // committente da 7 lettere
+    ]
+    const pesi = tokenWeights(registro)
+    const r = (nuova: string, riga: string) => similarityRatio(nuova, riga, pesi, registro.length)
+
+    // 8 caratteri, distanza 2 → credito fuzzy: sta SOPRA il baseline senza
+    // nessuna somiglianza (stessa lunghezza, stesso `pesoMai`).
+    const lungoSimile = r('2031-001 Venosa Cuviella Rifacimento copertura', registro[4])
+    const lungoBaseline = r('2031-001 Venosa Zzzzzzzz Rifacimento copertura', registro[4])
+    expect(lungoSimile).toBeGreaterThan(lungoBaseline)
+
+    // 7 caratteri, distanza 2 → NESSUN credito: identico al baseline.
+    const cortoSimile = r('2031-002 Venosa Tulesco Rifacimento copertura', registro[5])
+    const cortoBaseline = r('2031-002 Venosa Zzzzzzz Rifacimento copertura', registro[5])
+    expect(cortoSimile).toBe(cortoBaseline)
+  })
+
+  it('un token nuovo prende il credito fuzzy UNA volta sola per riga', () => {
+    // Il `break` nel ramo fuzzy non e' un'ottimizzazione: senza, un token che
+    // somiglia a DUE parole della stessa riga incassa il credito due volte e il
+    // rapporto puo' superare 1.
+    const registro = [
+      ...REGISTRO,
+      '2020-005 Venosa Conti Conte Rifacimento copertura', // DUE token simili
+      '2020-006 Venosa Conti Rifacimento copertura',       // UNO solo
+    ]
+    const pesi = tokenWeights(registro)
+    const nuova = '2031-001 Venosa Conto Rifacimento copertura'
+    const conDue = similarityRatio(nuova, registro[4], pesi, registro.length)
+    const conUno = similarityRatio(nuova, registro[5], pesi, registro.length)
+    expect(conDue).toBe(conUno)
+    expect(conDue).toBeLessThanOrEqual(1)
+  })
+
+  it('COSTO NOTO: il fuzzy vale su TUTTE le parole, non solo sui cognomi', () => {
+    // AMBITO VERO del ramo approssimato, da non confondere con la ragione per
+    // cui e' stato introdotto: `similarityRatio` lo applica a OGNI token della
+    // nuova riga — cognomi, comuni e parole dell'oggetto. Sono esclusi solo i
+    // token che contengono CIFRE (vedi il test sui numeri): una cifra sbagliata
+    // e' un altro numero, non un refuso.
+    //
+    // Costo su ciascuna delle tre classi:
+    //  - COGNOMI: misurato, 6 coppie su 18 di cognomi italiani confondibili
+    //    superano la soglia contro un cliente DIVERSO (Gallo/Gallu,
+    //    Conti/Conte, Rizzo/Rizzi, Costa/Cesta, Fontana/Fontano,
+    //    Barbieri/Barbiero).
+    //  - COMUNI: `Ravello` e `Lavello` sono due comuni REALI a distanza 1.
+    //  - OGGETTO: singolare e plurale della stessa parola collidono
+    //    (copertura/coperture, rifacimento/rifacimenti), ed e' voluto.
+    //
+    // NON e' tarabile: "typo dello stesso cliente" e "cliente diverso col
+    // cognome simile" sono lo STESSO segnale, e nessuna soglia li separa.
+    // Accettato consapevolmente: l'esito e' una domanda di conferma in piu',
+    // mai una perdita di dati, mentre il falso negativo costa una commessa
+    // duplicata sul Drive.
+    expect(editDistanceAtMost('conti', 'conte', 1)).toBe(true)
+    expect(editDistanceAtMost('rizzo', 'rizzi', 1)).toBe(true)
+    expect(editDistanceAtMost('ravello', 'lavello', 1)).toBe(true)
+    expect(editDistanceAtMost('copertura', 'coperture', 2)).toBe(true)
+  })
+
+  it('CARATTERIZZAZIONE: ZERO token identici bastano a bloccare, e vale 0.7000', () => {
+    // Corollario STRUTTURALE di `FUZZY_WEIGHT (0.7) > SOGLIA_DUPLICATO (0.6)`,
+    // non un caso limite: se OGNI token della nuova riga trova solo un match
+    // APPROSSIMATO, il rapporto vale esattamente FUZZY_WEIGHT — quindi supera
+    // la soglia senza un solo token in comune.
+    //
+    // Il comportamento e' VOLUTO e resta: una domanda di conferma in piu' costa
+    // meno di una commessa duplicata sul Drive. Questo test esiste perche' sia
+    // DICHIARATO invece che nascosto: chi tocca FUZZY_WEIGHT o SOGLIA_DUPLICATO
+    // lo trova rosso e sa cosa sta cambiando.
+    expect(FUZZY_WEIGHT).toBeGreaterThan(SOGLIA_DUPLICATO)
+
+    const registro = [...REGISTRO, '2020-005 Lavello Conti Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    const nuova = '2031-001 Ravello Conte Rifacimenti coperture'
+
+    // Nessun token davvero in comune: ogni parola e' scritta diversamente.
+    const tokNuova = new Set(significantTokens(nuova, { escludiGeneriche: true }))
+    const tokRiga = new Set(significantTokens(registro[4], { escludiGeneriche: true }))
+    expect(tokNuova.size).toBe(4)
+    expect([...tokNuova].filter(t => tokRiga.has(t))).toEqual([])
+
+    const r = similarityRatio(nuova, registro[4], pesi, registro.length)
+    // Misurato 18 ago 2026: esattamente FUZZY_WEIGHT, e sopra soglia.
+    expect(r).toBeCloseTo(0.7, 10)
+    expect(r).toBeGreaterThanOrEqual(SOGLIA_DUPLICATO)
+  })
+
+  it('LIMITE NOTO: le parole di dettaglio in piu nell oggetto restano invisibili', () => {
+    // Misurato 0% di riconoscimento in TUTTE le configurazioni provate
+    // (baseline e ogni combinazione di interventi sui token). L'unica cura
+    // sarebbe simmetrizzare la formula, e il Dice pesato e' stato misurato e
+    // REFUTATO: vedi il commento su SOGLIA_DUPLICATO.
+    const registro = [...REGISTRO, '2020-005 Venosa Coviello Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    const conDettagli = similarityRatio(
+      '2031-001 Venosa Coviello Rifacimento copertura con sostituzione lattoneria e pluviali esterni',
+      registro[4], pesi, registro.length,
+    )
+    expect(conDettagli).toBeLessThan(SOGLIA_DUPLICATO)
+  })
 })
 
 // Questo e IL test che protegge la calibrazione: senza, si puo tornare a un
@@ -400,5 +669,49 @@ describe('SOGLIA_DUPLICATO — calibrazione', () => {
     const { registro, bloccata } = scenario(40)
     const copie = registro.slice(0, 20).map((r, i) => `2031-${String(i + 1).padStart(3, '0')} ${r.split(' ').slice(1).join(' ')}`)
     expect(copie.filter(bloccata).length / copie.length).toBeGreaterThan(0.9)
+  })
+
+  it('CARATTERIZZAZIONE: il cliente che torna viene bloccato spesso — limite noto', () => {
+    // Una commessa NUOVA e legittima di un committente gia' nel Registro. Il
+    // committente da solo porta abbastanza peso da superare la soglia: il
+    // guardrail chiede conferma anche quando non c'e' nessun duplicato.
+    // Misurato su registri sintetici: 87-92% a 400 righe. Il test NON pretende
+    // che sia risolto — pinna il tasso perche' un intervento futuro possa
+    // dimostrare di averlo abbassato, invece di dichiararlo.
+    const { registro, bloccata } = scenario(400)
+
+    // Il "cliente che torna" e' fatto di parole che il Registro CONOSCE gia':
+    // stesso comune, stesso committente, un lavoro del repertorio abituale. E'
+    // NUOVA la combinazione, non il vocabolario. Costruirlo invece con comune e
+    // lavoro INVENTATI misura un'altra popolazione: due token su tre mai visti
+    // prendono `pesoMai`, il rapporto crolla a 0.15 e i blocchi sono 0% —
+    // l'opposto del caso in esame. Misurato il 18 ago 2026, su main e su questo
+    // branch allo stesso modo.
+    const presenti = new Set(registro.map(r => r.split(' ').slice(1).join(' ')))
+    const combinazioniNuove: string[] = []
+    for (const comune of COMUNI) for (const cognome of COGNOMI) for (const lavoro of LAVORI) {
+      const combo = `${comune} ${cognome} ${lavoro}`
+      // Solo combinazioni ASSENTI dal Registro: non sono duplicati, sono
+      // commesse che l'Ingegnere ha il diritto di creare senza che gli si
+      // chieda niente. (Con 320 combinazioni possibili e 400 righe, il Registro
+      // ne contiene 233 e ne restano 87 libere: prenderle a caso fra tutte
+      // misurerebbe in gran parte duplicati veri, non clienti che tornano.)
+      if (!presenti.has(combo)) combinazioniNuove.push(combo)
+    }
+    const ricorrenti = combinazioniNuove.slice(0, 40)
+      .map((combo, i) => `2033-${String(i + 1).padStart(3, '0')} ${combo}`)
+    expect(ricorrenti).toHaveLength(40)
+
+    const bloccate = ricorrenti.filter(bloccata).length / ricorrenti.length
+    // Misurato 18 ago 2026: 100% (rapporto massimo medio 0.7335), invariato
+    // dopo la separazione delle stopword e l'esclusione dei numeri dal fuzzy.
+    //
+    // La soglia sta a 0.9 e NON piu' a 0.2: con 0.2 un intervento che portasse
+    // il tasso da 100% a 30% — una vittoria enorme — lasciava questo test
+    // VERDE, cioe' il segnale non scattava mai. Un test di caratterizzazione
+    // che non si accorge del miglioramento che dichiara di sorvegliare non
+    // sorveglia niente. Chi abbassa davvero il tasso lo trova rosso: e' il
+    // segnale che deve riscrivere il numero misurato, non allargare la banda.
+    expect(bloccate).toBeGreaterThan(0.9)
   })
 })
