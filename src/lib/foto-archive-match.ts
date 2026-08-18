@@ -60,8 +60,10 @@ const MATCH_STOPWORDS = new Set([
  *
  * ⚠️ L'elenco e' volutamente NON esaustivo sulle varianti morfologiche
  * (`costruzioni` c'e', `costruzione` no; `edile`/`edilizia` ci sono, `edilizio`
- * no): sono le forme misurate sui nomi commessa reali. Aggiungerne altre
- * cambia la calibrazione del guardrail e va rimisurato, non dedotto.
+ * no): sono le forme misurate sui nomi commessa SINTETICI dei fixture di test
+ * (i tre casi qui sopra e i registri sintetici del piano), non su commesse
+ * reali. Aggiungerne altre cambia la calibrazione del guardrail e va
+ * rimisurato, non dedotto.
  */
 const GENERIC_STOPWORDS = new Set([
   'societa', 'responsabilita', 'limitata', 'azioni', 'individuale',
@@ -276,7 +278,7 @@ export function similarityRatio(
  *       3 su 4 identici, 1 con un typo        |   0.4495   | 0.8349 |   si
  *       ZERO token identici, tutti "quasi"    |   0.0000   | 0.7000 |   si
  *       ragione sociale per esteso            |   0.2633   | 1.0000 |   si
- *       tre parole di dettaglio in piu        |   0.2633   | 0.2633 |   no
+ *       sei parole di dettaglio in piu        |   0.2633   | 0.2633 |   no
  *
  *     Cioe': una riga con TRE token su quattro identici non blocca, una con
  *     ZERO token identici blocca. Le due parafrasi con cui i duplicati nascono
