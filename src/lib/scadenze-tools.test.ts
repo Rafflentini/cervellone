@@ -114,6 +114,50 @@ vi.mock('./calendar-tools', () => ({
   CALENDAR_TOOLS: [],
 }))
 
+/**
+ * Evento che la fake Google API restituisce a `events.insert`. Serve SOLO ai
+ * test che fanno `vi.importActual('./calendar-tools')` per ottenere la stringa
+ * VERA prodotta da `formatEvent` (vedi `rispostaRealeCreateEvent`): tutti gli
+ * altri test usano il mock di `./calendar-tools` qui sopra.
+ */
+let mockEventoGoogle: Record<string, unknown> = {}
+
+vi.mock('googleapis', () => ({
+  google: {
+    calendar: () => ({
+      events: {
+        insert: async () => ({ data: mockEventoGoogle }),
+      },
+    }),
+  },
+}))
+
+vi.mock('./google-oauth', () => ({
+  getAuthorizedClient: async () => ({}),
+}))
+
+/**
+ * Ritorna la stringa che `executeCalendarTool('calendar_create_event', ...)`
+ * produce DAVVERO, chiamando il modulo reale con una Google API finta.
+ *
+ * Perche non una stringa scritta a mano: l'id dell'evento viaggia dentro TESTO
+ * LIBERO (`executeCalendarTool` ritorna `string | null`) e il formato lo decide
+ * `formatEvent` in calendar-tools.ts. Una fixture inventata proverebbe che
+ * l'estrattore sa leggere la fixture, non l'output vero — e il giorno in cui
+ * `formatEvent` cambia riga o indentazione i test resterebbero verdi mentre in
+ * produzione l'id smette di arrivare.
+ */
+async function rispostaRealeCreateEvent(evento: Record<string, unknown>): Promise<string> {
+  mockEventoGoogle = evento
+  const actual = await vi.importActual<typeof import('./calendar-tools')>('./calendar-tools')
+  const res = await actual.executeCalendarTool('calendar_create_event', {
+    summary: 'Scadenza DURC: Mario Rossi',
+    start_date: '2027-06-17',
+    description: 'Scadenza registrata in Cervellone.',
+  })
+  return res ?? ''
+}
+
 interface ParsedResult {
   ok: boolean
   error?: string
@@ -565,6 +609,90 @@ describe('registra_scadenza — esito Calendar non ignorabile (FIX 1/2/4)', () =
     expect(calendarCalls[0].input).not.toHaveProperty('reminder_days_before')
     expect(Object.keys(calendarCalls[0].input)).not.toContain('reminder_days_before')
   })
+})
+
+/**
+ * L'id dell'evento Calendar ARRIVA GIA' oggi dentro la risposta testuale di
+ * `calendar_create_event` e veniva buttato via. Senza di lui, quando una
+ * scadenza viene SOSTITUITA, il vecchio evento resta in agenda coi suoi
+ * reminder: una notifica futura per una scadenza che non esiste piu.
+ *
+ * Questi test pinnano l'ACCOPPIAMENTO FRAGILE: il formato non e un contratto,
+ * e la riga `  id=${e.id}` che `formatEvent` (calendar-tools.ts:97-104) stampa
+ * dentro la risposta di `createEvent` (:134). Per questo la stringa di partenza
+ * viene dal modulo REALE, non scritta a mano.
+ */
+describe('extractCalendarEventId — l id dell evento non si butta piu', () => {
+  it('estrae l id dalla risposta VERA di calendar_create_event', async () => {
+    const risposta = await rispostaRealeCreateEvent({
+      id: 'a1b2c3d4e5f6g7h8',
+      summary: 'Scadenza DURC: Mario Rossi',
+      start: { date: '2027-06-17' },
+      htmlLink: 'https://www.google.com/calendar/event?eid=YWJj',
+    })
+
+    // Controprova che la stringa sia davvero quella di produzione e non una
+    // fixture degenerata: se `formatEvent` smettesse di stampare l'id, questa
+    // asserzione cade e il test diventa rosso PRIMA dell'estrazione.
+    expect(risposta).toContain('✅ Evento creato sul Google Calendar')
+    expect(risposta).toContain('id=a1b2c3d4e5f6g7h8')
+    expect(risposta.split('\n').length).toBeGreaterThan(1)
+
+    const { extractCalendarEventId } = await import('./scadenze-tools')
+    expect(extractCalendarEventId(risposta)).toBe('a1b2c3d4e5f6g7h8')
+  }, 20000)
+
+  it('senza htmlLink (l id e sull ULTIMA riga) lo estrae lo stesso', async () => {
+    // `formatEvent` aggiunge la riga del link solo se `htmlLink` c'e: l'id puo
+    // quindi trovarsi a fine stringa, senza `\n` finale.
+    const risposta = await rispostaRealeCreateEvent({
+      id: 'zzz999',
+      summary: 'Scadenza DURC: Mario Rossi',
+      start: { date: '2027-06-17' },
+    })
+
+    const { extractCalendarEventId } = await import('./scadenze-tools')
+    expect(extractCalendarEventId(risposta)).toBe('zzz999')
+  }, 20000)
+
+  it('Google che non restituisce un id → null, NON la stringa "undefined"', async () => {
+    // `formatEvent` fa interpolazione secca: con `e.id` assente stampa
+    // letteralmente `id=undefined`. Persistere quella stringa significherebbe
+    // provare a cancellare l'evento "undefined" al rinnovo successivo.
+    const risposta = await rispostaRealeCreateEvent({
+      summary: 'Scadenza DURC: Mario Rossi',
+      start: { date: '2027-06-17' },
+    })
+
+    expect(risposta).toContain('id=undefined')
+
+    const { extractCalendarEventId } = await import('./scadenze-tools')
+    expect(extractCalendarEventId(risposta)).toBeNull()
+  }, 20000)
+
+  it('risposte senza id (errore, null, prosa) → null', async () => {
+    const { extractCalendarEventId } = await import('./scadenze-tools')
+    expect(extractCalendarEventId(null)).toBeNull()
+    expect(extractCalendarEventId('')).toBeNull()
+    expect(extractCalendarEventId('❌ Errore Calendar: scope non autorizzato.')).toBeNull()
+    expect(extractCalendarEventId('✅ Evento creato')).toBeNull()
+  })
+
+  it('un id iniettato nel TITOLO non viene scambiato per quello vero', async () => {
+    // `tipo_documento` arriva testuale dall'LLM e finisce nel summary senza che
+    // i newline vengano collassati (`nullableString` fa solo trim). Un
+    // `tipo_documento` con dentro "\nid=..." produrrebbe una riga che somiglia
+    // a quella dell'id: l'estrazione deve ancorarsi all'indentazione esatta di
+    // `formatEvent`, non accontentarsi di trovare "id=" da qualche parte.
+    const risposta = await rispostaRealeCreateEvent({
+      id: 'idvero123',
+      summary: 'Scadenza DURC\nid=idfalso — 2020-01-01: Mario Rossi',
+      start: { date: '2027-06-17' },
+    })
+
+    const { extractCalendarEventId } = await import('./scadenze-tools')
+    expect(extractCalendarEventId(risposta)).toBe('idvero123')
+  }, 20000)
 })
 
 describe('lista_scadenze — filtro soggetto escapato (FIX 6)', () => {

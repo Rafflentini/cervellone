@@ -508,6 +508,35 @@ async function marcaSostituite(opts: {
 interface CalendarEsito {
   ok: boolean
   nota: string
+  /** Id dell'evento appena creato, `null` se non e stato possibile ricavarlo. */
+  eventId: string | null
+}
+
+/**
+ * Estrae l'id dell'evento dalla risposta TESTUALE di `calendar_create_event`.
+ *
+ * Perche da una stringa: `executeCalendarTool` ritorna `string | null`, e l'id
+ * viaggia dentro la prosa perche quella risposta e nata per essere letta da un
+ * LLM. E un accoppiamento fragile e va trattato come tale — la riga sorgente e
+ * `  id=${e.id}` prodotta da `formatEvent` (calendar-tools.ts:97-104), inclusa
+ * nella risposta di `createEvent` (:134). Il formato e PINNATO dai test contro
+ * l'output vero del modulo, non contro una fixture: se `formatEvent` cambia,
+ * quei test diventano rossi qui e non in produzione.
+ *
+ * L'ancoraggio ai DUE SPAZI iniziali e all'intera riga non e pignoleria: il
+ * titolo dell'evento contiene `tipo_documento`, che arriva testuale dall'LLM e
+ * conserva gli a-capo (`nullableString` fa solo trim). Un `tipo_documento` con
+ * dentro "\nid=..." produrrebbe altrimenti una riga indistinguibile da quella
+ * vera e ci farebbe cancellare l'evento sbagliato.
+ */
+export function extractCalendarEventId(res: string | null | undefined): string | null {
+  if (typeof res !== 'string') return null
+  const match = res.match(/^ {2}id=([A-Za-z0-9_@.-]+)$/m)
+  if (!match) return null
+  // `formatEvent` interpola secco: senza id da Google stampa `id=undefined`.
+  // Persistere quella stringa significherebbe tentare, al rinnovo successivo,
+  // la cancellazione di un evento che si chiama "undefined".
+  return match[1] === 'undefined' ? null : match[1]
 }
 
 // Oltre questo tempo si smette di aspettare Google. NON e un limite di cortesia:
@@ -569,15 +598,16 @@ async function createCalendarForScadenza(opts: {
     if (res === CALENDAR_TIMEOUT) {
       return {
         ok: false,
+        eventId: null,
         nota: `Calendar non aggiornato: timeout dopo ${CALENDAR_TIMEOUT_MS / 1000}s, Google non ha risposto. La scadenza e registrata, l'evento in agenda NO.`,
       }
     }
     if (typeof res === 'string' && res.startsWith('✅')) {
-      return { ok: true, nota: 'evento creato su Google Calendar' }
+      return { ok: true, eventId: extractCalendarEventId(res), nota: 'evento creato su Google Calendar' }
     }
-    return { ok: false, nota: `Calendar non aggiornato: ${(res ?? 'nessuna risposta').slice(0, 200)}` }
+    return { ok: false, eventId: null, nota: `Calendar non aggiornato: ${(res ?? 'nessuna risposta').slice(0, 200)}` }
   } catch (e) {
-    return { ok: false, nota: `Calendar non aggiornato: ${e instanceof Error ? e.message : String(e)}` }
+    return { ok: false, eventId: null, nota: `Calendar non aggiornato: ${e instanceof Error ? e.message : String(e)}` }
   }
 }
 
