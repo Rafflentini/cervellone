@@ -71,6 +71,49 @@ describe('matchNamedFolderScored — comportamento corretto da preservare', () =
 })
 
 // ---------------------------------------------------------------------------
+// FUGA DI SCOPE — le stopword nate per il guardrail anti-duplicato non devono
+// restringere il MATCH DELLE CARTELLE.
+//
+// `significantTokens` serve DUE percorsi con esigenze OPPOSTE:
+//  - guardrail: una parola generica che il Registro non ha mai visto prende il
+//    peso massimo e affossa il rapporto → va tolta;
+//  - match cartelle: la regola (c) chiede >=2 token in comune, quindi ogni
+//    parola tolta ABBASSA l'overlap. Tolte 10 parole di settore, una cartella
+//    che agganciava con overlap 2 sparisce dai candidati → `non_trovata` → le
+//    foto NON vengono archiviate, che e' esattamente il fallimento che questo
+//    modulo esiste per impedire.
+// Per questo le parole generiche vivono in un insieme separato, applicato SOLO
+// nel percorso guardrail. Questi tre casi sono stati misurati rossi il 18 ago
+// 2026 con l'insieme unico.
+// ---------------------------------------------------------------------------
+describe('matchNamedFolderScored — le stopword del guardrail non restringono il match', () => {
+  it('"Rossi Costruzioni" aggancia ancora "2026-014 Costruzioni Generali Rossi"', () => {
+    expect(scored([f('2026-014 Costruzioni Generali Rossi')], 'Rossi Costruzioni')).toEqual([
+      ['2026-014 Costruzioni Generali Rossi', 'debole'],
+    ])
+  })
+
+  it('"Coviello Edile" aggancia ancora "2026-014 Impresa Edile Coviello - Venosa"', () => {
+    expect(scored([f('2026-014 Impresa Edile Coviello - Venosa')], 'Coviello Edile')).toEqual([
+      ['2026-014 Impresa Edile Coviello - Venosa', 'debole'],
+    ])
+  })
+
+  it('"Edilizia Potenza" aggancia ancora "2025-003 Edilizia Moderna Potenza"', () => {
+    expect(scored([f('2025-003 Edilizia Moderna Potenza')], 'Edilizia Potenza')).toEqual([
+      ['2025-003 Edilizia Moderna Potenza', 'debole'],
+    ])
+  })
+
+  it('il match cartelle conta le parole di settore, il guardrail no', () => {
+    // La stessa stringa, i due vocabolari. Se questo test diventa un unico
+    // elenco, il caso qui sopra torna rosso senza che nessuno se ne accorga.
+    expect(significantTokens('Costruzioni Generali Rossi')).toEqual(['costruzioni', 'generali', 'rossi'])
+    expect(significantTokens('Costruzioni Generali Rossi', { escludiGeneriche: true })).toEqual(['rossi'])
+  })
+})
+
+// ---------------------------------------------------------------------------
 // B6 — substring unidirezionale spacciato per match forte.
 // ---------------------------------------------------------------------------
 describe('B6 — substring che non finisce su confine di parola', () => {
@@ -355,9 +398,27 @@ describe('tokenWeights / similarityRatio', () => {
     expect(r).toBeGreaterThanOrEqual(SOGLIA_DUPLICATO)
   })
 
-  it('le parole generiche di forma societaria non sono token significativi', () => {
-    const t = significantTokens('Impresa Edile Rossi Societa a responsabilita limitata')
+  it('le parole generiche di forma societaria non sono token del guardrail', () => {
+    const t = significantTokens('Impresa Edile Rossi Societa a responsabilita limitata', { escludiGeneriche: true })
     expect(t).toEqual(['rossi'])
+  })
+
+  it('COERENZA: peso e confronto usano lo STESSO vocabolario', () => {
+    // Se `tokenWeights` escludesse le parole generiche e `similarityRatio` no
+    // (o viceversa), i pesi sarebbero calcolati su un elenco e i token
+    // confrontati su un altro: `pesi.get('edile')` cadrebbe su `pesoMai` e la
+    // riga confrontata CON SE STESSA smetterebbe di valere 1.
+    const registro = [...REGISTRO, '2020-005 Venosa Edile Coviello Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    expect(pesi.has('edile')).toBe(false)
+    expect(pesi.get('coviello')).toBeGreaterThan(0)
+    expect(similarityRatio(registro[4], registro[4], pesi, registro.length)).toBeCloseTo(1, 6)
+    // E le parole generiche in piu' nella nuova riga non spostano nulla.
+    const conGeneriche = similarityRatio(
+      '2031-001 Venosa Edile Edilizia Costruzioni Coviello Rifacimento copertura',
+      registro[4], pesi, registro.length,
+    )
+    expect(conGeneriche).toBeCloseTo(1, 6)
   })
 
   it('un typo nel cognome non fa perdere il match, ma vale meno di un match esatto', () => {

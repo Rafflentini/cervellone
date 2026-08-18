@@ -33,22 +33,51 @@ const MATCH_STOPWORDS = new Set([
   'progetto', 'progetti', 'lavori', 'lavoro', 'cantiere', 'cantieri', 'srl', 's.r.l',
   'spa', 's.p.a', 'sas', 'snc', 'ditta', 'impresa', 'sig', 'sig.ra', 'e', 'a', 'il',
   'la', 'lo', 'gli', 'le', 'per', 'con', 'scia', 'cila', 'cilas', 'permesso', 'pdc',
-  // Parole generiche di forma societaria e di settore. Non identificano nessun
-  // committente: se restano "token significativi" e non compaiono nel Registro
-  // prendono `pesoMai` e affossano il rapporto proprio quando il cognome ha
-  // fatto match. Misurato: la ragione sociale per esteso passa da 0% a 100% di
-  // riconoscimento. NB: `srl`/`spa`/`sas`/`snc`/`ditta`/`impresa` erano gia'
-  // sopra — non erano loro il problema.
+])
+
+/**
+ * Parole generiche di forma societaria e di settore, tolte SOLO nel percorso
+ * del guardrail anti-duplicato (`escludiGeneriche: true`).
+ *
+ * Perche' un secondo insieme e non dieci voci in piu' in `MATCH_STOPWORDS`: i
+ * due consumatori di `significantTokens` hanno esigenze OPPOSTE.
+ *  - Guardrail (`tokenWeights` + `similarityRatio`): una parola generica mai
+ *    vista nel Registro prende `pesoMai` (il peso massimo) e finisce solo al
+ *    denominatore, affossando il rapporto proprio quando il cognome ha fatto
+ *    match. Misurato: la ragione sociale per esteso passa da 0% a 100% di
+ *    riconoscimento togliendole. NB: `srl`/`spa`/`sas`/`snc`/`ditta`/`impresa`
+ *    stanno gia' sopra — non erano loro il problema.
+ *  - Match cartelle (`matchNamedFolderScored`, regola (c)): serve overlap di
+ *    >=2 token, quindi ogni parola tolta ABBASSA l'overlap. Applicandole anche
+ *    li', "Rossi Costruzioni" smetteva di agganciare "2026-014 Costruzioni
+ *    Generali Rossi" → `non_trovata` → foto NON archiviate. Misurato su tre
+ *    casi il 18 ago 2026, tutti e tre persi.
+ *
+ * ⚠️ `generali` cancella un committente reale plausibile (Assicurazioni
+ * Generali): dopo la separazione il rischio resta confinato al guardrail, dove
+ * costa al massimo una conferma mancata e mai una cartella sbagliata. Per
+ * questo resta nell'elenco.
+ *
+ * ⚠️ L'elenco e' volutamente NON esaustivo sulle varianti morfologiche
+ * (`costruzioni` c'e', `costruzione` no; `edile`/`edilizia` ci sono, `edilizio`
+ * no): sono le forme misurate sui nomi commessa reali. Aggiungerne altre
+ * cambia la calibrazione del guardrail e va rimisurato, non dedotto.
+ */
+const GENERIC_STOPWORDS = new Set([
   'societa', 'responsabilita', 'limitata', 'azioni', 'individuale',
   'edile', 'edilizia', 'costruzioni', 'generale', 'generali',
 ])
+
+/** Opzioni di tokenizzazione. Vedi `GENERIC_STOPWORDS`. */
+export type TokenOptions = { escludiGeneriche?: boolean }
 
 // Numero commessa NNNN-NNN. I lookaround impediscono che "2026-012" agganci
 // "2026-0125" (commessa DIVERSA, con lo stesso prefisso). La regex è GLOBALE: va usata
 // solo con String#match / String#replace (che azzerano lastIndex), MAI con .test()/.exec().
 export const COMMESSA_RE = /(?<!\d)\d{4}-\d{3}(?!\d)/g
 
-export function significantTokens(value: string): string[] {
+export function significantTokens(value: string, opts?: TokenOptions): string[] {
+  const escludiGeneriche = opts?.escludiGeneriche === true
   return normalizeName(value)
     // Il flag /g e' essenziale: senza, viene rimosso solo il PRIMO numero commessa
     // e l'anno ('2026') resta un token significativo, producendo falsi match fra
@@ -56,7 +85,20 @@ export function significantTokens(value: string): string[] {
     .replace(COMMESSA_RE, ' ')
     .split(/[\s_\-.,/()]+/)
     .map(t => t.replace(/[^a-z0-9]/g, ''))
-    .filter(t => t.length >= 3 && !MATCH_STOPWORDS.has(t))
+    .filter(t => t.length >= 3 && !MATCH_STOPWORDS.has(t)
+      && !(escludiGeneriche && GENERIC_STOPWORDS.has(t)))
+}
+
+/**
+ * Tokenizzazione del percorso GUARDRAIL. Esiste come funzione unica, e non come
+ * opzione ripetuta ai tre call-site, perche' `tokenWeights` e `similarityRatio`
+ * DEVONO usare lo stesso vocabolario: pesare i token con un elenco e
+ * confrontarli con un altro darebbe pesi calcolati su parole che il confronto
+ * non vede mai (e viceversa `pesi.get(t)` cadrebbe su `pesoMai` per token che
+ * il Registro conosce benissimo).
+ */
+function guardrailTokens(value: string): string[] {
+  return significantTokens(value, { escludiGeneriche: true })
 }
 
 export function commessaNumbers(value: string): string[] {
@@ -83,7 +125,7 @@ export function tokenWeights(righe: string[]): Map<string, number> {
   for (const riga of righe) {
     // `new Set`: un token ripetuto NELLA STESSA riga ("Potenza | Comune di
     // Potenza") non deve pesare doppio.
-    for (const t of new Set(significantTokens(riga))) {
+    for (const t of new Set(guardrailTokens(riga))) {
       frequenza.set(t, (frequenza.get(t) ?? 0) + 1)
     }
   }
@@ -146,13 +188,13 @@ export function similarityRatio(
   pesi: Map<string, number>,
   righeRegistro: number,
 ): number {
-  const nuovi = new Set(significantTokens(nuovaText))
+  const nuovi = new Set(guardrailTokens(nuovaText))
   if (nuovi.size === 0) return 0
   // Registro vuoto: non c'e niente da duplicare. Va distinto dal caso
   // "denominatore nullo" trattato in fondo, che invece significa il contrario.
   if (righeRegistro <= 0) return 0
   const pesoMai = Math.log(righeRegistro + 1)
-  const rigaTok = new Set(significantTokens(rigaText))
+  const rigaTok = new Set(guardrailTokens(rigaText))
 
   let totale = 0
   let comune = 0
