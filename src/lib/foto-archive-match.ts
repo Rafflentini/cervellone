@@ -262,12 +262,31 @@ export function similarityRatio(
  *     60 → 57%, 20 → 95%, 8 → 100%. Uno studio con pochi clienti abituali
  *     ritrova la saturazione.
  *  2. Il rapporto normalizza SOLO sulla nuova riga, quindi non e simmetrico:
- *     righe corte sovra-bloccano, righe lunghe sotto-bloccano. Su una riga da 4
- *     token un solo token diverso costa 0.25-0.45 di rapporto, quindi 0.60
- *     significa in pratica "3 token su 4 identici". Misurato: un typo nel
- *     cognome (0.465), la ragione sociale scritta per esteso (0.548), tre
- *     parole di dettaglio in piu (0.348) passano TUTTI — ed e proprio cosi che
- *     nascono i duplicati, riscrivendo a mano.
+ *     righe corte sovra-bloccano, righe lunghe sotto-bloccano.
+ *
+ *     ⚠️ L'equivalenza "0.60 = 3 token su 4 identici", scritta qui fino al
+ *     17 ago 2026, NON VALE PIU' e non va usata per ragionare: il fuzzy ha
+ *     rotto il legame fra il rapporto e il numero di token IDENTICI. Misurato
+ *     18 ago 2026 sul fixture `REGISTRO` di foto-archive-match.test.ts
+ *     (5 righe, riga di confronto `2020-005 Venosa Coviello Rifacimento
+ *     copertura`):
+ *
+ *       caso                                  | pre-18 ago | oggi   | blocca?
+ *       3 token su 4 identici, 1 DIVERSO      |   0.5705   | 0.5705 |   no
+ *       3 su 4 identici, 1 con un typo        |   0.4495   | 0.8349 |   si
+ *       ZERO token identici, tutti "quasi"    |   0.0000   | 0.7000 |   si
+ *       ragione sociale per esteso            |   0.2633   | 1.0000 |   si
+ *       tre parole di dettaglio in piu        |   0.2633   | 0.2633 |   no
+ *
+ *     Cioe': una riga con TRE token su quattro identici non blocca, una con
+ *     ZERO token identici blocca. Le due parafrasi con cui i duplicati nascono
+ *     davvero (typo e ragione sociale per esteso) sono ora prese; le parole di
+ *     dettaglio in piu' restano invisibili (vedi il test `LIMITE NOTO`).
+ *
+ *     NB: i numeri "0.465 / 0.548 / 0.348" scritti qui in precedenza venivano
+ *     dall'harness sintetico di maggio, NON da questo fixture, e non erano
+ *     confrontabili con nient'altro nel file. Un numero senza la sua
+ *     popolazione non e' una misura.
  *  3. La suite non distingue 0.50 da 0.70: la soglia e documentata, non
  *     testata. I test la pinnano solo fuori dalla banda [0.46, 0.74].
  *  4. `FUZZY_WEIGHT` (0.7) e' MAGGIORE di questa soglia, e non e' un dettaglio
@@ -294,12 +313,24 @@ export function similarityRatio(
  * piu' al massimo, e un typo nel cognome non azzera piu' l'overlap. I due casi
  * passano da 0%/65% a 100%/100%.
  *
- * ⚠️ RESTA APERTO, ed e' il problema piu' grande: su un Registro realistico
- * (400 righe, ~20 committenti ricorrenti) il guardrail chiede conferma
- * sull'87-92% delle commesse nuove e LEGITTIME di clienti che tornano. E' di
- * nuovo saturo, per una via diversa da quella gia' curata: non il conteggio dei
- * token, ma il fatto che il committente ricorrente da solo porta abbastanza
- * peso. Misurato su registri SINTETICI: prima di intervenire va rifatto sul
+ * ⚠️ RESTA APERTO, ed e' il problema piu' grande: il guardrail chiede conferma
+ * sulla quasi totalita' delle commesse nuove e LEGITTIME di clienti che
+ * tornano. E' di nuovo saturo, per una via diversa da quella gia' curata: non
+ * il conteggio dei token, ma il fatto che il committente ricorrente da solo
+ * porta abbastanza peso.
+ *
+ * DUE popolazioni, due numeri — entrambi citati di proposito, perche' un tasso
+ * senza la popolazione su cui e' stato misurato e' il difetto che ha prodotto
+ * l'asserzione sbagliata in questo stesso file:
+ *   - harness sintetico R×pool (R ∈ {150,400} righe, pool committenti
+ *     ∈ {200,20}), 18 ago 2026: 87-92%;
+ *   - generatore `scenario(400)` di foto-archive-match.test.ts (8 comuni ×
+ *     8 cognomi × 5 lavori = 320 combinazioni, 233 gia' nel Registro, le 87
+ *     libere sono i "clienti che tornano"), 18 ago 2026: 100%, con rapporto
+ *     massimo medio 0.7335. Vocabolario piu' povero → saturazione totale.
+ * Il test `CARATTERIZZAZIONE: il cliente che torna` pinna il SECONDO.
+ *
+ * Entrambi sono su registri SINTETICI: prima di intervenire va rifatto sul
  * Registro VERO, dove le righe hanno piu' testo distintivo e il tasso potrebbe
  * essere piu' basso.
  */

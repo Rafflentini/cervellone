@@ -543,10 +543,22 @@ describe('tokenWeights / similarityRatio', () => {
     expect(conDue).toBeLessThanOrEqual(1)
   })
 
-  it('COSTO NOTO: due cognomi DIVERSI ma simili possono collidere', () => {
-    // Misurato: 6 coppie su 18 di cognomi italiani confondibili superano la
-    // soglia contro un cliente DIVERSO (Gallo/Gallu, Conti/Conte, Rizzo/Rizzi,
-    // Costa/Cesta, Fontana/Fontano, Barbieri/Barbiero).
+  it('COSTO NOTO: il fuzzy vale su TUTTE le parole, non solo sui cognomi', () => {
+    // AMBITO VERO del ramo approssimato, da non confondere con la ragione per
+    // cui e' stato introdotto: `similarityRatio` lo applica a OGNI token della
+    // nuova riga — cognomi, comuni e parole dell'oggetto. Sono esclusi solo i
+    // token che contengono CIFRE (vedi il test sui numeri): una cifra sbagliata
+    // e' un altro numero, non un refuso.
+    //
+    // Costo su ciascuna delle tre classi:
+    //  - COGNOMI: misurato, 6 coppie su 18 di cognomi italiani confondibili
+    //    superano la soglia contro un cliente DIVERSO (Gallo/Gallu,
+    //    Conti/Conte, Rizzo/Rizzi, Costa/Cesta, Fontana/Fontano,
+    //    Barbieri/Barbiero).
+    //  - COMUNI: `Ravello` e `Lavello` sono due comuni REALI a distanza 1.
+    //  - OGGETTO: singolare e plurale della stessa parola collidono
+    //    (copertura/coperture, rifacimento/rifacimenti), ed e' voluto.
+    //
     // NON e' tarabile: "typo dello stesso cliente" e "cliente diverso col
     // cognome simile" sono lo STESSO segnale, e nessuna soglia li separa.
     // Accettato consapevolmente: l'esito e' una domanda di conferma in piu',
@@ -554,6 +566,8 @@ describe('tokenWeights / similarityRatio', () => {
     // duplicata sul Drive.
     expect(editDistanceAtMost('conti', 'conte', 1)).toBe(true)
     expect(editDistanceAtMost('rizzo', 'rizzi', 1)).toBe(true)
+    expect(editDistanceAtMost('ravello', 'lavello', 1)).toBe(true)
+    expect(editDistanceAtMost('copertura', 'coperture', 2)).toBe(true)
   })
 
   it('CARATTERIZZAZIONE: ZERO token identici bastano a bloccare, e vale 0.7000', () => {
