@@ -270,6 +270,15 @@ export function similarityRatio(
  *     nascono i duplicati, riscrivendo a mano.
  *  3. La suite non distingue 0.50 da 0.70: la soglia e documentata, non
  *     testata. I test la pinnano solo fuori dalla banda [0.46, 0.74].
+ *  4. `FUZZY_WEIGHT` (0.7) e' MAGGIORE di questa soglia, e non e' un dettaglio
+ *     di taratura: e' un corollario strutturale. Una riga in cui OGNI token
+ *     trova solo un match APPROSSIMATO vale esattamente 0.7000 e blocca —
+ *     con ZERO token in comune. Misurato 18 ago 2026 su
+ *     `Ravello Conte Rifacimenti coperture` contro
+ *     `Lavello Conti Rifacimento copertura`. E' accettato: una domanda di
+ *     conferma in piu' costa meno di una commessa duplicata sul Drive. Chi
+ *     abbassa `FUZZY_WEIGHT` sotto la soglia cambia QUESTO, non solo un peso:
+ *     il test di caratterizzazione "ZERO token identici" lo dichiara.
  *
  * ⛔ LA CURA "DICE PESATO" E' STATA MISURATA E REFUTATA (18 ago 2026).
  * Simmetrizzare con `2*comune / (totNuova + totRiga)` sembra ovvio e non lo e':

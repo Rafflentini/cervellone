@@ -13,6 +13,7 @@ import {
   similarityRatio,
   editDistanceAtMost,
   SOGLIA_DUPLICATO,
+  FUZZY_WEIGHT,
   type FolderMatch,
 } from './foto-archive-match'
 
@@ -484,6 +485,34 @@ describe('tokenWeights / similarityRatio', () => {
     // duplicata sul Drive.
     expect(editDistanceAtMost('conti', 'conte', 1)).toBe(true)
     expect(editDistanceAtMost('rizzo', 'rizzi', 1)).toBe(true)
+  })
+
+  it('CARATTERIZZAZIONE: ZERO token identici bastano a bloccare, e vale 0.7000', () => {
+    // Corollario STRUTTURALE di `FUZZY_WEIGHT (0.7) > SOGLIA_DUPLICATO (0.6)`,
+    // non un caso limite: se OGNI token della nuova riga trova solo un match
+    // APPROSSIMATO, il rapporto vale esattamente FUZZY_WEIGHT — quindi supera
+    // la soglia senza un solo token in comune.
+    //
+    // Il comportamento e' VOLUTO e resta: una domanda di conferma in piu' costa
+    // meno di una commessa duplicata sul Drive. Questo test esiste perche' sia
+    // DICHIARATO invece che nascosto: chi tocca FUZZY_WEIGHT o SOGLIA_DUPLICATO
+    // lo trova rosso e sa cosa sta cambiando.
+    expect(FUZZY_WEIGHT).toBeGreaterThan(SOGLIA_DUPLICATO)
+
+    const registro = [...REGISTRO, '2020-005 Lavello Conti Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    const nuova = '2031-001 Ravello Conte Rifacimenti coperture'
+
+    // Nessun token davvero in comune: ogni parola e' scritta diversamente.
+    const tokNuova = new Set(significantTokens(nuova, { escludiGeneriche: true }))
+    const tokRiga = new Set(significantTokens(registro[4], { escludiGeneriche: true }))
+    expect(tokNuova.size).toBe(4)
+    expect([...tokNuova].filter(t => tokRiga.has(t))).toEqual([])
+
+    const r = similarityRatio(nuova, registro[4], pesi, registro.length)
+    // Misurato 18 ago 2026: esattamente FUZZY_WEIGHT, e sopra soglia.
+    expect(r).toBeCloseTo(0.7, 10)
+    expect(r).toBeGreaterThanOrEqual(SOGLIA_DUPLICATO)
   })
 
   it('LIMITE NOTO: le parole di dettaglio in piu nell oggetto restano invisibili', () => {
