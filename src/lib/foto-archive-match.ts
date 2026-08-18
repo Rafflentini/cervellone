@@ -209,6 +209,14 @@ export function similarityRatio(
     // azzerava l'overlap sul token che conta di piu'. Vale FUZZY_WEIGHT, non il
     // peso pieno. Costo noto e misurato: due cognomi DIVERSI ma simili possono
     // collidere — vedi il test di caratterizzazione sui cognomi confondibili.
+    //
+    // I token con CIFRE ne sono esclusi: una cifra sbagliata non e' un refuso
+    // morfologico, e' un altro numero. Senza questo filtro `2026`~`2025`
+    // (anni diversi) e `110`~`100` (bonus diversi) prendevano credito fuzzy.
+    // I toponimi restano DENTRO di proposito, pur pagando `Ravello`~`Lavello`
+    // (due comuni reali): anche i comuni si scrivono con refusi, e il costo e'
+    // una conferma in piu', non un duplicato.
+    if (/\d/.test(t)) continue
     const max = t.length >= 8 ? 2 : 1
     for (const r of rigaTok) {
       if (editDistanceAtMost(t, r, max)) {

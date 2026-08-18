@@ -432,6 +432,38 @@ describe('tokenWeights / similarityRatio', () => {
     expect(conTypo).toBeLessThan(esatto)
   })
 
+  it('il fuzzy NON vale per i numeri: 2026 e 2025 sono anni diversi, non un refuso', () => {
+    // Una cifra sbagliata non e' un refuso morfologico: e' un ALTRO numero.
+    // `2026`~`2025` (distanza 1) e `110`~`100` (distanza 1) prendevano credito
+    // fuzzy, cioe' il guardrail trattava l'anno o il bonus fiscale sbagliato
+    // come "quasi lo stesso".
+    // Prova: un anno adiacente e un numero del tutto scorrelato devono valere
+    // ESATTAMENTE lo stesso (entrambi mai visti → stesso `pesoMai`, entrambi
+    // senza credito). Se il fuzzy li distinguesse, i due rapporti divergono.
+    const registro = [...REGISTRO, '2020-005 Venosa Coviello Superbonus 110 anno 2025']
+    const pesi = tokenWeights(registro)
+    const base = '2031-001 Venosa Coviello Superbonus'
+    const annoAdiacente = similarityRatio(`${base} 110 anno 2026`, registro[4], pesi, registro.length)
+    const annoScorrelato = similarityRatio(`${base} 110 anno 7788`, registro[4], pesi, registro.length)
+    expect(annoAdiacente).toBe(annoScorrelato)
+
+    const bonusAdiacente = similarityRatio(`${base} 100 anno 2025`, registro[4], pesi, registro.length)
+    const bonusScorrelato = similarityRatio(`${base} 774 anno 2025`, registro[4], pesi, registro.length)
+    expect(bonusAdiacente).toBe(bonusScorrelato)
+  })
+
+  it('il fuzzy resta attivo sui comuni: anche i toponimi si scrivono con refusi', () => {
+    // Scelta consapevole e NON simmetrica al caso dei numeri: `Ravello` e
+    // `Lavello` sono due comuni REALI a distanza 1, quindi qui il fuzzy paga
+    // anche un falso positivo. Costa una conferma; toglierlo costerebbe i
+    // duplicati nati riscrivendo il comune a mano.
+    const registro = [...REGISTRO, '2020-005 Lavello Coviello Rifacimento copertura']
+    const pesi = tokenWeights(registro)
+    const conRefuso = similarityRatio('2031-001 Ravello Coviello Rifacimento copertura', registro[4], pesi, registro.length)
+    const conAltroComune = similarityRatio('2031-001 Bernalda Coviello Rifacimento copertura', registro[4], pesi, registro.length)
+    expect(conRefuso).toBeGreaterThan(conAltroComune)
+  })
+
   it('editDistanceAtMost: 1 per i token corti, 2 per quelli lunghi', () => {
     expect(editDistanceAtMost('rossi', 'rossa', 1)).toBe(true)
     expect(editDistanceAtMost('rossi', 'rosse', 1)).toBe(true)
