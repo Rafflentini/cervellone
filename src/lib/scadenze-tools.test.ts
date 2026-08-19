@@ -804,11 +804,17 @@ describe('extractCalendarEventId — l id dell evento non si butta piu', () => {
     //   `^` rimosso   → "…DURC  id=INMEZZO" verrebbe accettato
     //   ` {2}`→` +`   → " id=UNOSPAZIO" verrebbe accettato
     //   ` {2}`→`\s*`  → "id=ZEROSPAZI" verrebbe accettato
+    //   `$` rimosso   → "  id=CONTESTODOPO extra roba" verrebbe accettato,
+    //                   troncando la cattura al primo carattere fuori
+    //                   classe (lo spazio) invece di rifiutare la riga.
+    //                   `formatEvent` non produce mai altro dopo l'id sulla
+    //                   stessa riga: se compare, non e la riga vera.
     const { extractCalendarEventId } = await import('./scadenze-tools')
     expect(extractCalendarEventId('✅ Evento creato\nScadenza DURC  id=INMEZZO')).toBeNull()
     expect(extractCalendarEventId('✅ Evento creato\n id=UNOSPAZIO')).toBeNull()
     expect(extractCalendarEventId('✅ Evento creato\nid=ZEROSPAZI')).toBeNull()
     expect(extractCalendarEventId('✅ Evento creato\n   id=TRESPAZI')).toBeNull()
+    expect(extractCalendarEventId('✅ Evento creato\n  id=CONTESTODOPO extra roba')).toBeNull()
   })
 })
 
