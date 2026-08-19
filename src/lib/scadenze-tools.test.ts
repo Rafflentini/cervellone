@@ -127,12 +127,20 @@ vi.mock('./calendar-tools', () => ({
  */
 let mockEventoGoogle: Record<string, unknown> = {}
 
+/**
+ * Cosa fa la finta Google API quando le si chiede di cancellare un evento.
+ * Di default riesce; i test che devono provare un 404/410 la fanno LANCIARE,
+ * cosi la stringa d'errore la costruisce il catch VERO di
+ * `executeCalendarTool` invece di essere inventata qui.
+ */
+let mockDeleteGoogle: () => Promise<unknown> = async () => ({})
+
 vi.mock('googleapis', () => ({
   google: {
     calendar: () => ({
       events: {
         insert: async () => ({ data: mockEventoGoogle }),
-        delete: async () => ({}),
+        delete: () => mockDeleteGoogle(),
       },
     }),
   },
@@ -271,6 +279,7 @@ beforeEach(() => {
   mockHandler = mockDefaultHandler
   calendarCalls.length = 0
   calendarImpl = async () => CALENDAR_OK
+  mockDeleteGoogle = async () => ({})
 })
 
 describe('registra_scadenza — atomicita sostituzione (BUG 1)', () => {
@@ -1365,6 +1374,105 @@ describe('registra_scadenza — il vecchio evento esce dall agenda', () => {
     expect(res.calendar).toMatch(/Calendar non aggiornato/)
     expect(res.calendar).toMatch(/scope non autorizzato/)
     expect(res.calendar).toMatch(/vecchio evento/i)
+  }, 20000)
+
+  /**
+   * L'evento non c'e piu = risultato voluto, non fallimento. L'Ingegnere
+   * cancella eventi a mano da Google Calendar: senza questo, ogni rinnovo di
+   * una scadenza il cui evento era gia stato tolto produrrebbe
+   * "il vecchio evento NON e stato rimosso ... cancellalo a mano" per un evento
+   * che non esiste. Allarmante e falso — e a forza di allarmi falsi si smette
+   * di leggere anche quelli veri.
+   *
+   * Le stringhe d'errore NON sono scritte a mano: si fa lanciare la finta
+   * Google API e il messaggio lo costruisce il catch vero di
+   * `executeCalendarTool` (calendar-tools.ts:232-239).
+   */
+  describe('evento gia assente su Google (404/410) → non e un fallimento', () => {
+    async function conDeleteCheLancia(errore: Error): Promise<string> {
+      conRigheDaSostituire([VECCHIA])
+      const create = await rispostaRealeCreateEvent({
+        id: 'evt-nuovo', summary: 'Scadenza DURC: Mario Rossi', start: { date: '2027-06-17' },
+      })
+      mockDeleteGoogle = async () => { throw errore }
+      const actual = await vi.importActual<typeof import('./calendar-tools')>('./calendar-tools')
+      calendarImpl = async (name, input) => (name === 'calendar_delete_event'
+        ? (await actual.executeCalendarTool(name, input)) ?? ''
+        : create)
+      return create
+    }
+
+    it('410 "Resource has been deleted" → nessun avviso', async () => {
+      await conDeleteCheLancia(new Error('Resource has been deleted'))
+
+      const res = await registra(NUOVA)
+
+      // La chiamata e partita davvero: non stiamo saltando la cancellazione.
+      expect(deleteCalls()).toHaveLength(1)
+      expect(res.calendar).toBe('evento creato su Google Calendar')
+      expect(res.calendar).not.toMatch(/cancellalo a mano/)
+    }, 20000)
+
+    it('404 "Not Found" → nessun avviso', async () => {
+      await conDeleteCheLancia(new Error('Not Found'))
+
+      const res = await registra(NUOVA)
+
+      expect(deleteCalls()).toHaveLength(1)
+      expect(res.calendar).toBe('evento creato su Google Calendar')
+    }, 20000)
+
+    it('CONTROPROVA: un errore vero resta un fallimento', async () => {
+      // Il riconoscimento del 404 non deve diventare un "ingoia tutto": una
+      // rete che cade o un token senza scope lasciano l'evento IN agenda.
+      await conDeleteCheLancia(new Error('ECONNRESET'))
+
+      const res = await registra(NUOVA)
+
+      expect(res.calendar).toMatch(/vecchio evento/i)
+      expect(res.calendar).toContain('(evt-vecchio)')
+    }, 20000)
+  })
+
+  it('molti eventi appesi: si smette entro il budget complessivo, e si dichiara tutto', async () => {
+    // Il timeout per evento (10s) da solo non bastava: il loop e sequenziale,
+    // quindi N eventi appesi costavano N × 10s. Con la bonifica dello storico
+    // (~9 eventi per dipendente) si arrivava a ~90s, vicino al mutex per-chat
+    // da 150s — e la registrazione sarebbe morta DOPO aver scritto in DB,
+    // portando l'Ingegnere a ri-registrare (duplicato).
+    conRigheDaSostituire([
+      VECCHIA,
+      { ...VECCHIA, id: 'old-2', calendar_event_id: 'evt-2' },
+      { ...VECCHIA, id: 'old-3', calendar_event_id: 'evt-3' },
+      { ...VECCHIA, id: 'old-4', calendar_event_id: 'evt-4' },
+    ])
+    const create = await rispostaRealeCreateEvent({
+      id: 'evt-nuovo', summary: 'Scadenza DURC: Mario Rossi', start: { date: '2027-06-17' },
+    })
+    await import('./scadenze-tools') // i fake timer non devono correre durante gli import
+    calendarImpl = async (name) => (name === 'calendar_delete_event'
+      ? new Promise<string>(() => {})
+      : create)
+
+    vi.useFakeTimers()
+    try {
+      const pending = registra(NUOVA)
+      // Molto piu del budget: se il tetto non ci fosse, il loop andrebbe
+      // avanti e proverebbe tutti e quattro.
+      await vi.advanceTimersByTimeAsync(120_000)
+      const res = await pending
+
+      expect(res.ok).toBe(true)
+      // 10s a testa contro 20s di budget: solo DUE vengono tentati.
+      expect(deleteCalls()).toHaveLength(2)
+      // Ma nessuno viene taciuto: tutti e quattro sono ancora in agenda e
+      // l'avviso li nomina, anche quelli mai chiamati.
+      for (const id of ['evt-vecchio', 'evt-2', 'evt-3', 'evt-4']) {
+        expect(res.calendar).toContain(id)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
   }, 20000)
 
   it('anche a create RIUSCITA la nota di successo sopravvive all avviso della delete', async () => {

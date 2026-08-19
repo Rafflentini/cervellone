@@ -626,6 +626,13 @@ export function extractCalendarEventId(res: string | null | undefined): string |
 // era gia in DB, ma l'utente vedeva il turno morire e ri-registrava → duplicato.
 const CALENDAR_TIMEOUT_MS = 10_000
 
+/**
+ * Tetto COMPLESSIVO per togliere dall'agenda i vecchi eventi di un rinnovo
+ * (vedi `cancellaEventiSostituiti`). Deve stare largamente sotto il mutex
+ * per-chat da 150s anche sommato al timeout della create.
+ */
+const CALENDAR_DELETE_BUDGET_MS = 20_000
+
 const CALENDAR_TIMEOUT = Symbol('calendar-timeout')
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof CALENDAR_TIMEOUT> {
@@ -699,6 +706,17 @@ async function createCalendarForScadenza(opts: {
 }
 
 /**
+ * L'evento NON e in agenda perche' non c'e piu: 404 (mai esistito / gia
+ * rimosso) e 410 (cancellato) sono la forma in cui Google dice esattamente il
+ * risultato che volevamo. Se l'Ingegnere cancella un evento a mano da Google
+ * Calendar — cosa che fa — la delete al rinnovo torna
+ * `❌ Errore Calendar: Resource has been deleted` e senza questo riconoscimento
+ * leggerebbe "il vecchio evento NON e stato rimosso ... cancellalo a mano" per
+ * un evento che non esiste piu: allarmante E falso.
+ */
+const CALENDAR_EVENTO_GIA_ASSENTE = /\b(404|410)\b|not\s*found|has been deleted|already deleted|\bdeleted\b|\bgone\b/i
+
+/**
  * Riconosce una cancellazione FALLITA, non una riuscita.
  *
  * 🔴 `deleteEvent` risponde `🗑 Evento <id> eliminato dal calendario.`
@@ -708,10 +726,14 @@ async function createCalendarForScadenza(opts: {
  * ogni singolo rinnovo. Si guarda quindi il FALLIMENTO, che ha una forma
  * stabile: `❌ Errore Calendar: ...` dal catch di `executeCalendarTool`,
  * `⚠️ Manca event_id.` dalla validazione, oppure nessuna risposta.
+ *
+ * ECCEZIONE: 404/410 (vedi `CALENDAR_EVENTO_GIA_ASSENTE`) arrivano vestiti da
+ * errore ma sono il risultato voluto.
  */
 function deleteCalendarFallita(res: string | null | undefined): boolean {
   if (typeof res !== 'string' || res.trim() === '') return true
-  return res.startsWith('❌') || res.startsWith('⚠️')
+  if (!res.startsWith('❌') && !res.startsWith('⚠️')) return false
+  return !CALENDAR_EVENTO_GIA_ASSENTE.test(res)
 }
 
 /**
@@ -722,6 +744,12 @@ function deleteCalendarFallita(res: string | null | undefined): boolean {
  * qui non la tocca. Ma il fallimento NON e silenzioso — un evento fantasma
  * continua a far scattare i suoi reminder per una scadenza che non esiste piu,
  * e chi lo riceve deve sapere perche'.
+ *
+ * 📌 FOLLOW-UP (fuori scope, non implementato qui): `chiudi_scadenza` e
+ * `aggiorna_scadenza` NON toccano l'evento. Chiudere una scadenza lascia la sua
+ * voce in agenda, e spostarne la data lascia l'evento alla data vecchia. Il
+ * campo `calendar_event_id` c'e gia, quindi il ponte esiste: manca la
+ * chiamata. Va fatto come lavoro a se, con i suoi test.
  */
 async function cancellaEventiSostituiti(eventIds: string[]): Promise<string | null> {
   if (eventIds.length === 0) return null
@@ -729,11 +757,32 @@ async function cancellaEventiSostituiti(eventIds: string[]): Promise<string | nu
   const falliti: string[] = []
   try {
     const { executeCalendarTool } = await import('./calendar-tools')
+    // Il budget e COMPLESSIVO, non per evento: il loop e sequenziale, quindi N
+    // eventi appesi costavano N × 10s. La bonifica dello storico stima ~9
+    // eventi per dipendente, cioe fino a 90s — pericolosamente vicini al mutex
+    // per-chat da 150s: la registrazione morirebbe DOPO aver gia scritto in DB,
+    // e l'Ingegnere ri-registrerebbe (duplicato), che e proprio il guaio che il
+    // timeout sulla create era nato per evitare.
+    //
+    // Perche' un budget e non `Promise.allSettled`: ogni `executeCalendarTool`
+    // apre il suo client OAuth, quindi il parallelo significherebbe N refresh
+    // token e N chiamate simultanee contro la quota Calendar — con il rischio
+    // che un 403 da rate-limit trasformi cancellazioni sane in falsi allarmi.
+    // Il caso patologico e Google APPESO, non Google lento: bastano il loop di
+    // sempre e un tetto duro.
+    const scadenzaBudget = Date.now() + CALENDAR_DELETE_BUDGET_MS
     for (const eventId of eventIds) {
+      const rimanente = scadenzaBudget - Date.now()
+      // Budget finito: gli eventi non tentati sono ancora in agenda, quindi
+      // vanno DICHIARATI come tali. Silenziarli sarebbe peggio dell'attesa.
+      if (rimanente <= 0) {
+        falliti.push(eventId)
+        continue
+      }
       try {
         const res = await withTimeout(
           Promise.resolve(executeCalendarTool('calendar_delete_event', { event_id: eventId })),
-          CALENDAR_TIMEOUT_MS,
+          Math.min(CALENDAR_TIMEOUT_MS, rimanente),
         )
         if (res === CALENDAR_TIMEOUT || deleteCalendarFallita(res)) falliti.push(eventId)
       } catch {
