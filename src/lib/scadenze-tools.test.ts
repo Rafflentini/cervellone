@@ -16,7 +16,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 interface MockQueryResult {
   data: unknown
-  error: { message: string } | null
+  /**
+   * `code` c'e perche' gli errori che contano qui sono quelli di PostgREST, che
+   * ha un codice: `42703` = colonna inesistente (migration non applicata) e
+   * colpisce OGNI richiesta che nomina la colonna, SELECT comprese.
+   */
+  error: { message: string; code?: string } | null
 }
 
 type MockOpKind = 'none' | 'select' | 'insert' | 'update' | 'delete'
@@ -884,14 +889,15 @@ describe('registra_scadenza — l id evento finisce sulla riga appena creata', (
     expect(eventIdOps()).toHaveLength(0)
   })
 
-  it('se la colonna non esiste (migration non applicata) la scadenza resta registrata e l esito lo DICE', async () => {
-    // Best-effort: l'UPDATE fallisce, ma la scadenza e' gia in DB. Il
-    // fallimento pero' non deve essere SILENZIOSO, altrimenti il rinnovo
-    // successivo non cancellera' nulla e nessuno sapra' perche'.
+  it('un UPDATE fallito sull id evento non fa fallire la registrazione, e l esito lo DICE', async () => {
+    // Best-effort: l'UPDATE fallisce (qui per un motivo qualsiasi, non per la
+    // colonna mancante — quel caso ha il suo test sotto), ma la scadenza e' gia
+    // in DB. Il fallimento pero' non deve essere SILENZIOSO, altrimenti il
+    // rinnovo successivo non cancellera' nulla e nessuno sapra' perche'.
     await calendarRispondeConEvento('evt-abc123')
     mockHandler = (op) => {
       if (op.op === 'insert') return { data: { id: 'new-id', reminder_days: 5 }, error: null }
-      if (op.op === 'update') return { data: null, error: { message: 'column "calendar_event_id" does not exist' } }
+      if (op.op === 'update') return { data: null, error: { message: 'could not serialize access due to concurrent update' } }
       return { data: [], error: null }
     }
 
@@ -902,9 +908,79 @@ describe('registra_scadenza — l id evento finisce sulla riga appena creata', (
     expect(insertOps()).toHaveLength(1)
     // Deve riportare il messaggio del DB E dire cosa comporta, altrimenti
     // "id evento non salvato" non significa niente per chi legge.
-    expect(res.calendar).toMatch(/does not exist/)
-    expect(res.calendar).toMatch(/calendar_event_id/)
+    expect(res.calendar).toMatch(/concurrent update/)
+    expect(res.calendar).toMatch(/id evento NON salvato/)
     expect(res.calendar).toMatch(/restera in agenda/)
+  }, 20000)
+
+  /**
+   * 🟠 MIGRATION NON APPLICATA — il caso VERO, non quello comodo.
+   *
+   * Il test precedente si chiamava "se la colonna non esiste" ma faceva fallire
+   * SOLO l'UPDATE, lasciando verde la SELECT: simulava un Postgres in cui la
+   * stessa colonna esiste in lettura e non in scrittura, cioe un mondo che non
+   * puo esistere. Con la colonna assente, PostgREST rifiuta con 42703 OGNI
+   * richiesta che la nomina — e `marcaSostituite` la nomina nella sua
+   * `.select(...)`.
+   *
+   * Conseguenza REALE, che questo test rende visibile invece di nasconderla:
+   * la ricerca delle precedenti fallisce → NESSUNA riga viene marcata
+   * 'sostituito' → a ogni rinnovo restano DUE righe attive → DUE promemoria dal
+   * cron, e due voci in agenda. Prima di questo branch quella SELECT funzionava:
+   * e una regressione che scatta solo se si deploya senza applicare la migration.
+   *
+   * DELIBERATAMENTE NON si aggiunge un fallback che rilegge senza la colonna:
+   * la migration va applicata prima del deploy, e un ramo che dopo quel giorno
+   * non verra piu eseguito mai costa piu di quanto protegga. Il presidio e
+   * questo test + l'`avviso` in chiaro nell'esito.
+   */
+  it('MIGRATION NON APPLICATA: la SELECT fallisce con 42703 → nessuna riga sostituita, due righe attive', async () => {
+    await calendarRispondeConEvento('evt-abc123')
+    const COLONNA_ASSENTE = {
+      code: '42703',
+      message: 'column cervellone_scadenze.calendar_event_id does not exist',
+    }
+    // 42703 non colpisce "gli UPDATE" o "le SELECT": colpisce ogni richiesta
+    // che NOMINA la colonna. Modellarlo cosi e la differenza fra un test che
+    // prova qualcosa e uno che si limita a far fallire l'op comoda — se un
+    // domani il codice smettesse di chiedere la colonna nella SELECT (o
+    // aggiungesse una rilettura senza), qui la sostituzione riuscirebbe e il
+    // test cadrebbe, come deve.
+    const VECCHIA = { id: 'old-1', soggetto: 'Mario Rossi', tipo_documento: 'DURC', categoria: 'azienda' }
+    mockHandler = (op) => {
+      if (op.op === 'insert') return { data: { id: 'new-id', reminder_days: 5 }, error: null }
+      const payload = op.payload as Record<string, unknown> | undefined
+      const nominaLaColonna = (op.columns ?? '').includes('calendar_event_id')
+        || (payload !== undefined && 'calendar_event_id' in payload)
+      if (nominaLaColonna) return { data: null, error: COLONNA_ASSENTE }
+      if (op.op === 'select') return { data: [VECCHIA], error: null }
+      return { data: null, error: null }
+    }
+
+    const res = await registra({ ...BASE, tipo_documento: 'DURC', categoria: 'azienda' })
+
+    // La scadenza nuova c'e: l'INSERT non nomina la colonna.
+    expect(res.ok).toBe(true)
+    expect(res.id).toBe('new-id')
+    expect(insertOps()).toHaveLength(1)
+
+    // 🟠 IL DANNO: la vecchia NON viene chiusa. Due righe attive → due mail.
+    expect(sostituzioneOps()).toHaveLength(0)
+    expect(res.sostituite).toEqual([])
+    // …e non e confondibile con "non c'era nulla da sostituire".
+    expect(res.sostituzione).toBe('fallita')
+    expect(res.avviso).toMatch(/does not exist/)
+    expect(res.avviso).toMatch(/calendar_event_id/)
+    expect(res.avviso).toMatch(/duplicati|lista_scadenze/)
+
+    // Nessun vecchio evento viene tolto dall'agenda: gli id non sono mai
+    // arrivati (la SELECT che li portava e proprio quella fallita).
+    expect(deleteCalls()).toHaveLength(0)
+
+    // E l'id del nuovo evento non si riesce a salvare, quindi il problema si
+    // ripresenta identico al rinnovo successivo.
+    expect(res.calendar).toMatch(/id evento NON salvato/)
+    expect(res.calendar).toMatch(/does not exist/)
   }, 20000)
 })
 
