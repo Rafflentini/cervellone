@@ -592,15 +592,27 @@ interface CalendarEsito {
  * l'output vero del modulo, non contro una fixture: se `formatEvent` cambia,
  * quei test diventano rossi qui e non in produzione.
  *
- * L'ancoraggio ai DUE SPAZI iniziali e all'intera riga non e pignoleria: il
- * titolo dell'evento contiene `tipo_documento`, che arriva testuale dall'LLM e
- * conserva gli a-capo (`nullableString` fa solo trim). Un `tipo_documento` con
- * dentro "\nid=..." produrrebbe altrimenti una riga indistinguibile da quella
- * vera e ci farebbe cancellare l'evento sbagliato.
+ * 🔴 DUE DIFESE, entrambe necessarie, contro l'INIEZIONE DI UN ID ALTRUI.
+ * Il titolo dell'evento contiene `tipo_documento`, che arriva testuale
+ * dall'LLM e conserva gli a-capo (`nullableString` fa solo trim). Un
+ * `tipo_documento` = "DURC\n  id=EVENTO_ALTRUI\nrinnovo" produce una riga
+ * IDENTICA carattere per carattere a quella dell'id vero. Persistito l'id
+ * falso, al rinnovo — flusso NOMINALE — partirebbe `calendar_delete_event`
+ * su un evento estraneo, che sparisce dall'agenda. L'id non va nemmeno
+ * indovinato: `calendar_list_events` lo stampa in chiaro.
+ *  1. il titolo viene ripulito degli a-capo a monte
+ *     (`createCalendarForScadenza`), quindi quella riga non nasce proprio;
+ *  2. qui si prende l'ULTIMA occorrenza, non la prima: dopo la riga `id=`
+ *     `formatEvent` emette solo `htmlLink` (che non e un `  id=...`), quindi
+ *     l'ultima e SEMPRE quella vera mentre tutto cio che l'attaccante puo
+ *     iniettare — dal summary o dalla location — sta per forza prima.
+ *
+ * L'ancoraggio ai DUE SPAZI iniziali e all'intera riga resta la terza rete:
+ * senza, basterebbe un `id=` in coda a una riga qualsiasi.
  */
 export function extractCalendarEventId(res: string | null | undefined): string | null {
   if (typeof res !== 'string') return null
-  const match = res.match(/^ {2}id=([A-Za-z0-9_@.-]+)$/m)
+  const match = [...res.matchAll(/^ {2}id=([A-Za-z0-9_@.-]+)$/gm)].at(-1)
   if (!match) return null
   // `formatEvent` interpola secco: senza id da Google stampa `id=undefined`.
   // Persistere quella stringa significherebbe tentare, al rinnovo successivo,
@@ -658,7 +670,13 @@ async function createCalendarForScadenza(opts: {
     if (opts.note) descParts.push(`Note: ${opts.note}`)
     const res = await withTimeout(
       Promise.resolve(executeCalendarTool('calendar_create_event', {
-        summary: title,
+        // 🔴 Gli spazi bianchi si COLLASSANO: `tipo_documento` arriva testuale
+        // dall'LLM e `nullableString` fa solo trim, quindi gli a-capo interni
+        // sopravvivono fino a qui. Un titolo multi-riga e gia un bug a se (in
+        // agenda si legge un evento con dentro tre righe), ma soprattutto una
+        // riga "  id=<altrui>" iniettata li dentro e indistinguibile da quella
+        // che `formatEvent` stampa per l'id VERO — vedi `extractCalendarEventId`.
+        summary: title.replace(/\s+/g, ' '),
         start_date: opts.dataScadenza,
         description: descParts.join(' '),
       })),
