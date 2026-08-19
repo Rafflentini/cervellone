@@ -867,6 +867,39 @@ describe('registra_scadenza — l id evento finisce sulla riga appena creata', (
     expect(scritture[0].table).toBe('cervellone_scadenze')
   }, 20000)
 
+  it('con righe sostituite nello STESSO turno l id evento va sulla riga NUOVA', async () => {
+    // Nel turno di un rinnovo convivono DUE update che puntano a righe diverse:
+    // stato='sostituito' sulle vecchie (`.in`) e calendar_event_id sulla nuova
+    // (`.eq`). Finche' nessuna fixture aveva righe sostituite E l'update
+    // dell'id, `replacedIds[0] ?? created.id` era indistinguibile da
+    // `created.id`: l'id del NUOVO evento sarebbe finito sulla riga appena
+    // CHIUSA, e la riga attiva sarebbe rimasta senza id — cioe' esattamente il
+    // fantasma in agenda che questo lavoro doveva eliminare, solo spostato di
+    // un rinnovo.
+    mockHandler = (op) => {
+      if (op.op === 'insert') return { data: { id: 'new-id', reminder_days: 5 }, error: null }
+      if (op.op === 'select') {
+        return {
+          data: [{ id: 'old-1', soggetto: 'Mario Rossi', tipo_documento: 'DURC', categoria: 'azienda', calendar_event_id: 'evt-vecchio' }],
+          error: null,
+        }
+      }
+      return { data: null, error: null }
+    }
+    await calendarRealeCreateEDelete('evt-nuovo')
+
+    const res = await registra({ ...BASE, tipo_documento: 'DURC', categoria: 'azienda' })
+
+    expect(res.sostituite).toEqual(['old-1'])
+    const scritture = eventIdOps()
+    expect(scritture).toHaveLength(1)
+    expect((scritture[0].payload as Record<string, unknown>).calendar_event_id).toBe('evt-nuovo')
+    // Sulla riga NUOVA, per id singolo. Mai un `.in([...vecchie])`.
+    expect(scritture[0].filters).toContainEqual({ method: 'eq', args: ['id', 'new-id'] })
+    expect(scritture[0].filters.some(f => f.method === 'in')).toBe(false)
+    expect(scritture[0].filters.some(f => f.method === 'eq' && f.args[1] === 'old-1')).toBe(false)
+  }, 20000)
+
   it('Calendar fallito → NESSUN update di calendar_event_id', async () => {
     // Non deve scrivere `null` sopra un valore ne emettere un update inutile.
     calendarImpl = async () => '❌ Errore Calendar: scope non autorizzato.'
@@ -1266,6 +1299,88 @@ describe('registra_scadenza — il vecchio evento esce dall agenda', () => {
     await registra(NUOVA)
 
     expect(deleteCalls()).toHaveLength(0)
+  }, 20000)
+
+  it('calendar_event_id STRINGA VUOTA → nessuna delete', async () => {
+    // Una stringa vuota non e un id: mandarla a `calendar_delete_event`
+    // significa una chiamata inutile che torna '⚠️ Manca event_id.' e quindi un
+    // avviso allarmante ("il vecchio evento NON e stato rimosso") per una riga
+    // che un evento non l'ha mai avuto. Il filtro sugli id da cancellare
+    // controlla la lunghezza proprio per questo.
+    conRigheDaSostituire([{ ...VECCHIA, calendar_event_id: '' }])
+    await calendarRealeCreateEDelete('evt-nuovo')
+
+    const res = await registra(NUOVA)
+
+    expect(res.sostituite).toEqual(['old-1'])
+    expect(deleteCalls()).toHaveLength(0)
+    expect(res.calendar).toBe('evento creato su Google Calendar')
+  }, 20000)
+
+  it('delete che risponde una STRINGA VUOTA → contata come fallita, non come riuscita', async () => {
+    // `executeCalendarTool` ritorna `string | null`. Una risposta vuota (o di
+    // soli spazi) non e una conferma di niente: darla per buona significa
+    // dichiarare pulita un'agenda in cui il fantasma e rimasto.
+    conRigheDaSostituire([VECCHIA])
+    const create = await rispostaRealeCreateEvent({
+      id: 'evt-nuovo', summary: 'Scadenza DURC: Mario Rossi', start: { date: '2027-06-17' },
+    })
+    calendarImpl = async (name) => (name === 'calendar_delete_event' ? '   ' : create)
+
+    const res = await registra(NUOVA)
+
+    expect(deleteCalls()).toHaveLength(1)
+    expect(res.calendar).toMatch(/vecchio evento/i)
+    expect(res.calendar).toContain('(evt-vecchio)')
+  }, 20000)
+
+  it('delete rifiutata dalla validazione (⚠️) → contata come fallita', async () => {
+    // `deleteEvent` risponde '⚠️ Manca event_id.' senza nemmeno chiamare
+    // Google (calendar-tools.ts:192): l'evento e ancora li.
+    conRigheDaSostituire([VECCHIA])
+    const create = await rispostaRealeCreateEvent({
+      id: 'evt-nuovo', summary: 'Scadenza DURC: Mario Rossi', start: { date: '2027-06-17' },
+    })
+    calendarImpl = async (name) => (name === 'calendar_delete_event' ? '⚠️ Manca event_id.' : create)
+
+    const res = await registra(NUOVA)
+
+    expect(deleteCalls()).toHaveLength(1)
+    expect(res.calendar).toMatch(/vecchio evento/i)
+    expect(res.calendar).toContain('(evt-vecchio)')
+  }, 20000)
+
+  it('la nota della delete si AGGIUNGE a quella della create, non la sostituisce', async () => {
+    // Caso peggiore: Calendar rotto del tutto, falliscono sia la create sia la
+    // delete. Se la nota della cancellazione sovrascrivesse quella della
+    // creazione, si perderebbe l'UNICA riga che dice PERCHE' il nuovo evento
+    // non c'e: `calendar_ok:false` dice che manca, non il motivo — e "scope non
+    // autorizzato" e la differenza fra "rifai il consent" e "riprova".
+    conRigheDaSostituire([VECCHIA])
+    calendarImpl = async () => '❌ Errore Calendar: scope non autorizzato.'
+
+    const res = await registra(NUOVA)
+
+    expect(res.calendar_ok).toBe(false)
+    expect(res.calendar).toMatch(/Calendar non aggiornato/)
+    expect(res.calendar).toMatch(/scope non autorizzato/)
+    expect(res.calendar).toMatch(/vecchio evento/i)
+  }, 20000)
+
+  it('anche a create RIUSCITA la nota di successo sopravvive all avviso della delete', async () => {
+    conRigheDaSostituire([VECCHIA])
+    const create = await rispostaRealeCreateEvent({
+      id: 'evt-nuovo', summary: 'Scadenza DURC: Mario Rossi', start: { date: '2027-06-17' },
+    })
+    calendarImpl = async (name) => (name === 'calendar_delete_event'
+      ? '❌ Errore Calendar: ECONNRESET'
+      : create)
+
+    const res = await registra(NUOVA)
+
+    expect(res.calendar_ok).toBe(true)
+    expect(res.calendar).toContain('evento creato su Google Calendar')
+    expect(res.calendar).toMatch(/vecchio evento/i)
   }, 20000)
 })
 
