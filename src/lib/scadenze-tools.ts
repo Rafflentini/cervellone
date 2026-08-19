@@ -714,7 +714,7 @@ async function createCalendarForScadenza(opts: {
  * leggerebbe "il vecchio evento NON e stato rimosso ... cancellalo a mano" per
  * un evento che non esiste piu: allarmante E falso.
  */
-const CALENDAR_EVENTO_GIA_ASSENTE = /\b(404|410)\b|not\s*found|has been deleted|already deleted|\bdeleted\b|\bgone\b/i
+const CALENDAR_EVENTO_GIA_ASSENTE = /\b(404|410)\b|\bnot\s*found\b|has been deleted|already deleted|\bdeleted\b|\bgone\b/i
 
 /**
  * Riconosce una cancellazione FALLITA, non una riuscita.

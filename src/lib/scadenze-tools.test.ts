@@ -1432,6 +1432,20 @@ describe('registra_scadenza — il vecchio evento esce dall agenda', () => {
       expect(res.calendar).toMatch(/vecchio evento/i)
       expect(res.calendar).toContain('(evt-vecchio)')
     }, 20000)
+
+    it('CONTROPROVA: ENOTFOUND (errore DNS) resta un fallimento, non e "not found"', async () => {
+      // `not\s*found` senza word boundary matcha anche dentro "ENOTFOUND":
+      // \s* accetta zero spazi, quindi "NOT" + "FOUND" combaciano con le due
+      // meta della stringa "ENOTFOUND". Un errore DNS (Google irraggiungibile)
+      // verrebbe letto come "l'evento non c'era piu" e l'esito dichiarerebbe
+      // l'agenda pulita mentre l'evento fantasma resta li coi suoi reminder.
+      await conDeleteCheLancia(new Error('getaddrinfo ENOTFOUND oauth2.googleapis.com'))
+
+      const res = await registra(NUOVA)
+
+      expect(res.calendar).toMatch(/vecchio evento/i)
+      expect(res.calendar).toContain('(evt-vecchio)')
+    }, 20000)
   })
 
   it('molti eventi appesi: si smette entro il budget complessivo, e si dichiara tutto', async () => {
