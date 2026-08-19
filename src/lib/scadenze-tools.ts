@@ -20,6 +20,13 @@ interface ScadenzaRow {
   drive_url: string | null
   note: string | null
   stato: ScadenzaStato
+  /**
+   * Id dell'evento Google Calendar creato per questa scadenza, `null` per le
+   * righe registrate prima del 2026-08-18 (e per quelle il cui evento non e'
+   * stato creato). Serve SOLO a cancellare il vecchio evento quando la scadenza
+   * viene sostituita: e' un id tecnico e resta fuori da `summarize()`.
+   */
+  calendar_event_id?: string | null
   updated_at?: string
 }
 
@@ -34,6 +41,7 @@ interface ScadenzaWrite {
   drive_url?: string | null
   note?: string | null
   stato?: ScadenzaStato
+  calendar_event_id?: string | null
   updated_at?: string
 }
 
@@ -377,15 +385,24 @@ export async function registraScadenzaCore(
         tipoDocumento: insertFields.tipo_documento ?? null,
         categoria: insertFields.categoria ?? null,
       })
-    : { ids: [] }
+    : { ids: [], eventiDaCancellare: [] }
   const replacedIds = sostituzione.ids
 
   // 2026-07-22: scrive la scadenza anche su Google Calendar. BEST-EFFORT:
   // la registrazione in DB è già andata a buon fine, quindi un errore Calendar
   // (scope/API/rete) NON deve far fallire la scadenza. Riusa executeCalendarTool.
-  // NB: se la stessa scadenza viene ri-registrata (path sostituzione), viene
-  // creato un nuovo evento; il vecchio evento NON viene rimosso (nessuna colonna
-  // calendar_event_id → niente dedup). Follow-up se diventa fastidioso.
+  //
+  // 2026-08-18: al RINNOVO il vecchio evento viene ora TOLTO dall'agenda.
+  // L'id dell'evento si estrae dalla risposta della create
+  // (`extractCalendarEventId`), si salva sulla riga (`calendar_event_id`) e
+  // `marcaSostituite` lo riporta indietro per le righe che passa a
+  // 'sostituito'; la cancellazione avviene qui sotto. Prima non accadeva e
+  // ogni rinnovo lasciava un evento fantasma coi suoi reminder.
+  //
+  // ⚠️ LIMITE NOTO: le righe registrate PRIMA del 2026-08-18 hanno
+  // `calendar_event_id` null — i loro eventi restano in agenda e vanno
+  // ripuliti A MANO. Non e recuperabile dal codice: l'id di quegli eventi non
+  // e stato salvato da nessuna parte.
   const calendar = await createCalendarForScadenza({
     soggetto,
     dataScadenza: parsedDate.value,
@@ -393,13 +410,43 @@ export async function registraScadenzaCore(
     note: insertFields.note ?? null,
   })
 
+  let calendarNota = calendar.nota
+
+  // L'id dell'evento va scritto sulla riga: al RINNOVO e' l'unico modo per
+  // sapere quale evento togliere dall'agenda. Best-effort come tutto il resto
+  // del Calendar (la scadenza e' gia in DB, un errore qui non la tocca) ma NON
+  // silenzioso: se la colonna manca perche' la migration non e' stata
+  // applicata, questo e' l'unico punto in cui si vede — e senza avviso i
+  // rinnovi continuerebbero a lasciare eventi fantasma senza spiegazione.
+  if (created?.id && calendar.eventId) {
+    const { error: eventIdError } = await supabase
+      .from('cervellone_scadenze')
+      .update({ calendar_event_id: calendar.eventId, updated_at: new Date().toISOString() })
+      .eq('id', created.id)
+
+    if (eventIdError) {
+      calendarNota = `${calendarNota} — ATTENZIONE: id evento NON salvato (${eventIdError.message}), al prossimo rinnovo il vecchio evento restera in agenda.`
+    }
+  }
+
+  // Le righe appena passate a 'sostituito' non sono piu scadenze: i loro
+  // eventi in agenda vanno tolti, altrimenti i reminder continuano a scattare
+  // per qualcosa che non esiste piu.
+  //
+  // Si cancella ANCHE se la creazione del nuovo evento e fallita: la vecchia
+  // riga e gia 'sostituito' in DB, quindi il suo promemoria e comunque
+  // SBAGLIATO — e un promemoria sbagliato e peggio di nessun promemoria. Il
+  // caso "evento nuovo assente" e gia segnalato da calendar_ok:false.
+  const notaCancellazione = await cancellaEventiSostituiti(sostituzione.eventiDaCancellare)
+  if (notaCancellazione) calendarNota = `${calendarNota} — ${notaCancellazione}`
+
   return {
     ok: true,
     id: created?.id,
     sostituite: replacedIds,
     ...(sostituzione.warning ? { avviso: sostituzione.warning } : {}),
     calendarOk: calendar.ok,
-    calendarNota: calendar.nota,
+    calendarNota,
   }
 }
 
@@ -429,6 +476,15 @@ async function registraScadenza(input: Record<string, unknown>): Promise<string>
 
 interface SostituzioneResult {
   ids: string[]
+  /**
+   * Gli id degli eventi Google Calendar delle righe appena marcate
+   * 'sostituito' — solo quelle che un evento ce l'hanno davvero (le righe
+   * registrate prima del 2026-08-18 hanno `calendar_event_id` null).
+   *
+   * E un campo a parte e non un rimpiazzo di `ids`: `ids` finisce nell'esito
+   * verso l'LLM, questi no.
+   */
+  eventiDaCancellare: string[]
   warning?: string
 }
 
@@ -460,7 +516,10 @@ async function marcaSostituite(opts: {
 }): Promise<SostituzioneResult> {
   let existingQuery = supabase
     .from('cervellone_scadenze')
-    .select('id, soggetto, tipo_documento, categoria')
+    // `calendar_event_id` viaggia QUI e non in una query dedicata: queste sono
+    // gia le righe che stiamo per marcare 'sostituito', quindi i loro eventi da
+    // togliere dall'agenda arrivano senza un round-trip in piu.
+    .select('id, soggetto, tipo_documento, categoria, calendar_event_id')
     .eq('stato', 'attivo')
     .neq('id', opts.nuovoId)
     // Filtro lato server anche sul soggetto: prima si scaricavano TUTTE le
@@ -474,24 +533,27 @@ async function marcaSostituite(opts: {
 
   const { data: existingData, error: existingError } = await existingQuery
   if (existingError) {
-    return { ids: [], warning: `Scadenza registrata, ma la ricerca delle precedenti e fallita (${existingError.message}): controlla eventuali duplicati con lista_scadenze.` }
+    return { ids: [], eventiDaCancellare: [], warning: `Scadenza registrata, ma la ricerca delle precedenti e fallita (${existingError.message}): controlla eventuali duplicati con lista_scadenze.` }
   }
 
-  const existingRows = (existingData ?? []) as Pick<ScadenzaRow, 'id' | 'soggetto' | 'tipo_documento' | 'categoria'>[]
+  const existingRows = (existingData ?? []) as Pick<ScadenzaRow, 'id' | 'soggetto' | 'tipo_documento' | 'categoria' | 'calendar_event_id'>[]
   const soggettoKey = normalizeKey(opts.soggetto)
   const tipoKey = normalizeKey(opts.tipoDocumento)
   const categoriaKey = normalizeKey(opts.categoria)
 
-  const replacedIds = existingRows
-    .filter(row =>
-      row.id !== opts.nuovoId &&
-      normalizeKey(row.soggetto) === soggettoKey &&
-      normalizeKey(row.tipo_documento) === tipoKey &&
-      normalizeKey(row.categoria) === categoriaKey,
-    )
-    .map(row => row.id)
+  // ATTENZIONE: il filtro di identita VERO e questo, in JS. L'ILIKE lato server
+  // e deliberatamente un SOVRAINSIEME, quindi gli eventi da cancellare sono
+  // quelli delle righe che superano QUESTO filtro — prenderli dalla query
+  // grezza significherebbe togliere dall'agenda l'evento di un'altra scadenza.
+  const replacedRows = existingRows.filter(row =>
+    row.id !== opts.nuovoId &&
+    normalizeKey(row.soggetto) === soggettoKey &&
+    normalizeKey(row.tipo_documento) === tipoKey &&
+    normalizeKey(row.categoria) === categoriaKey,
+  )
+  const replacedIds = replacedRows.map(row => row.id)
 
-  if (replacedIds.length === 0) return { ids: [] }
+  if (replacedIds.length === 0) return { ids: [], eventiDaCancellare: [] }
 
   const { error: updateError } = await supabase
     .from('cervellone_scadenze')
@@ -499,15 +561,63 @@ async function marcaSostituite(opts: {
     .in('id', replacedIds)
 
   if (updateError) {
-    return { ids: [], warning: `Scadenza registrata, ma la precedente non e stata marcata come sostituita (${updateError.message}): restano due righe attive, chiudi la vecchia con chiudi_scadenza.` }
+    return { ids: [], eventiDaCancellare: [], warning: `Scadenza registrata, ma la precedente non e stata marcata come sostituita (${updateError.message}): restano due righe attive, chiudi la vecchia con chiudi_scadenza.` }
   }
 
-  return { ids: replacedIds }
+  // Solo le righe DAVVERO passate a 'sostituito': se l'UPDATE qui sopra
+  // fallisce le vecchie restano attive, e cancellarne l'evento lascerebbe una
+  // scadenza attiva senza voce in agenda.
+  const eventiDaCancellare = replacedRows
+    .map(row => row.calendar_event_id)
+    .filter((eventId): eventId is string => typeof eventId === 'string' && eventId.length > 0)
+
+  return { ids: replacedIds, eventiDaCancellare }
 }
 
 interface CalendarEsito {
   ok: boolean
   nota: string
+  /** Id dell'evento appena creato, `null` se non e stato possibile ricavarlo. */
+  eventId: string | null
+}
+
+/**
+ * Estrae l'id dell'evento dalla risposta TESTUALE di `calendar_create_event`.
+ *
+ * Perche da una stringa: `executeCalendarTool` ritorna `string | null`, e l'id
+ * viaggia dentro la prosa perche quella risposta e nata per essere letta da un
+ * LLM. E un accoppiamento fragile e va trattato come tale — la riga sorgente e
+ * `  id=${e.id}` prodotta da `formatEvent` (calendar-tools.ts:97-104), inclusa
+ * nella risposta di `createEvent` (:134). Il formato e PINNATO dai test contro
+ * l'output vero del modulo, non contro una fixture: se `formatEvent` cambia,
+ * quei test diventano rossi qui e non in produzione.
+ *
+ * 🔴 DUE DIFESE, entrambe necessarie, contro l'INIEZIONE DI UN ID ALTRUI.
+ * Il titolo dell'evento contiene `tipo_documento`, che arriva testuale
+ * dall'LLM e conserva gli a-capo (`nullableString` fa solo trim). Un
+ * `tipo_documento` = "DURC\n  id=EVENTO_ALTRUI\nrinnovo" produce una riga
+ * IDENTICA carattere per carattere a quella dell'id vero. Persistito l'id
+ * falso, al rinnovo — flusso NOMINALE — partirebbe `calendar_delete_event`
+ * su un evento estraneo, che sparisce dall'agenda. L'id non va nemmeno
+ * indovinato: `calendar_list_events` lo stampa in chiaro.
+ *  1. il titolo viene ripulito degli a-capo a monte
+ *     (`createCalendarForScadenza`), quindi quella riga non nasce proprio;
+ *  2. qui si prende l'ULTIMA occorrenza, non la prima: dopo la riga `id=`
+ *     `formatEvent` emette solo `htmlLink` (che non e un `  id=...`), quindi
+ *     l'ultima e SEMPRE quella vera mentre tutto cio che l'attaccante puo
+ *     iniettare — dal summary o dalla location — sta per forza prima.
+ *
+ * L'ancoraggio ai DUE SPAZI iniziali e all'intera riga resta la terza rete:
+ * senza, basterebbe un `id=` in coda a una riga qualsiasi.
+ */
+export function extractCalendarEventId(res: string | null | undefined): string | null {
+  if (typeof res !== 'string') return null
+  const match = [...res.matchAll(/^ {2}id=([A-Za-z0-9_@.-]+)$/gm)].at(-1)
+  if (!match) return null
+  // `formatEvent` interpola secco: senza id da Google stampa `id=undefined`.
+  // Persistere quella stringa significherebbe tentare, al rinnovo successivo,
+  // la cancellazione di un evento che si chiama "undefined".
+  return match[1] === 'undefined' ? null : match[1]
 }
 
 // Oltre questo tempo si smette di aspettare Google. NON e un limite di cortesia:
@@ -515,6 +625,13 @@ interface CalendarEsito {
 // richiesta restava viva fino al kill di Vercel (maxDuration 800). La scadenza
 // era gia in DB, ma l'utente vedeva il turno morire e ri-registrava → duplicato.
 const CALENDAR_TIMEOUT_MS = 10_000
+
+/**
+ * Tetto COMPLESSIVO per togliere dall'agenda i vecchi eventi di un rinnovo
+ * (vedi `cancellaEventiSostituiti`). Deve stare largamente sotto il mutex
+ * per-chat da 150s anche sommato al timeout della create.
+ */
+const CALENDAR_DELETE_BUDGET_MS = 20_000
 
 const CALENDAR_TIMEOUT = Symbol('calendar-timeout')
 
@@ -560,7 +677,13 @@ async function createCalendarForScadenza(opts: {
     if (opts.note) descParts.push(`Note: ${opts.note}`)
     const res = await withTimeout(
       Promise.resolve(executeCalendarTool('calendar_create_event', {
-        summary: title,
+        // 🔴 Gli spazi bianchi si COLLASSANO: `tipo_documento` arriva testuale
+        // dall'LLM e `nullableString` fa solo trim, quindi gli a-capo interni
+        // sopravvivono fino a qui. Un titolo multi-riga e gia un bug a se (in
+        // agenda si legge un evento con dentro tre righe), ma soprattutto una
+        // riga "  id=<altrui>" iniettata li dentro e indistinguibile da quella
+        // che `formatEvent` stampa per l'id VERO — vedi `extractCalendarEventId`.
+        summary: title.replace(/\s+/g, ' '),
         start_date: opts.dataScadenza,
         description: descParts.join(' '),
       })),
@@ -569,16 +692,109 @@ async function createCalendarForScadenza(opts: {
     if (res === CALENDAR_TIMEOUT) {
       return {
         ok: false,
+        eventId: null,
         nota: `Calendar non aggiornato: timeout dopo ${CALENDAR_TIMEOUT_MS / 1000}s, Google non ha risposto. La scadenza e registrata, l'evento in agenda NO.`,
       }
     }
     if (typeof res === 'string' && res.startsWith('✅')) {
-      return { ok: true, nota: 'evento creato su Google Calendar' }
+      return { ok: true, eventId: extractCalendarEventId(res), nota: 'evento creato su Google Calendar' }
     }
-    return { ok: false, nota: `Calendar non aggiornato: ${(res ?? 'nessuna risposta').slice(0, 200)}` }
+    return { ok: false, eventId: null, nota: `Calendar non aggiornato: ${(res ?? 'nessuna risposta').slice(0, 200)}` }
   } catch (e) {
-    return { ok: false, nota: `Calendar non aggiornato: ${e instanceof Error ? e.message : String(e)}` }
+    return { ok: false, eventId: null, nota: `Calendar non aggiornato: ${e instanceof Error ? e.message : String(e)}` }
   }
+}
+
+/**
+ * L'evento NON e in agenda perche' non c'e piu: 404 (mai esistito / gia
+ * rimosso) e 410 (cancellato) sono la forma in cui Google dice esattamente il
+ * risultato che volevamo. Se l'Ingegnere cancella un evento a mano da Google
+ * Calendar — cosa che fa — la delete al rinnovo torna
+ * `❌ Errore Calendar: Resource has been deleted` e senza questo riconoscimento
+ * leggerebbe "il vecchio evento NON e stato rimosso ... cancellalo a mano" per
+ * un evento che non esiste piu: allarmante E falso.
+ */
+const CALENDAR_EVENTO_GIA_ASSENTE = /\b(404|410)\b|\bnot\s*found\b|has been deleted|already deleted|\bdeleted\b|\bgone\b/i
+
+/**
+ * Riconosce una cancellazione FALLITA, non una riuscita.
+ *
+ * 🔴 `deleteEvent` risponde `🗑 Evento <id> eliminato dal calendario.`
+ * (calendar-tools.ts:197) — NON `✅`, che e l'emoji della sola create. Riusare
+ * il check `startsWith('✅')` di `createCalendarForScadenza` darebbe per fallita
+ * OGNI cancellazione riuscita, e l'Ingegnere leggerebbe un avviso allarmante a
+ * ogni singolo rinnovo. Si guarda quindi il FALLIMENTO, che ha una forma
+ * stabile: `❌ Errore Calendar: ...` dal catch di `executeCalendarTool`,
+ * `⚠️ Manca event_id.` dalla validazione, oppure nessuna risposta.
+ *
+ * ECCEZIONE: 404/410 (vedi `CALENDAR_EVENTO_GIA_ASSENTE`) arrivano vestiti da
+ * errore ma sono il risultato voluto.
+ */
+function deleteCalendarFallita(res: string | null | undefined): boolean {
+  if (typeof res !== 'string' || res.trim() === '') return true
+  if (!res.startsWith('❌') && !res.startsWith('⚠️')) return false
+  return !CALENDAR_EVENTO_GIA_ASSENTE.test(res)
+}
+
+/**
+ * Toglie dall'agenda gli eventi delle scadenze appena marcate 'sostituito'.
+ * Ritorna una nota se qualcosa non e stato rimosso, `null` se e filato tutto.
+ *
+ * Best-effort come il resto del Calendar: la scadenza e gia in DB e un errore
+ * qui non la tocca. Ma il fallimento NON e silenzioso — un evento fantasma
+ * continua a far scattare i suoi reminder per una scadenza che non esiste piu,
+ * e chi lo riceve deve sapere perche'.
+ *
+ * 📌 FOLLOW-UP (fuori scope, non implementato qui): `chiudi_scadenza` e
+ * `aggiorna_scadenza` NON toccano l'evento. Chiudere una scadenza lascia la sua
+ * voce in agenda, e spostarne la data lascia l'evento alla data vecchia. Il
+ * campo `calendar_event_id` c'e gia, quindi il ponte esiste: manca la
+ * chiamata. Va fatto come lavoro a se, con i suoi test.
+ */
+async function cancellaEventiSostituiti(eventIds: string[]): Promise<string | null> {
+  if (eventIds.length === 0) return null
+
+  const falliti: string[] = []
+  try {
+    const { executeCalendarTool } = await import('./calendar-tools')
+    // Il budget e COMPLESSIVO, non per evento: il loop e sequenziale, quindi N
+    // eventi appesi costavano N × 10s. La bonifica dello storico stima ~9
+    // eventi per dipendente, cioe fino a 90s — pericolosamente vicini al mutex
+    // per-chat da 150s: la registrazione morirebbe DOPO aver gia scritto in DB,
+    // e l'Ingegnere ri-registrerebbe (duplicato), che e proprio il guaio che il
+    // timeout sulla create era nato per evitare.
+    //
+    // Perche' un budget e non `Promise.allSettled`: ogni `executeCalendarTool`
+    // apre il suo client OAuth, quindi il parallelo significherebbe N refresh
+    // token e N chiamate simultanee contro la quota Calendar — con il rischio
+    // che un 403 da rate-limit trasformi cancellazioni sane in falsi allarmi.
+    // Il caso patologico e Google APPESO, non Google lento: bastano il loop di
+    // sempre e un tetto duro.
+    const scadenzaBudget = Date.now() + CALENDAR_DELETE_BUDGET_MS
+    for (const eventId of eventIds) {
+      const rimanente = scadenzaBudget - Date.now()
+      // Budget finito: gli eventi non tentati sono ancora in agenda, quindi
+      // vanno DICHIARATI come tali. Silenziarli sarebbe peggio dell'attesa.
+      if (rimanente <= 0) {
+        falliti.push(eventId)
+        continue
+      }
+      try {
+        const res = await withTimeout(
+          Promise.resolve(executeCalendarTool('calendar_delete_event', { event_id: eventId })),
+          Math.min(CALENDAR_TIMEOUT_MS, rimanente),
+        )
+        if (res === CALENDAR_TIMEOUT || deleteCalendarFallita(res)) falliti.push(eventId)
+      } catch {
+        falliti.push(eventId)
+      }
+    }
+  } catch (e) {
+    return `il vecchio evento NON e stato rimosso dall'agenda (${e instanceof Error ? e.message : String(e)}): cancellalo a mano, altrimenti arrivera un promemoria per una scadenza gia sostituita.`
+  }
+
+  if (falliti.length === 0) return null
+  return `ATTENZIONE: il vecchio evento NON e stato rimosso dall'agenda (${falliti.join(', ')}): cancellalo a mano, altrimenti arrivera un promemoria per una scadenza gia sostituita.`
 }
 
 async function listaScadenze(input: Record<string, unknown>): Promise<string> {
