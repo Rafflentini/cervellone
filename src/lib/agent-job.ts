@@ -296,4 +296,22 @@ export async function runAgentJob(
   // con document block, è il link "📄 …👉 url" e non l'estrazione vera. Best-effort;
   // se uploadedImages è vuoto, captureImageExtraction non salva (reason: no-images).
   captureImageExtraction(conversationId, fullResponse, input.uploadedImages ?? []).catch(() => {})
+
+  // Debrief di fine turno: distilla decisioni e lezioni in memoria durevole. È il
+  // pezzo che conserva il PERCHÉ di un lavoro, non solo i nomi che vi compaiono —
+  // il riassunto notturno, per progetto, scarta proprio i ragionamenti.
+  // Resta flag-gated (fail-closed) dentro maybeRunDebrief: accenderlo è una
+  // decisione separata. Il .catch è deliberato: la risposta è già stata
+  // consegnata all'utente, e un debrief fallito non deve poterla rovinare.
+  const { maybeRunDebrief } = await import('./auto-debrief')
+  await maybeRunDebrief({
+    conversationId,
+    userText,
+    transcript: [
+      ...history.map((m) => `[${m.role}]: ${typeof m.content === 'string' ? m.content : ''}`),
+      `[user]: ${userText}`,
+      `[assistant]: ${fullResponse}`,
+    ].join('\n'),
+    sendSummary: (line: string) => { void sendTelegramMessage(chatId, line) },
+  }).catch(() => {})
 }
