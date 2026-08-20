@@ -15,6 +15,7 @@ const MarkdownRenderer = React.memo(MarkdownRendererBase, (prev, next) => prev.c
 import DocumentPreviewPanel from '@/components/DocumentPreviewPanel'
 import SplitPanel from '@/components/SplitPanel'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
+import { staNelTettoKeepalive, tagliaAiByte } from '@/lib/chat-save-limits'
 
 type FileAttachment = {
   name: string
@@ -155,9 +156,20 @@ export default function ChatPage() {
         // preventivi, relazioni — che sono quelle che piu vale la pena salvare.
         // Meglio salvarne la parte iniziale, DICHIARANDO il taglio, che perdere
         // tutto in silenzio.
-        const TETTO = 60_000
-        if (inCorso.text.length > TETTO) {
-          invia(inCorso.text.slice(0, TETTO) + '\n\n[risposta troncata dal salvataggio d\'emergenza: la pagina e stata chiusa mentre arrivava]')
+        //
+        // Il taglio si misura in BYTE e non in caratteri: su testo tecnico
+        // italiano (accenti, €, m²) 60.000 caratteri superano abbondantemente i
+        // 64KB, e il ripiego fallirebbe come il primo tentativo. La funzione sta
+        // in `chat-save-limits`, dove e coperta da test.
+        const parziale = tagliaAiByte(inCorso.text)
+
+        const riuscito = parziale.length > 0 && invia(
+          parziale +
+          '\n\n[risposta troncata dal salvataggio d\'emergenza: la pagina e stata chiusa mentre arrivava]'
+        )
+        if (!riuscito) {
+          // Ultima spiaggia prima del silenzio: almeno resta una traccia.
+          console.warn('[chat] salvataggio d\'emergenza fallito: la risposta interrotta non e stata salvata')
         }
       } catch { /* la pagina sta morendo: non c'e altro da tentare */ }
     }
@@ -195,20 +207,28 @@ export default function ChatPage() {
   // Salva messaggio su Supabase
   async function saveMessage(convId: string, role: string, content: string, files?: FileAttachment[]) {
     try {
+      const corpo = JSON.stringify({
+        role,
+        content,
+        files: files ? files.map(f => ({ name: f.name, isImage: f.isImage, isPdf: f.isPdf, isWord: f.isWord })) : [],
+      })
+
+      // `keepalive` fa sopravvivere la richiesta alla chiusura della pagina, ma
+      // il browser lo paga con un tetto di ~64KB sul corpo — e quel tetto vale
+      // SEMPRE, non solo durante la chiusura. Attivarlo indiscriminatamente
+      // farebbe fallire in silenzio il salvataggio di ogni risposta lunga anche
+      // a scheda aperta. La soglia e in `chat-save-limits`, dove ha dei test.
       await fetch(`/api/conversations/${convId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // keepalive: la richiesta sopravvive alla chiusura della pagina. Senza,
-        // una fetch normale viene uccisa a meta e il messaggio si perde proprio
-        // nell'istante in cui il salvataggio d'emergenza e gia stato disarmato.
-        keepalive: true,
-        body: JSON.stringify({
-          role,
-          content,
-          files: files ? files.map(f => ({ name: f.name, isImage: f.isImage, isPdf: f.isPdf, isWord: f.isWord })) : [],
-        }),
+        keepalive: staNelTettoKeepalive(corpo),
+        body: corpo,
       })
-    } catch { /* ignore */ }
+    } catch (err) {
+      // Non piu ingoiato: un messaggio che non si salva e una perdita, e va
+      // almeno lasciata a log invece di sparire senza traccia.
+      console.warn(`[chat] messaggio non salvato (${role}): ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   // Crea nuova conversazione
