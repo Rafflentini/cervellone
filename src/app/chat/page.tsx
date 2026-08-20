@@ -15,6 +15,7 @@ const MarkdownRenderer = React.memo(MarkdownRendererBase, (prev, next) => prev.c
 import DocumentPreviewPanel from '@/components/DocumentPreviewPanel'
 import SplitPanel from '@/components/SplitPanel'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
+import { staNelTettoKeepalive, tagliaAiByte } from '@/lib/chat-save-limits'
 
 type FileAttachment = {
   name: string
@@ -118,7 +119,63 @@ export default function ChatPage() {
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const batchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const pendingTextRef = useRef('')
+  // Risposta in arrivo, non ancora salvata. Serve al salvataggio d'emergenza
+  // quando la pagina viene chiusa a meta streaming: senza questo, quel pezzo di
+  // lavoro non esiste da nessuna parte — ne in messages, ne negli embedding, ne
+  // nell'estrazione notturna.
+  const rispostaInCorsoRef = useRef<{ convId: string; text: string } | null>(null)
   const router = useRouter()
+
+  // Salvataggio d'emergenza alla chiusura della pagina.
+  // `pagehide` e non `beforeunload`: e l'unico che scatta in modo affidabile
+  // anche su Safari e su mobile. `sendBeacon` sopravvive alla morte della
+  // pagina, cosa che una fetch normale non fa.
+  // Il rischio di doppio salvataggio e coperto lato server: la route rifiuta un
+  // messaggio identico arrivato negli ultimi 5 minuti.
+  useEffect(() => {
+    const salvaSeInterrotta = () => {
+      const inCorso = rispostaInCorsoRef.current
+      if (!inCorso || !inCorso.text.trim()) return
+      // Disarma subito: pagehide puo scattare piu volte (bfcache), e un secondo
+      // invio con lo stesso testo sarebbe un doppione.
+      rispostaInCorsoRef.current = null
+
+      const invia = (testo: string): boolean => {
+        const corpo = new Blob(
+          [JSON.stringify({ role: 'assistant', content: testo, files: [], emergenza: true })],
+          { type: 'application/json' }
+        )
+        return navigator.sendBeacon(`/api/conversations/${inCorso.convId}/messages`, corpo)
+      }
+
+      try {
+        if (invia(inCorso.text)) return
+
+        // sendBeacon ha rifiutato: quasi sempre perche il corpo supera il tetto
+        // del browser (~64KB), cioe proprio sulle risposte lunghe — computi,
+        // preventivi, relazioni — che sono quelle che piu vale la pena salvare.
+        // Meglio salvarne la parte iniziale, DICHIARANDO il taglio, che perdere
+        // tutto in silenzio.
+        //
+        // Il taglio si misura in BYTE e non in caratteri: su testo tecnico
+        // italiano (accenti, €, m²) 60.000 caratteri superano abbondantemente i
+        // 64KB, e il ripiego fallirebbe come il primo tentativo. La funzione sta
+        // in `chat-save-limits`, dove e coperta da test.
+        const parziale = tagliaAiByte(inCorso.text)
+
+        const riuscito = parziale.length > 0 && invia(
+          parziale +
+          '\n\n[risposta troncata dal salvataggio d\'emergenza: la pagina e stata chiusa mentre arrivava]'
+        )
+        if (!riuscito) {
+          // Ultima spiaggia prima del silenzio: almeno resta una traccia.
+          console.warn('[chat] salvataggio d\'emergenza fallito: la risposta interrotta non e stata salvata')
+        }
+      } catch { /* la pagina sta morendo: non c'e altro da tentare */ }
+    }
+    window.addEventListener('pagehide', salvaSeInterrotta)
+    return () => window.removeEventListener('pagehide', salvaSeInterrotta)
+  }, [])
 
   // Carica lista conversazioni
   const loadConversations = useCallback(async () => {
@@ -150,16 +207,28 @@ export default function ChatPage() {
   // Salva messaggio su Supabase
   async function saveMessage(convId: string, role: string, content: string, files?: FileAttachment[]) {
     try {
+      const corpo = JSON.stringify({
+        role,
+        content,
+        files: files ? files.map(f => ({ name: f.name, isImage: f.isImage, isPdf: f.isPdf, isWord: f.isWord })) : [],
+      })
+
+      // `keepalive` fa sopravvivere la richiesta alla chiusura della pagina, ma
+      // il browser lo paga con un tetto di ~64KB sul corpo — e quel tetto vale
+      // SEMPRE, non solo durante la chiusura. Attivarlo indiscriminatamente
+      // farebbe fallire in silenzio il salvataggio di ogni risposta lunga anche
+      // a scheda aperta. La soglia e in `chat-save-limits`, dove ha dei test.
       await fetch(`/api/conversations/${convId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          role,
-          content,
-          files: files ? files.map(f => ({ name: f.name, isImage: f.isImage, isPdf: f.isPdf, isWord: f.isWord })) : [],
-        }),
+        keepalive: staNelTettoKeepalive(corpo),
+        body: corpo,
       })
-    } catch { /* ignore */ }
+    } catch (err) {
+      // Non piu ingoiato: un messaggio che non si salva e una perdita, e va
+      // almeno lasciata a log invece di sparire senza traccia.
+      console.warn(`[chat] messaggio non salvato (${role}): ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   // Crea nuova conversazione
@@ -595,6 +664,9 @@ export default function ChatPage() {
           fullText += pendingTextRef.current
           pendingTextRef.current = ''
           const textSnapshot = fullText
+          // Tenuto aggiornato per il salvataggio d'emergenza: se la pagina muore
+          // adesso, questo e tutto cio che esiste della risposta.
+          rispostaInCorsoRef.current = { convId, text: textSnapshot }
           setMessages([...newMessages, { role: 'assistant', text: textSnapshot }])
         }
       }
@@ -617,6 +689,7 @@ export default function ChatPage() {
       }
       flushBatch()
       // Salva risposta assistente
+      rispostaInCorsoRef.current = null
       await saveMessage(convId, 'assistant', fullText)
       // Aggiorna lista conversazioni (senza ricaricare messaggi)
       loadConversations().catch(() => {})
@@ -625,6 +698,10 @@ export default function ChatPage() {
         // Risposta interrotta: quello che e arrivato va salvato lo stesso.
         // Se non lo facciamo qui non lo fa piu nessuno, e il pezzo di lavoro
         // svanisce senza lasciare traccia da nessuna parte.
+        // Il ref va disarmato PRIMA di attendere, come nel percorso normale:
+        // altrimenti una chiusura di pagina durante questo salvataggio farebbe
+        // partire anche il beacon, con due scritture in volo insieme.
+        rispostaInCorsoRef.current = null
         if (fullText.trim()) await saveMessage(convId, 'assistant', fullText)
         return
       }
@@ -642,6 +719,10 @@ export default function ChatPage() {
       }
       setMessages([...newMessages, { role: 'assistant', text: errorMessage }])
     } finally {
+      // Comunque sia finito il turno — riuscito, interrotto o in errore — non
+      // c'e piu una risposta "in volo": il salvataggio d'emergenza non deve
+      // poter rimandare due volte lo stesso testo.
+      rispostaInCorsoRef.current = null
       setLoading(false)
     }
   }

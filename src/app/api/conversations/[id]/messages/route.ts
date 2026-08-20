@@ -40,7 +40,7 @@ export async function POST(
   }
 
   const { id } = await params
-  const { role, content, files } = await request.json()
+  const { role, content, files, emergenza } = await request.json()
 
   // Questa e l'UNICA riga scritta per il turno web: il server non ne scrive una
   // seconda. Quindi qui devono avvenire anche le due cose che prima faceva solo
@@ -57,6 +57,31 @@ export async function POST(
   }
 
   const sanitized = sanitizeForStorage(content)
+
+  // Difesa contro il doppio salvataggio, applicata SOLO ai salvataggi
+  // d'emergenza (`emergenza: true`, inviati con sendBeacon quando la pagina
+  // muore a meta risposta e non sa se il salvataggio normale sia riuscito).
+  //
+  // NON si applica ai messaggi normali, e la distinzione e essenziale: un
+  // confronto sul contenuto applicato a tutto scarterebbe un "ok" o un
+  // "procedi" scritti due volte in cinque minuti — cioe una perdita muta di
+  // dati legittimi, proprio il difetto che questo lavoro elimina.
+  if (emergenza === true) {
+    const cinqueMinutiFa = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+    const { data: giaPresente } = await supabase
+      .from('messages')
+      .select('id')
+      .eq('conversation_id', id)
+      .eq('role', role)
+      .eq('content', sanitized)
+      .gte('created_at', cinqueMinutiFa)
+      .limit(1)
+      .maybeSingle()
+
+    if (giaPresente) {
+      return NextResponse.json({ message: giaPresente, duplicato_ignorato: true })
+    }
+  }
 
   const { data, error } = await supabase
     .from('messages')
