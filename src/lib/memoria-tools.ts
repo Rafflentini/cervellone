@@ -85,6 +85,25 @@ export async function ricorda(input: RicordaInput): Promise<RicordaResult> {
 
 // ─── richiama_memoria ────────────────────────────────────────────────────────
 
+/**
+ * Spezza la domanda in parole cercabili.
+ *
+ * Serve perché mettere la frase intera in un ILIKE pretende quella sequenza
+ * letterale: chiedendo "le due lettere di risposta per Blasi" non si trovava
+ * mai nulla, e il bot rispondeva "non ho memoria" in perfetta buona fede.
+ * Stessa politica già usata da searchExplicitMemories in memory.ts.
+ *
+ * `%` e `_` vengono neutralizzati: sono caratteri jolly di SQL.
+ */
+export function buildSearchTokens(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length > 2)
+    .slice(0, 6)
+    .map((w) => w.replace(/[%_]/g, (c) => `\\${c}`))
+}
+
 export async function richiama_memoria(input: RichiamaInput): Promise<RichiamaResult> {
   const query = input.query?.trim()
   if (!query) return { ok: false, results: [], error: 'query obbligatoria' }
@@ -94,12 +113,20 @@ export async function richiama_memoria(input: RichiamaInput): Promise<RichiamaRe
   const filtro = input.tipo_filtro ?? 'tutto'
   const results: RichiamaResult['results'] = []
 
+  // Se la domanda è fatta di sole paroline corte non resta nulla di cercabile:
+  // in quel caso si ricade sul vecchio comportamento con la query intera.
+  const tokens = buildSearchTokens(query)
+  const orDi = (colonna: string) =>
+    tokens.map((t) => `${colonna}.ilike.%${t}%`).join(',')
+
   // L1: memoria_esplicita (full-text ILIKE)
   if (filtro === 'tutto' || filtro === 'esplicita') {
-    const { data, error } = await supabase
+    const base = supabase
       .from('cervellone_memoria_esplicita')
       .select('id, contenuto, tag, created_at')
-      .ilike('contenuto', `%${query}%`)
+    const { data, error } = await (tokens.length
+      ? base.or(orDi('contenuto'))
+      : base.ilike('contenuto', `%${query}%`))
       .order('created_at', { ascending: false })
       .limit(limit)
     if (error) return { ok: false, results: [], error: error.message }
@@ -115,10 +142,12 @@ export async function richiama_memoria(input: RichiamaInput): Promise<RichiamaRe
 
   // L2: summary_giornaliero (ILIKE su summary_text)
   if (filtro === 'tutto' || filtro === 'summary') {
-    const { data, error } = await supabase
+    const base = supabase
       .from('cervellone_summary_giornaliero')
       .select('data, summary_text')
-      .ilike('summary_text', `%${query}%`)
+    const { data, error } = await (tokens.length
+      ? base.or(orDi('summary_text'))
+      : base.ilike('summary_text', `%${query}%`))
       .order('data', { ascending: false })
       .limit(limit)
     if (error) return { ok: false, results: [], error: error.message }
@@ -133,10 +162,12 @@ export async function richiama_memoria(input: RichiamaInput): Promise<RichiamaRe
 
   // L3: entita_menzionate (ILIKE su name)
   if (filtro === 'tutto' || filtro === 'entita') {
-    const { data, error } = await supabase
+    const base = supabase
       .from('cervellone_entita_menzionate')
       .select('name, type, last_seen_at, mention_count')
-      .ilike('name', `%${query}%`)
+    const { data, error } = await (tokens.length
+      ? base.or(orDi('name'))
+      : base.ilike('name', `%${query}%`))
       .order('last_seen_at', { ascending: false })
       .limit(limit)
     if (error) return { ok: false, results: [], error: error.message }

@@ -13,6 +13,7 @@ const mockIlike = vi.fn()
 const mockOrder = vi.fn()
 const mockLimit = vi.fn()
 const mockDelete = vi.fn()
+const mockOr = vi.fn()
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
@@ -46,7 +47,8 @@ beforeEach(() => {
   // I test possono usare mockInsert.mockResolvedValueOnce(...) per simulare errori/ok.
   mockInsert.mockResolvedValue({ data: [{ id: 'test-uuid-1234' }], error: null })
   // select() del read-path: ritorna oggetto con eq/ilike/order (tutti i metodi che il source può chiamare dopo .select())
-  mockSelect.mockReturnValue({ eq: mockEq, ilike: mockIlike, order: mockOrder })
+  mockSelect.mockReturnValue({ eq: mockEq, ilike: mockIlike, order: mockOrder, or: mockOr })
+  mockOr.mockReturnValue({ order: mockOrder, limit: mockLimit, ilike: mockIlike })
   mockEq.mockReturnValue({ maybeSingle: mockMaybeSingle, order: mockOrder, ilike: mockIlike, limit: mockLimit })
   mockMaybeSingle.mockResolvedValue({ data: null, error: null })
   mockIlike.mockReturnValue({ order: mockOrder, limit: mockLimit })
@@ -106,6 +108,49 @@ describe('richiama_memoria', () => {
     const { richiama_memoria } = await import('./memoria-tools')
     const result = await richiama_memoria({ query: 'test' })
     expect(result.ok).toBe(false)
+  })
+})
+
+/**
+ * La ricerca metteva la domanda INTERA dentro un ILIKE: chiedendo
+ * "le due lettere di risposta per Blasi" pretendeva quella sequenza letterale
+ * e non trovava mai nulla, e il bot rispondeva "non ho memoria" in buona fede.
+ *
+ * NB sulla non-vacuità: con i mock il filtro non viene davvero applicato, quindi
+ * asserire "trova risultati" non proverebbe nulla. Si asserisce invece SUL FILTRO
+ * che viene passato a Supabase, che è la cosa realmente cambiata.
+ */
+describe('richiama_memoria — ricerca per parole, non per frase', () => {
+  it('spezza la domanda in parole invece di cercare la frase intera', async () => {
+    const { richiama_memoria } = await import('./memoria-tools')
+    await richiama_memoria({ query: 'le due lettere di risposta per Blasi', tipo_filtro: 'esplicita' })
+
+    expect(mockOr).toHaveBeenCalled()
+    const filtro = String(mockOr.mock.calls[0][0])
+
+    // deve cercare la parola significativa...
+    expect(filtro).toContain('blasi')
+    // ...e non la frase intera come sequenza letterale
+    expect(filtro).not.toContain('le due lettere di risposta per Blasi')
+  })
+
+  it('scarta le paroline corte e si ferma a sei parole', async () => {
+    const { buildSearchTokens } = await import('./memoria-tools')
+    expect(buildSearchTokens('le due lettere di risposta per Blasi Giuseppe'))
+      .toEqual(['due', 'lettere', 'risposta', 'per', 'blasi', 'giuseppe'])
+  })
+
+  it('neutralizza i caratteri jolly nelle parole', async () => {
+    const { buildSearchTokens } = await import('./memoria-tools')
+    expect(buildSearchTokens('100% Blasi_x')).toEqual(['100\\%', 'blasi\\_x'])
+  })
+
+  it('con sole paroline corte ricade sulla query intera', async () => {
+    const { richiama_memoria } = await import('./memoria-tools')
+    await richiama_memoria({ query: 'e la', tipo_filtro: 'esplicita' })
+
+    expect(mockOr).not.toHaveBeenCalled()
+    expect(mockIlike).toHaveBeenCalled()
   })
 })
 
