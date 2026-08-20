@@ -160,6 +160,23 @@ describe('collectMemoriaRuns', () => {
     expect(result.ok).toBe(false)
     expect(result.error).toContain('permission denied')
   })
+
+  // Un run 'partial' significa memoria persa. Prima non finiva in nessuno dei due
+  // conteggi (ok / error), quindi spariva dalla vista dell'audit: il segnale
+  // sarebbe nato cieco, come il difetto che ha lasciato la memoria vuota 3 mesi.
+  it('conta i run parziali, che prima non finivano in nessun conteggio', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-25T08:00:00Z'))
+    resolveWith([
+      { date_processed: '2026-05-06', status: 'partial', conversations_count: 1, entities_count: 0, llm_cost_estimate_usd: 0.02, error_message: '2 parti illeggibili scartate' },
+      { date_processed: '2026-05-05', status: 'ok', conversations_count: 2, entities_count: 1, llm_cost_estimate_usd: 0.005, error_message: null },
+    ])
+    const { collectMemoriaRuns } = await import('./audit-collector')
+    const result = await collectMemoriaRuns()
+    expect(result.data!.partial_count).toBe(1)
+    expect(result.data!.ok_count).toBe(1)
+    expect(result.data!.error_count).toBe(0)
+  })
 })
 
 // ── D5: collectCostEstimate ───────────────────────────────────────────────────

@@ -551,6 +551,13 @@ export default function ChatPage() {
       return { role: m.role, content }
     })
 
+    // Dichiarato FUORI dal try: da quando il server non scrive piu la sua riga,
+    // questo e l'unico punto che salva la risposta. Se lo stream viene interrotto
+    // (pulsante stop, rete caduta) il testo gia ricevuto deve essere salvato lo
+    // stesso, altrimenti sparisce da messages, dagli embedding e dall'estrazione
+    // notturna: una perdita muta, che e esattamente cio che stiamo eliminando.
+    let fullText = ''
+
     try {
       const jsonBody = JSON.stringify({ messages: apiMessages, conversationId: convId })
 
@@ -579,7 +586,7 @@ export default function ChatPage() {
       }
       const reader = res.body!.getReader()
       const decoder = new TextDecoder()
-      let fullText = ''
+
       pendingTextRef.current = ''
 
       // Batch: accumula chunk e aggiorna stato ogni 50ms invece di ogni singolo chunk
@@ -614,7 +621,13 @@ export default function ChatPage() {
       // Aggiorna lista conversazioni (senza ricaricare messaggi)
       loadConversations().catch(() => {})
     } catch (err) {
-      if ((err as Error).name === 'AbortError') return
+      if ((err as Error).name === 'AbortError') {
+        // Risposta interrotta: quello che e arrivato va salvato lo stesso.
+        // Se non lo facciamo qui non lo fa piu nessuno, e il pezzo di lavoro
+        // svanisce senza lasciare traccia da nessuna parte.
+        if (fullText.trim()) await saveMessage(convId, 'assistant', fullText)
+        return
+      }
       console.error('CHAT errore:', err)
       const fileCount = userMsg.files?.length || 0
       let errorMessage: string

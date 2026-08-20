@@ -30,6 +30,59 @@ Output JSON strutturato:
 
 Se la giornata è vuota o non contiene fatti rilevanti, output: {"summary": "Nessuna attività rilevante", "entita": [], "eventi": []}.`
 
+// ── Costanti estrazione ────────────────────────────────────────────────────────
+
+const TIPI_ENTITA_AMMESSI = new Set(['cliente', 'cantiere', 'fornitore'])
+
+const CHUNK_CHAR_BUDGET = 40_000
+const MAX_OUTPUT_TOKENS = 4096
+
+/** Spezza il transcript sui confini di riga, senza mai superare budget caratteri. */
+export function chunkTranscript(transcript: string, budget = CHUNK_CHAR_BUDGET): string[] {
+  if (transcript.length <= budget) return [transcript]
+  const chunks: string[] = []
+  let cur = ''
+  for (const rawLine of transcript.split('\n')) {
+    const parts = Math.max(1, Math.ceil(rawLine.length / budget))
+    for (let i = 0; i < parts; i++) {
+      const piece = rawLine.slice(i * budget, (i + 1) * budget)
+      if (cur.length + piece.length + 1 > budget && cur.length > 0) {
+        chunks.push(cur)
+        cur = ''
+      }
+      cur += (cur ? '\n' : '') + piece
+    }
+  }
+  if (cur) chunks.push(cur)
+  return chunks
+}
+
+export interface ExtractionPayload {
+  summary?: string
+  entita?: Array<{ name: string; type: string; context: string }>
+  eventi?: Array<{ data_iso?: string; descrizione: string }>
+}
+
+/** Legge il JSON anche se il modello lo incornicia o lo fa precedere da testo. Null se irrecuperabile. */
+export function parseExtraction(text: string): ExtractionPayload | null {
+  const cleaned = text.replace(/^\s*```(?:json)?/i, '').replace(/```\s*$/, '').trim()
+  try {
+    return JSON.parse(cleaned) as ExtractionPayload
+  } catch {
+    // passa al recupero
+  }
+  const start = cleaned.indexOf('{')
+  const end = cleaned.lastIndexOf('}')
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(cleaned.slice(start, end + 1)) as ExtractionPayload
+    } catch {
+      // irrecuperabile
+    }
+  }
+  return null
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ExtractResult {
@@ -40,6 +93,9 @@ export interface ExtractResult {
   tokens: number
   cost_usd: number
   error?: string
+  skipped_chunks?: number
+  /** Entita proposte dal modello ma non salvate (tipo non ammesso o errore di scrittura). */
+  entita_scartate?: number
 }
 
 interface MemoriaMessageRow {
@@ -69,7 +125,15 @@ function estimateCost(inputTokens: number, outputTokens: number): number {
  * Se `dateTarget` non è passato, usa ieri (UTC).
  * Idempotente: se `memoria_extract_last_run` in cervellone_config = dateTarget, skip.
  */
-export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractResult> {
+export async function runMemoriaExtract(
+  dateTarget?: string,
+  /**
+   * Rielaborazione chiesta a mano di una giornata passata (?date=).
+   * Salta l'idempotenza E non sposta il segnaposto del cron: senza entrambe le
+   * cose il recupero di un giorno perso non funziona, o rompe il giro automatico.
+   */
+  forced = false,
+): Promise<ExtractResult> {
 
   // Step 1: determina target (default: ieri)
   const target = dateTarget ?? (() => {
@@ -89,7 +153,7 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
     ? lastRunRow.value.replace(/"/g, '')
     : null
 
-  if (lastRun === target) {
+  if (lastRun === target && !forced) {
     console.log(`[memoria-extract] idempotency: already ran for ${target}, skip`)
     return { ok: true, skipped: true, conversations: 0, entities: 0, tokens: 0, cost_usd: 0 }
   }
@@ -141,10 +205,12 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
         llm_cost_estimate_usd: 0,
       }).eq('run_id', runId)
 
-      await supabase.from('cervellone_config').upsert(
-        { key: 'memoria_extract_last_run', value: target },
-        { onConflict: 'key' }
-      )
+      if (!forced) {
+        await supabase.from('cervellone_config').upsert(
+          { key: 'memoria_extract_last_run', value: target },
+          { onConflict: 'key' }
+        )
+      }
 
       return { ok: true, conversations: 0, entities: 0, tokens: 0, cost_usd: 0 }
     }
@@ -174,44 +240,62 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
     let totalCacheReadTokens = 0
     let totalCacheCreationTokens = 0
 
-    // Step 6 (cont.): Per ogni gruppo → call Anthropic
+    // Step 6 (cont.): Per ogni gruppo → spezza in chunk e chiama Anthropic
+    let skippedChunks = 0
+
     for (const [convId, convMsgs] of groups.entries()) {
       const transcript = convMsgs
         .map(m => `[${m.role}]: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
         .join('\n')
 
-      try {
-        const resp = await client.messages.create({
-          model,
-          max_tokens: 1024,
-          system: EXTRACTION_PROMPT,
-          messages: [
-            {
-              role: 'user',
-              content: `Conversazione (${convId}):\n${transcript}`,
-            },
-          ],
-        })
+      const chunks = chunkTranscript(transcript)
 
-        totalInputTokens += resp.usage?.input_tokens ?? 0
-        totalOutputTokens += resp.usage?.output_tokens ?? 0
-        totalCacheReadTokens += (resp.usage as any)?.cache_read_input_tokens ?? 0
-        totalCacheCreationTokens += (resp.usage as any)?.cache_creation_input_tokens ?? 0
+      for (let i = 0; i < chunks.length; i++) {
+        try {
+          const resp = await client.messages.create({
+            model,
+            max_tokens: MAX_OUTPUT_TOKENS,
+            system: EXTRACTION_PROMPT,
+            messages: [
+              {
+                role: 'user',
+                content: `Conversazione (${convId}) — parte ${i + 1} di ${chunks.length}:\n${chunks[i]}`,
+              },
+            ],
+          })
 
-        const textBlock = resp.content.find((b): b is AnthropicTextBlock => b.type === 'text')
-        if (textBlock) {
-          try {
-            const parsed = JSON.parse(textBlock.text)
-            if (parsed.summary) allSummaries.push(parsed.summary)
-            if (Array.isArray(parsed.entita)) allEntita.push(...parsed.entita)
-          } catch {
-            // JSON malformato: skip questa conversazione, log warning
-            console.warn(`[memoria-extract] JSON parse error for conv ${convId} — skipping`)
+          totalInputTokens += resp.usage?.input_tokens ?? 0
+          totalOutputTokens += resp.usage?.output_tokens ?? 0
+          totalCacheReadTokens += (resp.usage as { cache_read_input_tokens?: number })?.cache_read_input_tokens ?? 0
+          totalCacheCreationTokens += (resp.usage as { cache_creation_input_tokens?: number })?.cache_creation_input_tokens ?? 0
+
+          const textBlock = resp.content.find((b): b is AnthropicTextBlock => b.type === 'text')
+          const parsed = textBlock ? parseExtraction(textBlock.text) : null
+
+          if (!parsed) {
+            skippedChunks++
+            console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId} illeggibile (stop_reason=${resp.stop_reason}) — scartata`)
+            continue
           }
+          if (parsed.summary) allSummaries.push(parsed.summary)
+          if (Array.isArray(parsed.entita)) {
+            allEntita.push(...parsed.entita)
+          } else if (parsed.entita !== undefined) {
+            // Il modello ha risposto con 'entita' in una forma inattesa (non un array):
+            // non va scartata in silenzio, è un'altra porta per la stessa perdita muta.
+            skippedChunks++
+            console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId}: campo 'entita' non e un array — entita scartate`)
+          }
+        } catch (err) {
+          // Errore LLM su questa singola parte: non deve far cadere l'intera giornata.
+          // Allineato al catch esterno (step 10): niente cast incondizionato a Error,
+          // altrimenti un rifiuto non-Error (es. null) esplode qui dentro e la giornata
+          // collassa comunque — la stessa patologia che questo task doveva eliminare.
+          skippedChunks++
+          const msg = err instanceof Error ? err.message : String(err)
+          console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId} fallita: ${msg}`)
+          continue
         }
-      } catch (err) {
-        // Errore LLM per questa conversazione: propaga come errore totale (spec: step 10)
-        throw err
       }
     }
 
@@ -248,39 +332,97 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
       if (!entitaDeduplicate.has(key)) entitaDeduplicate.set(key, e)
     }
 
+    // Il DB accetta solo questi tre tipi. Il modello devia spesso ("committente",
+    // "professionista"): senza filtro la riga viene rifiutata in silenzio e
+    // entities_count dichiarerebbe entita' che non sono mai state salvate.
+    // Contatore SEPARATO da skippedChunks: sono due perdite di natura diversa
+    // (testo illeggibile vs entita non ammessa) e confonderle renderebbe falso il
+    // messaggio d'errore del run — leggibile ma fuorviante, che e' peggio di muto.
+    let entitaScartate = 0
+    let entitaSalvate = 0
     for (const e of entitaDeduplicate.values()) {
+      if (!TIPI_ENTITA_AMMESSI.has(e.type)) {
+        entitaScartate++
+        console.warn(`[memoria-extract] entita "${e.name}" scartata: tipo "${e.type}" non ammesso`)
+        continue
+      }
       // TODO: atomic increment via stored proc per concurrency futura
       // Per ora: upsert con mention_count=1 (overwrite) — sufficiente per single-cron daily.
-      await supabase.from('cervellone_entita_menzionate').upsert({
+      const { error: entErr } = await supabase.from('cervellone_entita_menzionate').upsert({
         name: e.name,
         type: e.type,
         last_seen_at: target,
         mention_count: 1,
         contexts_json: [e.context],
       }, { onConflict: 'name,type' })
+
+      if (entErr) {
+        entitaScartate++
+        console.warn(`[memoria-extract] entita "${e.name}" non salvata: ${entErr.message}`)
+        continue
+      }
+      entitaSalvate++
     }
 
-    // Step 8: UPDATE runs status='ok'
-    await supabase.from('cervellone_memoria_extraction_runs').update({
-      status: 'ok',
-      completed_at: new Date().toISOString(),
-      conversations_count: conversationIds.length,
-      entities_count: entitaDeduplicate.size,
-      llm_cost_estimate_usd: costUsd,
-    }).eq('run_id', runId)
+    // Step 8: UPDATE runs status='ok'/'partial'
+    //
+    // L'errore di QUESTA scrittura va letto. supabase-js non lancia: ritorna
+    // { error }. Se lo si ignora e la UPDATE viene rifiutata (per esempio da un
+    // vincolo CHECK che non conosce ancora lo stato), la riga resta 'started'
+    // per sempre e il fallimento diventa invisibile — cioe' esattamente la
+    // malattia che questo file esiste per curare, un piano piu' in basso.
+    const { error: statusErr } = await supabase
+      .from('cervellone_memoria_extraction_runs')
+      .update({
+        status: skippedChunks > 0 || entitaScartate > 0 ? 'partial' : 'ok',
+        completed_at: new Date().toISOString(),
+        conversations_count: conversationIds.length,
+        entities_count: entitaSalvate,
+        llm_cost_estimate_usd: costUsd,
+        // Il messaggio dice QUALE perdita e' avvenuta: chi legge l'audit non deve
+        // dedurre "testo illeggibile" quando invece era un'entita fuori elenco.
+        error_message: [
+          skippedChunks > 0 ? `${skippedChunks} parti illeggibili scartate` : null,
+          entitaScartate > 0 ? `${entitaScartate} entita scartate` : null,
+        ].filter(Boolean).join(', ') || null,
+      })
+      .eq('run_id', runId)
 
-    // Step 9: UPDATE config last_run
-    await supabase.from('cervellone_config').upsert(
-      { key: 'memoria_extract_last_run', value: target },
-      { onConflict: 'key' }
-    )
+    if (statusErr) {
+      console.error(
+        `[memoria-extract] IMPOSSIBILE registrare l'esito del run ${runId}: ${statusErr.message}. ` +
+        `La riga resta 'started' e l'audit non vedra' nulla.`
+      )
+      return {
+        ok: false,
+        conversations: conversationIds.length,
+        entities: entitaSalvate,
+        tokens: totalInputTokens + totalOutputTokens,
+        cost_usd: costUsd,
+        skipped_chunks: skippedChunks,
+        error: `esito non registrabile: ${statusErr.message}`,
+      }
+    }
+
+    // Step 9: UPDATE config last_run — MAI su rielaborazione manuale, altrimenti
+    // il giro automatico della notte crederebbe di aver gia' fatto il suo lavoro.
+    if (!forced) {
+      await supabase.from('cervellone_config').upsert(
+        { key: 'memoria_extract_last_run', value: target },
+        { onConflict: 'key' }
+      )
+    }
 
     return {
       ok: true,
       conversations: conversationIds.length,
-      entities: entitaDeduplicate.size,
+      // entità REALMENTE salvate, non quelle che il modello ha proposto:
+      // dichiararne di più significherebbe mentire sul contenuto della memoria.
+      entities: entitaSalvate,
       tokens: totalInputTokens + totalOutputTokens,
       cost_usd: costUsd,
+      skipped_chunks: skippedChunks,
+      entita_scartate: entitaScartate,
     }
 
   } catch (err) {
