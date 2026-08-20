@@ -403,9 +403,9 @@ export async function callClaudeStream(
   const memoryContext = await searchMemory(userQuery).catch(() => '')
   const systemBlocks = buildCachedSystem(systemPrompt, memoryContext, request.workingContext)
 
-  if (conversationId && userQuery) {
-    saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
-  }
+  // NB: qui NON si scrive in `messages`. Sul path web la riga la scrive il browser
+  // (POST /api/conversations/[id]/messages), che sanitizza e genera l'embedding.
+  // Scriverla anche qui produceva due righe per ogni turno.
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: any[] = getToolDefinitions()
@@ -532,9 +532,7 @@ export async function callClaudeStream(
     meta: { iterations, runAborted: isRunOverBudget(accUsage) },
   })
 
-  if (conversationId && fullResponse) {
-    saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
-  }
+  // NB: nessuna scrittura in messages - vedi la nota a inizio funzione.
 
   return fullResponse
 }

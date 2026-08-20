@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { validateAuth } from '@/lib/auth'
+import { sanitizeForStorage } from '@/lib/sanitize'
+import { saveEmbeddingOnly } from '@/lib/memory'
 
 // GET — messaggi di una conversazione
 export async function GET(
@@ -40,12 +42,17 @@ export async function POST(
   const { id } = await params
   const { role, content, files } = await request.json()
 
+  // Questa e l'UNICA riga scritta per il turno web: il server non ne scrive una
+  // seconda. Quindi qui devono avvenire anche le due cose che prima faceva solo
+  // il server — sanitizzazione dei dati sensibili e generazione dell'embedding.
+  const sanitized = typeof content === 'string' ? sanitizeForStorage(content) : content
+
   const { data, error } = await supabase
     .from('messages')
     .insert({
       conversation_id: id,
       role,
-      content,
+      content: sanitized,
       files: files || [],
     })
     .select()
@@ -53,6 +60,10 @@ export async function POST(
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  if (typeof sanitized === 'string' && typeof role === 'string') {
+    saveEmbeddingOnly(id, role, sanitized).catch(() => {})
   }
 
   // Aggiorna timestamp conversazione

@@ -40,6 +40,22 @@ export async function saveMessageWithEmbedding(
     logWarn(`Messages insert failed: ${(err as Error).message}`)
   }
 
+  await saveEmbeddingOnly(conversationId, role, content, projectId)
+}
+
+/**
+ * Genera e salva SOLO l'embedding di un messaggio già presente in `messages`.
+ * Serve al path web, dove la riga in `messages` la scrive il browser: il server
+ * non deve scriverne una seconda, ma l'embedding va comunque generato.
+ */
+export async function saveEmbeddingOnly(
+  conversationId: string,
+  role: string,
+  content: string,
+  projectId?: string | null,
+): Promise<void> {
+  const sanitized = sanitizeForStorage(content)
+
   // Skip embedding per messaggi brevi o triviali
   if (sanitized.length < MIN_EMBEDDING_LENGTH) return
   if (TRIVIAL_PATTERN.test(sanitized.trim())) return
