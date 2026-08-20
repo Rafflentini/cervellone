@@ -63,7 +63,7 @@ export async function GET(req: NextRequest) {
 
   let result
   try {
-    result = await runMemoriaExtract(dateTarget)
+    result = await runMemoriaExtract(dateTarget, richiesta !== null)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[CRON memoria-extract] runMemoriaExtract failed:', msg)
@@ -89,6 +89,11 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     date: dateTarget,
+    // `skipped` e `skipped_chunks` vanno esposti: una risposta ok con zero
+    // conversazioni puo significare "giornata vuota" oppure "ho saltato tutto",
+    // e chi legge deve poterlo distinguere senza aprire il database.
+    skipped: result.skipped ?? false,
+    skipped_chunks: result.skipped_chunks ?? 0,
     conversations: result.conversations,
     entities: result.entities,
     tokens: result.tokens,

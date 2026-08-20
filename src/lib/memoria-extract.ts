@@ -32,6 +32,8 @@ Se la giornata è vuota o non contiene fatti rilevanti, output: {"summary": "Nes
 
 // ── Costanti estrazione ────────────────────────────────────────────────────────
 
+const TIPI_ENTITA_AMMESSI = new Set(['cliente', 'cantiere', 'fornitore'])
+
 const CHUNK_CHAR_BUDGET = 40_000
 const MAX_OUTPUT_TOKENS = 4096
 
@@ -121,7 +123,15 @@ function estimateCost(inputTokens: number, outputTokens: number): number {
  * Se `dateTarget` non è passato, usa ieri (UTC).
  * Idempotente: se `memoria_extract_last_run` in cervellone_config = dateTarget, skip.
  */
-export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractResult> {
+export async function runMemoriaExtract(
+  dateTarget?: string,
+  /**
+   * Rielaborazione chiesta a mano di una giornata passata (?date=).
+   * Salta l'idempotenza E non sposta il segnaposto del cron: senza entrambe le
+   * cose il recupero di un giorno perso non funziona, o rompe il giro automatico.
+   */
+  forced = false,
+): Promise<ExtractResult> {
 
   // Step 1: determina target (default: ieri)
   const target = dateTarget ?? (() => {
@@ -141,7 +151,7 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
     ? lastRunRow.value.replace(/"/g, '')
     : null
 
-  if (lastRun === target) {
+  if (lastRun === target && !forced) {
     console.log(`[memoria-extract] idempotency: already ran for ${target}, skip`)
     return { ok: true, skipped: true, conversations: 0, entities: 0, tokens: 0, cost_usd: 0 }
   }
@@ -193,10 +203,12 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
         llm_cost_estimate_usd: 0,
       }).eq('run_id', runId)
 
-      await supabase.from('cervellone_config').upsert(
-        { key: 'memoria_extract_last_run', value: target },
-        { onConflict: 'key' }
-      )
+      if (!forced) {
+        await supabase.from('cervellone_config').upsert(
+          { key: 'memoria_extract_last_run', value: target },
+          { onConflict: 'key' }
+        )
+      }
 
       return { ok: true, conversations: 0, entities: 0, tokens: 0, cost_usd: 0 }
     }
@@ -318,38 +330,84 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
       if (!entitaDeduplicate.has(key)) entitaDeduplicate.set(key, e)
     }
 
+    // Il DB accetta solo questi tre tipi. Il modello devia spesso ("committente",
+    // "professionista"): senza filtro la riga viene rifiutata in silenzio e
+    // entities_count dichiarerebbe entita' che non sono mai state salvate.
+    let entitaSalvate = 0
     for (const e of entitaDeduplicate.values()) {
+      if (!TIPI_ENTITA_AMMESSI.has(e.type)) {
+        skippedChunks++
+        console.warn(`[memoria-extract] entita "${e.name}" scartata: tipo "${e.type}" non ammesso`)
+        continue
+      }
       // TODO: atomic increment via stored proc per concurrency futura
       // Per ora: upsert con mention_count=1 (overwrite) — sufficiente per single-cron daily.
-      await supabase.from('cervellone_entita_menzionate').upsert({
+      const { error: entErr } = await supabase.from('cervellone_entita_menzionate').upsert({
         name: e.name,
         type: e.type,
         last_seen_at: target,
         mention_count: 1,
         contexts_json: [e.context],
       }, { onConflict: 'name,type' })
+
+      if (entErr) {
+        skippedChunks++
+        console.warn(`[memoria-extract] entita "${e.name}" non salvata: ${entErr.message}`)
+        continue
+      }
+      entitaSalvate++
     }
 
     // Step 8: UPDATE runs status='ok'/'partial'
-    await supabase.from('cervellone_memoria_extraction_runs').update({
-      status: skippedChunks > 0 ? 'partial' : 'ok',
-      completed_at: new Date().toISOString(),
-      conversations_count: conversationIds.length,
-      entities_count: entitaDeduplicate.size,
-      llm_cost_estimate_usd: costUsd,
-      error_message: skippedChunks > 0 ? `${skippedChunks} parti illeggibili scartate` : null,
-    }).eq('run_id', runId)
+    //
+    // L'errore di QUESTA scrittura va letto. supabase-js non lancia: ritorna
+    // { error }. Se lo si ignora e la UPDATE viene rifiutata (per esempio da un
+    // vincolo CHECK che non conosce ancora lo stato), la riga resta 'started'
+    // per sempre e il fallimento diventa invisibile — cioe' esattamente la
+    // malattia che questo file esiste per curare, un piano piu' in basso.
+    const { error: statusErr } = await supabase
+      .from('cervellone_memoria_extraction_runs')
+      .update({
+        status: skippedChunks > 0 ? 'partial' : 'ok',
+        completed_at: new Date().toISOString(),
+        conversations_count: conversationIds.length,
+        entities_count: entitaSalvate,
+        llm_cost_estimate_usd: costUsd,
+        error_message: skippedChunks > 0 ? `${skippedChunks} parti illeggibili scartate` : null,
+      })
+      .eq('run_id', runId)
 
-    // Step 9: UPDATE config last_run
-    await supabase.from('cervellone_config').upsert(
-      { key: 'memoria_extract_last_run', value: target },
-      { onConflict: 'key' }
-    )
+    if (statusErr) {
+      console.error(
+        `[memoria-extract] IMPOSSIBILE registrare l'esito del run ${runId}: ${statusErr.message}. ` +
+        `La riga resta 'started' e l'audit non vedra' nulla.`
+      )
+      return {
+        ok: false,
+        conversations: conversationIds.length,
+        entities: entitaSalvate,
+        tokens: totalInputTokens + totalOutputTokens,
+        cost_usd: costUsd,
+        skipped_chunks: skippedChunks,
+        error: `esito non registrabile: ${statusErr.message}`,
+      }
+    }
+
+    // Step 9: UPDATE config last_run — MAI su rielaborazione manuale, altrimenti
+    // il giro automatico della notte crederebbe di aver gia' fatto il suo lavoro.
+    if (!forced) {
+      await supabase.from('cervellone_config').upsert(
+        { key: 'memoria_extract_last_run', value: target },
+        { onConflict: 'key' }
+      )
+    }
 
     return {
       ok: true,
       conversations: conversationIds.length,
-      entities: entitaDeduplicate.size,
+      // entità REALMENTE salvate, non quelle che il modello ha proposto:
+      // dichiararne di più significherebbe mentire sul contenuto della memoria.
+      entities: entitaSalvate,
       tokens: totalInputTokens + totalOutputTokens,
       cost_usd: costUsd,
       skipped_chunks: skippedChunks,

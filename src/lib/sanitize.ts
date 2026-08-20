@@ -23,6 +23,9 @@ const CARD_PREFIX_PATTERNS: RegExp[] = [
   /^3[47]/, // Amex
   /^(?:30[0-5]|3[689])/, // Diners
   /^(?:6011|65|64[4-9])/, // Discover
+  /^35/, // JCB
+  /^62/, // UnionPay
+  /^(?:50|5[6-8]|6759|676[1-3])/, // Maestro
 ]
 
 function hasValidCardPrefix(digits: string): boolean {

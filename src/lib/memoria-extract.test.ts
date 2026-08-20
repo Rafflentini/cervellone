@@ -359,3 +359,89 @@ describe('parseExtraction', () => {
     expect(parseExtraction('{"summary":"tronc')).toBeNull()
   })
 })
+
+// ── Esito del run e rielaborazione manuale ────────────────────────────────────
+
+/**
+ * Il vincolo CHECK del DB accettava solo 'started','ok','error': scrivere
+ * 'partial' veniva RIFIUTATO, supabase-js non lancia, e l'errore non veniva
+ * letto. La riga restava 'started' per sempre e l'audit non vedeva nulla —
+ * la stessa malattia che questo file cura, un piano piu' in basso.
+ */
+describe('runMemoriaExtract — l esito del run non puo fallire in silenzio', () => {
+  function messaggiDelGiorno() {
+    mockLte.mockReturnValue({
+      order: vi.fn().mockReturnValue({
+        order: vi.fn().mockResolvedValue({
+          data: [
+            { id: 1, conversation_id: 'conv-1', role: 'user', content: 'Ho mandato il preventivo a Bianchi Srl', created_at: '2026-05-06T10:00:00Z' },
+          ],
+          error: null,
+        }),
+      }),
+    })
+    mockGte.mockReturnValue({ lte: mockLte })
+  }
+
+  it('se la scrittura dell esito viene rifiutata, il run NON si dichiara riuscito', async () => {
+    messaggiDelGiorno()
+    mockUpdate.mockReturnValue({
+      eq: vi.fn().mockResolvedValue({ error: { message: 'violates check constraint' } }),
+    })
+
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    const result = await runMemoriaExtract('2026-05-06')
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('esito non registrabile')
+  })
+
+  it('una rielaborazione forzata non sposta il segnaposto del cron', async () => {
+    messaggiDelGiorno()
+    mockMaybeSingle.mockResolvedValue({ data: { value: '2026-05-06' }, error: null })
+
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    const result = await runMemoriaExtract('2026-05-06', true)
+
+    // non ha skippato per idempotenza, nonostante last_run coincida
+    expect(result.skipped).toBeFalsy()
+    // e non ha riscritto il segnaposto
+    const scritturaSegnaposto = mockUpsert.mock.calls.find((args: unknown[]) => {
+      const primo = args[0] as Record<string, unknown> | undefined
+      return primo?.key === 'memoria_extract_last_run'
+    })
+    expect(scritturaSegnaposto).toBeUndefined()
+  })
+
+  it('senza forzatura, last_run coincidente fa saltare il giro', async () => {
+    messaggiDelGiorno()
+    mockMaybeSingle.mockResolvedValue({ data: { value: '2026-05-06' }, error: null })
+
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    const result = await runMemoriaExtract('2026-05-06')
+
+    expect(result.skipped).toBe(true)
+  })
+
+  it('un entita con tipo non ammesso non viene contata fra quelle salvate', async () => {
+    messaggiDelGiorno()
+    mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({
+        summary: 'giornata di lavoro',
+        entita: [
+          { name: 'Bianchi Srl', type: 'cliente', context: 'preventivo' },
+          { name: 'Blasi Giuseppe', type: 'committente', context: 'contenzioso' },
+        ],
+        eventi: [],
+      }) }],
+      usage: { input_tokens: 100, output_tokens: 50 },
+    })
+
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    const result = await runMemoriaExtract('2026-05-06')
+
+    // solo 'cliente' e ammesso dal vincolo del DB: 'committente' viene scartato
+    expect(result.entities).toBe(1)
+    expect(result.skipped_chunks).toBeGreaterThan(0)
+  })
+})

@@ -137,12 +137,30 @@ describe('richiama_memoria — ricerca per parole, non per frase', () => {
   it('scarta le paroline corte e si ferma a sei parole', async () => {
     const { buildSearchTokens } = await import('./memoria-tools')
     expect(buildSearchTokens('le due lettere di risposta per Blasi Giuseppe'))
-      .toEqual(['due', 'lettere', 'risposta', 'per', 'blasi', 'giuseppe'])
+      .toEqual(['lettere', 'risposta', 'blasi', 'giuseppe'])
   })
 
-  it('neutralizza i caratteri jolly nelle parole', async () => {
+  // In PostgREST la virgola separa le condizioni di un .or(): un token che la
+  // contiene produce un filtro malformato, e la ricerca FALLISCE invece di non
+  // trovare nulla. Le parentesi fanno lo stesso, e un token arbitrario potrebbe
+  // iniettare condizioni proprie.
+  it('toglie la punteggiatura, che altrimenti romperebbe il filtro', async () => {
     const { buildSearchTokens } = await import('./memoria-tools')
-    expect(buildSearchTokens('100% Blasi_x')).toEqual(['100\\%', 'blasi\\_x'])
+    expect(buildSearchTokens('per Blasi, quella di ieri')).toEqual(['blasi', 'quella', 'ieri'])
+    expect(buildSearchTokens('cerca (Blasi) o tag.ilike.%x%').join(' ')).not.toContain(',')
+    expect(buildSearchTokens('100% Blasi_x')).toEqual(['blasi'])
+  })
+
+  it('una domanda con la virgola non fa fallire la ricerca', async () => {
+    const { richiama_memoria } = await import('./memoria-tools')
+    const res = await richiama_memoria({ query: 'le lettere per Blasi, quelle di ieri', tipo_filtro: 'esplicita' })
+
+    expect(res.ok).toBe(true)
+    const filtro = String(mockOr.mock.calls[0][0])
+    // ogni virgola presente deve essere un separatore di condizioni, non parte di un token
+    for (const parte of filtro.split(',')) {
+      expect(parte).toMatch(/^contenuto\.ilike\.%[^,]*%$/)
+    }
   })
 
   it('con sole paroline corte ricade sulla query intera', async () => {

@@ -98,10 +98,16 @@ export async function ricorda(input: RicordaInput): Promise<RicordaResult> {
 export function buildSearchTokens(query: string): string[] {
   return query
     .toLowerCase()
+    // La punteggiatura va tolta PRIMA di comporre il filtro: in PostgREST la
+    // virgola separa le condizioni di un .or(), quindi un token che la contiene
+    // produce un filtro malformato — la domanda "per Blasi, quella di ieri"
+    // farebbe fallire la ricerca invece di non trovare nulla. Le parentesi
+    // hanno lo stesso effetto, e un token arbitrario potrebbe iniettare
+    // condizioni proprie. Stessa difesa di searchExplicitMemories in memory.ts.
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .split(/\s+/)
-    .filter((w) => w.length > 2)
+    .filter((w) => w.length > 3)
     .slice(0, 6)
-    .map((w) => w.replace(/[%_]/g, (c) => `\\${c}`))
 }
 
 export async function richiama_memoria(input: RichiamaInput): Promise<RichiamaResult> {

@@ -58,7 +58,7 @@ describe('GET /api/cron/memoria-extract', () => {
     const { GET } = await import('./route')
     await GET(req('https://x/api/cron/memoria-extract?date=2026-08-05'))
 
-    expect(runMemoriaExtractMock).toHaveBeenCalledWith('2026-08-05')
+    expect(runMemoriaExtractMock).toHaveBeenCalledWith('2026-08-05', true)
   })
 
   it('rifiuta una data malformata invece di elaborare ieri di nascosto', async () => {
@@ -74,7 +74,7 @@ describe('GET /api/cron/memoria-extract', () => {
     const { GET } = await import('./route')
     await GET(req('https://x/api/cron/memoria-extract?date=2026-08-05'))
 
-    expect(runMemoriaExtractMock).toHaveBeenCalledWith('2026-08-05')
+    expect(runMemoriaExtractMock).toHaveBeenCalledWith('2026-08-05', true)
   })
 
   it('una rielaborazione manuale NON sposta il segnaposto del cron', async () => {
@@ -92,7 +92,7 @@ describe('GET /api/cron/memoria-extract', () => {
     const { GET } = await import('./route')
     await GET(req('https://x/api/cron/memoria-extract'))
 
-    expect(runMemoriaExtractMock).toHaveBeenCalledWith(atteso)
+    expect(runMemoriaExtractMock).toHaveBeenCalledWith(atteso, false)
     expect(updateSpy).toHaveBeenCalled()
   })
 
