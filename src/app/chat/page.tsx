@@ -118,7 +118,34 @@ export default function ChatPage() {
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const batchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const pendingTextRef = useRef('')
+  // Risposta in arrivo, non ancora salvata. Serve al salvataggio d'emergenza
+  // quando la pagina viene chiusa a meta streaming: senza questo, quel pezzo di
+  // lavoro non esiste da nessuna parte — ne in messages, ne negli embedding, ne
+  // nell'estrazione notturna.
+  const rispostaInCorsoRef = useRef<{ convId: string; text: string } | null>(null)
   const router = useRouter()
+
+  // Salvataggio d'emergenza alla chiusura della pagina.
+  // `pagehide` e non `beforeunload`: e l'unico che scatta in modo affidabile
+  // anche su Safari e su mobile. `sendBeacon` sopravvive alla morte della
+  // pagina, cosa che una fetch normale non fa.
+  // Il rischio di doppio salvataggio e coperto lato server: la route rifiuta un
+  // messaggio identico arrivato negli ultimi 5 minuti.
+  useEffect(() => {
+    const salvaSeInterrotta = () => {
+      const inCorso = rispostaInCorsoRef.current
+      if (!inCorso || !inCorso.text.trim()) return
+      try {
+        const corpo = new Blob(
+          [JSON.stringify({ role: 'assistant', content: inCorso.text, files: [] })],
+          { type: 'application/json' }
+        )
+        navigator.sendBeacon(`/api/conversations/${inCorso.convId}/messages`, corpo)
+      } catch { /* la pagina sta morendo: non c'e nulla da recuperare */ }
+    }
+    window.addEventListener('pagehide', salvaSeInterrotta)
+    return () => window.removeEventListener('pagehide', salvaSeInterrotta)
+  }, [])
 
   // Carica lista conversazioni
   const loadConversations = useCallback(async () => {
@@ -595,6 +622,9 @@ export default function ChatPage() {
           fullText += pendingTextRef.current
           pendingTextRef.current = ''
           const textSnapshot = fullText
+          // Tenuto aggiornato per il salvataggio d'emergenza: se la pagina muore
+          // adesso, questo e tutto cio che esiste della risposta.
+          rispostaInCorsoRef.current = { convId, text: textSnapshot }
           setMessages([...newMessages, { role: 'assistant', text: textSnapshot }])
         }
       }
@@ -617,6 +647,7 @@ export default function ChatPage() {
       }
       flushBatch()
       // Salva risposta assistente
+      rispostaInCorsoRef.current = null
       await saveMessage(convId, 'assistant', fullText)
       // Aggiorna lista conversazioni (senza ricaricare messaggi)
       loadConversations().catch(() => {})
@@ -642,6 +673,10 @@ export default function ChatPage() {
       }
       setMessages([...newMessages, { role: 'assistant', text: errorMessage }])
     } finally {
+      // Comunque sia finito il turno — riuscito, interrotto o in errore — non
+      // c'e piu una risposta "in volo": il salvataggio d'emergenza non deve
+      // poter rimandare due volte lo stesso testo.
+      rispostaInCorsoRef.current = null
       setLoading(false)
     }
   }

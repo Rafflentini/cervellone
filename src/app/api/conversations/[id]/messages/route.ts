@@ -58,6 +58,26 @@ export async function POST(
 
   const sanitized = sanitizeForStorage(content)
 
+  // Difesa contro il doppio salvataggio. Il browser puo inviare lo stesso
+  // messaggio due volte in modo legittimo: una col salvataggio normale e una
+  // con sendBeacon, quando la pagina muore a meta risposta e non sa se la prima
+  // sia andata a buon fine. Il server e l'unico punto che vede tutte le
+  // scritture, quindi la difesa sta qui e non nel browser.
+  const cinqueMinutiFa = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+  const { data: giaPresente } = await supabase
+    .from('messages')
+    .select('id')
+    .eq('conversation_id', id)
+    .eq('role', role)
+    .eq('content', sanitized)
+    .gte('created_at', cinqueMinutiFa)
+    .limit(1)
+    .maybeSingle()
+
+  if (giaPresente) {
+    return NextResponse.json({ message: giaPresente, duplicato_ignorato: true })
+  }
+
   const { data, error } = await supabase
     .from('messages')
     .insert({

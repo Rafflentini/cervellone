@@ -11,14 +11,16 @@ import { getAuthToken } from '@/lib/doc-access'
 
 beforeAll(() => { process.env.AUTH_SECRET = 'test-secret' })
 
-// Cattura la riga realmente inserita
-let rigaInserita: Record<string, unknown> | null = null
+// Cattura le righe realmente inserite (plurale: serve a smascherare i duplicati)
+let righeInserite: Record<string, unknown>[] = []
+// Riga gia presente che la ricerca anti-duplicato deve trovare, se impostata
+let duplicatoEsistente: { id: string } | null = null
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
-    from: () => ({
+    from: (tabella: string) => ({
       insert: (row: Record<string, unknown>) => {
-        rigaInserita = row
+        righeInserite.push(row)
         return {
           select: () => ({
             single: async () => ({ data: { id: 'msg-1', ...row }, error: null }),
@@ -26,10 +28,21 @@ vi.mock('@/lib/supabase', () => ({
         }
       },
       update: () => ({ eq: async () => ({ data: null, error: null }) }),
-      // la route, per i messaggi 'user', rilegge il titolo della conversazione
-      select: () => ({
-        eq: () => ({ single: async () => ({ data: { title: 'Nuova conversazione' }, error: null }) }),
-      }),
+      select: () => {
+        if (tabella === 'messages') {
+          // catena della ricerca anti-duplicato: .eq().eq().eq().gte().limit().maybeSingle()
+          const b: Record<string, unknown> = {}
+          b.eq = () => b
+          b.gte = () => b
+          b.limit = () => b
+          b.maybeSingle = async () => ({ data: duplicatoEsistente, error: null })
+          return b
+        }
+        // la route, per i messaggi 'user', rilegge il titolo della conversazione
+        return {
+          eq: () => ({ single: async () => ({ data: { title: 'Nuova conversazione' }, error: null }) }),
+        }
+      },
     }),
   },
 }))
@@ -51,7 +64,8 @@ const params = { params: Promise.resolve({ id: 'conv-1' }) }
 
 describe('POST /api/conversations/[id]/messages', () => {
   beforeEach(() => {
-    rigaInserita = null
+    righeInserite = []
+    duplicatoEsistente = null
     saveEmbeddingOnlyMock.mockClear()
   })
 
@@ -68,8 +82,8 @@ describe('POST /api/conversations/[id]/messages', () => {
       params
     )
 
-    expect(rigaInserita).not.toBeNull()
-    const salvato = String(rigaInserita!.content)
+    expect(righeInserite).toHaveLength(1)
+    const salvato = String(righeInserite[0].content)
     expect(salvato).toContain('[REDACTED]')
     expect(salvato).not.toContain('sk-ant-api03-abcdefghij1234567890xyz')
   })
@@ -82,7 +96,7 @@ describe('POST /api/conversations/[id]/messages', () => {
     )
 
     expect(res.status).toBe(400)
-    expect(rigaInserita).toBeNull()
+    expect(righeInserite).toHaveLength(0)
   })
 
   it('genera l embedding del testo sanitizzato', async () => {
@@ -97,5 +111,45 @@ describe('POST /api/conversations/[id]/messages', () => {
     expect(convId).toBe('conv-1')
     expect(role).toBe('assistant')
     expect(String(testo)).toContain('Blasi')
+  })
+})
+
+/**
+ * Il browser, quando la pagina muore a meta risposta, invia con sendBeacon il
+ * testo gia ricevuto. Ma il salvataggio normale potrebbe essere gia partito:
+ * senza una difesa qui si ricreerebbe il doppio salvataggio appena eliminato.
+ * La difesa sta sul SERVER, perche e l'unico punto che vede tutte le scritture.
+ */
+describe('POST — difesa contro il doppio salvataggio', () => {
+  beforeEach(() => {
+    righeInserite = []
+    duplicatoEsistente = null
+    saveEmbeddingOnlyMock.mockClear()
+  })
+
+  it('non inserisce una seconda riga identica arrivata poco dopo', async () => {
+    duplicatoEsistente = { id: 'msg-gia-salvato' }
+
+    const { POST } = await import('./route')
+    const res = await POST(
+      req({ role: 'assistant', content: 'Contenzioso Blasi: la controreplica poggia sull articolo 5.1.' }, getAuthToken()),
+      params
+    )
+
+    expect(res.status).toBe(200)
+    expect(righeInserite).toHaveLength(0)
+    expect(saveEmbeddingOnlyMock).not.toHaveBeenCalled()
+  })
+
+  it('un contenuto diverso viene invece salvato normalmente', async () => {
+    duplicatoEsistente = null
+
+    const { POST } = await import('./route')
+    await POST(
+      req({ role: 'assistant', content: 'Un testo completamente diverso dal precedente, abbastanza lungo.' }, getAuthToken()),
+      params
+    )
+
+    expect(righeInserite).toHaveLength(1)
   })
 })
