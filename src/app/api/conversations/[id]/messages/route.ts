@@ -45,7 +45,18 @@ export async function POST(
   // Questa e l'UNICA riga scritta per il turno web: il server non ne scrive una
   // seconda. Quindi qui devono avvenire anche le due cose che prima faceva solo
   // il server — sanitizzazione dei dati sensibili e generazione dell'embedding.
-  const sanitized = typeof content === 'string' ? sanitizeForStorage(content) : content
+  //
+  // Il contenuto DEVE essere una stringa: se non lo fosse, la sanitizzazione non
+  // potrebbe essere applicata e finirebbe testo grezzo nel database. Meglio
+  // rifiutare che scrivere qualcosa che non siamo in grado di ripulire.
+  if (typeof content !== 'string' || typeof role !== 'string') {
+    return NextResponse.json(
+      { error: 'role e content devono essere stringhe' },
+      { status: 400 }
+    )
+  }
+
+  const sanitized = sanitizeForStorage(content)
 
   const { data, error } = await supabase
     .from('messages')
@@ -62,9 +73,14 @@ export async function POST(
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  if (typeof sanitized === 'string' && typeof role === 'string') {
-    saveEmbeddingOnly(id, role, sanitized).catch(() => {})
-  }
+  // Best-effort: se l'indicizzazione fallisce il messaggio resta salvato, ma il
+  // fallimento va lasciato a log — un embedding perso in silenzio significa una
+  // ricerca semantica che smette di funzionare senza che nessuno se ne accorga.
+  saveEmbeddingOnly(id, role, sanitized).catch((err) => {
+    console.warn(
+      `[messages] embedding non generato per ${id}: ${err instanceof Error ? err.message : String(err)}`
+    )
+  })
 
   // Aggiorna timestamp conversazione
   await supabase
