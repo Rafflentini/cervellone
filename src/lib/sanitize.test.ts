@@ -41,4 +41,44 @@ describe('sanitizeForStorage', () => {
     const s = 'IT60X0542811101000000123456'
     expect(sanitizeForStorage(s)).toBe(s)
   })
+
+  it('NON tocca una sequenza di importi: la finestra non puo iniziare a meta di un numero', () => {
+    const s = 'importi 1234 5678 9012 3456 7890 in euro'
+    expect(sanitizeForStorage(s)).toBe(s)
+  })
+
+  it('nessuna redazione lascia mai cifre orfane attaccate a [REDACTED]', () => {
+    const samples = [
+      'importi 1234 5678 9012 3456 7890 in euro',
+      'carta 4539148803436467-01 scad 12/27',
+      'ordine 12-4539148803436467 confermato',
+      'a 4539148803436467 b 5555555555554444',
+      'rif.4539148803436467/2026 protocollo',
+    ]
+    for (const s of samples) {
+      const out = sanitizeForStorage(s)
+      expect(out).not.toMatch(/\d\[REDACTED\]/)
+      expect(out).not.toMatch(/\[REDACTED\]\d/)
+    }
+  })
+
+  it('redige la carta preceduta da un trattino (confine non-cifra a sinistra)', () => {
+    const out = sanitizeForStorage('ordine 12-4539148803436467 confermato')
+    expect(out).toBe('ordine 12-[REDACTED] confermato')
+  })
+
+  it('redige due carte distinte nello stesso testo', () => {
+    const out = sanitizeForStorage('a 4539148803436467 b 5555555555554444')
+    expect(out).toContain('a [REDACTED] b [REDACTED]')
+  })
+
+  it('redige la carta anche subito dopo un punto, prima di uno slash', () => {
+    const out = sanitizeForStorage('rif.4539148803436467/2026 protocollo')
+    expect(out).toBe('rif.[REDACTED]/2026 protocollo')
+  })
+
+  it('redige un Visa di test valido anche se sembra una matricola (in dubbio, si protegge)', () => {
+    const out = sanitizeForStorage('matricola 4532015112830366 apparecchio')
+    expect(out).toContain('[REDACTED]')
+  })
 })

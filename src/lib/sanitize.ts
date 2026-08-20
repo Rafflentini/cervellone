@@ -46,33 +46,57 @@ function isLuhnValid(digits: string): boolean {
   return sum % 10 === 0
 }
 
+function isDigitChar(ch: string): boolean {
+  return ch >= '0' && ch <= '9'
+}
+
 /**
- * Cerca, a partire da fromIndex, la prima sotto-finestra di 13-19 cifre che ha
- * un prefisso di emittente plausibile E supera Luhn. Scansiona gli offset da
- * sinistra a destra e, per ciascun offset, le lunghezze dalla piu lunga (19)
- * alla piu corta (13): cosi un numero di carta reale viene preso per intero
- * prima che una sua sotto-sequenza piu corta (ma anch'essa Luhn-valida per
- * caso) faccia scattare una redazione parziale che lascerebbe cifre in chiaro.
+ * Cerca, a partire da fromIndex, la prima sotto-finestra di 13-19 cifre che
+ * ha un prefisso di emittente plausibile, supera Luhn E non e attaccata ad
+ * altre cifre (ne prima ne dopo — una carta non comincia mai a meta di un
+ * altro numero). Scansiona gli offset da sinistra a destra e, per ciascun
+ * offset, le lunghezze dalla piu lunga (19) alla piu corta (13): cosi un
+ * numero di carta reale viene preso per intero prima che una sua
+ * sotto-sequenza piu corta (ma anch'essa Luhn-valida per caso) faccia
+ * scattare una redazione parziale che lascerebbe cifre in chiaro.
+ *
+ * `match` e `digitPositions` servono a guardare il carattere originale
+ * immediatamente prima/dopo la finestra candidata (fuori da `digits`, che
+ * contiene solo cifre e non ha piu questa informazione).
  */
-function findCardWindow(digits: string, fromIndex: number): { start: number; end: number } | null {
+function findCardWindow(
+  digits: string,
+  digitPositions: number[],
+  match: string,
+  fromIndex: number
+): { start: number; end: number } | null {
   const n = digits.length
   for (let offset = fromIndex; offset <= n - 13; offset++) {
     const maxLen = Math.min(19, n - offset)
     for (let len = maxLen; len >= 13; len--) {
       const window = digits.slice(offset, offset + len)
-      if (hasValidCardPrefix(window) && isLuhnValid(window)) {
-        return { start: offset, end: offset + len }
-      }
+      if (!hasValidCardPrefix(window) || !isLuhnValid(window)) continue
+
+      const charStart = digitPositions[offset]
+      const charEnd = digitPositions[offset + len - 1] + 1
+      const before = charStart > 0 ? match[charStart - 1] : ''
+      const after = charEnd < match.length ? match[charEnd] : ''
+      if (isDigitChar(before) || isDigitChar(after)) continue
+
+      return { start: offset, end: offset + len }
     }
   }
   return null
 }
 
 /**
- * Redige solo le sotto-sequenze di cifre che soddisfano insieme le tre
- * condizioni (prefisso IIN plausibile + lunghezza 13-19 + Luhn valido). I
- * separatori e le cifre fuori dalla finestra trovata restano intatti: cosi
- * "4539148803436467-01" diventa "[REDACTED]-01" e non inghiotte il suffisso.
+ * Redige solo le sotto-sequenze di cifre che soddisfano insieme le quattro
+ * condizioni (prefisso IIN plausibile + lunghezza 13-19 + Luhn valido + non
+ * attaccata ad altre cifre). I separatori e le cifre fuori dalla finestra
+ * trovata restano intatti: cosi "4539148803436467-01" diventa
+ * "[REDACTED]-01" e non inghiotte il suffisso, e "1234 5678 9012 3456 7890"
+ * resta intatto perche nessuna finestra di 13-19 cifre al suo interno puo
+ * cominciare o finire senza toccare un'altra cifra.
  */
 function redactCardNumbers(text: string): string {
   return text.replace(/\b\d[\d -]*\d\b/g, (match) => {
@@ -91,7 +115,7 @@ function redactCardNumbers(text: string): string {
     let cursor = 0
     let digitIndex = 0
     while (digitIndex <= digitsOnly.length - 13) {
-      const win = findCardWindow(digitsOnly, digitIndex)
+      const win = findCardWindow(digitsOnly, digitPositions, match, digitIndex)
       if (!win) break
       const charStart = digitPositions[win.start]
       const charEnd = digitPositions[win.end - 1] + 1
