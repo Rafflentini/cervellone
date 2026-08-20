@@ -30,6 +30,57 @@ Output JSON strutturato:
 
 Se la giornata è vuota o non contiene fatti rilevanti, output: {"summary": "Nessuna attività rilevante", "entita": [], "eventi": []}.`
 
+// ── Costanti estrazione ────────────────────────────────────────────────────────
+
+const CHUNK_CHAR_BUDGET = 40_000
+const MAX_OUTPUT_TOKENS = 4096
+
+/** Spezza il transcript sui confini di riga, senza mai superare budget caratteri. */
+export function chunkTranscript(transcript: string, budget = CHUNK_CHAR_BUDGET): string[] {
+  if (transcript.length <= budget) return [transcript]
+  const chunks: string[] = []
+  let cur = ''
+  for (const rawLine of transcript.split('\n')) {
+    const parts = Math.max(1, Math.ceil(rawLine.length / budget))
+    for (let i = 0; i < parts; i++) {
+      const piece = rawLine.slice(i * budget, (i + 1) * budget)
+      if (cur.length + piece.length + 1 > budget && cur.length > 0) {
+        chunks.push(cur)
+        cur = ''
+      }
+      cur += (cur ? '\n' : '') + piece
+    }
+  }
+  if (cur) chunks.push(cur)
+  return chunks
+}
+
+export interface ExtractionPayload {
+  summary?: string
+  entita?: Array<{ name: string; type: string; context: string }>
+  eventi?: Array<{ data_iso?: string; descrizione: string }>
+}
+
+/** Legge il JSON anche se il modello lo incornicia o lo fa precedere da testo. Null se irrecuperabile. */
+export function parseExtraction(text: string): ExtractionPayload | null {
+  const cleaned = text.replace(/^\s*```(?:json)?/i, '').replace(/```\s*$/, '').trim()
+  try {
+    return JSON.parse(cleaned) as ExtractionPayload
+  } catch {
+    // passa al recupero
+  }
+  const start = cleaned.indexOf('{')
+  const end = cleaned.lastIndexOf('}')
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(cleaned.slice(start, end + 1)) as ExtractionPayload
+    } catch {
+      // irrecuperabile
+    }
+  }
+  return null
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ExtractResult {
@@ -40,6 +91,7 @@ export interface ExtractResult {
   tokens: number
   cost_usd: number
   error?: string
+  skipped_chunks?: number
 }
 
 interface MemoriaMessageRow {
@@ -174,44 +226,51 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
     let totalCacheReadTokens = 0
     let totalCacheCreationTokens = 0
 
-    // Step 6 (cont.): Per ogni gruppo → call Anthropic
+    // Step 6 (cont.): Per ogni gruppo → spezza in chunk e chiama Anthropic
+    let skippedChunks = 0
+
     for (const [convId, convMsgs] of groups.entries()) {
       const transcript = convMsgs
         .map(m => `[${m.role}]: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
         .join('\n')
 
-      try {
-        const resp = await client.messages.create({
-          model,
-          max_tokens: 1024,
-          system: EXTRACTION_PROMPT,
-          messages: [
-            {
-              role: 'user',
-              content: `Conversazione (${convId}):\n${transcript}`,
-            },
-          ],
-        })
+      const chunks = chunkTranscript(transcript)
 
-        totalInputTokens += resp.usage?.input_tokens ?? 0
-        totalOutputTokens += resp.usage?.output_tokens ?? 0
-        totalCacheReadTokens += (resp.usage as any)?.cache_read_input_tokens ?? 0
-        totalCacheCreationTokens += (resp.usage as any)?.cache_creation_input_tokens ?? 0
+      for (let i = 0; i < chunks.length; i++) {
+        try {
+          const resp = await client.messages.create({
+            model,
+            max_tokens: MAX_OUTPUT_TOKENS,
+            system: EXTRACTION_PROMPT,
+            messages: [
+              {
+                role: 'user',
+                content: `Conversazione (${convId}) — parte ${i + 1} di ${chunks.length}:\n${chunks[i]}`,
+              },
+            ],
+          })
 
-        const textBlock = resp.content.find((b): b is AnthropicTextBlock => b.type === 'text')
-        if (textBlock) {
-          try {
-            const parsed = JSON.parse(textBlock.text)
-            if (parsed.summary) allSummaries.push(parsed.summary)
-            if (Array.isArray(parsed.entita)) allEntita.push(...parsed.entita)
-          } catch {
-            // JSON malformato: skip questa conversazione, log warning
-            console.warn(`[memoria-extract] JSON parse error for conv ${convId} — skipping`)
+          totalInputTokens += resp.usage?.input_tokens ?? 0
+          totalOutputTokens += resp.usage?.output_tokens ?? 0
+          totalCacheReadTokens += (resp.usage as { cache_read_input_tokens?: number })?.cache_read_input_tokens ?? 0
+          totalCacheCreationTokens += (resp.usage as { cache_creation_input_tokens?: number })?.cache_creation_input_tokens ?? 0
+
+          const textBlock = resp.content.find((b): b is AnthropicTextBlock => b.type === 'text')
+          const parsed = textBlock ? parseExtraction(textBlock.text) : null
+
+          if (!parsed) {
+            skippedChunks++
+            console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId} illeggibile (stop_reason=${resp.stop_reason}) — scartata`)
+            continue
           }
+          if (parsed.summary) allSummaries.push(parsed.summary)
+          if (Array.isArray(parsed.entita)) allEntita.push(...parsed.entita)
+        } catch (err) {
+          // Errore LLM su questa singola parte: non deve far cadere l'intera giornata
+          skippedChunks++
+          console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId} fallita: ${(err as Error).message}`)
+          continue
         }
-      } catch (err) {
-        // Errore LLM per questa conversazione: propaga come errore totale (spec: step 10)
-        throw err
       }
     }
 
@@ -260,13 +319,14 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
       }, { onConflict: 'name,type' })
     }
 
-    // Step 8: UPDATE runs status='ok'
+    // Step 8: UPDATE runs status='ok'/'partial'
     await supabase.from('cervellone_memoria_extraction_runs').update({
-      status: 'ok',
+      status: skippedChunks > 0 ? 'partial' : 'ok',
       completed_at: new Date().toISOString(),
       conversations_count: conversationIds.length,
       entities_count: entitaDeduplicate.size,
       llm_cost_estimate_usd: costUsd,
+      error_message: skippedChunks > 0 ? `${skippedChunks} parti illeggibili scartate` : null,
     }).eq('run_id', runId)
 
     // Step 9: UPDATE config last_run
@@ -281,6 +341,7 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
       entities: entitaDeduplicate.size,
       tokens: totalInputTokens + totalOutputTokens,
       cost_usd: costUsd,
+      skipped_chunks: skippedChunks,
     }
 
   } catch (err) {

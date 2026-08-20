@@ -169,9 +169,9 @@ describe('runMemoriaExtract', () => {
     expect(mockInsert).not.toHaveBeenCalled()
   })
 
-  // ── Test 3: Errore Anthropic API ──────────────────────────────────────────
+  // ── Test 3: Errore Anthropic API su una conversazione ─────────────────────
 
-  it('errore Anthropic API: status="error" sul runs row, ok=false, nessun summary inserito', async () => {
+  it('errore Anthropic API su una conversazione: non fa fallire la giornata, status="partial"', async () => {
     // Simula messaggi presenti
     mockLte.mockReturnValue({
       order: vi.fn().mockReturnValue({
@@ -193,20 +193,55 @@ describe('runMemoriaExtract', () => {
     const { runMemoriaExtract } = await import('./memoria-extract')
     const result = await runMemoriaExtract('2026-05-06')
 
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain('Anthropic API overloaded')
+    // Un errore su una singola conversazione non fa piu fallire l'intera giornata
+    expect(result.ok).toBe(true)
+    expect(result.skipped_chunks).toBeGreaterThan(0)
 
-    // UPDATE runs con status='error' deve essere stato chiamato
+    // UPDATE runs con status='partial' deve essere stato chiamato
     expect(mockUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'error' })
+      expect.objectContaining({ status: 'partial', error_message: expect.stringContaining('illeggibili') })
     )
-    // summary_giornaliero NON deve essere stato upsert-ato
-    // (upsert chiamato solo se tutto ok — non nel catch path)
+
+    // summary_giornaliero viene comunque scritto (col fallback, nessun contenuto recuperato)
     const upsertCalls = mockUpsert.mock.calls
-    const summaryUpsertCalls = upsertCalls.filter((args: any[]) =>
+    const summaryUpsertCall = upsertCalls.find((args: any[]) =>
       args[0] && typeof args[0] === 'object' && 'summary_text' in args[0]
     )
-    expect(summaryUpsertCalls).toHaveLength(0)
+    expect(summaryUpsertCall?.[0].summary_text).toBe('Nessuna attività rilevante')
+  })
+
+  // ── Test 3b: Risposta troncata (max_tokens) non fa sparire la giornata ────
+
+  it('una risposta troncata non fa sparire la giornata', async () => {
+    const bigContent = 'A'.repeat(50_000)
+    mockLte.mockReturnValue({
+      order: vi.fn().mockReturnValue({
+        order: vi.fn().mockResolvedValue({
+          data: [
+            { id: 1, conversation_id: 'conv-big', role: 'user', content: bigContent, created_at: '2026-08-05T10:00:00Z' },
+          ],
+          error: null,
+        }),
+      }),
+    })
+
+    // Prima "parte" del chunk: risposta troncata (JSON incompleto, come in produzione)
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '{"summary":"Contenzioso Blasi, calcolo del 15%","entita":[{"name":"Blasi Giuse' }],
+      usage: { input_tokens: 28825, output_tokens: 1024 },
+      stop_reason: 'max_tokens',
+    })
+
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    const res = await runMemoriaExtract('2026-08-05')
+
+    expect(res.skipped_chunks).toBeGreaterThan(0)
+
+    const upsertCalls = mockUpsert.mock.calls
+    const summaryUpsertCall = upsertCalls.find((args: any[]) =>
+      args[0] && typeof args[0] === 'object' && 'summary_text' in args[0]
+    )
+    expect(summaryUpsertCall?.[0].summary_text).not.toBe('Nessuna attività rilevante')
   })
 
   // ── Test 4: Giornata vuota ────────────────────────────────────────────────
@@ -238,5 +273,29 @@ describe('runMemoriaExtract', () => {
     expect(mockUpsert).toHaveBeenCalledWith(
       expect.objectContaining({ summary_text: 'Nessuna attività rilevante' })
     )
+  })
+})
+
+// ── chunkTranscript ───────────────────────────────────────────────────────────
+
+describe('chunkTranscript', () => {
+  it('non supera il budget e non perde caratteri', async () => {
+    const { chunkTranscript } = await import('./memoria-extract')
+    const t = Array.from({ length: 5000 }, (_, i) => `[user]: riga numero ${i}`).join('\n')
+    const chunks = chunkTranscript(t, 10_000)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(10_000)
+    expect(chunks.join('\n').replace(/\n/g, '')).toBe(t.replace(/\n/g, ''))
+  })
+})
+
+// ── parseExtraction ────────────────────────────────────────────────────────────
+
+describe('parseExtraction', () => {
+  it('recupera JSON incorniciato o preceduto da testo', async () => {
+    const { parseExtraction } = await import('./memoria-extract')
+    expect(parseExtraction('```json\n{"summary":"ok"}\n```')?.summary).toBe('ok')
+    expect(parseExtraction('Ecco il risultato:\n{"summary":"ok"}')?.summary).toBe('ok')
+    expect(parseExtraction('{"summary":"tronc')).toBeNull()
   })
 })
