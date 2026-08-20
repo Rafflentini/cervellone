@@ -135,13 +135,31 @@ export default function ChatPage() {
     const salvaSeInterrotta = () => {
       const inCorso = rispostaInCorsoRef.current
       if (!inCorso || !inCorso.text.trim()) return
-      try {
+      // Disarma subito: pagehide puo scattare piu volte (bfcache), e un secondo
+      // invio con lo stesso testo sarebbe un doppione.
+      rispostaInCorsoRef.current = null
+
+      const invia = (testo: string): boolean => {
         const corpo = new Blob(
-          [JSON.stringify({ role: 'assistant', content: inCorso.text, files: [] })],
+          [JSON.stringify({ role: 'assistant', content: testo, files: [], emergenza: true })],
           { type: 'application/json' }
         )
-        navigator.sendBeacon(`/api/conversations/${inCorso.convId}/messages`, corpo)
-      } catch { /* la pagina sta morendo: non c'e nulla da recuperare */ }
+        return navigator.sendBeacon(`/api/conversations/${inCorso.convId}/messages`, corpo)
+      }
+
+      try {
+        if (invia(inCorso.text)) return
+
+        // sendBeacon ha rifiutato: quasi sempre perche il corpo supera il tetto
+        // del browser (~64KB), cioe proprio sulle risposte lunghe — computi,
+        // preventivi, relazioni — che sono quelle che piu vale la pena salvare.
+        // Meglio salvarne la parte iniziale, DICHIARANDO il taglio, che perdere
+        // tutto in silenzio.
+        const TETTO = 60_000
+        if (inCorso.text.length > TETTO) {
+          invia(inCorso.text.slice(0, TETTO) + '\n\n[risposta troncata dal salvataggio d\'emergenza: la pagina e stata chiusa mentre arrivava]')
+        }
+      } catch { /* la pagina sta morendo: non c'e altro da tentare */ }
     }
     window.addEventListener('pagehide', salvaSeInterrotta)
     return () => window.removeEventListener('pagehide', salvaSeInterrotta)
@@ -180,6 +198,10 @@ export default function ChatPage() {
       await fetch(`/api/conversations/${convId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        // keepalive: la richiesta sopravvive alla chiusura della pagina. Senza,
+        // una fetch normale viene uccisa a meta e il messaggio si perde proprio
+        // nell'istante in cui il salvataggio d'emergenza e gia stato disarmato.
+        keepalive: true,
         body: JSON.stringify({
           role,
           content,
@@ -656,6 +678,10 @@ export default function ChatPage() {
         // Risposta interrotta: quello che e arrivato va salvato lo stesso.
         // Se non lo facciamo qui non lo fa piu nessuno, e il pezzo di lavoro
         // svanisce senza lasciare traccia da nessuna parte.
+        // Il ref va disarmato PRIMA di attendere, come nel percorso normale:
+        // altrimenti una chiusura di pagina durante questo salvataggio farebbe
+        // partire anche il beacon, con due scritture in volo insieme.
+        rispostaInCorsoRef.current = null
         if (fullText.trim()) await saveMessage(convId, 'assistant', fullText)
         return
       }

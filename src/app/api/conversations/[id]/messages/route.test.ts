@@ -127,18 +127,43 @@ describe('POST — difesa contro il doppio salvataggio', () => {
     saveEmbeddingOnlyMock.mockClear()
   })
 
-  it('non inserisce una seconda riga identica arrivata poco dopo', async () => {
+  it('scarta il salvataggio d emergenza se quel testo e gia stato salvato', async () => {
     duplicatoEsistente = { id: 'msg-gia-salvato' }
 
     const { POST } = await import('./route')
     const res = await POST(
-      req({ role: 'assistant', content: 'Contenzioso Blasi: la controreplica poggia sull articolo 5.1.' }, getAuthToken()),
+      req({ role: 'assistant', content: 'Contenzioso Blasi: la controreplica poggia sull articolo 5.1.', emergenza: true }, getAuthToken()),
       params
     )
 
     expect(res.status).toBe(200)
     expect(righeInserite).toHaveLength(0)
     expect(saveEmbeddingOnlyMock).not.toHaveBeenCalled()
+  })
+
+  // Questo e il test che mancava, e la sua assenza nascondeva un difetto vero:
+  // una difesa basata sul confronto del contenuto, applicata a TUTTI i messaggi,
+  // scarterebbe un "ok" o un "procedi" scritti due volte in cinque minuti.
+  // Sarebbe una perdita muta di dati legittimi dentro il lavoro che elimina le
+  // perdite mute. La difesa vale SOLO per i salvataggi d emergenza.
+  it('NON scarta un messaggio normale ripetuto, anche se identico e recente', async () => {
+    duplicatoEsistente = { id: 'msg-ok-precedente' }
+
+    const { POST } = await import('./route')
+    await POST(req({ role: 'user', content: 'ok' }, getAuthToken()), params)
+    expect(righeInserite).toHaveLength(1)
+
+    await POST(req({ role: 'user', content: 'ok' }, getAuthToken()), params)
+    expect(righeInserite).toHaveLength(2)
+  })
+
+  it('NON scarta una risposta breve ripetuta del bot su un altro argomento', async () => {
+    duplicatoEsistente = { id: 'msg-fatto-precedente' }
+
+    const { POST } = await import('./route')
+    await POST(req({ role: 'assistant', content: 'Fatto.' }, getAuthToken()), params)
+
+    expect(righeInserite).toHaveLength(1)
   })
 
   it('un contenuto diverso viene invece salvato normalmente', async () => {
