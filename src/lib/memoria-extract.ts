@@ -264,11 +264,22 @@ export async function runMemoriaExtract(dateTarget?: string): Promise<ExtractRes
             continue
           }
           if (parsed.summary) allSummaries.push(parsed.summary)
-          if (Array.isArray(parsed.entita)) allEntita.push(...parsed.entita)
+          if (Array.isArray(parsed.entita)) {
+            allEntita.push(...parsed.entita)
+          } else if (parsed.entita !== undefined) {
+            // Il modello ha risposto con 'entita' in una forma inattesa (non un array):
+            // non va scartata in silenzio, è un'altra porta per la stessa perdita muta.
+            skippedChunks++
+            console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId}: campo 'entita' non e un array — entita scartate`)
+          }
         } catch (err) {
-          // Errore LLM su questa singola parte: non deve far cadere l'intera giornata
+          // Errore LLM su questa singola parte: non deve far cadere l'intera giornata.
+          // Allineato al catch esterno (step 10): niente cast incondizionato a Error,
+          // altrimenti un rifiuto non-Error (es. null) esplode qui dentro e la giornata
+          // collassa comunque — la stessa patologia che questo task doveva eliminare.
           skippedChunks++
-          console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId} fallita: ${(err as Error).message}`)
+          const msg = err instanceof Error ? err.message : String(err)
+          console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId} fallita: ${msg}`)
           continue
         }
       }

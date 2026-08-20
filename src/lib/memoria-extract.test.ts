@@ -207,7 +207,37 @@ describe('runMemoriaExtract', () => {
     const summaryUpsertCall = upsertCalls.find((args: any[]) =>
       args[0] && typeof args[0] === 'object' && 'summary_text' in args[0]
     )
+    expect(summaryUpsertCall).toBeDefined()
     expect(summaryUpsertCall?.[0].summary_text).toBe('Nessuna attività rilevante')
+  })
+
+  // ── Test 3a: Errore non-Error lanciato da una parte ────────────────────────
+
+  it('un rifiuto non-Error (es. null) su una parte non fa collassare la giornata', async () => {
+    mockLte.mockReturnValue({
+      order: vi.fn().mockReturnValue({
+        order: vi.fn().mockResolvedValue({
+          data: [
+            { id: 1, conversation_id: 'conv-nonerror', role: 'user', content: 'Test message', created_at: '2026-05-06T10:00:00Z' },
+          ],
+          error: null,
+        }),
+      }),
+    })
+
+    // Rifiuto con un valore che non è un'istanza di Error: un cast
+    // incondizionato a Error (senza instanceof-check) esploderebbe qui
+    // dentro, fuori dal continue, facendo collassare l'intera giornata.
+    mockCreate.mockRejectedValueOnce(null)
+
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    const result = await runMemoriaExtract('2026-05-06')
+
+    expect(result.ok).toBe(true)
+    expect(result.skipped_chunks).toBeGreaterThan(0)
+    expect(mockUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'error' })
+    )
   })
 
   // ── Test 3b: Risposta troncata (max_tokens) non fa sparire la giornata ────
@@ -241,7 +271,37 @@ describe('runMemoriaExtract', () => {
     const summaryUpsertCall = upsertCalls.find((args: any[]) =>
       args[0] && typeof args[0] === 'object' && 'summary_text' in args[0]
     )
+    expect(summaryUpsertCall).toBeDefined()
     expect(summaryUpsertCall?.[0].summary_text).not.toBe('Nessuna attività rilevante')
+  })
+
+  // ── Test 3c: entita con forma sbagliata non sparisce in silenzio ──────────
+
+  it('entita non-array nella risposta non sparisce in silenzio: incrementa skipped_chunks', async () => {
+    mockLte.mockReturnValue({
+      order: vi.fn().mockReturnValue({
+        order: vi.fn().mockResolvedValue({
+          data: [
+            { id: 1, conversation_id: 'conv-badshape', role: 'user', content: 'Test message', created_at: '2026-05-06T10:00:00Z' },
+          ],
+          error: null,
+        }),
+      }),
+    })
+
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: JSON.stringify({
+        summary: 'Giornata regolare',
+        entita: 'Bianchi Srl', // forma sbagliata: non è un array
+      }) }],
+      usage: { input_tokens: 400, output_tokens: 80 },
+    })
+
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    const result = await runMemoriaExtract('2026-05-06')
+
+    expect(result.skipped_chunks).toBeGreaterThan(0)
+    expect(result.entities).toBe(0)
   })
 
   // ── Test 4: Giornata vuota ────────────────────────────────────────────────
