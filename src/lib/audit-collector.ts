@@ -227,6 +227,8 @@ export interface MemoriaRunsData {
   runs: MemoriaRunRow[]
   ok_count: number
   error_count: number
+  /** Run che hanno scartato contenuto illeggibile: memoria persa, ma non un errore. */
+  partial_count: number
   missing_dates: string[]
 }
 
@@ -252,6 +254,8 @@ export async function collectMemoriaRuns(): Promise<DimensionResult<MemoriaRunsD
   const runs = (data ?? []) as MemoriaRunRow[]
   const ok_count = runs.filter(r => r.status === 'ok').length
   const error_count = runs.filter(r => r.status === 'error').length
+  // 'partial' non e ne ok ne error: senza questo conteggio sparirebbe dalla vista.
+  const partial_count = runs.filter(r => r.status === 'partial').length
 
   // Calcola date mancanti: la run per D avviene D+1 alle 21:30 Europe/Rome,
   // quindi today-1 non è ancora dovuta durante l'audit del mattino.
@@ -268,7 +272,7 @@ export async function collectMemoriaRuns(): Promise<DimensionResult<MemoriaRunsD
 
   return {
     ok: true,
-    data: { runs, ok_count, error_count, missing_dates },
+    data: { runs, ok_count, error_count, partial_count, missing_dates },
   }
 }
 

@@ -53,6 +53,7 @@ function cleanInput(): AnalysisInput {
           { date_processed: '2026-05-04', status: 'ok', conversations_count: 3, entities_count: 2, llm_cost_estimate_usd: 0.008, error_message: null },
         ],
         ok_count: 3,
+        partial_count: 0,
         error_count: 0,
         missing_dates: [],
       },
@@ -202,11 +203,23 @@ describe('analyze — Memoria anomalie', () => {
     expect(a!.severity).toBe('medium')
   })
 
+  it('run parziali → MEMORIA_PARZIALE high', () => {
+    const input = cleanInput()
+    input.memoriaRuns.data!.partial_count = 2
+    const result = analyze(input)
+    const a = result.anomalies.find(x => x.code === 'MEMORIA_PARZIALE')
+    expect(a).toBeDefined()
+    // high e non medium: un run parziale significa memoria gia persa, ed e
+    // esattamente il difetto rimasto invisibile per tre mesi.
+    expect(a!.severity).toBe('high')
+  })
+
   it('nessun errore e nessuna data mancante → nessuna anomalia memoria', () => {
     const input = cleanInput()
     const result = analyze(input)
     expect(result.anomalies.find(x => x.code === 'MEMORIA_ERROR')).toBeUndefined()
     expect(result.anomalies.find(x => x.code === 'MEMORIA_GAP')).toBeUndefined()
+    expect(result.anomalies.find(x => x.code === 'MEMORIA_PARZIALE')).toBeUndefined()
   })
 })
 

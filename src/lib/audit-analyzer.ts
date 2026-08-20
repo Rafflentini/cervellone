@@ -185,6 +185,20 @@ export function analyze(input: AnalysisInput): AnalysisResult {
       })
     }
 
+    // Un run 'partial' ha scartato contenuto illeggibile: memoria gia persa.
+    // Severity high, non medium: e' il difetto che e' rimasto invisibile per tre
+    // mesi perche' il run si dichiarava comunque riuscito.
+    if ((d.partial_count ?? 0) > 0) {
+      const partialRun = d.runs.find(r => r.status === 'partial')
+      anomalies.push({
+        code: 'MEMORIA_PARZIALE',
+        severity: 'high',
+        description: `${d.partial_count} run memoria-extract hanno scartato contenuto illeggibile: quella memoria e' persa.`,
+        proposed_action: 'Controlla error_message dei run parziali. Se ricorre, abbassa CHUNK_CHAR_BUDGET in memoria-extract.ts o verifica le risposte del modello.',
+        raw: { partial_count: d.partial_count, last_partial: partialRun?.error_message },
+      })
+    }
+
     if (d.missing_dates.length > 0) {
       anomalies.push({
         code: 'MEMORIA_GAP',
