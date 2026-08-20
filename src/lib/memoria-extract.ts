@@ -94,6 +94,8 @@ export interface ExtractResult {
   cost_usd: number
   error?: string
   skipped_chunks?: number
+  /** Entita proposte dal modello ma non salvate (tipo non ammesso o errore di scrittura). */
+  entita_scartate?: number
 }
 
 interface MemoriaMessageRow {
@@ -333,10 +335,14 @@ export async function runMemoriaExtract(
     // Il DB accetta solo questi tre tipi. Il modello devia spesso ("committente",
     // "professionista"): senza filtro la riga viene rifiutata in silenzio e
     // entities_count dichiarerebbe entita' che non sono mai state salvate.
+    // Contatore SEPARATO da skippedChunks: sono due perdite di natura diversa
+    // (testo illeggibile vs entita non ammessa) e confonderle renderebbe falso il
+    // messaggio d'errore del run — leggibile ma fuorviante, che e' peggio di muto.
+    let entitaScartate = 0
     let entitaSalvate = 0
     for (const e of entitaDeduplicate.values()) {
       if (!TIPI_ENTITA_AMMESSI.has(e.type)) {
-        skippedChunks++
+        entitaScartate++
         console.warn(`[memoria-extract] entita "${e.name}" scartata: tipo "${e.type}" non ammesso`)
         continue
       }
@@ -351,7 +357,7 @@ export async function runMemoriaExtract(
       }, { onConflict: 'name,type' })
 
       if (entErr) {
-        skippedChunks++
+        entitaScartate++
         console.warn(`[memoria-extract] entita "${e.name}" non salvata: ${entErr.message}`)
         continue
       }
@@ -368,12 +374,17 @@ export async function runMemoriaExtract(
     const { error: statusErr } = await supabase
       .from('cervellone_memoria_extraction_runs')
       .update({
-        status: skippedChunks > 0 ? 'partial' : 'ok',
+        status: skippedChunks > 0 || entitaScartate > 0 ? 'partial' : 'ok',
         completed_at: new Date().toISOString(),
         conversations_count: conversationIds.length,
         entities_count: entitaSalvate,
         llm_cost_estimate_usd: costUsd,
-        error_message: skippedChunks > 0 ? `${skippedChunks} parti illeggibili scartate` : null,
+        // Il messaggio dice QUALE perdita e' avvenuta: chi legge l'audit non deve
+        // dedurre "testo illeggibile" quando invece era un'entita fuori elenco.
+        error_message: [
+          skippedChunks > 0 ? `${skippedChunks} parti illeggibili scartate` : null,
+          entitaScartate > 0 ? `${entitaScartate} entita scartate` : null,
+        ].filter(Boolean).join(', ') || null,
       })
       .eq('run_id', runId)
 
@@ -411,6 +422,7 @@ export async function runMemoriaExtract(
       tokens: totalInputTokens + totalOutputTokens,
       cost_usd: costUsd,
       skipped_chunks: skippedChunks,
+      entita_scartate: entitaScartate,
     }
 
   } catch (err) {

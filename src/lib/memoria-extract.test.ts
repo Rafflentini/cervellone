@@ -442,6 +442,14 @@ describe('runMemoriaExtract — l esito del run non puo fallire in silenzio', ()
 
     // solo 'cliente' e ammesso dal vincolo del DB: 'committente' viene scartato
     expect(result.entities).toBe(1)
-    expect(result.skipped_chunks).toBeGreaterThan(0)
+    // contatore SEPARATO da skipped_chunks: sono perdite di natura diversa, e
+    // confonderle renderebbe falso il messaggio d'errore del run
+    expect(result.entita_scartate).toBe(1)
+    expect(result.skipped_chunks).toBe(0)
+
+    // il run e comunque 'partial', e il messaggio dice QUALE perdita e avvenuta
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'partial', error_message: '1 entita scartate' })
+    )
   })
 })
