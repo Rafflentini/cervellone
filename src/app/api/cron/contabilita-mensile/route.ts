@@ -56,7 +56,10 @@ export async function GET(req: NextRequest) {
 
   let riconciliazione: ToolResult = { ok: false, error: 'non eseguita' }
   try {
-    riconciliazione = parseToolJson(await executeRiconciliazioneTool('riconcilia_automatico', { periodo }))
+    // Società dichiarata esplicitamente: il cron mensile oggi lavora solo per
+    // Restruktura. Quando La Real Estate sarà operativa questo giro andrà
+    // ripetuto per ciascuna società, non generalizzato con un default.
+    riconciliazione = parseToolJson(await executeRiconciliazioneTool('riconcilia_automatico', { periodo }, 'restruktura'))
   } catch (err) {
     riconciliazione = { ok: false, error: err instanceof Error ? err.message : String(err) }
   }

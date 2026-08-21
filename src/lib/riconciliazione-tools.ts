@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { ficGet, getCompanyId } from './fatture-in-cloud'
+import type { CodiceSocieta } from './societa'
 
 interface ToolDefinition {
   name: string
@@ -127,8 +128,8 @@ function invoiceMatchesMovement(movimento: MovimentoRow, fattura: FatturaAperta)
   return customerTokens.filter(token => movementTokens.has(token)).length >= 2
 }
 
-async function getOpenInvoices(): Promise<{ ok: true; fatture: FatturaAperta[] } | { ok: false; error: string }> {
-  const company = await getCompanyId()
+async function getOpenInvoices(societa: CodiceSocieta): Promise<{ ok: true; fatture: FatturaAperta[] } | { ok: false; error: string }> {
+  const company = await getCompanyId(societa)
   if (!company.ok) return { ok: false, error: company.error }
   let allocazioni: Awaited<ReturnType<typeof getAllocazioni>>
   try {
@@ -136,7 +137,7 @@ async function getOpenInvoices(): Promise<{ ok: true; fatture: FatturaAperta[] }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
-  const r = await ficGet(`/c/${company.id}/issued_documents`, { type: 'invoice', per_page: 100, sort: '-date' })
+  const r = await ficGet(`/c/${company.id}/issued_documents`, { type: 'invoice', per_page: 100, sort: '-date' }, societa)
   if (!r.ok) return { ok: false, error: r.error }
   const rows = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
   return {
@@ -152,10 +153,10 @@ async function getOpenInvoices(): Promise<{ ok: true; fatture: FatturaAperta[] }
   }
 }
 
-async function getInvoiceDetail(fatturaId: string): Promise<{ ok: true; fattura: FatturaAperta } | { ok: false; error: string }> {
-  const company = await getCompanyId()
+async function getInvoiceDetail(fatturaId: string, societa: CodiceSocieta): Promise<{ ok: true; fattura: FatturaAperta } | { ok: false; error: string }> {
+  const company = await getCompanyId(societa)
   if (!company.ok) return { ok: false, error: company.error }
-  const r = await ficGet(`/c/${company.id}/issued_documents/${fatturaId}`, { type: 'invoice', fieldset: 'detailed' })
+  const r = await ficGet(`/c/${company.id}/issued_documents/${fatturaId}`, { type: 'invoice', fieldset: 'detailed' }, societa)
   if (!r.ok && r.error.includes('404')) return { ok: false, error: 'fattura non trovata su Fatture in Cloud' }
   if (!r.ok) return { ok: false, error: r.error }
   const raw = (r.data?.data ?? r.data) as Record<string, unknown> | null
@@ -292,13 +293,13 @@ async function validateAllocazione(input: {
   }
 }
 
-async function riconciliaAutomatico(input: Record<string, unknown>): Promise<string> {
+async function riconciliaAutomatico(input: Record<string, unknown>, societa: CodiceSocieta): Promise<string> {
   const periodo = cleanString(input.periodo)
   if (!periodo) return fail('periodo richiesto')
 
   const movimentiResult = await getMovimentiEntrata(periodo)
   if (!movimentiResult.ok) return fail(movimentiResult.error)
-  const fattureResult = await getOpenInvoices()
+  const fattureResult = await getOpenInvoices(societa)
   if (!fattureResult.ok) return fail(fattureResult.error)
 
   let abbinatiAuto = 0
@@ -371,7 +372,7 @@ function fattureResidue(fatture: FatturaAperta[], matched: Set<string>): Fattura
   return fatture.filter(row => !matched.has(row.id))
 }
 
-async function proponiRiconciliazione(input: Record<string, unknown>): Promise<string> {
+async function proponiRiconciliazione(input: Record<string, unknown>, societa: CodiceSocieta): Promise<string> {
   const movimentoId = cleanString(input.movimento_id)
   const fatturaId = cleanId(input.fattura_id)
   if (!movimentoId || !fatturaId) return fail('movimento_id e fattura_id richiesti')
@@ -385,7 +386,7 @@ async function proponiRiconciliazione(input: Record<string, unknown>): Promise<s
   if (error) return fail(error.message)
   if (!movimento) return fail('movimento non trovato')
 
-  const fatturaResult = await getInvoiceDetail(fatturaId)
+  const fatturaResult = await getInvoiceDetail(fatturaId, societa)
   if (!fatturaResult.ok) return fail(fatturaResult.error)
 
   const importoAbbinato = parseNumber(input.importo_abbinato) ?? Number(movimento.importo)
@@ -548,9 +549,13 @@ export const RICONCILIAZIONE_TOOLS: ToolDefinition[] = [
   },
 ]
 
-export async function executeRiconciliazioneTool(name: string, input: Record<string, unknown>): Promise<string | null> {
-  if (name === 'riconcilia_automatico') return riconciliaAutomatico(input)
-  if (name === 'proponi_riconciliazione') return proponiRiconciliazione(input)
+export async function executeRiconciliazioneTool(
+  name: string,
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string | null> {
+  if (name === 'riconcilia_automatico') return riconciliaAutomatico(input, societa)
+  if (name === 'proponi_riconciliazione') return proponiRiconciliazione(input, societa)
   if (name === 'lista_riconciliazioni') return listaRiconciliazioni(input)
   if (name === 'conferma_riconciliazione') return cambiaStato(cleanString(input.id), 'confermata')
   if (name === 'scarta_riconciliazione') return cambiaStato(cleanString(input.id), 'scartata')

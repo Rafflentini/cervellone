@@ -688,7 +688,25 @@ export function getAllToolNames(): string[] {
   return ALL_TOOLS.map(t => t.name)
 }
 
-const EXECUTORS = [executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
+/**
+ * Gli strumenti contabili hanno bisogno di sapere PER QUALE SOCIETÀ operano.
+ * Oggi dichiarano esplicitamente Restruktura: nel Task 4 la società verrà
+ * risolta dalla conversazione (società attiva) e passata qui.
+ *
+ * L'esplicito è deliberato: un valore di default nella firma renderebbe
+ * possibile chiamare senza dichiarare l'azienda, che è il difetto appena
+ * rimosso — una chiamata futura finirebbe in silenzio sull'account sbagliato.
+ */
+const SOCIETA_PROVVISORIA = 'restruktura' as const
+
+const executeFicWrapper = (name: string, input: Record<string, unknown>) =>
+  executeFicTool(name, input, SOCIETA_PROVVISORIA)
+const executeFicWriteWrapper = (name: string, input: Record<string, unknown>) =>
+  executeFicWriteTool(name, input, SOCIETA_PROVVISORIA)
+const executeRiconciliazioneWrapper = (name: string, input: Record<string, unknown>) =>
+  executeRiconciliazioneTool(name, input, SOCIETA_PROVVISORIA)
+
+const EXECUTORS = [executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiTool, executeRiconciliazioneWrapper, executePrimaNotaTool, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [

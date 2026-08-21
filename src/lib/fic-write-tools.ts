@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { ficGet, getCompanyId, creaDocumentoFIC, eliminaDocumentoFIC } from './fatture-in-cloud'
+import type { CodiceSocieta } from './societa'
 
 interface ToolDefinition {
   name: string
@@ -36,7 +37,8 @@ interface RigaDocumentoPayload {
   vat: { id: number }
 }
 
-const vatIdCache = new Map<number, number>()
+/** Chiave: `${societa}:${aliquota}` — gli id IVA sono per azienda. */
+const vatIdCache = new Map<string, number>()
 
 function ok(payload: Record<string, unknown>): string {
   return JSON.stringify({ ok: true, ...payload })
@@ -76,13 +78,17 @@ function escapeFicQuery(value: string): string {
   return value.replace(/[\\']/g, '')
 }
 
-async function resolveVatId(aliquota: number): Promise<number | null> {
-  if (vatIdCache.has(aliquota)) return vatIdCache.get(aliquota) ?? null
+async function resolveVatId(aliquota: number, societa: CodiceSocieta): Promise<number | null> {
+  // La cache va indicizzata ANCHE per società: gli id delle aliquote IVA sono
+  // per azienda, quindi una cache per sola aliquota restituirebbe l'id
+  // dell'altra società — e la fattura uscirebbe con l'IVA sbagliata.
+  const chiave = `${societa}:${aliquota}`
+  if (vatIdCache.has(chiave)) return vatIdCache.get(chiave) ?? null
 
-  const company = await getCompanyId()
+  const company = await getCompanyId(societa)
   if (!company.ok) return null
 
-  const r = await ficGet(`/c/${company.id}/vat_types`)
+  const r = await ficGet(`/c/${company.id}/vat_types`, undefined, societa)
   if (!r.ok) return null
 
   const list = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
@@ -90,7 +96,7 @@ async function resolveVatId(aliquota: number): Promise<number | null> {
   const id = parseNumber(match?.id)
   if (id === null) return null
 
-  vatIdCache.set(aliquota, id)
+  vatIdCache.set(chiave, id)
   return id
 }
 
@@ -124,14 +130,17 @@ function normalizeRighe(value: unknown, fallbackDescrizione?: string): { righe?:
   return { righe }
 }
 
-async function resolveClientEntity(cliente: string): Promise<{ ok: true; entity: Record<string, unknown> } | { ok: false; error: string }> {
-  const company = await getCompanyId()
+async function resolveClientEntity(
+  cliente: string,
+  societa: CodiceSocieta,
+): Promise<{ ok: true; entity: Record<string, unknown> } | { ok: false; error: string }> {
+  const company = await getCompanyId(societa)
   if (!company.ok) return { ok: false, error: company.error }
 
   const r = await ficGet(`/c/${company.id}/entities/clients`, {
     q: `name contains '${escapeFicQuery(cliente)}'`,
     per_page: 5,
-  })
+  }, societa)
   if (!r.ok) return { ok: false, error: r.error }
 
   const list = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
@@ -173,6 +182,7 @@ async function salvaPending(input: {
   data: string
   righe: RigaDocumento[]
   note?: string
+  societa: CodiceSocieta
 }): Promise<{ ok: true; row: Pick<PendingRow, 'id' | 'descrizione'> } | { ok: false; error: string }> {
   const { data, error } = await supabase
     .from('cervellone_fic_pending')
@@ -182,6 +192,9 @@ async function salvaPending(input: {
       descrizione: '',
       stato: 'in_attesa',
       conferme: 0,
+      // La società viaggia CON la bozza: la conferma avviene in un momento
+      // successivo, e senza questo dato dovrebbe indovinare l'azienda.
+      societa: input.societa,
     })
     .select('id')
     .single()
@@ -202,7 +215,11 @@ async function salvaPending(input: {
   return { ok: true, row: updated.data as Pick<PendingRow, 'id' | 'descrizione'> }
 }
 
-async function compilaDocumento(input: Record<string, unknown>, tipo: PendingTipo): Promise<string> {
+async function compilaDocumento(
+  input: Record<string, unknown>,
+  tipo: PendingTipo,
+  societa: CodiceSocieta,
+): Promise<string> {
   const cliente = cleanString(input.cliente)
   if (!cliente) return fail('cliente richiesto')
 
@@ -212,12 +229,12 @@ async function compilaDocumento(input: Record<string, unknown>, tipo: PendingTip
   const parsedRighe = normalizeRighe(input.righe, tipo === 'rapporto_intervento' ? descrizione : undefined)
   if (parsedRighe.error || !parsedRighe.righe) return fail(parsedRighe.error ?? 'righe non valide')
 
-  const entity = await resolveClientEntity(cliente)
+  const entity = await resolveClientEntity(cliente, societa)
   if (!entity.ok) return fail(entity.error)
 
   const itemsList: RigaDocumentoPayload[] = []
   for (const riga of parsedRighe.righe) {
-    const vatId = await resolveVatId(riga.aliquota)
+    const vatId = await resolveVatId(riga.aliquota, societa)
     if (vatId === null) return fail(`aliquota ${riga.aliquota}% non trovata tra le aliquote IVA di Fatture in Cloud`)
     itemsList.push({
       name: riga.name,
@@ -236,7 +253,7 @@ async function compilaDocumento(input: Record<string, unknown>, tipo: PendingTip
   }
   if (note) payload.notes = note
 
-  const pending = await salvaPending({ tipo, payload, cliente, data, righe: parsedRighe.righe, note })
+  const pending = await salvaPending({ tipo, payload, cliente, data, righe: parsedRighe.righe, note, societa })
   if (!pending.ok) return fail(pending.error)
   return ok({
     id: pending.row.id,
@@ -267,18 +284,20 @@ async function eliminaBozzaFic(input: Record<string, unknown>): Promise<string> 
 
   const { data, error } = await supabase
     .from('cervellone_fic_pending')
-    .select('id, stato, fic_document_id')
+    .select('id, stato, fic_document_id, societa')
     .eq('id', id)
     .maybeSingle()
 
   if (error) return fail(error.message)
   if (!data) return fail('bozza FIC non trovata', { id })
 
-  const row = data as Pick<PendingRow, 'id' | 'stato' | 'fic_document_id'>
+  const row = data as Pick<PendingRow, 'id' | 'stato' | 'fic_document_id'> & { societa: CodiceSocieta }
   if (row.stato === 'annullata') return ok({ id, stato: 'gia_annullata' })
   if (row.stato === 'creata') {
     if (!row.fic_document_id) return fail('bozza creata senza fic_document_id', { id })
-    const deleted = await eliminaDocumentoFIC(row.fic_document_id)
+    // La società viene dalla RIGA, non dal contesto corrente: la bozza puo
+    // essere stata compilata quando era attiva un'altra società.
+    const deleted = await eliminaDocumentoFIC(row.fic_document_id, row.societa)
     if (!deleted.ok) return fail(deleted.error, { id })
   }
 
@@ -317,14 +336,14 @@ export async function confirmFicStep2(id: string): Promise<string> {
 
   const { data, error } = await supabase
     .from('cervellone_fic_pending')
-    .select('id, payload, conferme, stato')
+    .select('id, payload, conferme, stato, societa')
     .eq('id', cleanId)
     .maybeSingle()
 
   if (error) return `Errore caricamento bozza FIC: ${error.message}`
   if (!data) return 'Bozza FIC non trovata.'
 
-  const row = data as Pick<PendingRow, 'id' | 'payload' | 'conferme' | 'stato'>
+  const row = data as Pick<PendingRow, 'id' | 'payload' | 'conferme' | 'stato'> & { societa: CodiceSocieta }
   if (row.stato !== 'in_attesa') return 'Bozza FIC gia elaborata.'
   if (Number(row.conferme) < 1) return `Serve prima la prima conferma -> /fic_ok_${cleanId}`
 
@@ -339,7 +358,10 @@ export async function confirmFicStep2(id: string): Promise<string> {
   if (claim.error) return `Errore claim bozza FIC: ${claim.error.message}`
   if (!claim.data?.length) return 'Bozza gia in elaborazione o elaborata.'
 
-  const created = await creaDocumentoFIC(row.payload)
+  // Società dalla RIGA, non dal contesto: fra la compilazione e questa conferma
+  // puo essere cambiata la società attiva, e il documento deve nascere
+  // nell'azienda per cui e stato compilato.
+  const created = await creaDocumentoFIC(row.payload, row.societa)
   if (!created.ok) {
     await supabase
       .from('cervellone_fic_pending')
@@ -443,10 +465,14 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
   },
 ]
 
-export async function executeFicWriteTool(name: string, input: Record<string, unknown>): Promise<string | null> {
+export async function executeFicWriteTool(
+  name: string,
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string | null> {
   try {
-    if (name === 'compila_fattura_emessa') return compilaDocumento(input, 'fattura_emessa')
-    if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento')
+    if (name === 'compila_fattura_emessa') return compilaDocumento(input, 'fattura_emessa', societa)
+    if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento', societa)
     if (name === 'lista_bozze_fic') return listaBozzeFic(input)
     if (name === 'elimina_bozza_fic') return eliminaBozzaFic(input)
     return null
