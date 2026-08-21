@@ -185,6 +185,14 @@ export async function runAgentJob(
   // Garantisce la continuità conversazionale anche con il flag OFF.
   const projectContext = await buildActiveProjectContext(conversationId)
 
+  // Società attiva: INCONDIZIONATA e sempre presente. Ogni operazione contabile
+  // deve sapere per quale azienda lavora, e il nome deve comparire nel contesto
+  // perché il modello lo ripeta nelle conferme: la difesa vera contro la società
+  // sbagliata è che l'Ingegnere legga il nome errato PRIMA di confermare.
+  const { getSocietaAttiva, bloccoSocietaAttiva } = await import('./societa-attiva')
+  const { getSocieta } = await import('./societa')
+  const societaContext = bloccoSocietaAttiva(getSocieta(await getSocietaAttiva(conversationId)))
+
   // Injection modelli documento: INCONDIZIONATA (non dipende dal flag working_memory_enabled).
   // Cheap: cache 5 min + un solo loop regex sui template. Best-effort: '' su errore.
   // Lanciata in parallelo con il flag check sopra per non aggiungere latenza.
@@ -195,7 +203,8 @@ export async function runAgentJob(
   // di history (analogo a templateContext). Best-effort: '' se non c'è nulla.
   const imagesPointer = await buildImagesPointer(conversationId)
 
-  const workingContext = [projectContext, flaggedWorkingContext, templateContext, imagesPointer]
+  // societaContext per PRIMO: e la cornice dentro cui va letto tutto il resto.
+  const workingContext = [societaContext, projectContext, flaggedWorkingContext, templateContext, imagesPointer]
     .filter((b) => b && b.trim())
     .join('\n\n') || undefined
 
