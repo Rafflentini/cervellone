@@ -69,7 +69,7 @@ export async function GET(req: NextRequest) {
     primaNota = parseToolJson(await executePrimaNotaTool('genera_prima_nota', {
       periodo,
       folder_id: CONTABILITA_FOLDER_ID,
-    }))
+    }, 'restruktura'))
   } catch (err) {
     primaNota = { ok: false, error: err instanceof Error ? err.message : String(err) }
   }

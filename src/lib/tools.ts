@@ -705,8 +705,12 @@ const executeFicWriteWrapper = (name: string, input: Record<string, unknown>) =>
   executeFicWriteTool(name, input, SOCIETA_PROVVISORIA)
 const executeRiconciliazioneWrapper = (name: string, input: Record<string, unknown>) =>
   executeRiconciliazioneTool(name, input, SOCIETA_PROVVISORIA)
+const executePrimaNotaWrapper = (name: string, input: Record<string, unknown>) =>
+  executePrimaNotaTool(name, input, SOCIETA_PROVVISORIA)
+const executeMovimentiWrapper = (name: string, input: Record<string, unknown>) =>
+  executeMovimentiTool(name, input, SOCIETA_PROVVISORIA)
 
-const EXECUTORS = [executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiTool, executeRiconciliazioneWrapper, executePrimaNotaTool, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
+const EXECUTORS = [executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [

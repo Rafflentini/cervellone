@@ -133,7 +133,7 @@ async function getOpenInvoices(societa: CodiceSocieta): Promise<{ ok: true; fatt
   if (!company.ok) return { ok: false, error: company.error }
   let allocazioni: Awaited<ReturnType<typeof getAllocazioni>>
   try {
-    allocazioni = await getAllocazioni()
+    allocazioni = await getAllocazioni(societa)
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
@@ -166,13 +166,16 @@ async function getInvoiceDetail(fatturaId: string, societa: CodiceSocieta): Prom
   return { ok: true, fattura }
 }
 
-async function getAllocazioni(exclude?: { movimentoId: string; fatturaId: string }): Promise<{
+async function getAllocazioni(societa: CodiceSocieta, exclude?: { movimentoId: string; fatturaId: string }): Promise<{
   allocatoMovimento: Map<string, number>
   allocatoFattura: Map<string, number>
 }> {
   const { data, error } = await supabase
     .from('cervellone_riconciliazioni')
     .select('movimento_id, fattura_id, importo_abbinato')
+    // Le allocazioni dell'altra società non devono entrare in questo conto:
+    // altrimenti un importo gia abbinato altrove risulterebbe indisponibile qui.
+    .eq('societa', societa)
     .in('stato', ['proposta', 'confermata'])
 
   if (error) throw new Error(error.message)
@@ -188,10 +191,11 @@ async function getAllocazioni(exclude?: { movimentoId: string; fatturaId: string
   return { allocatoMovimento, allocatoFattura }
 }
 
-async function getMovimentiEntrata(periodo?: string): Promise<{ ok: true; movimenti: MovimentoRow[] } | { ok: false; error: string }> {
+async function getMovimentiEntrata(societa: CodiceSocieta, periodo?: string): Promise<{ ok: true; movimenti: MovimentoRow[] } | { ok: false; error: string }> {
   let query = supabase
     .from('cervellone_movimenti')
     .select('id, data, importo, direzione, descrizione, controparte, fonte, conto, periodo')
+    .eq('societa', societa)
     .eq('direzione', 'entrata')
     .eq('stato', 'attivo')
     .order('data', { ascending: false })
@@ -203,7 +207,7 @@ async function getMovimentiEntrata(periodo?: string): Promise<{ ok: true; movime
   if (error) return { ok: false, error: error.message }
 
   try {
-    const allocazioni = await getAllocazioni()
+    const allocazioni = await getAllocazioni(societa)
     const movimenti = ((data ?? []) as MovimentoRow[])
       .map(row => ({
         ...row,
@@ -229,10 +233,12 @@ async function insertReconciliation(input: {
   tipoMatch: TipoMatch
   confidenza: number
   note?: string | null
+  societa: CodiceSocieta
 }): Promise<{ inserted: boolean; id?: string }> {
   const existing = await supabase
     .from('cervellone_riconciliazioni')
     .select('id')
+    .eq('societa', input.societa)
     .eq('movimento_id', input.movimentoId)
     .eq('fattura_id', input.fatturaId)
     .maybeSingle()
@@ -246,6 +252,7 @@ async function insertReconciliation(input: {
     importoAbbinato: input.importoAbbinato,
     importoMovimento: input.importoMovimento,
     totaleFattura: input.totaleFattura,
+    societa: input.societa,
   })
 
   const { data, error } = await supabase
@@ -260,6 +267,7 @@ async function insertReconciliation(input: {
       tipo_match: input.tipoMatch,
       confidenza: input.confidenza,
       note: input.note ?? null,
+      societa: input.societa,
     })
     .select('id')
     .single()
@@ -277,9 +285,10 @@ async function validateAllocazione(input: {
   importoAbbinato: number
   importoMovimento: number
   totaleFattura: number
+  societa: CodiceSocieta
 }): Promise<void> {
   if (input.importoAbbinato <= 0) throw new Error('importo_abbinato deve essere positivo')
-  const allocazioni = await getAllocazioni({ movimentoId: input.movimentoId, fatturaId: input.fatturaId })
+  const allocazioni = await getAllocazioni(input.societa, { movimentoId: input.movimentoId, fatturaId: input.fatturaId })
   const allocatoFattura = allocazioni.allocatoFattura.get(input.fatturaId) ?? 0
   const allocatoMovimento = allocazioni.allocatoMovimento.get(input.movimentoId) ?? 0
   const residuoFattura = roundMoney(input.totaleFattura - allocatoFattura)
@@ -297,7 +306,7 @@ async function riconciliaAutomatico(input: Record<string, unknown>, societa: Cod
   const periodo = cleanString(input.periodo)
   if (!periodo) return fail('periodo richiesto')
 
-  const movimentiResult = await getMovimentiEntrata(periodo)
+  const movimentiResult = await getMovimentiEntrata(societa, periodo)
   if (!movimentiResult.ok) return fail(movimentiResult.error)
   const fattureResult = await getOpenInvoices(societa)
   if (!fattureResult.ok) return fail(fattureResult.error)
@@ -330,6 +339,7 @@ async function riconciliaAutomatico(input: Record<string, unknown>, societa: Cod
         tipoMatch: 'deterministico',
         confidenza: 0.95,
         note: 'Match automatico per importo e numero fattura/cliente.',
+        societa,
       })
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err))
@@ -380,6 +390,9 @@ async function proponiRiconciliazione(input: Record<string, unknown>, societa: C
   const { data: movimento, error } = await supabase
     .from('cervellone_movimenti')
     .select('id, importo, periodo')
+    // Il filtro per società non è ridondante con l'id: impedisce di abbinare un
+    // movimento dell'altra azienda passandone l'identificativo.
+    .eq('societa', societa)
     .eq('id', movimentoId)
     .maybeSingle()
 
@@ -398,6 +411,7 @@ async function proponiRiconciliazione(input: Record<string, unknown>, societa: C
       importoAbbinato,
       importoMovimento: Number(movimento.importo),
       totaleFattura: fatturaResult.fattura.totale ?? 0,
+      societa,
     })
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err))
@@ -415,6 +429,7 @@ async function proponiRiconciliazione(input: Record<string, unknown>, societa: C
       tipo_match: 'ragionato',
       confidenza,
       note: cleanString(input.note) ?? null,
+      societa,
     }, { onConflict: 'movimento_id,fattura_id' })
     .select('id')
     .single()
@@ -423,13 +438,14 @@ async function proponiRiconciliazione(input: Record<string, unknown>, societa: C
   return ok({ id: data?.id, stato: 'proposta' })
 }
 
-async function listaRiconciliazioni(input: Record<string, unknown>): Promise<string> {
+async function listaRiconciliazioni(input: Record<string, unknown>, societa: CodiceSocieta): Promise<string> {
   const periodo = cleanString(input.periodo)
   const stato = cleanString(input.stato) as StatoRiconciliazione | undefined
 
   let query = supabase
     .from('cervellone_riconciliazioni')
     .select('id, movimento_id, fattura_id, fattura_numero, importo_abbinato, periodo, stato, tipo_match, confidenza, note')
+    .eq('societa', societa)
     .order('created_at', { ascending: false })
     .limit(100)
 
@@ -445,6 +461,10 @@ async function listaRiconciliazioni(input: Record<string, unknown>): Promise<str
     ? await supabase
       .from('cervellone_movimenti')
       .select('id, data, importo, direzione, descrizione, controparte, fonte, conto, periodo')
+      // Ridondante oggi — gli id vengono da righe gia filtrate — ma deliberato:
+      // una sicurezza che dipende da una query PIU SOPRA si rompe la prima volta
+      // che qualcuno cambia quella query senza sapere di questa.
+      .eq('societa', societa)
       .in('id', movimentoIds)
     : { data: [], error: null }
 
@@ -478,11 +498,14 @@ async function listaRiconciliazioni(input: Record<string, unknown>): Promise<str
   return ok({ count: rows.length, totale_abbinato: totale, riconciliazioni: elenco })
 }
 
-async function cambiaStato(id: string | undefined, stato: 'confermata' | 'scartata'): Promise<string> {
+async function cambiaStato(id: string | undefined, stato: 'confermata' | 'scartata', societa: CodiceSocieta): Promise<string> {
   if (!id) return fail('id richiesto')
   const { data, error } = await supabase
     .from('cervellone_riconciliazioni')
     .update({ stato })
+    // Confermare per id non deve poter toccare una riconciliazione dell'altra
+    // azienda: gli id sono opachi e un errore qui sposterebbe soldi altrove.
+    .eq('societa', societa)
     .eq('id', id)
     .eq('stato', 'proposta')
     .select('id')
@@ -556,8 +579,8 @@ export async function executeRiconciliazioneTool(
 ): Promise<string | null> {
   if (name === 'riconcilia_automatico') return riconciliaAutomatico(input, societa)
   if (name === 'proponi_riconciliazione') return proponiRiconciliazione(input, societa)
-  if (name === 'lista_riconciliazioni') return listaRiconciliazioni(input)
-  if (name === 'conferma_riconciliazione') return cambiaStato(cleanString(input.id), 'confermata')
-  if (name === 'scarta_riconciliazione') return cambiaStato(cleanString(input.id), 'scartata')
+  if (name === 'lista_riconciliazioni') return listaRiconciliazioni(input, societa)
+  if (name === 'conferma_riconciliazione') return cambiaStato(cleanString(input.id), 'confermata', societa)
+  if (name === 'scarta_riconciliazione') return cambiaStato(cleanString(input.id), 'scartata', societa)
   return null
 }
