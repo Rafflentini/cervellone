@@ -31,7 +31,9 @@ const MAX_REMINDER_MINUTES = 40320
 
 async function getCalendarClient(): Promise<calendar_v3.Calendar> {
   const { getAuthorizedClient } = await import('./google-oauth')
-  const oauthClient: OAuth2Client | null = await getAuthorizedClient()
+  const { getSocieta } = await import('./societa')
+  // Casella dichiarata esplicitamente: nel Task 4 arriverà dalla società attiva.
+  const oauthClient: OAuth2Client | null = await getAuthorizedClient(getSocieta('restruktura').googleAccount)
   if (!oauthClient) {
     throw new Error(
       'OAuth Google non autenticato. L\'Ingegnere deve completare il consent flow su /api/auth/google (con lo scope Calendar aggiunto).',

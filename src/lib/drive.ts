@@ -16,7 +16,10 @@ import { GoogleAuthDeadError } from './google-token-health'
 async function getAuth(): Promise<any> {
   try {
     const { getAuthorizedClient } = await import('./google-oauth')
-    const oauthClient = await getAuthorizedClient()
+    const { getSocieta } = await import('./societa')
+    // Casella dichiarata esplicitamente. Nel Task 4 arriverà dalla società
+    // attiva; un default qui riporterebbe la scelta a "l'ultima aggiornata".
+    const oauthClient = await getAuthorizedClient(getSocieta('restruktura').googleAccount)
     if (oauthClient) return oauthClient
   } catch (err) {
     // Token morto: il SA è un principal DIVERSO che non vede le cartelle

@@ -81,7 +81,9 @@ export function extractClientName(prompt: string, recentHistory: string): string
 async function getAuth(): Promise<OAuth2Client | GoogleAuth> {
   try {
     const { getAuthorizedClient } = await import('./google-oauth')
-    const oauthClient = await getAuthorizedClient()
+    const { getSocieta } = await import('./societa')
+    // Casella dichiarata esplicitamente: nel Task 4 arriverà dalla società attiva.
+    const oauthClient = await getAuthorizedClient(getSocieta('restruktura').googleAccount)
     if (oauthClient) return oauthClient
   } catch (err) {
     // Stesso motivo di drive.ts: su token morto il fallback SA maschererebbe

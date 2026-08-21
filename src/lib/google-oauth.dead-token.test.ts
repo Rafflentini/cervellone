@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 /**
- * getAuthorizedClient() è il choke point unico di TUTTI i client Google del repo.
+ * getAuthorizedClient è il choke point unico di TUTTI i client Google del repo.
  * Prima di questo fix faceva solo setCredentials(): un refresh_token revocato
  * produceva un client formalmente valido e l'errore esplodeva pigramente dentro
  * la prima chiamata API, mascherato da "file non trovato".
@@ -43,6 +43,8 @@ vi.mock('./supabase-server', () => ({
   getSupabaseServer: () => ({
     from: () => ({
       select: () => ({
+        // La selezione ora e per casella: .eq('account_email', ...).maybeSingle()
+        eq: () => ({ maybeSingle: mockSingle }),
         order: () => ({ limit: () => ({ single: mockSingle }) }),
       }),
       upsert: mockUpsert,
@@ -83,7 +85,7 @@ describe('getAuthorizedClient — token morto', () => {
     const { getAuthorizedClient } = await import('./google-oauth')
     const { GoogleAuthDeadError } = await import('./google-token-health')
 
-    await expect(getAuthorizedClient()).rejects.toBeInstanceOf(GoogleAuthDeadError)
+    await expect(getAuthorizedClient('restruktura.drive@gmail.com')).rejects.toBeInstanceOf(GoogleAuthDeadError)
     expect(markGoogleTokenDeadSpy).toHaveBeenCalledWith('dead')
   })
 
@@ -99,13 +101,13 @@ describe('getAuthorizedClient — token morto', () => {
       )
 
     const { getAuthorizedClient } = await import('./google-oauth')
-    await expect(getAuthorizedClient()).rejects.toThrow(/\/api\/auth\/google/)
-    await expect(getAuthorizedClient()).rejects.toThrow(/Token Google scaduto o revocato/)
+    await expect(getAuthorizedClient('restruktura.drive@gmail.com')).rejects.toThrow(/\/api\/auth\/google/)
+    await expect(getAuthorizedClient('restruktura.drive@gmail.com')).rejects.toThrow(/Token Google scaduto o revocato/)
   })
 
   it('la credenziale viene DAVVERO esercitata (getAccessToken chiamato)', async () => {
     const { getAuthorizedClient } = await import('./google-oauth')
-    const client = await getAuthorizedClient()
+    const client = await getAuthorizedClient('restruktura.drive@gmail.com')
     expect(client).not.toBeNull()
     expect(setCredentialsSpy).toHaveBeenCalledTimes(1)
     expect(getAccessTokenSpy).toHaveBeenCalledTimes(1)
@@ -125,7 +127,7 @@ describe('getAuthorizedClient — errori NON di autenticazione', () => {
       Promise.reject(gaxiosLike('Service Unavailable', { status: 503, response: { status: 503, data: {} } }))
 
     const { getAuthorizedClient } = await import('./google-oauth')
-    const client = await getAuthorizedClient()
+    const client = await getAuthorizedClient('restruktura.drive@gmail.com')
     expect(client).not.toBeNull()
     expect(markGoogleTokenDeadSpy).not.toHaveBeenCalled()
   })
@@ -134,7 +136,7 @@ describe('getAuthorizedClient — errori NON di autenticazione', () => {
     getAccessTokenImpl = () => Promise.reject(gaxiosLike('socket hang up', { code: 'ECONNRESET' }))
 
     const { getAuthorizedClient } = await import('./google-oauth')
-    const client = await getAuthorizedClient()
+    const client = await getAuthorizedClient('restruktura.drive@gmail.com')
     expect(client).not.toBeNull()
     expect(markGoogleTokenDeadSpy).not.toHaveBeenCalled()
   })
@@ -145,7 +147,7 @@ describe('getAuthorizedClient — nessuna credenziale in DB', () => {
     mockSingle.mockResolvedValue({ data: null, error: { message: 'no rows' } })
 
     const { getAuthorizedClient } = await import('./google-oauth')
-    await expect(getAuthorizedClient()).resolves.toBeNull()
+    await expect(getAuthorizedClient('restruktura.drive@gmail.com')).resolves.toBeNull()
     expect(oauth2Constructed).not.toHaveBeenCalled()
     expect(markGoogleTokenDeadSpy).not.toHaveBeenCalled()
   })
