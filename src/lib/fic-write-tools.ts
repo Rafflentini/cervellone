@@ -1,6 +1,6 @@
 import { supabase } from './supabase'
 import { ficGet, getCompanyId, creaDocumentoFIC, eliminaDocumentoFIC } from './fatture-in-cloud'
-import type { CodiceSocieta } from './societa'
+import { getSocieta, type CodiceSocieta } from './societa'
 
 interface ToolDefinition {
   name: string
@@ -156,14 +156,18 @@ function descriviDocumento(input: {
   righe: RigaDocumento[]
   note?: string
   id: string
+  societa: CodiceSocieta
 }): string {
   const titolo = input.tipo === 'fattura_emessa' ? 'Bozza fattura emessa FIC' : 'Bozza rapporto intervento FIC'
   const righe = input.righe
     .map(row => `- ${row.name}: ${row.qty} x ${row.net_price} + IVA ${row.aliquota}%`)
     .join('\n')
   const totaleNetto = Math.round(input.righe.reduce((sum, row) => sum + row.qty * row.net_price, 0) * 100) / 100
+  const s = getSocieta(input.societa)
   return [
     titolo,
+    // Prima riga dopo il titolo: e il testo che l'Ingegnere legge davvero.
+    `SOCIETA EMITTENTE: ${s.denominazione} (P.IVA ${s.piva})`,
     `Cliente: ${input.cliente}`,
     `Data: ${input.data}`,
     `Righe:\n${righe}`,
@@ -255,7 +259,13 @@ async function compilaDocumento(
 
   const pending = await salvaPending({ tipo, payload, cliente, data, righe: parsedRighe.righe, note, societa })
   if (!pending.ok) return fail(pending.error)
+  const s = getSocieta(societa)
   return ok({
+    // La società apre la risposta, non la chiude: e il primo dato che
+    // l'Ingegnere legge prima di confermare. La difesa contro l'azienda
+    // sbagliata non e il codice — e che lui veda il nome errato PRIMA del /ok.
+    societa: s.denominazione,
+    partita_iva: s.piva,
     id: pending.row.id,
     stato: 'in_attesa',
     anteprima: pending.row.descrizione,
@@ -323,11 +333,16 @@ export async function confirmFicStep1(id: string): Promise<string> {
     .eq('id', cleanId)
     .eq('stato', 'in_attesa')
     .eq('conferme', 0)
-    .select('id')
+    .select('id, societa')
 
   if (error) return `Errore conferma bozza FIC: ${error.message}`
   if (!data?.length) return 'Bozza FIC non trovata o gia confermata/elaborata.'
-  return `Prima conferma registrata. Conferma DEFINITIVA -> /fic_ok2_${cleanId}`
+
+  // Il nome dell'azienda va ripetuto QUI, sull'ultimo passaggio prima della
+  // creazione: e l'ultima occasione in cui l'Ingegnere puo accorgersi che la
+  // fattura sta per nascere dalla societa sbagliata.
+  const s = getSocieta((data[0] as { societa: CodiceSocieta }).societa)
+  return `Prima conferma registrata per *${s.denominazione}* (P.IVA ${s.piva}).\nConferma DEFINITIVA -> /fic_ok2_${cleanId}`
 }
 
 export async function confirmFicStep2(id: string): Promise<string> {
