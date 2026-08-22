@@ -66,10 +66,16 @@ export async function ficGet(
 /**
  * Id azienda su Fatture in Cloud per la società indicata.
  *
- * NON esiste più il ripiego su `/user/companies` con `companies[0]`: quella
- * scelta la faceva l'ordine di risposta dell'API, cioè nessuno. Se la variabile
- * manca si fallisce dicendolo — un'azienda sbagliata emette fatture da una
- * partita IVA sbagliata, e una fattura elettronica trasmessa non si cancella.
+ * Il vecchio ripiego prendeva `companies[0]`, cioè la PRIMA azienda restituita
+ * dall'API: una scelta fatta dall'ordine di risposta, non da noi. Rimosso.
+ *
+ * Ma toglierlo e basta spegnerebbe la contabilità di Restruktura, che oggi
+ * funziona proprio grazie a quel ripiego (`FIC_COMPANY_ID` non è configurata in
+ * produzione). Quindi il ripiego resta, in una forma che non può sbagliare:
+ * **si accetta l'azienda solo se ne esiste UNA SOLA** sull'account. Con una
+ * sola azienda non c'è scelta da fare; con due o più bisogna dichiararla,
+ * perché li' sceglierne una a caso vuol dire emettere fatture da una partita
+ * IVA sbagliata — e una fattura elettronica trasmessa non si cancella.
  *
  * Niente cache di modulo: la lettura è una variabile d'ambiente, e una cache
  * globale con due società restituirebbe l'id dell'altra.
@@ -79,10 +85,25 @@ export async function getCompanyId(
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const s = getSocieta(societa)
   const id = process.env[s.ficCompanyIdEnv]
-  if (!id) {
-    return { ok: false, error: `${s.ficCompanyIdEnv} non configurata per ${s.denominazione}.` }
+  if (id) return { ok: true, id }
+
+  const r = await ficGet('/user/companies', undefined, societa)
+  if (!r.ok) return { ok: false, error: r.error }
+
+  const companies = r.data?.data?.companies
+  const elenco = Array.isArray(companies) ? companies : []
+
+  if (elenco.length === 1 && elenco[0]?.id) {
+    return { ok: true, id: String(elenco[0].id) }
   }
-  return { ok: true, id }
+  if (elenco.length > 1) {
+    return {
+      ok: false,
+      error: `${s.ficCompanyIdEnv} non configurata e l'account ha ${elenco.length} aziende: `
+        + `dichiara quale usare invece di lasciarlo decidere all'ordine della lista.`,
+    }
+  }
+  return { ok: false, error: `nessuna azienda trovata su Fatture in Cloud per ${s.denominazione}.` }
 }
 
 export async function creaDocumentoFIC(

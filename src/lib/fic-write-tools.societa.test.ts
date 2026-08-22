@@ -89,6 +89,31 @@ describe('le conferme dichiarano la societa', () => {
     expect(String(risposta)).not.toContain('LA REAL ESTATE')
   })
 
+  // Una riga senza aliquota esplicita deve prendere quella della SOCIETA:
+  // 10% per l'alloggio de La Real Estate, 22% per i lavori di Restruktura.
+  // Prima era cablato 22 e una fattura alloggio sarebbe uscita con l'IVA
+  // sbagliata su un documento fiscale vero.
+  it('una riga senza aliquota usa quella della societa, non un 22 cablato', async () => {
+    await executeFicWriteTool(
+      'compila_fattura_emessa',
+      { cliente: 'Mario Rossi', righe: [{ descrizione: 'Soggiorno 3 notti', quantita: 1, prezzo_unitario: 200 }] },
+      'larealestate',
+    )
+
+    expect(descrizioneSalvata).toContain('IVA 10%')
+    expect(descrizioneSalvata).not.toContain('IVA 22%')
+  })
+
+  it('e per Restruktura resta il 22%', async () => {
+    await executeFicWriteTool(
+      'compila_fattura_emessa',
+      { cliente: 'Cliente', righe: [{ descrizione: 'Ponteggio', quantita: 1, prezzo_unitario: 100 }] },
+      'restruktura',
+    )
+
+    expect(descrizioneSalvata).toContain('IVA 22%')
+  })
+
   // L'ultimo passaggio prima della creazione: ultima occasione per accorgersene.
   it('la prima conferma ripete la societa della bozza', async () => {
     const msg = await confirmFicStep1('bozza-1')

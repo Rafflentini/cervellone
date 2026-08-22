@@ -18,3 +18,20 @@ create table if not exists public.cervellone_societa_attiva (
   societa text not null check (societa in ('restruktura', 'larealestate')),
   updated_at timestamptz not null default now()
 );
+
+-- RLS come su tutte le altre tabelle applicative (verificato: movimenti,
+-- riconciliazioni, fic_pending e google_oauth_credentials ce l'hanno).
+--
+-- Non è una formalità: il repository è PUBBLICO, quindi la chiave anon è nota.
+-- Senza RLS un estraneo potrebbe leggere e soprattutto RISCRIVERE quale società
+-- è attiva in una conversazione — cioè dirottare le operazioni contabili su
+-- un'altra azienda. Il servizio usa la service key e non è toccato dalla policy.
+alter table public.cervellone_societa_attiva enable row level security;
+
+drop policy if exists "deny_anon_societa_attiva" on public.cervellone_societa_attiva;
+create policy "deny_anon_societa_attiva"
+  on public.cervellone_societa_attiva
+  for all
+  to anon, authenticated
+  using (false)
+  with check (false);

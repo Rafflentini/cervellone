@@ -11,6 +11,7 @@
 
 import { getSupabaseServer } from './supabase-server'
 import type { ToolDefinition } from './tools/types'
+import type { CodiceSocieta } from './societa'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
 import { GITHUB_TOOLS, executeGithubTool } from './github-tools'
 import { WEATHER_TOOLS, executeWeatherTool } from './weather-tool'
@@ -691,24 +692,29 @@ export function getAllToolNames(): string[] {
 /**
  * Gli strumenti contabili hanno bisogno di sapere PER QUALE SOCIETÀ operano.
  * Oggi dichiarano esplicitamente Restruktura: nel Task 4 la società verrà
- * risolta dalla conversazione (società attiva) e passata qui.
+ * risolta dalla conversazione: `/societa` sceglie, e da qui la scelta arriva
+ * agli strumenti contabili.
  *
- * L'esplicito è deliberato: un valore di default nella firma renderebbe
- * possibile chiamare senza dichiarare l'azienda, che è il difetto appena
- * rimosso — una chiamata futura finirebbe in silenzio sull'account sbagliato.
+ * Questo cablaggio NON è un dettaglio: senza, `/societa` sarebbe un interruttore
+ * che risponde "fatto" e non commuta nulla — il bot dichiarerebbe di lavorare
+ * per un'azienda mentre legge e scrive i dati dell'altra. Un sistema che non sa
+ * fare una cosa è onesto; uno che afferma di averla fatta è pericoloso.
  */
-const SOCIETA_PROVVISORIA = 'restruktura' as const
+async function societaDellaConversazione(conversationId?: string): Promise<CodiceSocieta> {
+  const { getSocietaAttiva } = await import('./societa-attiva')
+  return getSocietaAttiva(conversationId ?? '')
+}
 
-const executeFicWrapper = (name: string, input: Record<string, unknown>) =>
-  executeFicTool(name, input, SOCIETA_PROVVISORIA)
-const executeFicWriteWrapper = (name: string, input: Record<string, unknown>) =>
-  executeFicWriteTool(name, input, SOCIETA_PROVVISORIA)
-const executeRiconciliazioneWrapper = (name: string, input: Record<string, unknown>) =>
-  executeRiconciliazioneTool(name, input, SOCIETA_PROVVISORIA)
-const executePrimaNotaWrapper = (name: string, input: Record<string, unknown>) =>
-  executePrimaNotaTool(name, input, SOCIETA_PROVVISORIA)
-const executeMovimentiWrapper = (name: string, input: Record<string, unknown>) =>
-  executeMovimentiTool(name, input, SOCIETA_PROVVISORIA)
+const executeFicWrapper = async (name: string, input: Record<string, unknown>, conversationId?: string) =>
+  executeFicTool(name, input, await societaDellaConversazione(conversationId))
+const executeFicWriteWrapper = async (name: string, input: Record<string, unknown>, conversationId?: string) =>
+  executeFicWriteTool(name, input, await societaDellaConversazione(conversationId))
+const executeRiconciliazioneWrapper = async (name: string, input: Record<string, unknown>, conversationId?: string) =>
+  executeRiconciliazioneTool(name, input, await societaDellaConversazione(conversationId))
+const executePrimaNotaWrapper = async (name: string, input: Record<string, unknown>, conversationId?: string) =>
+  executePrimaNotaTool(name, input, await societaDellaConversazione(conversationId))
+const executeMovimentiWrapper = async (name: string, input: Record<string, unknown>, conversationId?: string) =>
+  executeMovimentiTool(name, input, await societaDellaConversazione(conversationId))
 
 const EXECUTORS = [executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 

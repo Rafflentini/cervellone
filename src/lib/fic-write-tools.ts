@@ -100,7 +100,19 @@ async function resolveVatId(aliquota: number, societa: CodiceSocieta): Promise<n
   return id
 }
 
-function normalizeRighe(value: unknown, fallbackDescrizione?: string): { righe?: RigaDocumento[]; error?: string } {
+/**
+ * `aliquotaDefault` viene dalla società, non è più il 22 cablato.
+ *
+ * Restruktura fa lavori edili (22%), La Real Estate alloggio (10%): una riga
+ * senza aliquota esplicita su una fattura La Real Estate usciva al 22%, cioè
+ * con l'IVA sbagliata su un documento fiscale vero — mentre il registro
+ * dichiarava 10 e il contesto lo annunciava pure al modello.
+ */
+function normalizeRighe(
+  value: unknown,
+  aliquotaDefault: number,
+  fallbackDescrizione?: string,
+): { righe?: RigaDocumento[]; error?: string } {
   const rawRows = Array.isArray(value) ? value : []
   if (rawRows.length === 0 && fallbackDescrizione) {
     return {
@@ -108,7 +120,7 @@ function normalizeRighe(value: unknown, fallbackDescrizione?: string): { righe?:
         name: fallbackDescrizione,
         qty: 1,
         net_price: 0,
-        aliquota: 22,
+        aliquota: aliquotaDefault,
       }],
     }
   }
@@ -122,10 +134,10 @@ function normalizeRighe(value: unknown, fallbackDescrizione?: string): { righe?:
 
     const qty = money(row.qty ?? row.quantita ?? 1)
     const netPrice = money(row.net_price ?? row.prezzo_unitario ?? row.prezzo ?? row.importo)
-    const vat = money(row.aliquota ?? row.vat ?? 22)
+    const vat = money(row.aliquota ?? row.vat ?? aliquotaDefault)
     if (qty <= 0) return { error: `quantita non valida per riga "${name}"` }
     if (netPrice < 0) return { error: `prezzo_unitario non valido per riga "${name}"` }
-    righe.push({ name, qty, net_price: netPrice, aliquota: vat || 22 })
+    righe.push({ name, qty, net_price: netPrice, aliquota: vat || aliquotaDefault })
   }
   return { righe }
 }
@@ -230,7 +242,11 @@ async function compilaDocumento(
   const data = cleanString(input.data) ?? todayISO()
   const descrizione = cleanString(input.descrizione)
   const note = cleanString(input.note) ?? (tipo === 'rapporto_intervento' ? descrizione : undefined)
-  const parsedRighe = normalizeRighe(input.righe, tipo === 'rapporto_intervento' ? descrizione : undefined)
+  const parsedRighe = normalizeRighe(
+    input.righe,
+    getSocieta(societa).aliquotaIvaDefault,
+    tipo === 'rapporto_intervento' ? descrizione : undefined,
+  )
   if (parsedRighe.error || !parsedRighe.righe) return fail(parsedRighe.error ?? 'righe non valide')
 
   const entity = await resolveClientEntity(cliente, societa)
@@ -274,11 +290,14 @@ async function compilaDocumento(
   })
 }
 
-async function listaBozzeFic(input: Record<string, unknown>): Promise<string> {
+async function listaBozzeFic(input: Record<string, unknown>, societa: CodiceSocieta): Promise<string> {
   const stato = cleanString(input.stato) as PendingStato | undefined
   let query = supabase
     .from('cervellone_fic_pending')
-    .select('id, tipo, descrizione, conferme, stato, fic_document_id, fic_url, created_at')
+    .select('id, tipo, descrizione, conferme, stato, fic_document_id, fic_url, created_at, societa')
+    // Era l'unica lettura contabile del ramo senza filtro: l'elenco mescolava
+    // le bozze delle due aziende.
+    .eq('societa', societa)
     .order('created_at', { ascending: false })
     .limit(50)
 
@@ -288,13 +307,16 @@ async function listaBozzeFic(input: Record<string, unknown>): Promise<string> {
   return ok({ count: data?.length ?? 0, bozze: data ?? [] })
 }
 
-async function eliminaBozzaFic(input: Record<string, unknown>): Promise<string> {
+async function eliminaBozzaFic(input: Record<string, unknown>, societa: CodiceSocieta): Promise<string> {
   const id = cleanString(input.id)
   if (!id) return fail('id richiesto')
 
   const { data, error } = await supabase
     .from('cervellone_fic_pending')
     .select('id, stato, fic_document_id, societa')
+    // Senza questo filtro, da un contesto Restruktura si potrebbe annullare —
+    // e cancellare da Fatture in Cloud — una bozza de La Real Estate.
+    .eq('societa', societa)
     .eq('id', id)
     .maybeSingle()
 
@@ -488,8 +510,8 @@ export async function executeFicWriteTool(
   try {
     if (name === 'compila_fattura_emessa') return compilaDocumento(input, 'fattura_emessa', societa)
     if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento', societa)
-    if (name === 'lista_bozze_fic') return listaBozzeFic(input)
-    if (name === 'elimina_bozza_fic') return eliminaBozzaFic(input)
+    if (name === 'lista_bozze_fic') return listaBozzeFic(input, societa)
+    if (name === 'elimina_bozza_fic') return eliminaBozzaFic(input, societa)
     return null
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err))

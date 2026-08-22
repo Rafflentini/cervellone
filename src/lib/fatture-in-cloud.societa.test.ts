@@ -9,13 +9,27 @@
  * Le due societa hanno account FIC separati, quindi anche il token deve venire
  * dalla societa richiesta.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { getCompanyId, getFicToken } from './fatture-in-cloud'
 
 const AMBIENTE_ORIGINALE = { ...process.env }
 
+/** Risposta finta di /user/companies. */
+function rispostaAziende(companies: Array<{ id: number; name: string }>) {
+  return {
+    status: 200,
+    ok: true,
+    json: async () => ({ data: { companies } }),
+    text: async () => '',
+  } as unknown as Response
+}
+
+const fetchFinto = vi.fn()
+
 describe('azienda e token per societa', () => {
   beforeEach(() => {
+    fetchFinto.mockReset()
+    vi.stubGlobal('fetch', fetchFinto)
     process.env.FIC_COMPANY_ID = '111'
     process.env.FIC_COMPANY_ID_LAREALESTATE = '222'
     process.env.FIC_ACCESS_TOKEN = 'token-restruktura'
@@ -24,6 +38,7 @@ describe('azienda e token per societa', () => {
 
   afterEach(() => {
     process.env = { ...AMBIENTE_ORIGINALE }
+    vi.unstubAllGlobals()
   })
 
   it('legge l id azienda della societa richiesta', async () => {
@@ -38,19 +53,45 @@ describe('azienda e token per societa', () => {
 
   // Il cuore del task: senza configurazione si FALLISCE dicendolo, non si
   // ripiega sull'azienda di un'altra societa.
-  it('se la variabile manca fallisce e nomina la variabile mancante', async () => {
+  it('senza variabile e senza aziende sull account, fallisce dicendolo', async () => {
     delete process.env.FIC_COMPANY_ID_LAREALESTATE
+    fetchFinto.mockResolvedValue(rispostaAziende([]))
+
     const r = await getCompanyId('larealestate')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.error).toContain('FIC_COMPANY_ID_LAREALESTATE')
+    if (!r.ok) expect(r.error).toContain('LA REAL ESTATE')
   })
 
-  it('non esiste piu un ripiego che interroga l elenco delle aziende', async () => {
+  // Il ripiego esiste ancora, ma solo nella forma che non puo sbagliare:
+  // una sola azienda sull'account = nessuna scelta da fare.
+  it('senza variabile, con UNA sola azienda sull account, la usa', async () => {
     delete process.env.FIC_COMPANY_ID
-    // Se ci fosse ancora il ripiego su /user/companies, questa chiamata
-    // proverebbe a raggiungere la rete. Deve invece fallire subito.
+    fetchFinto.mockResolvedValue(rispostaAziende([{ id: 710408, name: 'RESTRUKTURA' }]))
+
+    expect(await getCompanyId('restruktura')).toEqual({ ok: true, id: '710408' })
+  })
+
+  // Questo e il caso che il ramo esiste per impedire: con due aziende la scelta
+  // NON puo essere fatta dall'ordine della lista.
+  it('con DUE aziende rifiuta invece di prendere la prima', async () => {
+    delete process.env.FIC_COMPANY_ID
+    fetchFinto.mockResolvedValue(rispostaAziende([
+      { id: 111, name: 'RESTRUKTURA' },
+      { id: 222, name: 'ALTRA' },
+    ]))
+
     const r = await getCompanyId('restruktura')
     expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.error).toContain('2 aziende')
+      expect(r.error).toContain('FIC_COMPANY_ID')
+    }
+  })
+
+  it('la variabile, quando c e, vince sull elenco', async () => {
+    fetchFinto.mockResolvedValue(rispostaAziende([{ id: 999, name: 'SBAGLIATA' }]))
+    expect(await getCompanyId('restruktura')).toEqual({ ok: true, id: '111' })
+    expect(fetchFinto).not.toHaveBeenCalled()
   })
 
   it('le due societa non si contaminano: cambiare una non tocca l altra', async () => {

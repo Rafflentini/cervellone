@@ -22,6 +22,25 @@ alter table public.cervellone_riconciliazioni
   add column if not exists societa text not null default 'restruktura'
   check (societa in ('restruktura', 'larealestate'));
 
+-- Il vincolo di unicità va reso PER SOCIETÀ, e non è un dettaglio.
+--
+-- Oggi esiste `cervellone_movimenti_hash_key UNIQUE (hash)`, globale (verificato
+-- in produzione), e l'hash NON contiene la società: è calcolato su
+-- data|importo|descrizione|fonte|conto. Con due aziende che hanno un movimento
+-- identico — stesso giorno, stesso importo, stessa causale: succede — accadeva
+-- questo: il controllo anti-duplicato per società non trovava nulla, l'INSERT
+-- partiva, Postgres alzava 23505, e il codice interpretava quel rifiuto come
+-- "già presente" restituendo `false`. Il movimento spariva SENZA UN ERRORE.
+--
+-- È la stessa malattia che questo progetto esiste per curare, ricreata un piano
+-- più in basso. Le tabelle sono vuote, quindi la correzione non costa nulla.
+
+alter table public.cervellone_movimenti
+  drop constraint if exists cervellone_movimenti_hash_key;
+
+alter table public.cervellone_movimenti
+  add constraint cervellone_movimenti_societa_hash_key unique (societa, hash);
+
 -- Le letture filtrano sempre per società, quasi sempre insieme al periodo o
 -- alla data: l'indice segue quell'uso.
 create index if not exists idx_movimenti_societa_data
