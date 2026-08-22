@@ -11,6 +11,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 let rigaInserita: Record<string, unknown> | null = null
 let descrizioneSalvata = ''
+/** Ogni .eq(colonna, valore) usato dalle query, per provare i filtri. */
+const filtriUsati: Array<[string, unknown]> = []
 
 vi.mock('./supabase', () => ({
   supabase: {
@@ -18,6 +20,17 @@ vi.mock('./supabase', () => ({
       insert: (row: Record<string, unknown>) => {
         rigaInserita = row
         return { select: () => ({ single: async () => ({ data: { id: 'bozza-1' }, error: null }) }) }
+      },
+      // catena di sola lettura che REGISTRA i filtri usati
+      select: () => {
+        const b: Record<string, unknown> = {}
+        b.eq = (colonna: string, valore: unknown) => { filtriUsati.push([colonna, valore]); return b }
+        b.order = () => b
+        b.limit = () => b
+        b.maybeSingle = async () => ({ data: { id: 'bozza-1', stato: 'annullata', fic_document_id: null, societa: 'restruktura' }, error: null })
+        b.then = (risolvi: (v: { data: unknown[]; error: null }) => unknown) =>
+          Promise.resolve({ data: [], error: null }).then(risolvi)
+        return b
       },
       update: (row: Record<string, unknown>) => {
         if (typeof row.descrizione === 'string' && row.descrizione) descrizioneSalvata = row.descrizione
@@ -112,6 +125,24 @@ describe('le conferme dichiarano la societa', () => {
     )
 
     expect(descrizioneSalvata).toContain('IVA 22%')
+  })
+
+  // L'elenco delle bozze era l'unica lettura contabile senza filtro societa:
+  // mescolava le bozze delle due aziende.
+  it('l elenco delle bozze filtra per societa', async () => {
+    filtriUsati.length = 0
+    await executeFicWriteTool('lista_bozze_fic', {}, 'larealestate')
+
+    expect(filtriUsati).toContainEqual(['societa', 'larealestate'])
+  })
+
+  // Senza filtro, da un contesto Restruktura si poteva annullare — e cancellare
+  // da Fatture in Cloud — una bozza de La Real Estate.
+  it('la cancellazione di una bozza filtra per societa', async () => {
+    filtriUsati.length = 0
+    await executeFicWriteTool('elimina_bozza_fic', { id: 'bozza-1' }, 'restruktura')
+
+    expect(filtriUsati).toContainEqual(['societa', 'restruktura'])
   })
 
   // L'ultimo passaggio prima della creazione: ultima occasione per accorgersene.

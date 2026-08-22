@@ -21,7 +21,7 @@ const DEFAULT_SOCIETA: CodiceSocieta = 'restruktura'
  * La società in uso nella conversazione. Restruktura se non è mai stata scelta,
  * o se la lettura fallisce: un errore di database non deve cambiare azienda.
  */
-export async function getSocietaAttiva(conversationId: string): Promise<CodiceSocieta> {
+export async function getSocietaAttiva(conversationId?: string): Promise<CodiceSocieta> {
   if (!conversationId) return DEFAULT_SOCIETA
   try {
     const { data, error } = await getSupabaseServer()

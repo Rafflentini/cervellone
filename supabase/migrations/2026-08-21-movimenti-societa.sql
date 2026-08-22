@@ -38,6 +38,13 @@ alter table public.cervellone_riconciliazioni
 alter table public.cervellone_movimenti
   drop constraint if exists cervellone_movimenti_hash_key;
 
+-- Idempotente: Postgres non ha ADD CONSTRAINT IF NOT EXISTS, quindi si toglie
+-- prima anche il vincolo nuovo. Senza, una seconda esecuzione fallirebbe a
+-- meta file — e in questo progetto le migration sono state applicate a mano
+-- piu di una volta.
+alter table public.cervellone_movimenti
+  drop constraint if exists cervellone_movimenti_societa_hash_key;
+
 alter table public.cervellone_movimenti
   add constraint cervellone_movimenti_societa_hash_key unique (societa, hash);
 

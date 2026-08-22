@@ -702,19 +702,46 @@ export function getAllToolNames(): string[] {
  */
 async function societaDellaConversazione(conversationId?: string): Promise<CodiceSocieta> {
   const { getSocietaAttiva } = await import('./societa-attiva')
-  return getSocietaAttiva(conversationId ?? '')
+  return getSocietaAttiva(conversationId)
 }
 
-const executeFicWrapper = async (name: string, input: Record<string, unknown>, conversationId?: string) =>
-  executeFicTool(name, input, await societaDellaConversazione(conversationId))
-const executeFicWriteWrapper = async (name: string, input: Record<string, unknown>, conversationId?: string) =>
-  executeFicWriteTool(name, input, await societaDellaConversazione(conversationId))
-const executeRiconciliazioneWrapper = async (name: string, input: Record<string, unknown>, conversationId?: string) =>
-  executeRiconciliazioneTool(name, input, await societaDellaConversazione(conversationId))
-const executePrimaNotaWrapper = async (name: string, input: Record<string, unknown>, conversationId?: string) =>
-  executePrimaNotaTool(name, input, await societaDellaConversazione(conversationId))
-const executeMovimentiWrapper = async (name: string, input: Record<string, unknown>, conversationId?: string) =>
-  executeMovimentiTool(name, input, await societaDellaConversazione(conversationId))
+/**
+ * Senza conversazione la società non è determinabile, e un'operazione contabile
+ * NON deve ricadere su un default: è come sceglierla a caso, cioè il difetto che
+ * questo ramo elimina. Meglio rifiutare dicendolo.
+ *
+ * Oggi questo cammino non è raggiungibile — l'unico chiamante senza
+ * conversazione invoca un tool non contabile, e il cron mensile dichiara la
+ * società esplicitamente (verificato). Ma "oggi non raggiungibile" è una
+ * garanzia indiretta, e le garanzie indirette si rompono quando qualcun altro
+ * cambia il chiamante.
+ */
+function senzaConversazione(name: string): string {
+  return JSON.stringify({
+    ok: false,
+    error: `${name}: societa non determinabile senza conversazione. Usa /societa per dichiararla.`,
+  })
+}
+
+const contabile = (
+  esecutore: (n: string, i: Record<string, unknown>, s: CodiceSocieta) => Promise<string | null>,
+  appartiene: (n: string) => boolean,
+) => async (name: string, input: Record<string, unknown>, conversationId?: string): Promise<string | null> => {
+  if (!appartiene(name)) return null
+  if (!conversationId) return senzaConversazione(name)
+  return esecutore(name, input, await societaDellaConversazione(conversationId))
+}
+
+const nomiDi = (tools: ToolDefinition[]) => {
+  const set = new Set(tools.map((t) => t.name))
+  return (n: string) => set.has(n)
+}
+
+const executeFicWrapper = contabile(executeFicTool, (n) => n.startsWith('fic_'))
+const executeFicWriteWrapper = contabile(executeFicWriteTool, nomiDi(FIC_WRITE_TOOLS))
+const executeRiconciliazioneWrapper = contabile(executeRiconciliazioneTool, nomiDi(RICONCILIAZIONE_TOOLS))
+const executePrimaNotaWrapper = contabile(executePrimaNotaTool, nomiDi(PRIMA_NOTA_TOOLS))
+const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI_TOOLS))
 
 const EXECUTORS = [executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
