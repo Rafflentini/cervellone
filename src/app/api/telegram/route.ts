@@ -491,6 +491,49 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    // ─── /societa [nome] — quale delle due societa per le operazioni contabili ───
+    if (userText === '/societa' || userText.startsWith('/societa ')) {
+      const convId = chatIdToUuid(chatId)
+      const { getSocietaAttiva, setSocietaAttiva } = await import('@/lib/societa-attiva')
+      const { getSocieta, listaSocieta, risolviSocieta } = await import('@/lib/societa')
+
+      const argomento = userText.startsWith('/societa ') ? userText.slice('/societa '.length).trim() : ''
+
+      if (!argomento) {
+        const attuale = getSocieta(await getSocietaAttiva(convId))
+        const elenco = listaSocieta()
+          .map((s) => `• ${s.denominazione} — /societa ${s.codice}`)
+          .join('\n')
+        await sendTelegramMessage(
+          chatId,
+          `🏢 Societa attiva: *${attuale.denominazione}* (P.IVA ${attuale.piva})\n\nPer cambiare:\n${elenco}`,
+        )
+        return NextResponse.json({ ok: true })
+      }
+
+      // Se il testo non nomina UNA societa con certezza non si indovina: una
+      // deduzione sbagliata qui produce documenti fiscali dell'azienda sbagliata.
+      const codice = risolviSocieta(argomento)
+      if (!codice) {
+        const elenco = listaSocieta().map((s) => `/societa ${s.codice}`).join('  ·  ')
+        await sendTelegramMessage(
+          chatId,
+          `⛔ Non ho capito quale societa. Non tiro a indovinare: usa uno di questi.\n${elenco}`,
+        )
+        return NextResponse.json({ ok: true })
+      }
+
+      const esito = await setSocietaAttiva(convId, codice)
+      const s = getSocieta(codice)
+      await sendTelegramMessage(
+        chatId,
+        esito.ok
+          ? `✅ Societa attiva: *${s.denominazione}* (P.IVA ${s.piva}) — IVA di riferimento ${s.aliquotaIvaDefault}%.`
+          : `⛔ Errore: ${esito.error}`,
+      )
+      return NextResponse.json({ ok: true })
+    }
+
     // ─── /ricorda <testo> — salva in memoria esplicita (sub-progetto B) ───
     if (userText.startsWith('/ricorda ') || userText === '/ricorda') {
       const testo = userText.startsWith('/ricorda ') ? userText.slice('/ricorda '.length).trim() : ''

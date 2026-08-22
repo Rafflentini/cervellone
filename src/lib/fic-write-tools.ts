@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { ficGet, getCompanyId, creaDocumentoFIC, eliminaDocumentoFIC } from './fatture-in-cloud'
+import { getSocieta, type CodiceSocieta } from './societa'
 
 interface ToolDefinition {
   name: string
@@ -36,7 +37,8 @@ interface RigaDocumentoPayload {
   vat: { id: number }
 }
 
-const vatIdCache = new Map<number, number>()
+/** Chiave: `${societa}:${aliquota}` — gli id IVA sono per azienda. */
+const vatIdCache = new Map<string, number>()
 
 function ok(payload: Record<string, unknown>): string {
   return JSON.stringify({ ok: true, ...payload })
@@ -76,13 +78,17 @@ function escapeFicQuery(value: string): string {
   return value.replace(/[\\']/g, '')
 }
 
-async function resolveVatId(aliquota: number): Promise<number | null> {
-  if (vatIdCache.has(aliquota)) return vatIdCache.get(aliquota) ?? null
+async function resolveVatId(aliquota: number, societa: CodiceSocieta): Promise<number | null> {
+  // La cache va indicizzata ANCHE per società: gli id delle aliquote IVA sono
+  // per azienda, quindi una cache per sola aliquota restituirebbe l'id
+  // dell'altra società — e la fattura uscirebbe con l'IVA sbagliata.
+  const chiave = `${societa}:${aliquota}`
+  if (vatIdCache.has(chiave)) return vatIdCache.get(chiave) ?? null
 
-  const company = await getCompanyId()
+  const company = await getCompanyId(societa)
   if (!company.ok) return null
 
-  const r = await ficGet(`/c/${company.id}/vat_types`)
+  const r = await ficGet(`/c/${company.id}/vat_types`, undefined, societa)
   if (!r.ok) return null
 
   const list = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
@@ -90,11 +96,23 @@ async function resolveVatId(aliquota: number): Promise<number | null> {
   const id = parseNumber(match?.id)
   if (id === null) return null
 
-  vatIdCache.set(aliquota, id)
+  vatIdCache.set(chiave, id)
   return id
 }
 
-function normalizeRighe(value: unknown, fallbackDescrizione?: string): { righe?: RigaDocumento[]; error?: string } {
+/**
+ * `aliquotaDefault` viene dalla società, non è più il 22 cablato.
+ *
+ * Restruktura fa lavori edili (22%), La Real Estate alloggio (10%): una riga
+ * senza aliquota esplicita su una fattura La Real Estate usciva al 22%, cioè
+ * con l'IVA sbagliata su un documento fiscale vero — mentre il registro
+ * dichiarava 10 e il contesto lo annunciava pure al modello.
+ */
+function normalizeRighe(
+  value: unknown,
+  aliquotaDefault: number,
+  fallbackDescrizione?: string,
+): { righe?: RigaDocumento[]; error?: string } {
   const rawRows = Array.isArray(value) ? value : []
   if (rawRows.length === 0 && fallbackDescrizione) {
     return {
@@ -102,7 +120,7 @@ function normalizeRighe(value: unknown, fallbackDescrizione?: string): { righe?:
         name: fallbackDescrizione,
         qty: 1,
         net_price: 0,
-        aliquota: 22,
+        aliquota: aliquotaDefault,
       }],
     }
   }
@@ -116,22 +134,25 @@ function normalizeRighe(value: unknown, fallbackDescrizione?: string): { righe?:
 
     const qty = money(row.qty ?? row.quantita ?? 1)
     const netPrice = money(row.net_price ?? row.prezzo_unitario ?? row.prezzo ?? row.importo)
-    const vat = money(row.aliquota ?? row.vat ?? 22)
+    const vat = money(row.aliquota ?? row.vat ?? aliquotaDefault)
     if (qty <= 0) return { error: `quantita non valida per riga "${name}"` }
     if (netPrice < 0) return { error: `prezzo_unitario non valido per riga "${name}"` }
-    righe.push({ name, qty, net_price: netPrice, aliquota: vat || 22 })
+    righe.push({ name, qty, net_price: netPrice, aliquota: vat || aliquotaDefault })
   }
   return { righe }
 }
 
-async function resolveClientEntity(cliente: string): Promise<{ ok: true; entity: Record<string, unknown> } | { ok: false; error: string }> {
-  const company = await getCompanyId()
+async function resolveClientEntity(
+  cliente: string,
+  societa: CodiceSocieta,
+): Promise<{ ok: true; entity: Record<string, unknown> } | { ok: false; error: string }> {
+  const company = await getCompanyId(societa)
   if (!company.ok) return { ok: false, error: company.error }
 
   const r = await ficGet(`/c/${company.id}/entities/clients`, {
     q: `name contains '${escapeFicQuery(cliente)}'`,
     per_page: 5,
-  })
+  }, societa)
   if (!r.ok) return { ok: false, error: r.error }
 
   const list = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
@@ -147,14 +168,18 @@ function descriviDocumento(input: {
   righe: RigaDocumento[]
   note?: string
   id: string
+  societa: CodiceSocieta
 }): string {
   const titolo = input.tipo === 'fattura_emessa' ? 'Bozza fattura emessa FIC' : 'Bozza rapporto intervento FIC'
   const righe = input.righe
     .map(row => `- ${row.name}: ${row.qty} x ${row.net_price} + IVA ${row.aliquota}%`)
     .join('\n')
   const totaleNetto = Math.round(input.righe.reduce((sum, row) => sum + row.qty * row.net_price, 0) * 100) / 100
+  const s = getSocieta(input.societa)
   return [
     titolo,
+    // Prima riga dopo il titolo: e il testo che l'Ingegnere legge davvero.
+    `SOCIETA EMITTENTE: ${s.denominazione} (P.IVA ${s.piva})`,
     `Cliente: ${input.cliente}`,
     `Data: ${input.data}`,
     `Righe:\n${righe}`,
@@ -173,6 +198,7 @@ async function salvaPending(input: {
   data: string
   righe: RigaDocumento[]
   note?: string
+  societa: CodiceSocieta
 }): Promise<{ ok: true; row: Pick<PendingRow, 'id' | 'descrizione'> } | { ok: false; error: string }> {
   const { data, error } = await supabase
     .from('cervellone_fic_pending')
@@ -182,6 +208,9 @@ async function salvaPending(input: {
       descrizione: '',
       stato: 'in_attesa',
       conferme: 0,
+      // La società viaggia CON la bozza: la conferma avviene in un momento
+      // successivo, e senza questo dato dovrebbe indovinare l'azienda.
+      societa: input.societa,
     })
     .select('id')
     .single()
@@ -202,22 +231,30 @@ async function salvaPending(input: {
   return { ok: true, row: updated.data as Pick<PendingRow, 'id' | 'descrizione'> }
 }
 
-async function compilaDocumento(input: Record<string, unknown>, tipo: PendingTipo): Promise<string> {
+async function compilaDocumento(
+  input: Record<string, unknown>,
+  tipo: PendingTipo,
+  societa: CodiceSocieta,
+): Promise<string> {
   const cliente = cleanString(input.cliente)
   if (!cliente) return fail('cliente richiesto')
 
   const data = cleanString(input.data) ?? todayISO()
   const descrizione = cleanString(input.descrizione)
   const note = cleanString(input.note) ?? (tipo === 'rapporto_intervento' ? descrizione : undefined)
-  const parsedRighe = normalizeRighe(input.righe, tipo === 'rapporto_intervento' ? descrizione : undefined)
+  const parsedRighe = normalizeRighe(
+    input.righe,
+    getSocieta(societa).aliquotaIvaDefault,
+    tipo === 'rapporto_intervento' ? descrizione : undefined,
+  )
   if (parsedRighe.error || !parsedRighe.righe) return fail(parsedRighe.error ?? 'righe non valide')
 
-  const entity = await resolveClientEntity(cliente)
+  const entity = await resolveClientEntity(cliente, societa)
   if (!entity.ok) return fail(entity.error)
 
   const itemsList: RigaDocumentoPayload[] = []
   for (const riga of parsedRighe.righe) {
-    const vatId = await resolveVatId(riga.aliquota)
+    const vatId = await resolveVatId(riga.aliquota, societa)
     if (vatId === null) return fail(`aliquota ${riga.aliquota}% non trovata tra le aliquote IVA di Fatture in Cloud`)
     itemsList.push({
       name: riga.name,
@@ -236,9 +273,15 @@ async function compilaDocumento(input: Record<string, unknown>, tipo: PendingTip
   }
   if (note) payload.notes = note
 
-  const pending = await salvaPending({ tipo, payload, cliente, data, righe: parsedRighe.righe, note })
+  const pending = await salvaPending({ tipo, payload, cliente, data, righe: parsedRighe.righe, note, societa })
   if (!pending.ok) return fail(pending.error)
+  const s = getSocieta(societa)
   return ok({
+    // La società apre la risposta, non la chiude: e il primo dato che
+    // l'Ingegnere legge prima di confermare. La difesa contro l'azienda
+    // sbagliata non e il codice — e che lui veda il nome errato PRIMA del /ok.
+    societa: s.denominazione,
+    partita_iva: s.piva,
     id: pending.row.id,
     stato: 'in_attesa',
     anteprima: pending.row.descrizione,
@@ -247,11 +290,14 @@ async function compilaDocumento(input: Record<string, unknown>, tipo: PendingTip
   })
 }
 
-async function listaBozzeFic(input: Record<string, unknown>): Promise<string> {
+async function listaBozzeFic(input: Record<string, unknown>, societa: CodiceSocieta): Promise<string> {
   const stato = cleanString(input.stato) as PendingStato | undefined
   let query = supabase
     .from('cervellone_fic_pending')
-    .select('id, tipo, descrizione, conferme, stato, fic_document_id, fic_url, created_at')
+    .select('id, tipo, descrizione, conferme, stato, fic_document_id, fic_url, created_at, societa')
+    // Era l'unica lettura contabile del ramo senza filtro: l'elenco mescolava
+    // le bozze delle due aziende.
+    .eq('societa', societa)
     .order('created_at', { ascending: false })
     .limit(50)
 
@@ -261,24 +307,29 @@ async function listaBozzeFic(input: Record<string, unknown>): Promise<string> {
   return ok({ count: data?.length ?? 0, bozze: data ?? [] })
 }
 
-async function eliminaBozzaFic(input: Record<string, unknown>): Promise<string> {
+async function eliminaBozzaFic(input: Record<string, unknown>, societa: CodiceSocieta): Promise<string> {
   const id = cleanString(input.id)
   if (!id) return fail('id richiesto')
 
   const { data, error } = await supabase
     .from('cervellone_fic_pending')
-    .select('id, stato, fic_document_id')
+    .select('id, stato, fic_document_id, societa')
+    // Senza questo filtro, da un contesto Restruktura si potrebbe annullare —
+    // e cancellare da Fatture in Cloud — una bozza de La Real Estate.
+    .eq('societa', societa)
     .eq('id', id)
     .maybeSingle()
 
   if (error) return fail(error.message)
   if (!data) return fail('bozza FIC non trovata', { id })
 
-  const row = data as Pick<PendingRow, 'id' | 'stato' | 'fic_document_id'>
+  const row = data as Pick<PendingRow, 'id' | 'stato' | 'fic_document_id'> & { societa: CodiceSocieta }
   if (row.stato === 'annullata') return ok({ id, stato: 'gia_annullata' })
   if (row.stato === 'creata') {
     if (!row.fic_document_id) return fail('bozza creata senza fic_document_id', { id })
-    const deleted = await eliminaDocumentoFIC(row.fic_document_id)
+    // La società viene dalla RIGA, non dal contesto corrente: la bozza puo
+    // essere stata compilata quando era attiva un'altra società.
+    const deleted = await eliminaDocumentoFIC(row.fic_document_id, row.societa)
     if (!deleted.ok) return fail(deleted.error, { id })
   }
 
@@ -304,11 +355,16 @@ export async function confirmFicStep1(id: string): Promise<string> {
     .eq('id', cleanId)
     .eq('stato', 'in_attesa')
     .eq('conferme', 0)
-    .select('id')
+    .select('id, societa')
 
   if (error) return `Errore conferma bozza FIC: ${error.message}`
   if (!data?.length) return 'Bozza FIC non trovata o gia confermata/elaborata.'
-  return `Prima conferma registrata. Conferma DEFINITIVA -> /fic_ok2_${cleanId}`
+
+  // Il nome dell'azienda va ripetuto QUI, sull'ultimo passaggio prima della
+  // creazione: e l'ultima occasione in cui l'Ingegnere puo accorgersi che la
+  // fattura sta per nascere dalla societa sbagliata.
+  const s = getSocieta((data[0] as { societa: CodiceSocieta }).societa)
+  return `Prima conferma registrata per *${s.denominazione}* (P.IVA ${s.piva}).\nConferma DEFINITIVA -> /fic_ok2_${cleanId}`
 }
 
 export async function confirmFicStep2(id: string): Promise<string> {
@@ -317,14 +373,14 @@ export async function confirmFicStep2(id: string): Promise<string> {
 
   const { data, error } = await supabase
     .from('cervellone_fic_pending')
-    .select('id, payload, conferme, stato')
+    .select('id, payload, conferme, stato, societa')
     .eq('id', cleanId)
     .maybeSingle()
 
   if (error) return `Errore caricamento bozza FIC: ${error.message}`
   if (!data) return 'Bozza FIC non trovata.'
 
-  const row = data as Pick<PendingRow, 'id' | 'payload' | 'conferme' | 'stato'>
+  const row = data as Pick<PendingRow, 'id' | 'payload' | 'conferme' | 'stato'> & { societa: CodiceSocieta }
   if (row.stato !== 'in_attesa') return 'Bozza FIC gia elaborata.'
   if (Number(row.conferme) < 1) return `Serve prima la prima conferma -> /fic_ok_${cleanId}`
 
@@ -339,7 +395,10 @@ export async function confirmFicStep2(id: string): Promise<string> {
   if (claim.error) return `Errore claim bozza FIC: ${claim.error.message}`
   if (!claim.data?.length) return 'Bozza gia in elaborazione o elaborata.'
 
-  const created = await creaDocumentoFIC(row.payload)
+  // Società dalla RIGA, non dal contesto: fra la compilazione e questa conferma
+  // puo essere cambiata la società attiva, e il documento deve nascere
+  // nell'azienda per cui e stato compilato.
+  const created = await creaDocumentoFIC(row.payload, row.societa)
   if (!created.ok) {
     await supabase
       .from('cervellone_fic_pending')
@@ -443,12 +502,16 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
   },
 ]
 
-export async function executeFicWriteTool(name: string, input: Record<string, unknown>): Promise<string | null> {
+export async function executeFicWriteTool(
+  name: string,
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string | null> {
   try {
-    if (name === 'compila_fattura_emessa') return compilaDocumento(input, 'fattura_emessa')
-    if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento')
-    if (name === 'lista_bozze_fic') return listaBozzeFic(input)
-    if (name === 'elimina_bozza_fic') return eliminaBozzaFic(input)
+    if (name === 'compila_fattura_emessa') return compilaDocumento(input, 'fattura_emessa', societa)
+    if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento', societa)
+    if (name === 'lista_bozze_fic') return listaBozzeFic(input, societa)
+    if (name === 'elimina_bozza_fic') return eliminaBozzaFic(input, societa)
     return null
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err))

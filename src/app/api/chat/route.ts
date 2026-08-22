@@ -236,13 +236,20 @@ export async function POST(request: NextRequest) {
   // Best-effort: '' se non c'è progetto attivo / conversationId assente / errore.
   const projectContext = await buildActiveProjectContext(conversationId ?? '')
 
+  // Società attiva: stessa cornice del path Telegram. Va iniettata anche qui,
+  // altrimenti dall'app web le operazioni contabili non saprebbero per quale
+  // azienda lavorano — e il modello non ripeterebbe il nome nelle conferme.
+  const { getSocietaAttiva, bloccoSocietaAttiva } = await import('@/lib/societa-attiva')
+  const { getSocieta } = await import('@/lib/societa')
+  const societaContext = bloccoSocietaAttiva(getSocieta(await getSocietaAttiva(conversationId ?? '')))
+
   // Injection modelli documento: INCONDIZIONATA (non dipende dal flag working_memory_enabled).
   // Cheap: cache 5 min + un solo loop regex sui template. Best-effort: '' su errore.
   const templateContext = await buildTemplateContext(userQuery)
 
   const artifactsPointer = await buildArtifactsPointer(conversationId ?? '')
   const imagesPointer = await buildImagesPointer(conversationId ?? '')
-  const workingContext = [projectContext, flaggedWorkingContext, templateContext, artifactsPointer, imagesPointer]
+  const workingContext = [societaContext, projectContext, flaggedWorkingContext, templateContext, artifactsPointer, imagesPointer]
     .filter((b) => b && b.trim())
     .join('\n\n') || undefined
 

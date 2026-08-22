@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import crypto from 'crypto'
 import { listFiles, downloadFileBase64 } from './drive'
 import { supabase } from './supabase'
+import type { CodiceSocieta } from './societa'
 
 interface ToolDefinition {
   name: string
@@ -197,7 +198,7 @@ export async function estraiMovimentiDaPdf(
 
 async function insertMovement(
   movimento: MovimentoEstratto,
-  meta: { driveFileId: string; driveUrl: string; periodo: string | null; fonteOverride: Fonte | null },
+  meta: { driveFileId: string; driveUrl: string; periodo: string | null; fonteOverride: Fonte | null; societa: CodiceSocieta },
 ): Promise<boolean> {
   const fonte = meta.fonteOverride ?? movimento.fonte
   const periodoEff = meta.periodo ?? movimento.data.slice(0, 7)
@@ -206,6 +207,10 @@ async function insertMovement(
   const existing = await supabase
     .from('cervellone_movimenti')
     .select('id')
+    // Il controllo anti-duplicato vale DENTRO la società: due aziende possono
+    // avere movimenti identici (stesso importo, stessa causale) e scartare il
+    // secondo lo farebbe sparire dalla contabilità a cui appartiene.
+    .eq('societa', meta.societa)
     .eq('hash', hash)
     .maybeSingle()
 
@@ -226,6 +231,7 @@ async function insertMovement(
     hash,
     confidenza: 0.8,
     stato: 'attivo',
+    societa: meta.societa,
   })
 
   if (error) {
@@ -235,7 +241,7 @@ async function insertMovement(
   return true
 }
 
-async function executeEstraiMovimenti(input: Record<string, unknown>): Promise<string> {
+async function executeEstraiMovimenti(input: Record<string, unknown>, societa: CodiceSocieta): Promise<string> {
   const folderId = cleanString(input.folder_id)
   const fonteOverride = parseFonte(input.fonte)
   const periodo = cleanString(input.periodo) ?? null
@@ -274,6 +280,7 @@ async function executeEstraiMovimenti(input: Record<string, unknown>): Promise<s
         driveUrl: `https://drive.google.com/file/d/${file.id}/view`,
         periodo,
         fonteOverride,
+        societa,
       })
       if (!inserted) continue
       nuoviFile += 1
@@ -298,7 +305,7 @@ async function executeEstraiMovimenti(input: Record<string, unknown>): Promise<s
   })
 }
 
-async function executeListaMovimenti(input: Record<string, unknown>): Promise<string> {
+async function executeListaMovimenti(input: Record<string, unknown>, societa: CodiceSocieta): Promise<string> {
   const periodo = cleanString(input.periodo)
   const dataDal = cleanString(input.data_dal)
   const dataAl = cleanString(input.data_al)
@@ -311,6 +318,7 @@ async function executeListaMovimenti(input: Record<string, unknown>): Promise<st
   let query = supabase
     .from('cervellone_movimenti')
     .select('id, data, importo, direzione, descrizione, controparte, fonte, conto, periodo, drive_url')
+    .eq('societa', societa)
     .eq('stato', 'attivo')
     .order('data', { ascending: false })
     .limit(100)
@@ -367,8 +375,12 @@ export const MOVIMENTI_TOOLS: ToolDefinition[] = [
   },
 ]
 
-export async function executeMovimentiTool(name: string, input: Record<string, unknown>): Promise<string | null> {
-  if (name === 'estrai_movimenti') return executeEstraiMovimenti(input)
-  if (name === 'lista_movimenti') return executeListaMovimenti(input)
+export async function executeMovimentiTool(
+  name: string,
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string | null> {
+  if (name === 'estrai_movimenti') return executeEstraiMovimenti(input, societa)
+  if (name === 'lista_movimenti') return executeListaMovimenti(input, societa)
   return null
 }

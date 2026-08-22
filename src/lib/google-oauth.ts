@@ -200,17 +200,29 @@ export async function exchangeCodeAndStore(code: string): Promise<{ email: strin
  * sta scadendo; se è fresco è un no-op in memoria, e quando rinfresca fa il
  * round-trip che la prima chiamata API avrebbe fatto comunque.
  */
-export async function getAuthorizedClient(): Promise<OAuth2Client | null> {
+/**
+ * `accountEmail` è obbligatoria di proposito.
+ *
+ * Prima si prendeva la riga con `updated_at` più recente. Ma il listener qui
+ * sotto riscrive `updated_at` a ogni rinnovo automatico del token, che avviene
+ * in sottofondo: con due caselle collegate, quale fosse quella attiva cambiava
+ * DA SOLO, in modo intermittente e senza errori. Questa funzione serve Drive,
+ * Gmail, Calendar e il salvataggio documenti, quindi il danno era leggere la
+ * posta sbagliata o scrivere un documento nel Drive dell'altra società.
+ *
+ * Un parametro con default ricreerebbe il difetto: chi non lo passa tornerebbe
+ * a operare su una casella non scelta da nessuno.
+ */
+export async function getAuthorizedClient(accountEmail: string): Promise<OAuth2Client | null> {
   try {
     const { data, error } = await getSupabaseServer()
       .from('google_oauth_credentials')
       .select('refresh_token, access_token, access_token_expires_at')
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .single()
+      .eq('account_email', accountEmail)
+      .maybeSingle()
 
     if (error || !data) {
-      console.log('[OAUTH] no credentials in DB, fallback to Service Account')
+      console.warn(`[OAUTH] nessuna credenziale per ${accountEmail}: autorizzala prima di usarla`)
       return null
     }
 

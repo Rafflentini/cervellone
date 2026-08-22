@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { createSpreadsheetInFolder } from './drive'
+import type { CodiceSocieta } from './societa'
 
 interface ToolDefinition {
   name: string
@@ -52,7 +53,7 @@ function money(value: unknown): number {
   return Math.round(parseNumber(value) * 100) / 100
 }
 
-async function generaPrimaNota(input: Record<string, unknown>): Promise<string> {
+async function generaPrimaNota(input: Record<string, unknown>, societa: CodiceSocieta): Promise<string> {
   const periodo = cleanString(input.periodo)
   const folderId = cleanString(input.folder_id)
   const saldoIniziale = money(input.saldo_iniziale)
@@ -63,6 +64,9 @@ async function generaPrimaNota(input: Record<string, unknown>): Promise<string> 
   const { data, error } = await supabase
     .from('cervellone_movimenti')
     .select('id, data, importo, direzione, descrizione, controparte, fonte, conto, periodo')
+    // Il filtro per società e la ragione di questa tabella: senza, la prima nota
+    // di un'azienda conterrebbe i movimenti dell'altra.
+    .eq('societa', societa)
     .eq('periodo', periodo)
     .eq('stato', 'attivo')
     .order('data', { ascending: true })
@@ -77,6 +81,7 @@ async function generaPrimaNota(input: Record<string, unknown>): Promise<string> 
     ? await supabase
       .from('cervellone_riconciliazioni')
       .select('movimento_id, fattura_numero, importo_abbinato')
+      .eq('societa', societa)
       .in('movimento_id', movimentoIds)
       .eq('stato', 'confermata')
     : { data: [], error: null }
@@ -161,10 +166,14 @@ export const PRIMA_NOTA_TOOLS: ToolDefinition[] = [
   },
 ]
 
-export async function executePrimaNotaTool(name: string, input: Record<string, unknown>): Promise<string | null> {
+export async function executePrimaNotaTool(
+  name: string,
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string | null> {
   if (name === 'genera_prima_nota') {
     try {
-      return await generaPrimaNota(input)
+      return await generaPrimaNota(input, societa)
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err))
     }

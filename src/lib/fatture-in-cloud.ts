@@ -4,6 +4,8 @@
 // creaDocumentoFIC ed eliminaDocumentoFIC. NESSUNA trasmissione SdI è implementata
 // per costruzione: le creazioni forzano e_invoice:false e omettono sempre number.
 
+import { getSocieta, type CodiceSocieta } from './societa'
+
 const FIC_BASE = 'https://api-v2.fattureincloud.it'
 
 interface ToolDefinition {
@@ -17,14 +19,30 @@ type FicResult = { ok: true; data: any } | { ok: false; error: string }
 type FicCreateResult = { ok: true; id: string; url: string | null } | { ok: false; error: string }
 type FicDeleteResult = { ok: true } | { ok: false; error: string }
 
-let _companyId: string | null = null
+/**
+ * Token FIC della società indicata. Null se la variabile non è configurata.
+ *
+ * Le due società hanno account Fatture in Cloud separati, quindi token distinti:
+ * leggere un unico `FIC_ACCESS_TOKEN` significherebbe operare sempre sull'account
+ * sbagliato per una delle due.
+ */
+export function getFicToken(societa: CodiceSocieta): string | null {
+  return process.env[getSocieta(societa).ficTokenEnv] || null
+}
 
+/**
+ * NB: `societa` è obbligatoria di proposito. Un default renderebbe possibile
+ * chiamare senza dichiarare l'azienda, che è il difetto rimosso da questo task:
+ * una chiamata futura finirebbe in silenzio sull'account sbagliato.
+ */
 export async function ficGet(
   path: string,
-  query?: Record<string, string | number | undefined>,
+  query: Record<string, string | number | undefined> | undefined,
+  societa: CodiceSocieta,
 ): Promise<FicResult> {
-  const token = process.env.FIC_ACCESS_TOKEN
-  if (!token) return { ok: false, error: 'FIC_ACCESS_TOKEN non configurato su Vercel.' }
+  const s = getSocieta(societa)
+  const token = getFicToken(societa)
+  if (!token) return { ok: false, error: `${s.ficTokenEnv} non configurato su Vercel (${s.denominazione}).` }
   let url = FIC_BASE + path
   if (query) {
     const qs = Object.entries(query)
@@ -45,23 +63,58 @@ export async function ficGet(
   }
 }
 
-export async function getCompanyId(): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
-  if (process.env.FIC_COMPANY_ID) return { ok: true, id: process.env.FIC_COMPANY_ID }
-  if (_companyId) return { ok: true, id: _companyId }
-  const r = await ficGet('/user/companies')
+/**
+ * Id azienda su Fatture in Cloud per la società indicata.
+ *
+ * Il vecchio ripiego prendeva `companies[0]`, cioè la PRIMA azienda restituita
+ * dall'API: una scelta fatta dall'ordine di risposta, non da noi. Rimosso.
+ *
+ * Ma toglierlo e basta spegnerebbe la contabilità di Restruktura, che oggi
+ * funziona proprio grazie a quel ripiego (`FIC_COMPANY_ID` non è configurata in
+ * produzione). Quindi il ripiego resta, in una forma che non può sbagliare:
+ * **si accetta l'azienda solo se ne esiste UNA SOLA** sull'account. Con una
+ * sola azienda non c'è scelta da fare; con due o più bisogna dichiararla,
+ * perché li' sceglierne una a caso vuol dire emettere fatture da una partita
+ * IVA sbagliata — e una fattura elettronica trasmessa non si cancella.
+ *
+ * Niente cache di modulo: la lettura è una variabile d'ambiente, e una cache
+ * globale con due società restituirebbe l'id dell'altra.
+ */
+export async function getCompanyId(
+  societa: CodiceSocieta,
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const s = getSocieta(societa)
+  const id = process.env[s.ficCompanyIdEnv]
+  if (id) return { ok: true, id }
+
+  const r = await ficGet('/user/companies', undefined, societa)
   if (!r.ok) return { ok: false, error: r.error }
+
   const companies = r.data?.data?.companies
-  const first = Array.isArray(companies) && companies.length ? companies[0] : null
-  if (!first?.id) return { ok: false, error: 'company_id non trovato in /user/companies' }
-  _companyId = String(first.id)
-  return { ok: true, id: _companyId }
+  const elenco = Array.isArray(companies) ? companies : []
+
+  if (elenco.length === 1 && elenco[0]?.id) {
+    return { ok: true, id: String(elenco[0].id) }
+  }
+  if (elenco.length > 1) {
+    return {
+      ok: false,
+      error: `${s.ficCompanyIdEnv} non configurata e l'account ha ${elenco.length} aziende: `
+        + `dichiara quale usare invece di lasciarlo decidere all'ordine della lista.`,
+    }
+  }
+  return { ok: false, error: `nessuna azienda trovata su Fatture in Cloud per ${s.denominazione}.` }
 }
 
-export async function creaDocumentoFIC(payload: Record<string, unknown>): Promise<FicCreateResult> {
-  const token = process.env.FIC_ACCESS_TOKEN
-  if (!token) return { ok: false, error: 'FIC_ACCESS_TOKEN non configurato su Vercel.' }
+export async function creaDocumentoFIC(
+  payload: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<FicCreateResult> {
+  const s = getSocieta(societa)
+  const token = getFicToken(societa)
+  if (!token) return { ok: false, error: `${s.ficTokenEnv} non configurato su Vercel (${s.denominazione}).` }
 
-  const company = await getCompanyId()
+  const company = await getCompanyId(societa)
   if (!company.ok) return { ok: false, error: company.error }
 
   const { number: _number, ...payloadWithoutNumber } = payload
@@ -95,14 +148,18 @@ export async function creaDocumentoFIC(payload: Record<string, unknown>): Promis
   }
 }
 
-export async function eliminaDocumentoFIC(id: string): Promise<FicDeleteResult> {
-  const token = process.env.FIC_ACCESS_TOKEN
-  if (!token) return { ok: false, error: 'FIC_ACCESS_TOKEN non configurato su Vercel.' }
+export async function eliminaDocumentoFIC(
+  id: string,
+  societa: CodiceSocieta,
+): Promise<FicDeleteResult> {
+  const s = getSocieta(societa)
+  const token = getFicToken(societa)
+  if (!token) return { ok: false, error: `${s.ficTokenEnv} non configurato su Vercel (${s.denominazione}).` }
 
   const cleanId = String(id || '').trim()
   if (!cleanId) return { ok: false, error: 'id documento FIC richiesto' }
 
-  const company = await getCompanyId()
+  const company = await getCompanyId(societa)
   if (!company.ok) return { ok: false, error: company.error }
 
   console.log('[FIC] DELETE issued_documents') // audit (mai loggare il token)
@@ -209,16 +266,17 @@ export const FIC_READ_TOOLS: ToolDefinition[] = [
 export async function executeFicTool(
   name: string,
   input: Record<string, unknown>,
+  societa: CodiceSocieta,
 ): Promise<string | null> {
   if (!name.startsWith('fic_')) return null
-  const company = await getCompanyId()
+  const company = await getCompanyId(societa)
   if (!company.ok) return JSON.stringify({ ok: false, error: company.error })
   const cid = company.id
 
   try {
     if (name === 'fic_fatture_emesse') {
       const q = buildDateQuery(intParam(input.anno), intParam(input.mese))
-      const r = await ficGet(`/c/${cid}/issued_documents`, { type: 'invoice', q, per_page: 50, sort: '-date', fieldset: 'detailed' })
+      const r = await ficGet(`/c/${cid}/issued_documents`, { type: 'invoice', q, per_page: 50, sort: '-date', fieldset: 'detailed' }, societa)
       if (!r.ok) return JSON.stringify({ ok: false, error: r.error })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let docs = (r.data?.data ?? []).map(mapDoc)
@@ -234,7 +292,7 @@ export async function executeFicTool(
     }
     if (name === 'fic_fatture_ricevute') {
       const q = buildDateQuery(intParam(input.anno), intParam(input.mese))
-      const r = await ficGet(`/c/${cid}/received_documents`, { type: 'expense', q, per_page: 50, sort: '-date', fieldset: 'detailed' })
+      const r = await ficGet(`/c/${cid}/received_documents`, { type: 'expense', q, per_page: 50, sort: '-date', fieldset: 'detailed' }, societa)
       if (!r.ok) return JSON.stringify({ ok: false, error: r.error })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let docs = (r.data?.data ?? []).map(mapDoc)
@@ -248,7 +306,7 @@ export async function executeFicTool(
       if (!id) return JSON.stringify({ ok: false, error: 'id richiesto' })
       const seg = input.tipo === 'ricevuta' ? 'received_documents' : 'issued_documents'
       const typeQ = input.tipo === 'ricevuta' ? 'expense' : 'invoice'
-      const r = await ficGet(`/c/${cid}/${seg}/${id}`, { type: typeQ, fieldset: 'detailed' })
+      const r = await ficGet(`/c/${cid}/${seg}/${id}`, { type: typeQ, fieldset: 'detailed' }, societa)
       if (!r.ok) return JSON.stringify({ ok: false, error: r.error })
       return JSON.stringify({ ok: true, documento: r.data?.data ?? r.data })
     }
@@ -256,7 +314,7 @@ export async function executeFicTool(
       const nome = String(input.nome || '').trim()
       if (!nome) return JSON.stringify({ ok: false, error: 'nome richiesto' })
       const seg = input.tipo === 'fornitore' ? 'suppliers' : 'clients'
-      const r = await ficGet(`/c/${cid}/entities/${seg}`, { q: `name contains '${nome.replace(/[\\']/g, '')}'`, per_page: 25 })
+      const r = await ficGet(`/c/${cid}/entities/${seg}`, { q: `name contains '${nome.replace(/[\\']/g, '')}'`, per_page: 25 }, societa)
       if (!r.ok) return JSON.stringify({ ok: false, error: r.error })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const list = (r.data?.data ?? []).map((e: any) => ({ id: e?.id, nome: e?.name, piva: e?.vat_number ?? e?.vatNumber, cf: e?.tax_code ?? e?.taxCode, email: e?.email }))

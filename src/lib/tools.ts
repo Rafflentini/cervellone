@@ -11,6 +11,7 @@
 
 import { getSupabaseServer } from './supabase-server'
 import type { ToolDefinition } from './tools/types'
+import type { CodiceSocieta } from './societa'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
 import { GITHUB_TOOLS, executeGithubTool } from './github-tools'
 import { WEATHER_TOOLS, executeWeatherTool } from './weather-tool'
@@ -688,7 +689,61 @@ export function getAllToolNames(): string[] {
   return ALL_TOOLS.map(t => t.name)
 }
 
-const EXECUTORS = [executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicTool, executeMovimentiTool, executeRiconciliazioneTool, executePrimaNotaTool, executeFicWriteTool, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
+/**
+ * Gli strumenti contabili hanno bisogno di sapere PER QUALE SOCIETÀ operano.
+ * Oggi dichiarano esplicitamente Restruktura: nel Task 4 la società verrà
+ * risolta dalla conversazione: `/societa` sceglie, e da qui la scelta arriva
+ * agli strumenti contabili.
+ *
+ * Questo cablaggio NON è un dettaglio: senza, `/societa` sarebbe un interruttore
+ * che risponde "fatto" e non commuta nulla — il bot dichiarerebbe di lavorare
+ * per un'azienda mentre legge e scrive i dati dell'altra. Un sistema che non sa
+ * fare una cosa è onesto; uno che afferma di averla fatta è pericoloso.
+ */
+async function societaDellaConversazione(conversationId?: string): Promise<CodiceSocieta> {
+  const { getSocietaAttiva } = await import('./societa-attiva')
+  return getSocietaAttiva(conversationId)
+}
+
+/**
+ * Senza conversazione la società non è determinabile, e un'operazione contabile
+ * NON deve ricadere su un default: è come sceglierla a caso, cioè il difetto che
+ * questo ramo elimina. Meglio rifiutare dicendolo.
+ *
+ * Oggi questo cammino non è raggiungibile — l'unico chiamante senza
+ * conversazione invoca un tool non contabile, e il cron mensile dichiara la
+ * società esplicitamente (verificato). Ma "oggi non raggiungibile" è una
+ * garanzia indiretta, e le garanzie indirette si rompono quando qualcun altro
+ * cambia il chiamante.
+ */
+function senzaConversazione(name: string): string {
+  return JSON.stringify({
+    ok: false,
+    error: `${name}: societa non determinabile senza conversazione. Usa /societa per dichiararla.`,
+  })
+}
+
+const contabile = (
+  esecutore: (n: string, i: Record<string, unknown>, s: CodiceSocieta) => Promise<string | null>,
+  appartiene: (n: string) => boolean,
+) => async (name: string, input: Record<string, unknown>, conversationId?: string): Promise<string | null> => {
+  if (!appartiene(name)) return null
+  if (!conversationId) return senzaConversazione(name)
+  return esecutore(name, input, await societaDellaConversazione(conversationId))
+}
+
+const nomiDi = (tools: ToolDefinition[]) => {
+  const set = new Set(tools.map((t) => t.name))
+  return (n: string) => set.has(n)
+}
+
+const executeFicWrapper = contabile(executeFicTool, (n) => n.startsWith('fic_'))
+const executeFicWriteWrapper = contabile(executeFicWriteTool, nomiDi(FIC_WRITE_TOOLS))
+const executeRiconciliazioneWrapper = contabile(executeRiconciliazioneTool, nomiDi(RICONCILIAZIONE_TOOLS))
+const executePrimaNotaWrapper = contabile(executePrimaNotaTool, nomiDi(PRIMA_NOTA_TOOLS))
+const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI_TOOLS))
+
+const EXECUTORS = [executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [

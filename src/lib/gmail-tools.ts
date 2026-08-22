@@ -59,7 +59,11 @@ export interface SendDraftResult {
 
 async function getGmailAuth(): Promise<OAuth2Client> {
   const { getAuthorizedClient } = await import('./google-oauth')
-  const oauthClient = await getAuthorizedClient()
+  const { getSocieta } = await import('./societa')
+  // Casella dichiarata esplicitamente: nel Task 4 arriverà dalla società attiva.
+  // Qui il rischio è concreto — la posta de La Real Estate arriva su una casella
+  // diversa, e leggere quella sbagliata significa cercare fatture inesistenti.
+  const oauthClient = await getAuthorizedClient(getSocieta('restruktura').googleAccount)
   if (!oauthClient) {
     throw new Error('OAuth Gmail non autenticato. L\'Ingegnere deve completare il consent flow su /api/auth/google con scope gmail.modify + gmail.send.')
   }
