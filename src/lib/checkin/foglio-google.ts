@@ -72,6 +72,39 @@ export async function aggiungiRighe(
   })
 }
 
+/** Tutte le righe di una scheda, intestazione compresa. */
+export async function leggiTutto(spreadsheetId: string, nomeScheda: string): Promise<string[][]> {
+  const sheets = await getSheets()
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${nomeScheda}'!A:AZ`,
+  })
+  return (res.data.values ?? []).map((r) => (r ?? []).map((c) => String(c ?? '')))
+}
+
+/**
+ * Riscrive UNA riga, individuata dal suo numero (1-based, intestazione inclusa).
+ *
+ * Si riscrive la riga intera e non le singole celle cambiate: cosi' la riga sul
+ * foglio corrisponde sempre, colonna per colonna, a quella che il codice ha
+ * costruito. Aggiornare celle sparse lascerebbe combinazioni che nessuno ha mai
+ * prodotto — e sono quelle che poi non si sanno spiegare.
+ */
+export async function aggiornaRiga(
+  spreadsheetId: string,
+  nomeScheda: string,
+  numeroRiga: number,
+  valori: string[],
+): Promise<void> {
+  const sheets = await getSheets()
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `'${nomeScheda}'!A${numeroRiga}`,
+    valueInputOption: 'RAW',
+    requestBody: { values: [valori] },
+  })
+}
+
 export const foglioGoogle: FoglioApi = {
   async elencaSchede(spreadsheetId) {
     return Array.from((await proprietaSchede(spreadsheetId)).keys())
