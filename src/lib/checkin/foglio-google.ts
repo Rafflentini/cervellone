@@ -110,10 +110,36 @@ export const foglioGoogle: FoglioApi = {
   async scriviIntestazioniInCoda(spreadsheetId, nome, daColonna, intestazioni) {
     if (intestazioni.length === 0) return
     const sheets = await getSheets()
-    const prima = lettera(daColonna)
+
+    // Una scheda ha un numero FISSO di colonne di griglia. Scrivere oltre non
+    // e' "aggiungere una colonna", e' uscire dal foglio: Google risponde
+    // "exceeds grid limits" e non scrive niente. Trovato sul foglio vero il
+    // 24/08, con 28 colonne esatte e la 29esima da creare.
+    const serve = daColonna + intestazioni.length
+    const info = await sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: 'sheets.properties(sheetId,title,gridProperties/columnCount)',
+    })
+    const prop = (info.data.sheets ?? [])
+      .map((s) => s.properties)
+      .find((p) => p?.title === nome)
+    if (!prop?.sheetId && prop?.sheetId !== 0) throw new Error(`Scheda "${nome}" non trovata.`)
+
+    const attuali = prop.gridProperties?.columnCount ?? 0
+    if (attuali < serve) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [{
+            appendDimension: { sheetId: prop.sheetId, dimension: 'COLUMNS', length: serve - attuali },
+          }],
+        },
+      })
+    }
+
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `'${nome}'!${prima}1`,
+      range: `'${nome}'!${lettera(daColonna)}1`,
       valueInputOption: 'RAW',
       requestBody: { values: [[...intestazioni]] },
     })
