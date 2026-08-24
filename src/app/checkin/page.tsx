@@ -501,8 +501,8 @@ function CheckinForm() {
             </dl>
             {anteprima && anteprima.importo > 0 && (
               <div className="calcolo">
-                Imposta di soggiorno stimata € {anteprima.importo.toFixed(2)}
-                <span className="en-inline">Tourist tax, payable on arrival</span>
+                Imposta di soggiorno € {anteprima.importo.toFixed(2)} — da pagare in struttura al check-in
+                <span className="en-inline">Tourist tax — to be paid at the property on arrival</span>
               </div>
             )}
           </section>
@@ -829,10 +829,14 @@ function CheckinForm() {
           <div className="tassa">
             <div className="cifra">€ {anteprima.importo.toFixed(2)}</div>
             <div className="conto">
-              Imposta di soggiorno · {anteprima.pernottamentiTassati} pernottamenti tassabili
-              {anteprima.esenti.length > 0 && `, ${anteprima.esenti.length} esente/i`}
+              <b>Imposta di soggiorno — da pagare in struttura al check-in</b>
+              <span className="dettaglio">
+                {anteprima.pernottamentiTassati} pernottamenti tassabili
+                {anteprima.esenti.length > 0 && `, ${anteprima.esenti.length} esente/i`}
+              </span>
               <span className="en">
-                Tourist tax, to be paid on arrival · {anteprima.notti} nights, {ospiti.length} guests
+                Tourist tax — to be paid at the property on arrival
+                <br />{anteprima.notti} nights, {ospiti.length} guests
               </span>
             </div>
           </div>
@@ -914,7 +918,8 @@ const STILE = `
   .tassa{display:flex;align-items:center;gap:12px;background:#eef2f9;border:1px solid var(--bordo);
     border-radius:8px;padding:10px 12px;margin-bottom:10px}
   .tassa .cifra{font-size:22px;font-weight:700;color:var(--blu);white-space:nowrap}
-  .tassa .conto{font-size:11.5px;color:#4a5568;line-height:1.4}
+  .tassa .conto{font-size:12px;color:#2b3a55;line-height:1.45}
+  .tassa .dettaglio{display:block;font-size:11px;color:#6b7280;margin-top:2px}
   .tassa .en{display:block;font-style:italic;color:#8a94a6}
   .stato{padding:12px 14px;border-radius:8px;margin-bottom:12px;font-size:13px;line-height:1.5;
     background:#fff6e5;border:1px solid #e0c48a;color:#6b4e00;font-weight:600}
