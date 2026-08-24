@@ -10,7 +10,7 @@
 import {
   FOGLIO_CHECKIN_ID, SCHEDA_SOGGIORNI, SCHEDA_OSPITI, COL_SOGGIORNI, COL_OSPITI,
 } from './foglio-schema'
-import { leggiTutto, aggiornaRiga, aggiungiRighe } from './foglio-google'
+import { leggiTutto, aggiornaRiga, aggiungiRighe, eliminaRighe } from './foglio-google'
 import { aMappa, aRiga, fondiSoggiorno, fondiOspiti, type Livello } from './merge-pratica'
 import { calcolaStato } from './stato-checkin'
 import { leggiConfig, regoleDaConfig } from './foglio-lettura'
@@ -105,6 +105,37 @@ export async function creaPrenotazione(
 
   await aggiungiRighe(spreadsheetId, SCHEDA_SOGGIORNI, [riga])
   return { id }
+}
+
+/**
+ * Elimina una pratica e tutte le sue schede ospite.
+ *
+ * Serve davvero: le prenotazioni si disdicono. E serve che tolga ANCHE gli
+ * ospiti — una scheda orfana resterebbe nel foglio con i dati di una persona
+ * che non verra' mai, cioe' dati personali conservati senza piu' uno scopo.
+ *
+ * Rifiuta di cancellare una pratica gia' fatturata: un documento fiscale
+ * emesso deve poter essere ricondotto alla riga che lo ha generato.
+ */
+export async function eliminaPratica(
+  id: string,
+  spreadsheetId: string = FOGLIO_CHECKIN_ID,
+): Promise<{ ok: boolean; errore?: string; righeTolte?: number }> {
+  const pratica = await leggiPratica(id, spreadsheetId)
+  if (!pratica) return { ok: false, errore: 'Prenotazione non trovata.' }
+
+  if (String(pratica.soggiorno['Fattura emessa'] ?? '').toUpperCase() === 'SI') {
+    return {
+      ok: false,
+      errore: 'Questa prenotazione ha gia una fattura: la riga non si cancella, si annulla con nota di credito.',
+    }
+  }
+
+  const righeOspiti = pratica.ospiti.map((o) => o.numeroRiga)
+  await eliminaRighe(spreadsheetId, SCHEDA_OSPITI, righeOspiti)
+  await eliminaRighe(spreadsheetId, SCHEDA_SOGGIORNI, [pratica.numeroRiga])
+
+  return { ok: true, righeTolte: righeOspiti.length + 1 }
 }
 
 export interface EsitoSalvataggio {

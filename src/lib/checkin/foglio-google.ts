@@ -105,6 +105,40 @@ export async function aggiornaRiga(
   })
 }
 
+/**
+ * Elimina righe da una scheda, indicate col numero 1-based.
+ *
+ * Si cancella DAL BASSO VERSO L'ALTO. Togliendo prima la riga 5 e poi la 9, la
+ * 9 nel frattempo e' diventata l'8 e si cancellerebbe la riga sbagliata — che
+ * qui vuol dire l'ospite di un'altra prenotazione. E' l'errore classico, non si
+ * vede nei test con una riga sola, e non lascia traccia di cosa e' sparito.
+ */
+export async function eliminaRighe(
+  spreadsheetId: string,
+  nomeScheda: string,
+  numeriRiga: number[],
+): Promise<number> {
+  if (numeriRiga.length === 0) return 0
+  const sheets = await getSheets()
+  const sheetId = (await proprietaSchede(spreadsheetId)).get(nomeScheda)
+  if (sheetId == null) throw new Error(`Scheda "${nomeScheda}" non trovata.`)
+
+  const ordinate = Array.from(new Set(numeriRiga)).sort((a, b) => b - a)
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: ordinate.map((n) => ({
+        deleteDimension: {
+          // startIndex e' 0-based ed esclude l'estremo finale: la riga N del
+          // foglio e' l'indice N-1.
+          range: { sheetId, dimension: 'ROWS', startIndex: n - 1, endIndex: n },
+        },
+      })),
+    },
+  })
+  return ordinate.length
+}
+
 export const foglioGoogle: FoglioApi = {
   async elencaSchede(spreadsheetId) {
     return Array.from((await proprietaSchede(spreadsheetId)).keys())

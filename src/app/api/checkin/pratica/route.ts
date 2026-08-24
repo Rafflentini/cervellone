@@ -17,7 +17,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { rateLimit } from '@/lib/rate-limiter'
 import { risolviAccesso } from '@/lib/checkin/accesso'
-import { leggiPratica, salvaPratica } from '@/lib/checkin/pratica'
+import { leggiPratica, salvaPratica, eliminaPratica } from '@/lib/checkin/pratica'
 import { linkScaduto } from '@/lib/checkin/token-prenotazione'
 import { CAMPI_DELLA_PRENOTAZIONE } from '@/lib/checkin/merge-pratica'
 
@@ -100,5 +100,30 @@ export async function POST(req: NextRequest) {
       { ok: false, errore: 'Non sono riuscito a salvare. Riprova.' },
       { status: 500 },
     )
+  }
+}
+
+/**
+ * Cancella una prenotazione e le sue schede ospite.
+ *
+ * Solo il gestore: un ospite non deve poter far sparire la propria pratica —
+ * e con essa la comunicazione alla Questura — premendo un pulsante.
+ */
+export async function DELETE(req: NextRequest) {
+  const { k, p } = parametri(req)
+  const accesso = risolviAccesso(k, p, null, null)
+  if (!accesso.ok || accesso.livello.tipo !== 'gestore') {
+    return NextResponse.json({ ok: false, errore: 'Non autorizzato.' }, { status: 401 })
+  }
+  if (!accesso.id) {
+    return NextResponse.json({ ok: false, errore: 'Prenotazione non indicata.' }, { status: 400 })
+  }
+
+  try {
+    const esito = await eliminaPratica(accesso.id)
+    return NextResponse.json(esito, { status: esito.ok ? 200 : 409 })
+  } catch (err) {
+    console.error('[CHECKIN] eliminazione pratica fallita:', err)
+    return NextResponse.json({ ok: false, errore: 'Non sono riuscito a cancellare.' }, { status: 500 })
   }
 }
