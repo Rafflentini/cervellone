@@ -32,7 +32,7 @@ describe('colonne dei Soggiorni', () => {
   })
 
   it('e in fondo lo stato della pratica, che e cio che si guarda per primo', () => {
-    expect(COL_SOGGIORNI.slice(28)).toEqual(['Stato check-in', 'Da completare'])
+    expect(COL_SOGGIORNI.slice(28)).toEqual(['Stato check-in', 'Da completare', 'Ospiti dichiarati'])
   })
 
   it('le colonne nuove stanno SEMPRE in fondo', () => {

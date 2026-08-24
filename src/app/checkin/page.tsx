@@ -358,7 +358,17 @@ function CheckinForm() {
       body: JSON.stringify({
         // Un ospite non intestatario non manda NIENTE del soggiorno: quello che
         // non si puo' cambiare non si invia nemmeno.
-        soggiorno: mioProgressivo ? {} : soggiornoAColonne(sog),
+        soggiorno: mioProgressivo
+          ? {}
+          : {
+            ...soggiornoAColonne(sog),
+            // Quante persone si presentano DAVVERO. E' il numero di schede
+            // aperte: toglierne una o aggiungerne una e' il gesto esplicito.
+            // Lasciarne una in bianco invece non conta, e continua a bloccare —
+            // altrimenti un ospite sparirebbe per distrazione, e con lui la sua
+            // imposta e la sua riga per la Questura.
+            'Ospiti dichiarati': String(ospiti.length),
+          },
         ospiti: ospiti.map((os, i) =>
           ospiteAColonne({
             ...os,
@@ -666,21 +676,28 @@ function CheckinForm() {
                 />
                 {cf.messaggio && <div className={`verifica ${cf.classe}`}>{cf.messaggio}</div>}
 
-                <label className="spunta">
-                  <input type="checkbox" checked={o.esente} onChange={(e) => cambiaOspite(i, 'esente', e.target.checked)} />
-                  Esente da imposta di soggiorno / Exempt from tourist tax
-                </label>
-                {o.esente && (
-                  <input
-                    placeholder="Motivo esenzione / Reason for exemption"
-                    value={o.motivoEsenzione}
-                    onChange={(e) => cambiaOspite(i, 'motivoEsenzione', e.target.value)}
-                  />
+                {/*
+                  La casella la vede solo chi gestisce. Il regolamento ha nove casi
+                  di esenzione: quello dei minori si calcola dalla data di nascita, gli
+                  altri otto (disabili, residenti, accompagnatori di degenti...) un
+                  ospite non li riconosce, e l art. 3 c.4 obbliga comunque a
+                  conservarne la dichiarazione scritta.
+                */}
+                {!soloLettura && (
+                  <>
+                  <label className="spunta">
+                    <input type="checkbox" checked={o.esente} onChange={(e) => cambiaOspite(i, 'esente', e.target.checked)} />
+                    Esente da imposta di soggiorno / Exempt from tourist tax
+                  </label>
+                  {o.esente && (
+                    <input
+                      placeholder="Motivo esenzione / Reason for exemption"
+                      value={o.motivoEsenzione}
+                      onChange={(e) => cambiaOspite(i, 'motivoEsenzione', e.target.value)}
+                    />
+                  )}
+                  </>
                 )}
-                <div className="hint">
-                  I minori fino a {regole.esenzioneEtaMax} anni sono esenti per legge: non serve spuntare nulla.
-                  <span className="en">Children up to {regole.esenzioneEtaMax} are exempt by law — no need to tick.</span>
-                </div>
               </div>
             )
           })}
@@ -803,6 +820,24 @@ function CheckinForm() {
       </div>
 
       <div className="barra">
+        {/*
+          L'imposta si vede PRIMA di confermare e resta visibile dopo. E' una
+          somma che l'ospite paga in contanti all'arrivo: scoprirla sulla porta
+          di casa e' il modo migliore per litigarci sopra.
+        */}
+        {anteprima && anteprima.notti > 0 && (
+          <div className="tassa">
+            <div className="cifra">€ {anteprima.importo.toFixed(2)}</div>
+            <div className="conto">
+              Imposta di soggiorno · {anteprima.pernottamentiTassati} pernottamenti tassabili
+              {anteprima.esenti.length > 0 && `, ${anteprima.esenti.length} esente/i`}
+              <span className="en">
+                Tourist tax, to be paid on arrival · {anteprima.notti} nights, {ospiti.length} guests
+              </span>
+            </div>
+          </div>
+        )}
+
         <button className="btn btn-pri" disabled={invio || !caricato || cfBloccanti} onClick={invia}>
           {invio ? 'Salvataggio…' : 'Salva check-in / Save'}
         </button>
@@ -876,6 +911,11 @@ const STILE = `
   .intestata .en{display:block;font-size:11px;font-style:italic;color:#8a94a6}
   .prevale{background:#fff6e5;border:1px solid #e0c48a;border-radius:8px;padding:10px 12px;font-size:12px;color:#6b4e00;line-height:1.5;margin:10px 0 4px}
   .prevale .en{display:block;font-size:11px;font-style:italic;opacity:.8}
+  .tassa{display:flex;align-items:center;gap:12px;background:#eef2f9;border:1px solid var(--bordo);
+    border-radius:8px;padding:10px 12px;margin-bottom:10px}
+  .tassa .cifra{font-size:22px;font-weight:700;color:var(--blu);white-space:nowrap}
+  .tassa .conto{font-size:11.5px;color:#4a5568;line-height:1.4}
+  .tassa .en{display:block;font-style:italic;color:#8a94a6}
   .stato{padding:12px 14px;border-radius:8px;margin-bottom:12px;font-size:13px;line-height:1.5;
     background:#fff6e5;border:1px solid #e0c48a;color:#6b4e00;font-weight:600}
   .stato.ok{background:#e7f5ee;border-color:var(--ok);color:#0b5c3b}

@@ -100,6 +100,7 @@ export async function creaPrenotazione(
     'Fattura emessa': 'NO',
     'Note': pulito(d.note),
     'Stato check-in': 'DA COMPILARE',
+    'Ospiti dichiarati': pulito(d.ospitiAttesi),
     'Da completare': 'Nessuno ha ancora compilato.',
   })
 
@@ -142,6 +143,7 @@ export interface EsitoSalvataggio {
   ok: boolean
   stato: string
   mancanze: string[]
+  segnalazioni: string[]
   /** Campi che il mittente non aveva diritto di cambiare. */
   rifiutati: string[]
 }
@@ -188,6 +190,7 @@ export async function salvaPratica(
 
   const stato = calcolaStato({
     ospitiAttesi: Number(mappaSoggiorno['N. ospiti'] || 0),
+    ospitiDichiarati: Number(mappaSoggiorno['Ospiti dichiarati'] || 0),
     ospiti: schede.map((s) => ({
       cognome: s['Cognome'] ?? '', nome: s['Nome'] ?? '',
       dataNascita: s['Data nascita'] ?? '',
@@ -205,7 +208,7 @@ export async function salvaPratica(
   mappaSoggiorno['Notti'] = String(imposta.notti)
   mappaSoggiorno['Imposta soggiorno €'] = String(imposta.importo)
   mappaSoggiorno['Stato check-in'] = stato.stato
-  mappaSoggiorno['Da completare'] = stato.mancanze.join(' · ')
+  mappaSoggiorno['Da completare'] = [...stato.mancanze, ...stato.segnalazioni].join(' · ')
 
   // Prima gli ospiti, poi il soggiorno: se la seconda scrittura non riesce,
   // restano schede senza uno stato aggiornato — visibile e recuperabile.
@@ -226,6 +229,7 @@ export async function salvaPratica(
     ok: true,
     stato: stato.stato,
     mancanze: stato.mancanze,
+    segnalazioni: stato.segnalazioni,
     rifiutati: [...fusoSoggiorno.rifiutati, ...fusiOspiti.rifiutati],
   }
 }

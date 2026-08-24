@@ -134,6 +134,10 @@ describe('lo schema che cresce', () => {
     // Le colonne si aggiungono, non si riordinano: spostarne una sposterebbe i
     // dati sotto di essa, e il foglio resterebbe pieno di valori plausibili ma
     // slittati di una posizione.
+    // Le ultime due colonne dello schema di OGGI, qualunque siano: il test non
+    // deve rompersi ogni volta che lo schema cresce, deve rompersi se le
+    // colonne nuove smettono di essere aggiunte.
+    const nuove = COL_SOGGIORNI.slice(-2) as unknown as string[]
     const vecchie = COL_SOGGIORNI.slice(0, -2) as unknown as string[]
     const { api, dati, chiamate } = fintoFoglio({
       Soggiorni: [vecchie, ['SOG-1', 'x']], Ospiti: [], Config: [], Tabelle: [],
@@ -141,9 +145,7 @@ describe('lo schema che cresce', () => {
     const esito = await inizializzaFoglioCheckin('FOGLIO-X', api)
 
     expect(esito.ok).toBe(true)
-    expect(esito.colonneAggiunte).toEqual([
-      'Soggiorni: Stato check-in', 'Soggiorni: Da completare',
-    ])
+    expect(esito.colonneAggiunte).toEqual(nuove.map((c) => `Soggiorni: ${c}`))
     // I dati che c erano non sono stati toccati.
     expect(dati.Soggiorni[1][0]).toBe('SOG-1')
     expect(chiamate).not.toContain('scrivi:Soggiorni')

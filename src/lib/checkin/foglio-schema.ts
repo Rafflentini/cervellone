@@ -37,6 +37,10 @@ export const COL_SOGGIORNI = [
   // piena. `Stato check-in` e' l'unica cosa che l'Ingegnere guardera' davvero;
   // `Da completare` gli dice cosa manca senza aprire nient'altro.
   'Stato check-in', 'Da completare',
+  // Quanti ospiti si presentano DAVVERO. Parte dal numero prenotato e si
+  // abbassa (o si alza) solo con un gesto esplicito di chi compila: cosi' un
+  // ospite in meno resta visibile invece di sparire per distrazione.
+  'Ospiti dichiarati',
 ] as const
 
 export const COL_OSPITI = [

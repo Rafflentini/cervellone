@@ -159,3 +159,44 @@ describe('le mancanze si elencano tutte insieme', () => {
     expect(r.mancanze.length).toBeGreaterThanOrEqual(5)
   })
 })
+
+describe('quando si presentano in numero diverso dal prenotato', () => {
+  it('con "siamo di meno" il check-in si chiude, e lo dice', () => {
+    // Uno da forfait. Bloccare l'ospite costringerebbe la ragazza a
+    // intervenire per ogni disdetta; lasciarlo passare in silenzio farebbe
+    // sparire un pernottamento dal versamento al Comune.
+    const r = calcolaStato(pratica({ ospitiAttesi: 4, ospitiDichiarati: 1 }))
+    expect(r.stato).toBe('CHECKIN OK')
+    expect(r.segnalazioni).toContain('Dichiarati 1 ospiti su 4 prenotati.')
+  })
+
+  it('con un ospite in piu si chiude, e lo dice', () => {
+    const r = calcolaStato(pratica({
+      ospitiAttesi: 1, ospitiDichiarati: 2,
+      ospiti: [ospite(), ospite({ cognome: 'VERDI', nome: 'ANNA', dataNascita: '1990-04-10', codiceFiscale: 'VRDNNA90D50H501R' })],
+    }))
+    expect(r.stato).toBe('CHECKIN OK')
+    expect(r.segnalazioni.join(' ')).toContain('in piu')
+  })
+
+  it('NON basta lasciare una scheda in bianco: quello resta bloccante', () => {
+    // La differenza si dichiara, non si ottiene per omissione.
+    const r = calcolaStato(pratica({ ospitiAttesi: 4 }))
+    expect(r.stato).toBe('PARZIALE')
+    expect(r.mancanze[0]).toContain('Mancano 3 schede')
+  })
+
+  it('se dichiarati e prenotati coincidono non segnala niente', () => {
+    const r = calcolaStato(pratica({ ospitiAttesi: 1, ospitiDichiarati: 1 }))
+    expect(r.segnalazioni).toEqual([])
+  })
+
+  it('dichiarare di meno non esonera dal compilare le schede rimaste', () => {
+    const r = calcolaStato(pratica({
+      ospitiAttesi: 4, ospitiDichiarati: 3,
+      ospiti: [ospite(), ospite({ cognome: '', nome: '', dataNascita: '' })],
+    }))
+    expect(r.stato).toBe('PARZIALE')
+    expect(r.mancanze.join(' ')).toContain('su 3')
+  })
+})

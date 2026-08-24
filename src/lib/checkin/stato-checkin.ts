@@ -28,8 +28,15 @@ export interface OspiteDaControllare {
 }
 
 export interface PraticaDaControllare {
-  /** Quanti ospiti dichiara la prenotazione. */
+  /** Quanti ospiti prevedeva la PRENOTAZIONE. */
   ospitiAttesi: number
+  /**
+   * Quanti se ne presentano DAVVERO, se qualcuno l'ha dichiarato.
+   * Cambia solo con un gesto esplicito ("siamo di meno", "siamo uno in piu'"),
+   * mai lasciando una scheda in bianco: un ospite che sparisce per distrazione
+   * e' imposta non versata e una comunicazione alla Questura incompleta.
+   */
+  ospitiDichiarati?: number
   ospiti: OspiteDaControllare[]
   indirizzo: string
   cap: string
@@ -41,6 +48,12 @@ export interface EsitoStato {
   stato: Stato
   /** Cosa manca perche' diventi CHECKIN OK. Vuoto solo quando e' OK. */
   mancanze: string[]
+  /**
+   * Cose che NON impediscono di chiudere, ma che l'Ingegnere deve vedere.
+   * La differenza fra prenotati e presentati sta qui: non si blocca nessuno,
+   * ma non succede in silenzio.
+   */
+  segnalazioni: string[]
 }
 
 const vuoto = (s: string) => !String(s ?? '').trim()
@@ -58,20 +71,37 @@ function schedaVuota(o: OspiteDaControllare): boolean {
 
 export function calcolaStato(p: PraticaDaControllare): EsitoStato {
   const mancanze: string[] = []
+  const segnalazioni: string[] = []
 
   const compilate = (p.ospiti ?? []).filter((o) => !schedaVuota(o))
 
-  // Il controllo che nessuno farebbe a mano: se la prenotazione dice 4 e le
-  // schede sono 2, due persone dormono in casa senza essere comunicate alla
-  // Questura, e il foglio non mostra nulla di strano.
-  if (p.ospitiAttesi > 0 && compilate.length < p.ospitiAttesi) {
-    const mancano = p.ospitiAttesi - compilate.length
+  // Il metro e' quanti se ne presentano davvero, se qualcuno l'ha dichiarato;
+  // altrimenti quanti ne prevedeva la prenotazione.
+  const metro = p.ospitiDichiarati && p.ospitiDichiarati > 0 ? p.ospitiDichiarati : p.ospitiAttesi
+
+  // Il controllo che nessuno farebbe a mano: se se ne aspettano 4 e le schede
+  // sono 2, due persone dormono in casa senza essere comunicate alla Questura,
+  // e il foglio non mostra nulla di strano.
+  if (metro > 0 && compilate.length < metro) {
+    const mancano = metro - compilate.length
     // Questa frase la legge l'Ingegnere ogni giorno nella colonna del foglio:
     // il verbo si accorda, altrimenti sembra scritta da una macchina.
     mancanze.push(
       mancano === 1
-        ? `Manca 1 scheda ospite su ${p.ospitiAttesi}.`
-        : `Mancano ${mancano} schede ospite su ${p.ospitiAttesi}.`,
+        ? `Manca 1 scheda ospite su ${metro}.`
+        : `Mancano ${mancano} schede ospite su ${metro}.`,
+    )
+  }
+
+  // Chi si presenta puo' essere diverso da chi aveva prenotato: uno da forfait,
+  // uno si aggiunge all'ultimo. Non si blocca nessuno — ma non deve succedere
+  // in silenzio, perche' cambia l'imposta dovuta al Comune e l'elenco che va
+  // alla Questura.
+  if (p.ospitiAttesi > 0 && metro !== p.ospitiAttesi) {
+    segnalazioni.push(
+      metro < p.ospitiAttesi
+        ? `Dichiarati ${metro} ospiti su ${p.ospitiAttesi} prenotati.`
+        : `Dichiarati ${metro} ospiti, ${metro - p.ospitiAttesi} in piu' del prenotato.`,
     )
   }
 
@@ -102,8 +132,8 @@ export function calcolaStato(p: PraticaDaControllare): EsitoStato {
     mancanze.push('CAP di residenza per la fattura.')
   }
 
-  if (compilate.length === 0) return { stato: 'DA COMPILARE', mancanze }
+  if (compilate.length === 0) return { stato: 'DA COMPILARE', mancanze, segnalazioni }
   return mancanze.length === 0
-    ? { stato: 'CHECKIN OK', mancanze: [] }
-    : { stato: 'PARZIALE', mancanze }
+    ? { stato: 'CHECKIN OK', mancanze: [], segnalazioni }
+    : { stato: 'PARZIALE', mancanze, segnalazioni }
 }
