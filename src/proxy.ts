@@ -11,6 +11,12 @@ export default async function proxy(request: NextRequest) {
     || pathname.startsWith('/api/doc/')
     || pathname.startsWith('/doc/')
     || pathname.startsWith('/api/cron/')
+    // Il check-in lo compila l ospite o chi consegna le chiavi: non c e un
+    // login da chiedere a un turista. La difesa e il token nel collegamento,
+    // verificato dalle route stesse (vedi api/checkin/registra).
+    || pathname === '/checkin'
+    || pathname.startsWith('/api/checkin/registra')
+    || pathname.startsWith('/api/checkin/dati')
 
   if (isPublic) return NextResponse.next()
 
