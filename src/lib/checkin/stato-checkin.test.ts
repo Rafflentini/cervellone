@@ -45,12 +45,12 @@ describe('il conteggio degli ospiti — il controllo che nessuno farebbe a mano'
     // e il foglio non mostrerebbe niente di strano.
     const r = calcolaStato(pratica({ ospitiAttesi: 4 }))
     expect(r.stato).toBe('PARZIALE')
-    expect(r.mancanze[0]).toContain('Mancano 3 schede ospite su 4')
+    expect(r.mancanze[0]).toBe('Mancano 3 schede ospite su 4.')
   })
 
   it('accorda il singolare quando ne manca una sola', () => {
     const r = calcolaStato(pratica({ ospitiAttesi: 2 }))
-    expect(r.mancanze[0]).toContain('Mancano 1 scheda ospite su 2')
+    expect(r.mancanze[0]).toBe('Manca 1 scheda ospite su 2.')
   })
 
   it('non conta le schede lasciate in bianco', () => {

@@ -66,8 +66,12 @@ export function calcolaStato(p: PraticaDaControllare): EsitoStato {
   // Questura, e il foglio non mostra nulla di strano.
   if (p.ospitiAttesi > 0 && compilate.length < p.ospitiAttesi) {
     const mancano = p.ospitiAttesi - compilate.length
+    // Questa frase la legge l'Ingegnere ogni giorno nella colonna del foglio:
+    // il verbo si accorda, altrimenti sembra scritta da una macchina.
     mancanze.push(
-      `Mancano ${mancano} sched${mancano === 1 ? 'a' : 'e'} ospite su ${p.ospitiAttesi}.`,
+      mancano === 1
+        ? `Manca 1 scheda ospite su ${p.ospitiAttesi}.`
+        : `Mancano ${mancano} schede ospite su ${p.ospitiAttesi}.`,
     )
   }
 
