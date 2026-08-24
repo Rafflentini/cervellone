@@ -90,6 +90,18 @@ export function trovaComune(nome: string, sigla?: string): Comune | null {
   return candidati.find((c) => chiave(c.sigla) === s) ?? null
 }
 
+/**
+ * Il comune dato il suo codice catastale.
+ *
+ * Serve a leggere il luogo di nascita DENTRO il codice fiscale, invece di
+ * richiederlo a chi il codice lo ha appena scritto.
+ */
+export function comuneDaCatastale(catastale: string): Comune | null {
+  const c = String(catastale || '').trim().toUpperCase()
+  if (!c) return null
+  return tuttiIComuni().find((x) => x.catastale === c) ?? null
+}
+
 /** Etichetta mostrata nell'elenco: il nome da solo non basta per gli omonimi. */
 export function etichetta(c: Comune): string {
   return `${c.nome} (${c.sigla})`

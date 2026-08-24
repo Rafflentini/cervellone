@@ -10,10 +10,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import {
   leggiConfig, regoleDaConfig, unitaDaConfig, leggiTabelle,
 } from '@/lib/checkin/foglio-lettura'
-import { tokenValido } from '../registra/route'
+import { risolviAccesso } from '@/lib/checkin/accesso'
 
 export async function GET(req: NextRequest) {
-  if (!tokenValido(req.nextUrl.searchParams.get('k'))) {
+  // Serve anche all'ospite, che il token generale non ce l'ha: sono le unita
+  // e i parametri dell'imposta, non dati di nessuno.
+  const s = req.nextUrl.searchParams
+  if (!risolviAccesso(s.get('k'), s.get('p'), s.get('t'), s.get('o')).ok) {
     return NextResponse.json({ ok: false, errore: 'Collegamento non valido.' }, { status: 401 })
   }
 

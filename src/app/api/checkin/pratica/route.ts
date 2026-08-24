@@ -19,7 +19,7 @@ import { rateLimit } from '@/lib/rate-limiter'
 import { risolviAccesso } from '@/lib/checkin/accesso'
 import { leggiPratica, salvaPratica, eliminaPratica } from '@/lib/checkin/pratica'
 import { linkScaduto } from '@/lib/checkin/token-prenotazione'
-import { CAMPI_DELLA_PRENOTAZIONE } from '@/lib/checkin/merge-pratica'
+import { CAMPI_DELLA_PRENOTAZIONE, oscuraRiservati } from '@/lib/checkin/merge-pratica'
 
 function parametri(req: NextRequest) {
   const s = req.nextUrl.searchParams
@@ -59,7 +59,9 @@ export async function GET(req: NextRequest) {
     livello: accesso.livello.tipo,
     ...(miaScheda ? { mioProgressivo: miaScheda } : {}),
     campiBloccati: accesso.livello.tipo === 'gestore' ? [] : CAMPI_DELLA_PRENOTAZIONE,
-    soggiorno: pratica.soggiorno,
+    // L'importo non esce affatto verso un ospite: nasconderlo nella pagina lo
+    // lascerebbe leggibile dagli strumenti del browser.
+    soggiorno: oscuraRiservati(pratica.soggiorno, accesso.livello),
     // Un ospite qualsiasi vede SOLO la propria scheda.
     ospiti: pratica.ospiti
       .filter((x) => miaScheda === null || Number(x.dati['Progressivo']) === miaScheda)

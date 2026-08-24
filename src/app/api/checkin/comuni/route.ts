@@ -12,12 +12,23 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { cercaComuni, etichetta } from '@/lib/checkin/comuni'
-import { tokenValido } from '../registra/route'
+import { cercaComuni, comuneDaCatastale, etichetta } from '@/lib/checkin/comuni'
+import { risolviAccesso } from '@/lib/checkin/accesso'
 
 export async function GET(req: NextRequest) {
-  if (!tokenValido(req.nextUrl.searchParams.get('k'))) {
+  const s = req.nextUrl.searchParams
+  if (!risolviAccesso(s.get('k'), s.get('p'), s.get('t'), s.get('o')).ok) {
     return NextResponse.json({ ok: false, comuni: [] }, { status: 401 })
+  }
+
+  // Ricerca inversa: dal codice catastale letto nel codice fiscale al comune.
+  const catastale = s.get('catastale')
+  if (catastale) {
+    const trovato = comuneDaCatastale(catastale)
+    return NextResponse.json({
+      ok: true,
+      comuni: trovato ? [{ e: etichetta(trovato), n: trovato.nome, p: trovato.sigla, cap: trovato.cap }] : [],
+    })
   }
 
   const q = req.nextUrl.searchParams.get('q') ?? ''

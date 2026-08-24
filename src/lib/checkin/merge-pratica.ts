@@ -46,6 +46,32 @@ export const CAMPI_DELLA_PRENOTAZIONE: readonly string[] = [
 ]
 
 /**
+ * Campi che l'ospite non deve nemmeno VEDERE.
+ *
+ * L'importo della prenotazione e' un dato commerciale fra l'Ingegnere e il
+ * portale: quanto ha incassato, al netto o al lordo di cosa, non riguarda chi
+ * dorme in casa — e mostrarlo apre discussioni che non servono a nessuno.
+ *
+ * Non basta non disegnarlo nella pagina: se il server lo manda, resta nella
+ * risposta e si legge dagli strumenti del browser. Si toglie qui, prima di
+ * uscire.
+ */
+export const CAMPI_RISERVATI: readonly string[] = [
+  'Importo lordo €',
+]
+
+/** Toglie dalla mappa i campi che quel livello non deve vedere. */
+export function oscuraRiservati(
+  m: Record<string, string>,
+  livello: Livello,
+): Record<string, string> {
+  if (livello.tipo === 'gestore') return m
+  const out = { ...m }
+  for (const c of CAMPI_RISERVATI) delete out[c]
+  return out
+}
+
+/**
  * Campi che nessuno tocca dal form: li scrive il sistema.
  * Ci finiscono anche gli esiti della fatturazione: se il form potesse
  * riscriverli, un salvataggio tardivo cancellerebbe il numero di una fattura

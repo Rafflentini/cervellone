@@ -18,7 +18,12 @@
 import { useEffect, useMemo, useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { validaCodiceFiscale } from '@/lib/checkin/valida-codice-fiscale'
+import { decodificaCf } from '@/lib/checkin/decodifica-cf'
 import { calcolaImpostaSoggiorno, REGOLE_MARATEA, type RegoleImposta } from '@/lib/checkin/imposta-soggiorno'
+import {
+  soggiornoDaColonne, soggiornoAColonne, ospiteDaColonne, ospiteAColonne,
+  campoBloccato, type FormOspite,
+} from '@/lib/checkin/mappa-form'
 
 interface Ospite {
   tipoAlloggiato: string
@@ -60,6 +65,27 @@ const TIPI_DOCUMENTO: Array<[string, string, string]> = [
   ['ALTRO', 'Altro documento', 'Other document'],
 ]
 
+/** 'aaaa-mm-gg' -> 'gg/mm/aaaa'. Un ospite non legge le date al contrario. */
+function dataIT(s: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || '').trim())
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : (s || '—')
+}
+
+/** Dalla forma condivisa col server a quella dello stato del form. */
+function daForm(f: FormOspite): Ospite {
+  return {
+    tipoAlloggiato: f.tipoAlloggiato || '16',
+    cognome: f.cognome, nome: f.nome, sesso: f.sesso || 'M',
+    dataNascita: f.dataNascita, comuneNascita: f.comuneNascita,
+    provNascita: f.provNascita, statoNascita: f.statoNascita,
+    cittadinanza: f.cittadinanza || 'ITALIA',
+    tipoDocumento: f.tipoDocumento || 'IDENT',
+    numeroDocumento: f.numeroDocumento, luogoRilascio: f.luogoRilascio,
+    codiceFiscale: f.codiceFiscale,
+    esente: f.esente, motivoEsenzione: f.motivoEsenzione,
+  }
+}
+
 /** Etichetta bilingue: italiano sopra, inglese sotto in corpo minore. */
 function Eti({ it, en }: { it: string; en: string }) {
   return (
@@ -84,9 +110,9 @@ interface ComuneTrovato { e: string; n: string; p: string; cap: string }
  * (BG/LE), LIVO (CO/TN), PEGLIO (CO/PU), SAMONE (TO/TN), SAN TEODORO (ME/SS).
  */
 function CercaComune({
-  k, valore, onScegli, placeholder,
+  accesso, valore, onScegli, placeholder,
 }: {
-  k: string
+  accesso: string
   valore: string
   onScegli: (c: ComuneTrovato) => void
   placeholder?: string
@@ -102,13 +128,13 @@ function CercaComune({
     // Mezzo secondo di attesa: si cerca quando smetti di scrivere, non a ogni
     // tasto. In cantiere la rete e' quella che e'.
     const t = setTimeout(() => {
-      fetch(`/api/checkin/comuni?k=${encodeURIComponent(k)}&q=${encodeURIComponent(testo)}`)
+      fetch(`/api/checkin/comuni?${accesso}&q=${encodeURIComponent(testo)}`)
         .then((r) => r.json())
         .then((d) => setRisultati(d.comuni ?? []))
         .catch(() => setRisultati([]))
     }, 400)
     return () => clearTimeout(t)
-  }, [testo, aperto, k])
+  }, [testo, aperto, accesso])
 
   return (
     <div className="cerca">
@@ -138,6 +164,17 @@ function CercaComune({
 function CheckinForm() {
   const params = useSearchParams()
   const k = params.get('k') ?? ''
+  /** Prenotazione da riprendere. Se c'e', il form completa invece di creare. */
+  const p = params.get('p') ?? ''
+  const t = params.get('t') ?? ''
+  /** Progressivo dell'ospite, se il link e' quello di una singola scheda. */
+  const o = params.get('o') ?? ''
+
+  const inPratica = p !== ''
+  /** Query da appendere alle chiamate: porta con se' il livello di accesso. */
+  const q = inPratica
+    ? `p=${encodeURIComponent(p)}&t=${encodeURIComponent(t)}${o ? `&o=${encodeURIComponent(o)}` : ''}${k ? `&k=${encodeURIComponent(k)}` : ''}`
+    : `k=${encodeURIComponent(k)}`
 
   const [caricato, setCaricato] = useState(false)
   const [erroreAvvio, setErroreAvvio] = useState('')
@@ -146,8 +183,22 @@ function CheckinForm() {
   const [comuni, setComuni] = useState<Array<{ n: string; p: string }>>([])
   const [stati, setStati] = useState<Array<{ n: string }>>([])
 
+  /** Colonne che questo livello non puo' cambiare: arrivano dal server. */
+  const [colonneBloccate, setColonneBloccate] = useState<string[]>([])
+  /** Se valorizzato, si compila SOLO la scheda di quell'ospite. */
+  const [mioProgressivo, setMioProgressivo] = useState<number | null>(null)
+  const [statoPratica, setStatoPratica] = useState('')
+  const [mancanze, setMancanze] = useState<string[]>([])
+
+  /**
+   * Chi apre con un link di prenotazione non modifica il soggiorno: lo
+   * riconosce. Il gestore invece riceve un elenco di bloccati vuoto e continua
+   * a vedere i campi, perche' a lui puo' servire correggere una data.
+   */
+  const soloLettura = inPratica && colonneBloccate.length > 0
+
   const [sog, setSog] = useState({
-    unita: '', portale: 'Booking', codPrenotazione: '', checkin: '', checkout: '',
+    unita: '', portale: 'Booking', codPrenotazione: '', checkin: '', checkout: '', ospitiAttesi: '',
     importoLordo: '', intestatario: '', codiceFiscale: '', piva: '', sdi: '',
     indirizzo: '', cap: '', citta: '', provincia: '', nazione: 'IT',
     email: '', telefono: '', note: '',
@@ -159,20 +210,62 @@ function CheckinForm() {
   const [esito, setEsito] = useState<{ tipo: 'ok' | 'ko'; testo: string[] } | null>(null)
 
   useEffect(() => {
-    if (!k) { setErroreAvvio('Collegamento incompleto: manca il codice di accesso.'); return }
-    fetch(`/api/checkin/dati?k=${encodeURIComponent(k)}`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (!d.ok) { setErroreAvvio(d.errore || 'Collegamento non valido.'); return }
-        setUnita(d.unita ?? [])
-        setRegole(d.regole ?? REGOLE_MARATEA)
-        setComuni(d.comuni ?? [])
-        setStati(d.stati ?? [])
-        setSog((s) => ({ ...s, unita: (d.unita ?? [])[0] ?? '' }))
+    if (!k && !inPratica) {
+      setErroreAvvio('Collegamento incompleto: manca il codice di accesso.')
+      return
+    }
+
+    const configurazione = fetch(`/api/checkin/dati?${q}`).then((r) => r.json())
+    const pratica = inPratica
+      ? fetch(`/api/checkin/pratica?${q}`).then((r) => r.json())
+      : Promise.resolve(null)
+
+    Promise.all([configurazione, pratica])
+      .then(([cfg, pr]) => {
+        if (!cfg?.ok) { setErroreAvvio(cfg?.errore || 'Collegamento non valido.'); return }
+        setUnita(cfg.unita ?? [])
+        setRegole(cfg.regole ?? REGOLE_MARATEA)
+        setComuni(cfg.comuni ?? [])
+        setStati(cfg.stati ?? [])
+
+        if (!inPratica) {
+          setSog((s) => ({ ...s, unita: (cfg.unita ?? [])[0] ?? '' }))
+          setCaricato(true)
+          return
+        }
+
+        if (!pr?.ok) { setErroreAvvio(pr?.errore || 'Collegamento non valido.'); return }
+
+        setColonneBloccate(pr.campiBloccati ?? [])
+        setMioProgressivo(pr.mioProgressivo ?? null)
+        setStatoPratica(pr.stato ?? '')
+
+        const s = soggiornoDaColonne(pr.soggiorno ?? {})
+        setSog((prec) => ({ ...prec, ...s }))
+        // Se l'intestatario e' gia' stato dichiarato, la sezione fattura si
+        // apre gia': altrimenti sembrerebbe che il dato sia sparito.
+        if (s.intestatario && s.piva) setFatturaAltri(true)
+
+        const schede = (pr.ospiti ?? []).map((x: Record<string, string>) => ospiteDaColonne(x))
+        const attesi = Number(s.ospitiAttesi || 0)
+
+        if (pr.mioProgressivo) {
+          // Il link di un singolo ospite: una scheda sola, la sua.
+          const mia = schede.find((sc: FormOspite) => Number(sc.progressivo) === pr.mioProgressivo)
+          setOspiti([mia ? daForm(mia) : { ...OSPITE_VUOTO }])
+        } else {
+          // Tante schede quanti gli ospiti prenotati: chi compila vede subito
+          // quante ne mancano, invece di doverle aggiungere una a una.
+          const complete = [...schede.map(daForm)]
+          while (complete.length < Math.max(attesi, 1)) complete.push({ ...OSPITE_VUOTO })
+          setOspiti(complete)
+        }
+
         setCaricato(true)
       })
-      .catch(() => setErroreAvvio('Non riesco a caricare la configurazione.'))
-  }, [k])
+      .catch(() => setErroreAvvio('Non riesco a caricare i dati della prenotazione.'))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [k, p, t, o])
 
   /** Lo stesso calcolo del server, cosi' la cifra mostrata e' quella salvata. */
   const anteprima = useMemo(() => {
@@ -194,8 +287,53 @@ function CheckinForm() {
     return `${o.cognome} ${o.nome}`.trim().toUpperCase()
   }, [ospiti])
 
+  /**
+   * A chi va la fattura, per come stanno le cose adesso: l'azienda se e' stata
+   * dichiarata, altrimenti il primo ospite. Serve a scrivere il nome accanto
+   * all'indirizzo, perche' "l'indirizzo" in un modulo con tre persone dentro
+   * non dice di chi.
+   */
+  const destinatarioFattura = fatturaAltri
+    ? sog.intestatario.trim().toUpperCase()
+    : intestatarioDedotto
+
   const cambiaOspite = (i: number, campo: keyof Ospite, valore: string | boolean) =>
     setOspiti((prev) => prev.map((o, j) => (j === i ? { ...o, [campo]: valore } : o)))
+
+  /**
+   * Quando il codice fiscale e' valido, i dati che contiene si compilano da
+   * soli: sesso, data e luogo di nascita sono scritti dentro il codice.
+   *
+   * Richiederli a chi il codice lo ha appena scritto vuol dire fargli riempire
+   * quattro caselle che il sistema conosce gia' — e ogni casella in piu' e'
+   * un'occasione di scriverle diverse dal codice, cioe' di creare una
+   * discordanza che poi qualcuno dovra' risolvere.
+   *
+   * Restano modificabili: se l'ospite corregge, la sua correzione vince.
+   */
+  async function riempiDalCf(i: number, cf: string) {
+    const d = decodificaCf(cf, new Date().getFullYear())
+    if (!d) return
+
+    setOspiti((prev) => prev.map((o, j) => (
+      j === i ? { ...o, sesso: d.sesso, dataNascita: d.dataNascita } : o
+    )))
+
+    if (d.estero) return // il luogo estero non sta nel nostro elenco comuni
+
+    try {
+      const res = await fetch(`/api/checkin/comuni?${q}&catastale=${encodeURIComponent(d.catastale)}`)
+      const j = await res.json()
+      const c = j.comuni?.[0]
+      if (!c) return
+      setOspiti((prev) => prev.map((os, idx) => (
+        idx === i ? { ...os, comuneNascita: c.n, provNascita: c.p } : os
+      )))
+    } catch {
+      // Se la ricerca non riesce, i campi restano da compilare a mano: nessun
+      // danno, solo un aiuto in meno.
+    }
+  }
 
   /** Verifica del CF mentre si scrive: l'errore si vede subito, non al salvataggio. */
   function statoCf(o: Ospite): { classe: string; messaggio: string } {
@@ -212,10 +350,49 @@ function CheckinForm() {
     return cf !== '' && !validaCodiceFiscale(cf).valido
   })
 
+  /** Salva su una prenotazione gia' aperta. */
+  async function salvaPratica() {
+    const res = await fetch(`/api/checkin/pratica?${q}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        // Un ospite non intestatario non manda NIENTE del soggiorno: quello che
+        // non si puo' cambiare non si invia nemmeno.
+        soggiorno: mioProgressivo ? {} : soggiornoAColonne(sog),
+        ospiti: ospiti.map((os, i) =>
+          ospiteAColonne({
+            ...os,
+            progressivo: String(mioProgressivo ?? i + 1),
+          }),
+        ),
+      }),
+    })
+    const d = await res.json()
+    if (!d.ok) {
+      setEsito({ tipo: 'ko', testo: [d.errore ?? 'Non salvato.'] })
+      return
+    }
+
+    setStatoPratica(d.stato)
+    setMancanze(d.mancanze ?? [])
+    setEsito({
+      tipo: d.stato === 'CHECKIN OK' ? 'ok' : 'ko',
+      testo: d.stato === 'CHECKIN OK'
+        ? ['Check-in completo. / Check-in complete.', 'Non serve altro: ci vediamo all’arrivo.']
+        : ['Salvato. Manca ancora: / Saved. Still missing:', ...(d.mancanze ?? [])],
+    })
+    window.scrollTo(0, 0)
+  }
+
   async function invia() {
     setInvio(true)
     setEsito(null)
     try {
+      if (inPratica) {
+        await salvaPratica()
+        return
+      }
+
       const res = await fetch(`/api/checkin/registra?k=${encodeURIComponent(k)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -283,6 +460,45 @@ function CheckinForm() {
           </div>
         )}
 
+        {statoPratica && (
+          <div className={`stato ${statoPratica === 'CHECKIN OK' ? 'ok' : ''}`}>
+            {statoPratica === 'CHECKIN OK'
+              ? 'Check-in completo / Check-in complete'
+              : 'Check-in da completare / Check-in incomplete'}
+            {mancanze.length > 0 && (
+              <ul>{mancanze.map((m, i) => <li key={i}>{m}</li>)}</ul>
+            )}
+          </div>
+        )}
+
+        {/*
+          In una prenotazione gia' aperta l'ospite non modifica il soggiorno: lo
+          RICONOSCE. Un riepilogo in sola lettura, senza l'importo — che e' un
+          dato commerciale fra l'Ingegnere e il portale e non riguarda chi
+          dorme in casa.
+        */}
+        {inPratica && soloLettura && (
+          <section className="riepilogo">
+            <h2>La tua prenotazione / Your booking</h2>
+            <dl>
+              <div><dt>Alloggio / Property</dt><dd>{sog.unita || '—'}</dd></div>
+              <div><dt>Arrivo / Arrival</dt><dd>{dataIT(sog.checkin)}</dd></div>
+              <div><dt>Partenza / Departure</dt><dd>{dataIT(sog.checkout)}</dd></div>
+              <div><dt>Ospiti / Guests</dt><dd>{sog.ospitiAttesi || '—'}</dd></div>
+              {sog.codPrenotazione && (
+                <div><dt>Prenotazione / Booking ref.</dt><dd>{sog.codPrenotazione}</dd></div>
+              )}
+            </dl>
+            {anteprima && anteprima.importo > 0 && (
+              <div className="calcolo">
+                Imposta di soggiorno stimata € {anteprima.importo.toFixed(2)}
+                <span className="en-inline">Tourist tax, payable on arrival</span>
+              </div>
+            )}
+          </section>
+        )}
+
+        {!soloLettura && (
         <section>
           <h2>Soggiorno / Stay</h2>
 
@@ -339,6 +555,7 @@ function CheckinForm() {
             </div>
           )}
         </section>
+        )}
 
         <section>
           <h2>Ospiti / Guests</h2>
@@ -388,7 +605,7 @@ function CheckinForm() {
                   <div style={{ flex: 2 }}>
                     <Eti it="Comune di nascita (se in Italia)" en="Town of birth (if born in Italy)" />
                     <CercaComune
-                      k={k} valore={o.comuneNascita} placeholder="scrivi le prime lettere…"
+                      accesso={q} valore={o.comuneNascita} placeholder="scrivi le prime lettere…"
                       onScegli={(c) => {
                         cambiaOspite(i, 'comuneNascita', c.n)
                         cambiaOspite(i, 'provNascita', c.p)
@@ -440,7 +657,12 @@ function CheckinForm() {
                 <input
                   className={`maiusc cf ${cf.classe}`} maxLength={16}
                   value={o.codiceFiscale}
-                  onChange={(e) => cambiaOspite(i, 'codiceFiscale', e.target.value.toUpperCase())}
+                  onChange={(e) => {
+                    const v = e.target.value.toUpperCase()
+                    cambiaOspite(i, 'codiceFiscale', v)
+                    // Appena il codice e' completo, si legge quello che contiene.
+                    if (v.length === 16) void riempiDalCf(i, v)
+                  }}
                 />
                 {cf.messaggio && <div className={`verifica ${cf.classe}`}>{cf.messaggio}</div>}
 
@@ -462,9 +684,11 @@ function CheckinForm() {
               </div>
             )
           })}
+          {!mioProgressivo && (
           <button className="btn btn-sec" onClick={() => setOspiti([...ospiti, { ...OSPITE_VUOTO }])}>
             + Aggiungi ospite / Add guest
           </button>
+          )}
         </section>
 
         <section>
@@ -495,7 +719,7 @@ function CheckinForm() {
                 if (!e.target.checked) setSog((s) => ({ ...s, intestatario: '', codiceFiscale: '', piva: '', sdi: '' }))
               }}
             />
-            Fattura a un&apos;azienda o a un&apos;altra persona / Invoice to a company or someone else
+            Fattura a societa, ditta individuale o altra persona / Invoice to a company or someone else
           </label>
 
           {fatturaAltri && (
@@ -528,12 +752,21 @@ function CheckinForm() {
             <span className="en">The address is always required — the e-invoice cannot be issued without it.</span>
           </div>
 
-          <Eti it="Indirizzo di residenza *" en="Home address *" />
+          {/*
+            L'etichetta porta il nome di chi verra' fatturato. Chiedere
+            "l'indirizzo" e basta, in un modulo dove si sono appena scritte tre
+            persone, lascia il dubbio su quale dei tre — e il dubbio si risolve
+            scrivendo l'indirizzo sbagliato.
+          */}
+          <Eti
+            it={destinatarioFattura ? `Indirizzo di residenza di ${destinatarioFattura} *` : 'Indirizzo di residenza *'}
+            en={destinatarioFattura ? `Home address of ${destinatarioFattura} *` : 'Home address *'}
+          />
           <input value={sog.indirizzo} onChange={(e) => setSog({ ...sog, indirizzo: e.target.value })} />
 
           <Eti it="Comune di residenza *" en="Town of residence *" />
           <CercaComune
-            k={k} valore={sog.citta} placeholder="scrivi le prime lettere…"
+            accesso={q} valore={sog.citta} placeholder="scrivi le prime lettere…"
             onScegli={(c) => setSog((s) => ({
               ...s,
               citta: c.n,
@@ -643,6 +876,18 @@ const STILE = `
   .intestata .en{display:block;font-size:11px;font-style:italic;color:#8a94a6}
   .prevale{background:#fff6e5;border:1px solid #e0c48a;border-radius:8px;padding:10px 12px;font-size:12px;color:#6b4e00;line-height:1.5;margin:10px 0 4px}
   .prevale .en{display:block;font-size:11px;font-style:italic;opacity:.8}
+  .stato{padding:12px 14px;border-radius:8px;margin-bottom:12px;font-size:13px;line-height:1.5;
+    background:#fff6e5;border:1px solid #e0c48a;color:#6b4e00;font-weight:600}
+  .stato.ok{background:#e7f5ee;border-color:var(--ok);color:#0b5c3b}
+  .stato ul{margin:6px 0 0;padding-left:18px;font-weight:400}
+  .stato li{margin:2px 0}
+  .riepilogo dl{margin:0}
+  .riepilogo dl>div{display:flex;justify-content:space-between;gap:12px;padding:8px 0;
+    border-bottom:1px solid #eef1f6}
+  .riepilogo dl>div:last-child{border-bottom:none}
+  .riepilogo dt{font-size:11.5px;color:#6b7280;margin:0}
+  .riepilogo dd{margin:0;font-size:15px;font-weight:600;color:var(--blu);text-align:right}
+  .en-inline{display:block;font-size:11px;font-style:italic;color:#8a94a6;font-weight:400}
   .cerca{position:relative}
   .elenco{position:absolute;z-index:20;left:0;right:0;top:100%;margin:2px 0 0;padding:0;list-style:none;
     background:#fff;border:1px solid var(--blu);border-radius:8px;max-height:240px;overflow-y:auto;

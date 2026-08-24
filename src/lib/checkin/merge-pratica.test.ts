@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  fondiSoggiorno, fondiOspiti, aMappa, aRiga, type Livello,
+  fondiSoggiorno, fondiOspiti, aMappa, aRiga, oscuraRiservati, type Livello,
 } from './merge-pratica'
 import { COL_SOGGIORNI, COL_OSPITI } from './foglio-schema'
 
@@ -180,5 +180,40 @@ describe('schede ospiti', () => {
   it('scarta una scheda senza progressivo invece di inventarne uno', () => {
     const r = fondiOspiti([], [{ Cognome: 'SENZA' }], GESTORE, 'SOG-1')
     expect(r.righe).toHaveLength(0)
+  })
+})
+
+describe('cosa l ospite non deve nemmeno vedere', () => {
+  it("l'importo sparisce dalla risposta, non solo dalla pagina", () => {
+    // Nasconderlo nell'interfaccia lo lascerebbe leggibile dagli strumenti del
+    // browser: e lo stesso errore del blocco in scrittura, ma in lettura.
+    const m = aMappa(COL_SOGGIORNI, soggiornoEsistente())
+    const visto = oscuraRiservati(m, INTESTATARIO)
+    expect('Importo lordo €' in visto).toBe(false)
+  })
+
+  it('sparisce anche per un ospite qualsiasi', () => {
+    const m = aMappa(COL_SOGGIORNI, soggiornoEsistente())
+    expect('Importo lordo €' in oscuraRiservati(m, OSPITE2)).toBe(false)
+  })
+
+  it('il gestore invece lo vede: gli serve', () => {
+    const m = aMappa(COL_SOGGIORNI, soggiornoEsistente())
+    expect(oscuraRiservati(m, GESTORE)['Importo lordo €']).toBe('800')
+  })
+
+  it('le date del soggiorno restano visibili a tutti', () => {
+    // Servono all ospite per riconoscere la propria prenotazione.
+    const visto = oscuraRiservati(aMappa(COL_SOGGIORNI, soggiornoEsistente()), INTESTATARIO)
+    expect(visto['Check-in']).toBe('2026-08-10')
+    expect(visto['Check-out']).toBe('2026-08-14')
+    expect(visto['Unità']).toBe('Unità 1')
+  })
+
+  it('non modifica la mappa che ha ricevuto', () => {
+    // Se la modificasse, il valore sparirebbe anche per chi lo deve salvare.
+    const m = aMappa(COL_SOGGIORNI, soggiornoEsistente())
+    oscuraRiservati(m, OSPITE2)
+    expect(m['Importo lordo €']).toBe('800')
   })
 })
