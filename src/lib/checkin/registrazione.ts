@@ -185,6 +185,25 @@ export function registraCheckin(
 
   const n = notti(p.checkin, p.checkout)
 
+  // La fattura, se non si dice altro, e' intestata al PRIMO ospite. Nome e
+  // codice fiscale sono gia' stati scritti nella sezione Ospiti: richiederli
+  // una seconda volta significa chiedere due volte la stessa cosa a chi ha
+  // l'ospite davanti — e due copie dello stesso dato prima o poi divergono.
+  const primo = ospiti[0]
+  const intestatario =
+    pulisci(p.intestatario) ||
+    (primo ? `${pulisci(primo.cognome)} ${pulisci(primo.nome)}`.trim().toUpperCase() : '')
+  const cfIntestatario =
+    pulisci(p.codiceFiscale).toUpperCase() ||
+    (pulisci(p.intestatario) ? '' : pulisci(primo?.codiceFiscale ?? '').toUpperCase())
+
+  const nazione = (pulisci(p.nazione) || 'IT').toUpperCase()
+
+  // Codice destinatario: 0000000 e' il valore previsto per chi non ha un canale
+  // telematico (privati italiani), XXXXXXX per i soggetti esteri. Lasciarlo
+  // vuoto produrrebbe un XML rifiutato dallo SdI.
+  const sdi = pulisci(p.sdi) || (nazione === 'IT' ? '0000000' : 'XXXXXXX')
+
   const imposta = calcolaImpostaSoggiorno({
     checkin: p.checkin,
     checkout: p.checkout,
@@ -210,15 +229,15 @@ export function registraCheckin(
     'Notti': String(n),
     'N. ospiti': String(ospiti.length),
     'Importo lordo €': lordo === null ? '' : String(lordo),
-    'Intestatario fattura': pulisci(p.intestatario),
-    'Codice fiscale': pulisci(p.codiceFiscale).toUpperCase(),
+    'Intestatario fattura': intestatario,
+    'Codice fiscale': cfIntestatario,
     'P.IVA': pulisci(p.piva),
-    'Codice SDI / PEC': pulisci(p.sdi),
+    'Codice SDI / PEC': sdi,
     'Indirizzo': pulisci(p.indirizzo),
     'CAP': pulisci(p.cap),
     'Città': pulisci(p.citta),
     'Provincia': pulisci(p.provincia).toUpperCase(),
-    'Nazione': (pulisci(p.nazione) || 'IT').toUpperCase(),
+    'Nazione': nazione,
     'Email': pulisci(p.email),
     'Telefono': pulisci(p.telefono),
     'Imposta soggiorno €': String(imposta.importo),

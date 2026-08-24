@@ -88,6 +88,8 @@ function CheckinForm() {
     email: '', telefono: '', note: '',
   })
   const [ospiti, setOspiti] = useState<Ospite[]>([{ ...OSPITE_VUOTO }])
+  /** Chiusa per un privato: i suoi dati sono gia' fra gli ospiti. */
+  const [fatturaAltri, setFatturaAltri] = useState(false)
   const [invio, setInvio] = useState(false)
   const [esito, setEsito] = useState<{ tipo: 'ok' | 'ko'; testo: string[] } | null>(null)
 
@@ -119,6 +121,13 @@ function CheckinForm() {
       })),
     })
   }, [sog.checkin, sog.checkout, ospiti, regole])
+
+  /** Chi risultera' intestatario se non si dichiara nessun altro. */
+  const intestatarioDedotto = useMemo(() => {
+    const o = ospiti[0]
+    if (!o) return ''
+    return `${o.cognome} ${o.nome}`.trim().toUpperCase()
+  }, [ospiti])
 
   const cambiaOspite = (i: number, campo: keyof Ospite, valore: string | boolean) =>
     setOspiti((prev) => prev.map((o, j) => (j === i ? { ...o, [campo]: valore } : o)))
@@ -383,30 +392,58 @@ function CheckinForm() {
         </section>
 
         <section>
-          <h2>Dati per la fattura / Invoicing details</h2>
-          <div className="hint" style={{ marginBottom: 6 }}>
-            Compila solo se l&apos;intestatario è diverso dal primo ospite o è un&apos;azienda.
-            <span className="en">Only if the invoice is for someone else, or for a company.</span>
-          </div>
+          <h2>Fattura / Invoice</h2>
 
-          <Eti it="Intestatario" en="Invoice to" />
-          <input value={sog.intestatario} onChange={(e) => setSog({ ...sog, intestatario: e.target.value })} />
-
-          <div className="row">
-            <div>
-              <Eti it="Codice fiscale" en="Tax code" />
-              <input className="maiusc" maxLength={16} value={sog.codiceFiscale} onChange={(e) => setSog({ ...sog, codiceFiscale: e.target.value.toUpperCase() })} />
+          {/*
+            Per un privato questa sezione era ridondante: nome e codice fiscale
+            erano gia' stati scritti fra gli ospiti. Ora la fattura va da se' al
+            primo ospite, e si apre solo se serve intestarla ad altri.
+            L'indirizzo resta sempre: nella fattura elettronica la sede del
+            destinatario e' obbligatoria anche per un privato, e il check-in
+            raccoglie il luogo di NASCITA, non la residenza.
+          */}
+          {!fatturaAltri && (
+            <div className="intestata">
+              Fattura intestata a{' '}
+              <b>{intestatarioDedotto || '— aggiungi prima un ospite'}</b>
+              {ospiti[0]?.codiceFiscale ? ` · ${ospiti[0].codiceFiscale}` : ''}
+              <span className="en">The invoice will be issued to the first guest.</span>
             </div>
-            <div>
-              <Eti it="P.IVA (se azienda)" en="VAT no. (companies)" />
-              <input value={sog.piva} onChange={(e) => setSog({ ...sog, piva: e.target.value })} />
-            </div>
-          </div>
+          )}
 
-          <Eti it="Codice SDI / PEC" en="e-invoicing code" />
-          <input placeholder="0000000 se privato italiano" value={sog.sdi} onChange={(e) => setSog({ ...sog, sdi: e.target.value })} />
+          <label className="spunta">
+            <input
+              type="checkbox" checked={fatturaAltri}
+              onChange={(e) => {
+                setFatturaAltri(e.target.checked)
+                if (!e.target.checked) setSog((s) => ({ ...s, intestatario: '', codiceFiscale: '', piva: '', sdi: '' }))
+              }}
+            />
+            Fattura a un&apos;azienda o a un&apos;altra persona / Invoice to a company or someone else
+          </label>
 
-          <Eti it="Indirizzo" en="Address" />
+          {fatturaAltri && (
+            <>
+              <Eti it="Intestatario" en="Invoice to" />
+              <input value={sog.intestatario} onChange={(e) => setSog({ ...sog, intestatario: e.target.value })} />
+
+              <div className="row">
+                <div>
+                  <Eti it="Codice fiscale" en="Tax code" />
+                  <input className="maiusc" maxLength={16} value={sog.codiceFiscale} onChange={(e) => setSog({ ...sog, codiceFiscale: e.target.value.toUpperCase() })} />
+                </div>
+                <div>
+                  <Eti it="P.IVA (se azienda)" en="VAT no. (companies)" />
+                  <input value={sog.piva} onChange={(e) => setSog({ ...sog, piva: e.target.value })} />
+                </div>
+              </div>
+
+              <Eti it="Codice SDI / PEC" en="e-invoicing code" />
+              <input placeholder="0000000 se privato italiano" value={sog.sdi} onChange={(e) => setSog({ ...sog, sdi: e.target.value })} />
+            </>
+          )}
+
+          <Eti it="Indirizzo di residenza" en="Home address" />
           <input value={sog.indirizzo} onChange={(e) => setSog({ ...sog, indirizzo: e.target.value })} />
 
           <div className="row">
@@ -495,6 +532,9 @@ const STILE = `
   .verifica.attenzione{color:var(--att);font-weight:600}
   .spunta{display:flex;align-items:center;gap:8px;margin-top:12px;font-weight:600}
   .spunta input{width:auto;margin:0}
+  .intestata{background:#eef2f9;border:1px solid var(--bordo);border-radius:8px;padding:10px 12px;
+    font-size:13px;color:#2b3a55;line-height:1.5;margin-bottom:4px}
+  .intestata .en{display:block;font-size:11px;font-style:italic;color:#8a94a6}
   .calcolo{margin-top:10px;font-size:12px;color:var(--blu);font-weight:600;line-height:1.5}
   .calcolo .esenti{font-weight:400;color:#6b7280}
   .blocco{font-size:11px;color:var(--err);margin-top:8px;line-height:1.4;text-align:center}

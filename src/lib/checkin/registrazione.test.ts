@@ -206,3 +206,43 @@ describe('cose che non devono finire nel foglio', () => {
     expect(v.startsWith('=')).toBe(false)
   })
 })
+
+describe('intestazione della fattura senza riscrivere niente', () => {
+  it('senza intestatario, la fattura va al primo ospite', () => {
+    // Nome e codice fiscale sono gia' stati scritti nella sezione Ospiti:
+    // richiederli di nuovo significa chiedere due volte la stessa cosa a chi
+    // ha l ospite davanti, e ogni ripetizione e' un modo per divergere.
+    const p = payload({ intestatario: '', codiceFiscale: '' })
+    const r = esegui(p)
+    expect(r.ok).toBe(true)
+    expect(r.rigaSoggiorno[COL_SOGGIORNI.indexOf('Intestatario fattura' as never)]).toBe('ROSSI MARIO')
+    expect(r.rigaSoggiorno[COL_SOGGIORNI.indexOf('Codice fiscale' as never)]).toBe('RSSMRA80A01H501U')
+  })
+
+  it('se l intestatario e dichiarato, vince su quello dedotto', () => {
+    const r = esegui(payload({ intestatario: 'ACME SRL', codiceFiscale: '', piva: '01234567890' }))
+    expect(r.rigaSoggiorno[COL_SOGGIORNI.indexOf('Intestatario fattura' as never)]).toBe('ACME SRL')
+  })
+
+  it('non inventa un intestatario se non ci sono ospiti', () => {
+    const r = esegui(payload({ intestatario: '', ospiti: [] }))
+    expect(r.rigaSoggiorno[COL_SOGGIORNI.indexOf('Intestatario fattura' as never)]).toBe('')
+  })
+})
+
+describe('codice destinatario', () => {
+  it('mette 0000000 per un italiano che non lo indica', () => {
+    const r = esegui(payload({ sdi: '', nazione: 'IT' }))
+    expect(r.rigaSoggiorno[COL_SOGGIORNI.indexOf('Codice SDI / PEC' as never)]).toBe('0000000')
+  })
+
+  it('mette XXXXXXX per uno straniero', () => {
+    const r = esegui(payload({ sdi: '', nazione: 'DE' }))
+    expect(r.rigaSoggiorno[COL_SOGGIORNI.indexOf('Codice SDI / PEC' as never)]).toBe('XXXXXXX')
+  })
+
+  it('non sovrascrive un codice indicato davvero', () => {
+    const r = esegui(payload({ sdi: 'ABCDEFG' }))
+    expect(r.rigaSoggiorno[COL_SOGGIORNI.indexOf('Codice SDI / PEC' as never)]).toBe('ABCDEFG')
+  })
+})
