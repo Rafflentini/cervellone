@@ -45,7 +45,7 @@ async function getDrive() {
   return google.drive({ version: 'v3', auth: await getAuth() })
 }
 
-async function getSheets() {
+export async function getSheets() {
   return google.sheets({ version: 'v4', auth: await getAuth() })
 }
 

@@ -149,3 +149,126 @@ Regola di progetto: **niente in questo sottosistema può fallire in silenzio.** 
 4. Parte 3 — autofattura Booking.
 
 Le fondamenta per prime perché rendono sicuro tutto il resto. La prima nota subito dopo perché è quasi gratis e ti serve da subito.
+
+---
+
+# Aggiornamento 24 agosto 2026 — dove vive il check-in
+
+Questa sezione modifica il §3 (Perimetro) e il §4 (Parte 2). Dove diverge da quanto sopra, vale questa.
+
+## 9. Cosa è stato accertato, e non era scritto da nessuna parte
+
+Verificato il 24/08/2026 sul Drive reale, non sui documenti:
+
+| Cosa | Stato accertato |
+|---|---|
+| Sorgenti `Codice.gs`, `Form.html`, `Esportazioni.gs`, `CodiceFiscale.gs` | Esistono come `.txt` nella cartella *App Check-in Rev.01* |
+| Progetto Apps Script | **Mai creato.** Sull'account esistono due soli progetti (`Progetto senza titolo`, `Restruktura Studio Tecnico v2`), entrambi di marzo, nessuno dei due è il check-in |
+| Web app pubblicata | Non esiste: non c'è lo script che la pubblichi |
+| Schede `Soggiorni`/`Ospiti`/`Config`/`Tabelle` | **Mai create.** Entrambi i fogli candidati hanno solo `Foglio1`, vuoto, fermo all'11 agosto |
+| Prima chiamata reale a Fatture in Cloud | ✅ **Riuscita** (Restruktura, 50 fatture lette). Il ripiego "una sola azienda" ha funzionato: `FIC_COMPANY_ID` non serve |
+| `FIC_ACCESS_TOKEN_LAREALESTATE`, `FIC_COMPANY_ID_LAREALESTATE` su Vercel | Assenti |
+
+**Non esiste un'app da riparare: esiste del codice mai messo in opera.** L'11 agosto è stato scritto tutto e non è mai stato installato.
+
+## 10. D6 — Il form di check-in entra in Cervellone
+
+Il §3 metteva il form *fuori* dal perimetro: *"restano al foglio e alla persona"*. **Quel confine si sposta.**
+
+**Motivo, e non è una preferenza estetica:** nessuno degli strumenti disponibili a Claude può creare, agganciare o pubblicare un progetto Apps Script. Lasciando il form dove sta, ogni modifica futura finisce con l'Ingegnere che incolla codice dentro un editor. Un sistema che dipende da un gesto manuale a ogni giro è un sistema che, alla prima settimana intensa, smette di essere aggiornato — ed è lo stesso motivo per cui la memoria persistente è rimasta rotta tre mesi senza che nessuno se ne accorgesse.
+
+Dentro Cervellone il ciclo si chiude: codice nel repo, test, CI, deploy a ogni push, nessun passaggio manuale.
+
+**Cosa NON cambia** — ed è la parte che l'Ingegnere ha chiesto esplicitamente:
+
+- Il **foglio Google resta l'archivio**. La web app ci scrive, Cervellone ci legge. Non si sposta niente in Supabase.
+- Le **quattro schede e le colonne** restano quelle di `Codice.gs`, carattere per carattere: un'intestazione diversa romperebbe la lettura senza dare errore.
+- Il **layout del form resta identico**: stessa palette (`#1f3864`), stessa impaginazione a tre sezioni, stessa barra fissa, stesso calcolo dal vivo dell'imposta. In più il logo (`Logo La Real Bianco`), che nel `Form.html` non c'era mai stato.
+
+**Cosa viene tradotto da Apps Script a TypeScript, con i test che là mancavano:** calcolo del codice fiscale, imposta di soggiorno di Maratea notte per notte, tracciato Alloggiati a 168 caratteri, criterio di selezione delle fatture.
+
+## 11. D7 — L'idempotenza, non il flag, impedisce la fattura doppia
+
+Creare la bozza su Fatture in Cloud e scrivere `Fattura emessa = SI` sul foglio sono **due sistemi senza transazione**. Se la prima riesce e la seconda no, la settimana dopo il soggiorno risulta ancora `NO` e la fattura viene rifatta. Invertendo l'ordine è peggio: un errore su FIC lascia la riga marcata come fatturata quando non lo è, e quello non se ne accorge nessuno.
+
+**Decisione:** l'`ID Soggiorno` (`SOG-20260824-101530`) viene stampato **dentro il documento su Fatture in Cloud**. Prima di creare qualsiasi bozza si cerca se ne esiste già una con quell'ID: se c'è, non si ricrea — si sistema il flag e basta.
+
+Conseguenza da tenere a mente: **la verità è su Fatture in Cloud, il flag sul foglio è una comodità.** Un flag perso costa una ricerca in più, non una fattura doppia a un ospite.
+
+## 12. Il foglio: quale, e chi lo inizializza
+
+I due candidati sono gemelli e vuoti. Si adotta **`La REAL Estate — Gestionale Check-in`**, id `19UeD_Soy_zqTxxg1p6ZkQrOW4_0uct4vftQzy9iLmE4`, perché sta nella cartella operativa accanto ad *Alloggiati* e *Documenti temporanei*.
+
+⚠️ **La spec originale (§4, Parte 2) indicava `1vaq_fJo3l17Jl0_PcV5aih1q1O9qZisPvU2KrBdTX7I`.** Quello è la copia dentro la cartella dei sorgenti. Vale l'id qui sopra.
+
+L'inizializzazione la fa **Cervellone**, non un menu da cliccare: aggiunge le quattro schede al foglio esistente via Sheets API. Così è ripetibile, verificabile e non dipende da nessuno.
+
+`Config` alla messa in opera — unità come segnaposto, da rinominare dopo i test:
+
+| Chiave | Valore |
+|---|---|
+| `ragione_sociale` | LA REAL ESTATE SRLS |
+| `unita` | `Unità 1\|Unità 2\|Unità 3\|Unità 4\|Unità 5` (**cinque**, non quattro) |
+| `tassa_importo` | 2.5 |
+| `tassa_max_notti` | 5 |
+| `tassa_stagione_dal` / `_al` | 01/05 / 31/10 |
+| `tassa_in_vigore_dal` | 01/05/2026 |
+| `aliquota_iva` | 10 |
+
+## 13. Il form è pubblico e raccoglie documenti d'identità
+
+Questo non c'era nella spec di agosto perché il form stava fuori dal perimetro. Ora ci sta dentro, e va detto prima di scrivere il codice.
+
+Il form raccoglie cognome, nome, data e luogo di nascita, tipo e numero del documento: **dati personali di terzi**, non dell'Ingegnere. Una pagina pubblica che li accetta è una pagina che va protetta prima di essere utile.
+
+Requisiti, non desideri:
+
+- Il link porta un **token**; senza token la pagina non si apre. Il link si può revocare senza toccare il codice.
+- La pagina **non legge mai**: accetta scritture, non restituisce soggiorni. Nessuna enumerazione possibile.
+- **Limite di frequenza** per token e per IP.
+- I dati vanno **solo** sul foglio, che sta in un Drive privato. Niente copia in database, niente log del contenuto.
+- Nessun dato personale nei messaggi di errore.
+
+## 14. Ordine di lavoro aggiornato
+
+1. **Il foglio, per davvero** — quattro schede create da Cervellone sul foglio adottato, `Config` popolato. Verifica: rileggere il foglio e trovarcele.
+2. **Il form** — pagina Cervellone, layout identico, logo, scrittura su `Soggiorni` + `Ospiti`, codice fiscale e imposta calcolati.
+3. **Le fatture** (Parte 2) — lettura del foglio, bozze su FIC con `ID Soggiorno`, flag scritto dopo.
+4. **Alloggiati Web** — tracciato a 168 caratteri.
+
+Fuori da questo giro, invariati: trasmissione allo SdI (gesto umano), token FIC de La Real Estate e correzione della tipologia soggetto (credenziali e anagrafiche dell'Ingegnere), caricamento su Alloggiati Web finché non c'è la WebServiceKey.
+
+## 15. L'imposta di soggiorno, dal regolamento e non dal ricordo
+
+Fonte: *Regolamento sull'Imposta di soggiorno del Comune di Maratea*, da ultimo modificato con **D.C.C. n. 03 del 24/02/2026**, letto integralmente il 24/08/2026. Dove il codice di agosto (`Codice.gs`) diverge da questo, vale il regolamento.
+
+**Misura (art. 4 c.1).** L'imposta è determinata *"per persona e per pernottamento"*. **Non è un forfait a soggiorno.** Per case e appartamenti per vacanze e locazioni brevi: **2,50 €**. Ciò che sembra un tetto per soggiorno è in realtà l'esenzione dell'art. 5 lettera a).
+
+**Esenzioni (art. 5).** Sono esenti i pernottamenti di:
+
+| | Caso | In `Codice.gs` |
+|---|---|---|
+| a | successivi al **quinto giorno consecutivo** nella stessa struttura | ✅ implementato (`tassa_max_notti`) |
+| b | campeggi: successivi al quinto giorno anche non consecutivo | non applicabile |
+| c | **minori di età non superiore al dodicesimo anno** | ❌ **assente** |
+| d | disabili (handicap grave L. 104/92) e invalidi civili ≥ 80% | ❌ assente |
+| e | pernottamenti gratuiti a qualunque titolo | ❌ assente |
+| f | chi assiste un degente ricoverato (max 1 per paziente) | ❌ assente |
+| g | autisti di pullman | ❌ assente |
+| h | accompagnatori di gruppi organizzati (1 ogni 25) | ❌ assente |
+| i | ospiti a totale carico del Comune di Maratea | ❌ assente |
+| j | **residenti nel Comune di Maratea** | ❌ assente |
+
+Agevolazione al **50%** per gruppi di almeno 25 persone, con autocertificazione (art. 5 c.2).
+
+**D8 — L'esenzione dei minori si calcola, non si spunta.** `Codice.gs` conosce solo una casella "Esente" manuale: un bambino di tre anni risulta pagante ogni volta che l'operatore si dimentica di spuntarla, e il totale resta plausibile, quindi nessuno se ne accorge. La data di nascita di ogni ospite è già obbligatoria nel form: **l'esenzione per età si deriva dai dati, non dalla memoria di chi compila.**
+
+⚠️ **Ambiguità dichiarata, non risolta.** *"minori di età non superiore al dodicesimo anno"* ammette due letture: esente fino al compimento dei 12, oppure esente anche a 12 compiuti. Si adotta **esente fino a 12 anni compiuti, pagante da 13**, esposta come parametro `esenzione_eta_max` in `Config`. **Da confermare all'Ufficio Entrate e Tributi del Comune (dr. Giuseppe Giannasio, 0973 874111).** Non è una decisione tecnica: è denaro di terzi.
+
+**D9 — Le esenzioni diverse dall'età vanno motivate per iscritto.** Art. 3 c.4: il gestore è obbligato a conservare *"le dichiarazioni rilasciate dal cliente per l'esenzione"*. Quindi il campo motivo diventa **obbligatorio** quando si spunta l'esenzione manuale. Un'esenzione senza motivo è un ammanco in sede di controllo.
+
+⚠️ **Discordanza sul periodo, da chiarire.** L'art. 2 del regolamento fissa il presupposto nel periodo **1 aprile – 31 ottobre**; la delibera tariffaria 2026 e l'avviso del Comune indicano **1 maggio – 31 ottobre 2026**, ed è quest'ultimo che sta in `Config`. Per un soggiorno di aprile la differenza è denaro. Resta parametro, ma va deciso sapendo.
+
+**D10 — La scadenza mensile la crea Cervellone.** Artt. 6 e 7: entro il **giorno 16 di ogni mese** il gestore inserisce sul portale del Comune (applicativo *Xenia* di SISCOM) la dichiarazione del mese precedente — **anche se negativa, indicando zero** — e versa con PagoPA. Nessuno oggi segue questa scadenza. È la stessa famiglia di guasti dell'autofattura TD17: un adempimento che matura in silenzio. Va creata come scadenza ricorrente, non lasciata alla memoria.
+
+**Nota, fuori perimetro ma da sapere:** art. 3 c.3, i gestori di portali telematici e gli intermediari immobiliari sono **essi stessi responsabili** del pagamento dell'imposta. Se Booking incassa e riversa direttamente, il conteggio va riconciliato e non sommato. Da verificare col commercialista prima della prima dichiarazione.

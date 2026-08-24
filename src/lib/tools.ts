@@ -31,6 +31,7 @@ import { MAIL_TOOL_DEFINITIONS } from '@/v19/tools/email'
 import { DOCUMENT_TEMPLATE_TOOLS, executeDocumentTemplateTool } from './document-template-tools'
 import { GMAIL_TOOLS, executeGmailWrapper, executeMailWrapper } from './tools/mail'
 import { SELF_TOOLS, executeSelfTools } from './tools/self'
+import { CHECKIN_TOOLS, executeCheckinTool } from './checkin/tools'
 
 
 // ── IMAGE TOOLS (ri-aggancio pixel immagini caricate) ──
@@ -656,6 +657,7 @@ async function executeDraftWrapper(
 }
 
 const ALL_TOOLS: ToolDefinition[] = [
+  ...CHECKIN_TOOLS, // 2026-08-24: prepara il foglio check-in de La Real Estate
   ...STUDIO_TECNICO_TOOLS,
   ...SAL_TOOLS, // 2026-08-13: SAL da computo (sal_estrai_computo, sal_calcola) con doppia conferma
   ...IMAGE_TOOLS, // 2026-06-12: rivedi_immagine — ri-aggancia i pixel di un'immagine già caricata
@@ -743,7 +745,7 @@ const executeRiconciliazioneWrapper = contabile(executeRiconciliazioneTool, nomi
 const executePrimaNotaWrapper = contabile(executePrimaNotaTool, nomiDi(PRIMA_NOTA_TOOLS))
 const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI_TOOLS))
 
-const EXECUTORS = [executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
+const EXECUTORS = [executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [
