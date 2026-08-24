@@ -21,7 +21,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import crypto from 'crypto'
 import { rateLimit } from '@/lib/rate-limiter'
-import { appendSheet } from '@/lib/drive'
+import { aggiungiRighe } from '@/lib/checkin/foglio-google'
 import { registraCheckin, type PayloadCheckin } from '@/lib/checkin/registrazione'
 import {
   leggiConfig, regoleDaConfig, leggiTabelle, cercatoreCatastale,
@@ -75,10 +75,8 @@ export async function POST(req: NextRequest) {
     // restano righe orfane in Ospiti — visibili e recuperabili. Nell'ordine
     // opposto resterebbe un soggiorno SENZA ospiti: fatturabile, e con la
     // comunicazione alla Questura mancante senza che nulla lo dica.
-    if (esito.righeOspiti.length > 0) {
-      await appendSheet(FOGLIO_CHECKIN_ID, `'${SCHEDA_OSPITI}'!A:A`, esito.righeOspiti)
-    }
-    await appendSheet(FOGLIO_CHECKIN_ID, `'${SCHEDA_SOGGIORNI}'!A:A`, [esito.rigaSoggiorno])
+    await aggiungiRighe(FOGLIO_CHECKIN_ID, SCHEDA_OSPITI, esito.righeOspiti)
+    await aggiungiRighe(FOGLIO_CHECKIN_ID, SCHEDA_SOGGIORNI, [esito.rigaSoggiorno])
 
     return NextResponse.json({
       ok: true,

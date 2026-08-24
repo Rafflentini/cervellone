@@ -30,6 +30,33 @@ async function proprietaSchede(spreadsheetId: string): Promise<Map<string, numbe
   return mappa
 }
 
+/**
+ * Aggiunge righe in fondo a una scheda, SENZA lasciare che Google le interpreti.
+ *
+ * Il motivo e' un difetto trovato sul foglio VERO il 24/08, non in un test:
+ * l'helper generico di drive.ts scrive con "USER_ENTERED", e allora Google
+ * *legge* i valori invece di trascriverli. Il CAP "00100" era diventato il
+ * numero 100, e il codice destinatario "0000000" era diventato "0" — cioe'
+ * proprio il campo che instrada la fattura elettronica, svuotato in silenzio.
+ *
+ * Con "RAW" quello che si scrive e' quello che resta.
+ */
+export async function aggiungiRighe(
+  spreadsheetId: string,
+  nomeScheda: string,
+  righe: string[][],
+): Promise<void> {
+  if (righe.length === 0) return
+  const sheets = await getSheets()
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `'${nomeScheda}'!A:A`,
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: righe },
+  })
+}
+
 export const foglioGoogle: FoglioApi = {
   async elencaSchede(spreadsheetId) {
     return Array.from((await proprietaSchede(spreadsheetId)).keys())
