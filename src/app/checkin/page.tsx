@@ -70,6 +70,71 @@ function Eti({ it, en }: { it: string; en: string }) {
   )
 }
 
+interface ComuneTrovato { e: string; n: string; p: string; cap: string }
+
+/**
+ * Campo comune con ricerca.
+ *
+ * Non e' un vezzo: il comune di nascita determina il codice fiscale e quello di
+ * residenza finisce in fattura. Scritti a mano, "Reggio Emilia" e "Reggio
+ * nell'Emilia" sono due cose diverse per il sistema e la stessa per chi scrive.
+ *
+ * L'elenco mostra sempre la sigla di provincia perche' sei comuni italiani
+ * hanno un omonimo con codice catastale diverso: CALLIANO (AT/TN), CASTRO
+ * (BG/LE), LIVO (CO/TN), PEGLIO (CO/PU), SAMONE (TO/TN), SAN TEODORO (ME/SS).
+ */
+function CercaComune({
+  k, valore, onScegli, placeholder,
+}: {
+  k: string
+  valore: string
+  onScegli: (c: ComuneTrovato) => void
+  placeholder?: string
+}) {
+  const [testo, setTesto] = useState(valore)
+  const [risultati, setRisultati] = useState<ComuneTrovato[]>([])
+  const [aperto, setAperto] = useState(false)
+
+  useEffect(() => { setTesto(valore) }, [valore])
+
+  useEffect(() => {
+    if (!aperto || testo.trim().length < 2) { setRisultati([]); return }
+    // Mezzo secondo di attesa: si cerca quando smetti di scrivere, non a ogni
+    // tasto. In cantiere la rete e' quella che e'.
+    const t = setTimeout(() => {
+      fetch(`/api/checkin/comuni?k=${encodeURIComponent(k)}&q=${encodeURIComponent(testo)}`)
+        .then((r) => r.json())
+        .then((d) => setRisultati(d.comuni ?? []))
+        .catch(() => setRisultati([]))
+    }, 400)
+    return () => clearTimeout(t)
+  }, [testo, aperto, k])
+
+  return (
+    <div className="cerca">
+      <input
+        className="maiusc"
+        value={testo}
+        placeholder={placeholder}
+        onChange={(e) => { setTesto(e.target.value); setAperto(true) }}
+        onFocus={() => setAperto(true)}
+        // Il ritardo serve: senza, il click su una voce arriva dopo la chiusura.
+        onBlur={() => setTimeout(() => setAperto(false), 200)}
+      />
+      {aperto && risultati.length > 0 && (
+        <ul className="elenco">
+          {risultati.map((c) => (
+            <li key={`${c.n}-${c.p}`} onMouseDown={() => { onScegli(c); setTesto(c.n); setAperto(false) }}>
+              {c.e}
+              {c.cap ? <span className="cap">{c.cap}</span> : <span className="cap multi">più CAP</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 function CheckinForm() {
   const params = useSearchParams()
   const k = params.get('k') ?? ''
@@ -311,13 +376,13 @@ function CheckinForm() {
                 <div className="row">
                   <div style={{ flex: 2 }}>
                     <Eti it="Comune di nascita (se in Italia)" en="Town of birth (if born in Italy)" />
-                    <input
-                      className="maiusc" list={`comuni-${i}`} value={o.comuneNascita}
-                      onChange={(e) => cambiaOspite(i, 'comuneNascita', e.target.value)}
+                    <CercaComune
+                      k={k} valore={o.comuneNascita} placeholder="scrivi le prime lettere…"
+                      onScegli={(c) => {
+                        cambiaOspite(i, 'comuneNascita', c.n)
+                        cambiaOspite(i, 'provNascita', c.p)
+                      }}
                     />
-                    <datalist id={`comuni-${i}`}>
-                      {comuni.map((c) => <option key={c.n} value={c.n}>{c.p}</option>)}
-                    </datalist>
                   </div>
                   <div style={{ maxWidth: 90 }}>
                     <Eti it="Prov." en="Prov." />
@@ -455,11 +520,30 @@ function CheckinForm() {
           <Eti it="Indirizzo di residenza *" en="Home address *" />
           <input value={sog.indirizzo} onChange={(e) => setSog({ ...sog, indirizzo: e.target.value })} />
 
+          <Eti it="Comune di residenza *" en="Town of residence *" />
+          <CercaComune
+            k={k} valore={sog.citta} placeholder="scrivi le prime lettere…"
+            onScegli={(c) => setSog((s) => ({
+              ...s,
+              citta: c.n,
+              provincia: c.p,
+              // Il CAP arriva solo se il comune ne ha uno. Le citta' grandi ne
+              // hanno decine: scriverne uno a caso sarebbe un indirizzo
+              // sbagliato dall'aria giusta.
+              cap: c.cap || s.cap,
+            }))}
+          />
+
           <div className="row">
             <div><Eti it="CAP *" en="Postcode *" /><input value={sog.cap} onChange={(e) => setSog({ ...sog, cap: e.target.value })} /></div>
-            <div style={{ flex: 2 }}><Eti it="Città *" en="Town *" /><input value={sog.citta} onChange={(e) => setSog({ ...sog, citta: e.target.value })} /></div>
             <div style={{ maxWidth: 90 }}><Eti it="Prov." en="Prov." /><input className="maiusc" maxLength={2} value={sog.provincia} onChange={(e) => setSog({ ...sog, provincia: e.target.value })} /></div>
           </div>
+          {sog.citta && !sog.cap && (
+            <div className="hint" style={{ color: '#8a6100' }}>
+              Questo comune ha più CAP: scrivilo tu.
+              <span className="en">This town has several postcodes — please type it.</span>
+            </div>
+          )}
 
           <div className="row">
             <div><Eti it="Nazione" en="Country" /><input className="maiusc" maxLength={2} value={sog.nazione} onChange={(e) => setSog({ ...sog, nazione: e.target.value })} /></div>
@@ -546,6 +630,16 @@ const STILE = `
   .intestata .en{display:block;font-size:11px;font-style:italic;color:#8a94a6}
   .prevale{background:#fff6e5;border:1px solid #e0c48a;border-radius:8px;padding:10px 12px;font-size:12px;color:#6b4e00;line-height:1.5;margin:10px 0 4px}
   .prevale .en{display:block;font-size:11px;font-style:italic;opacity:.8}
+  .cerca{position:relative}
+  .elenco{position:absolute;z-index:20;left:0;right:0;top:100%;margin:2px 0 0;padding:0;list-style:none;
+    background:#fff;border:1px solid var(--blu);border-radius:8px;max-height:240px;overflow-y:auto;
+    box-shadow:0 6px 18px rgba(31,56,100,.18)}
+  .elenco li{padding:11px 12px;font-size:15px;cursor:pointer;display:flex;justify-content:space-between;
+    align-items:center;gap:8px;border-bottom:1px solid #eef1f6}
+  .elenco li:last-child{border-bottom:none}
+  .elenco li:active{background:#eef2f9}
+  .elenco .cap{font-size:11px;color:#6b7280;font-family:ui-monospace,Menlo,monospace}
+  .elenco .cap.multi{color:#8a6100;font-family:inherit;font-style:italic}
   .calcolo{margin-top:10px;font-size:12px;color:var(--blu);font-weight:600;line-height:1.5}
   .calcolo .esenti{font-weight:400;color:#6b7280}
   .blocco{font-size:11px;color:var(--err);margin-top:8px;line-height:1.4;text-align:center}
