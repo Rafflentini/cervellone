@@ -148,36 +148,52 @@ export function registraCheckin(
   const errori: string[] = []
   const avvisi: string[] = []
 
-  if (!String(p.unita || '').trim()) errori.push('Indica l unita.')
-  if (!String(p.checkin || '').trim()) errori.push('Indica la data di check-in.')
-  if (!String(p.checkout || '').trim()) errori.push('Indica la data di check-out.')
+  if (!String(p.unita || '').trim()) errori.push("Indica l'unita. / Select the property.")
+  if (!String(p.checkin || '').trim()) errori.push('Indica la data di check-in. / Enter the arrival date.')
+  if (!String(p.checkout || '').trim()) errori.push('Indica la data di check-out. / Enter the departure date.')
 
   const lordo = numero(p.importoLordo)
-  if (lordo === null) errori.push('Importo lordo mancante o non numerico.')
+  if (lordo === null) errori.push('Importo lordo mancante o non numerico. / Total amount missing or not a number.')
+
+  const nazionePagante = (String(p.nazione || '').trim() || 'IT').toUpperCase()
+
+  // L'indirizzo non e' un dato anagrafico fra i tanti: senza, la fattura non
+  // esiste. Verificato sullo schema XSD ufficiale (FatturaPA 1.2.2): nel blocco
+  // CessionarioCommittente l'elemento `Sede` NON porta minOccurs="0", mentre
+  // `StabileOrganizzazione` e `RappresentanteFiscale` ce l'hanno. Accettare un
+  // check-in senza indirizzo vorrebbe dire registrare un soggiorno che sembra a
+  // posto e che poi non si puo' fatturare — scoperto una settimana dopo.
+  if (!String(p.indirizzo || '').trim()) errori.push("Indica l'indirizzo di residenza. / Enter the home address.")
+  if (!String(p.citta || '').trim()) errori.push('Indica il comune di residenza. / Enter the town of residence.')
+  // Per i soggetti esteri la convenzione ammette 00000: pretendere un CAP
+  // italiano da un tedesco bloccherebbe il check-in per un dato che non esiste.
+  if (!String(p.cap || '').trim() && nazionePagante === 'IT') {
+    errori.push('Indica il CAP. / Enter the postcode.')
+  }
 
   const ospiti = Array.isArray(p.ospiti) ? p.ospiti : []
-  if (ospiti.length === 0) errori.push('Aggiungi almeno un ospite.')
+  if (ospiti.length === 0) errori.push('Aggiungi almeno un ospite. / Add at least one guest.')
 
   ospiti.forEach((o, i) => {
-    const eti = `Ospite ${i + 1}`
-    if (!String(o.cognome || '').trim()) errori.push(`${eti}: manca il cognome.`)
-    if (!String(o.nome || '').trim()) errori.push(`${eti}: manca il nome.`)
-    if (!String(o.dataNascita || '').trim()) errori.push(`${eti}: manca la data di nascita.`)
+    const eti = `Ospite ${i + 1} / Guest ${i + 1}`
+    if (!String(o.cognome || '').trim()) errori.push(`${eti}: manca il cognome. / surname missing.`)
+    if (!String(o.nome || '').trim()) errori.push(`${eti}: manca il nome. / first name missing.`)
+    if (!String(o.dataNascita || '').trim()) errori.push(`${eti}: manca la data di nascita. / date of birth missing.`)
 
     if (o.esente && !String(o.motivoEsenzione || '').trim()) {
       // Art. 3 c.4: il gestore deve conservare la dichiarazione di esenzione.
-      errori.push(`${eti}: indica il motivo dell esenzione dall imposta di soggiorno.`)
+      errori.push(`${eti}: indica il motivo dell esenzione dall imposta di soggiorno. / state the reason for the tax exemption.`)
     }
 
     const cf = String(o.codiceFiscale || '').trim()
     if (!cf) {
-      if (serveCodiceFiscale(o)) errori.push(`${eti}: manca il codice fiscale.`)
+      if (serveCodiceFiscale(o)) errori.push(`${eti}: manca il codice fiscale. / Italian tax code missing.`)
       return
     }
 
     const v = validaCodiceFiscale(cf, { dataNascita: o.dataNascita, sesso: o.sesso })
     if (!v.valido) {
-      errori.push(`${eti}: ${v.errore}.`)
+      errori.push(`${eti}: ${v.errore}. / invalid Italian tax code.`)
       return
     }
     if (v.coerente === false) avvisi.push(`${eti}: ${v.avvisoCoerenza}.`)
@@ -234,7 +250,9 @@ export function registraCheckin(
     'P.IVA': pulisci(p.piva),
     'Codice SDI / PEC': sdi,
     'Indirizzo': pulisci(p.indirizzo),
-    'CAP': pulisci(p.cap),
+    // 00000 e' il ripiego previsto per i soggetti esteri, che un CAP nel
+    // formato italiano non ce l'hanno.
+    'CAP': pulisci(p.cap) || (nazione === 'IT' ? '' : '00000'),
     'Città': pulisci(p.citta),
     'Provincia': pulisci(p.provincia).toUpperCase(),
     'Nazione': nazione,

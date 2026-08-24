@@ -246,3 +246,51 @@ describe('codice destinatario', () => {
     expect(r.rigaSoggiorno[COL_SOGGIORNI.indexOf('Codice SDI / PEC' as never)]).toBe('ABCDEFG')
   })
 })
+
+describe('indirizzo — obbligatorio perche la fattura non si genera senza', () => {
+  it('rifiuta un check-in senza indirizzo, CAP o comune', () => {
+    // Verificato sullo schema XSD ufficiale (FatturaPA 1.2.2): nel blocco
+    // CessionarioCommittente l'elemento Sede NON ha minOccurs="0", mentre
+    // StabileOrganizzazione e RappresentanteFiscale ce l hanno. E obbligatorio.
+    // Senza, il file viene scartato prima ancora di arrivare allo SdI.
+    const r = esegui(payload({ indirizzo: '', cap: '', citta: '' }))
+    expect(r.ok).toBe(false)
+    expect(r.errori.join(' ')).toContain('indirizzo')
+    expect(r.errori.join(' ')).toContain('CAP')
+    expect(r.errori.join(' ')).toContain('omune')
+  })
+
+  it('NON pretende la provincia, che nello schema e facoltativa', () => {
+    const r = esegui(payload({ provincia: '' }))
+    expect(r.ok).toBe(true)
+  })
+
+  it('per uno straniero senza CAP usa 00000, la convenzione prevista', () => {
+    const r = esegui(payload({ nazione: 'DE', cap: '' }))
+    expect(r.ok).toBe(true)
+    expect(r.rigaSoggiorno[COL_SOGGIORNI.indexOf('CAP' as never)]).toBe('00000')
+  })
+
+  it('a un italiano il CAP lo chiede davvero', () => {
+    const r = esegui(payload({ nazione: 'IT', cap: '' }))
+    expect(r.ok).toBe(false)
+  })
+})
+
+describe('quando la fattura e a una societa', () => {
+  it('la societa prevale sull ospite, e il suo codice fiscale non viene dedotto', () => {
+    const r = esegui(payload({ intestatario: 'ACME SRL', codiceFiscale: '', piva: '01234567890' }))
+    const col = (n: string) => r.rigaSoggiorno[COL_SOGGIORNI.indexOf(n as never)]
+    expect(col('Intestatario fattura')).toBe('ACME SRL')
+    expect(col('Codice fiscale')).toBe('')
+    expect(col('P.IVA')).toBe('01234567890')
+  })
+})
+
+describe('i messaggi li legge anche chi non parla italiano', () => {
+  it('ogni errore porta con se la versione inglese', () => {
+    const r = esegui(payload({ unita: '', indirizzo: '', importoLordo: '' }))
+    expect(r.ok).toBe(false)
+    for (const e of r.errori) expect(e, `senza inglese: ${e}`).toContain(' / ')
+  })
+})

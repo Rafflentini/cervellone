@@ -424,7 +424,11 @@ function CheckinForm() {
 
           {fatturaAltri && (
             <>
-              <Eti it="Intestatario" en="Invoice to" />
+              <div className="prevale">
+                La fattura sarà intestata <b>a questi dati</b>, non all&apos;ospite.
+                <span className="en">The invoice will be issued to these details instead of the guest.</span>
+              </div>
+              <Eti it="Denominazione o intestatario" en="Company name / Invoice to" />
               <input value={sog.intestatario} onChange={(e) => setSog({ ...sog, intestatario: e.target.value })} />
 
               <div className="row">
@@ -443,12 +447,17 @@ function CheckinForm() {
             </>
           )}
 
-          <Eti it="Indirizzo di residenza" en="Home address" />
+          <div className="hint" style={{ marginTop: 12 }}>
+            L&apos;indirizzo serve <b>sempre</b>: senza, la fattura elettronica non si genera.
+            <span className="en">The address is always required — the e-invoice cannot be issued without it.</span>
+          </div>
+
+          <Eti it="Indirizzo di residenza *" en="Home address *" />
           <input value={sog.indirizzo} onChange={(e) => setSog({ ...sog, indirizzo: e.target.value })} />
 
           <div className="row">
-            <div><Eti it="CAP" en="Postcode" /><input value={sog.cap} onChange={(e) => setSog({ ...sog, cap: e.target.value })} /></div>
-            <div style={{ flex: 2 }}><Eti it="Città" en="Town" /><input value={sog.citta} onChange={(e) => setSog({ ...sog, citta: e.target.value })} /></div>
+            <div><Eti it="CAP *" en="Postcode *" /><input value={sog.cap} onChange={(e) => setSog({ ...sog, cap: e.target.value })} /></div>
+            <div style={{ flex: 2 }}><Eti it="Città *" en="Town *" /><input value={sog.citta} onChange={(e) => setSog({ ...sog, citta: e.target.value })} /></div>
             <div style={{ maxWidth: 90 }}><Eti it="Prov." en="Prov." /><input className="maiusc" maxLength={2} value={sog.provincia} onChange={(e) => setSog({ ...sog, provincia: e.target.value })} /></div>
           </div>
 
@@ -535,6 +544,8 @@ const STILE = `
   .intestata{background:#eef2f9;border:1px solid var(--bordo);border-radius:8px;padding:10px 12px;
     font-size:13px;color:#2b3a55;line-height:1.5;margin-bottom:4px}
   .intestata .en{display:block;font-size:11px;font-style:italic;color:#8a94a6}
+  .prevale{background:#fff6e5;border:1px solid #e0c48a;border-radius:8px;padding:10px 12px;font-size:12px;color:#6b4e00;line-height:1.5;margin:10px 0 4px}
+  .prevale .en{display:block;font-size:11px;font-style:italic;opacity:.8}
   .calcolo{margin-top:10px;font-size:12px;color:var(--blu);font-weight:600;line-height:1.5}
   .calcolo .esenti{font-weight:400;color:#6b7280}
   .blocco{font-size:11px;color:var(--err);margin-top:8px;line-height:1.4;text-align:center}
