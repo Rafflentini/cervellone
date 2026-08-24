@@ -260,9 +260,20 @@ function CheckinForm() {
   return (
     <>
       <header>
-        <h1>Registrazione check-in</h1>
-        <p>LA REAL ESTATE SRLS — dati per Questura, imposta di soggiorno e fattura</p>
-        <p className="en-header">Guest registration — required by law for police records, tourist tax and invoicing</p>
+        {/*
+          Il logo e' bordeaux su fondo bianco (il file si chiama "Bianco" per il
+          FONDO, non per il tratto). Su un'intestazione blu ci finirebbe dentro
+          un rettangolo bianco e il colore stonerebbe: percio' la fascia del
+          logo e' bianca, e il blu resta il colore di tutto il resto.
+          Se il logo non si carica, l'intestazione regge lo stesso.
+        */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/api/checkin/logo" alt="LA Real Estate srls" className="logo" />
+        <div className="titolo">
+          <h1>Registrazione check-in</h1>
+          <p>Dati per Questura, imposta di soggiorno e fattura</p>
+          <p className="en-header">Guest registration — required by law for police records, tourist tax and invoicing</p>
+        </div>
       </header>
 
       <div className="wrap">
@@ -588,10 +599,12 @@ const STILE = `
   *{box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     margin:0;padding:0 0 110px;background:var(--bg);color:#1a1a1a;font-size:16px}
-  header{background:var(--blu);color:#fff;padding:16px 18px;position:sticky;top:0;z-index:10}
-  header h1{margin:0;font-size:17px;font-weight:600}
-  header p{margin:3px 0 0;font-size:12px;opacity:.75}
-  header p.en-header{opacity:.55;font-style:italic}
+  header{background:#fff;border-bottom:3px solid var(--blu);padding:14px 18px 12px;
+    position:sticky;top:0;z-index:10;box-shadow:0 1px 6px rgba(31,56,100,.08)}
+  header .logo{display:block;height:38px;width:auto;max-width:100%;margin:0 0 10px}
+  header .titolo h1{margin:0;font-size:16px;font-weight:600;color:var(--blu)}
+  header .titolo p{margin:2px 0 0;font-size:11.5px;color:#6b7280;line-height:1.35}
+  header .titolo p.en-header{color:#9aa3b2;font-style:italic}
   .wrap{padding:14px}
   section{background:#fff;border:1px solid var(--bordo);border-radius:10px;padding:14px;margin-bottom:12px}
   h2{font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--blu);margin:0 0 12px}
