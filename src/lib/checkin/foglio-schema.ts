@@ -33,6 +33,10 @@ export const COL_SOGGIORNI = [
   'Indirizzo', 'CAP', 'Città', 'Provincia', 'Nazione', 'Email', 'Telefono',
   'Imposta soggiorno €', 'Inviato Alloggiati', 'Fattura emessa', 'Note',
   'N. fattura', 'Data fattura', 'ID documento FIC',
+  // 24/08: la prenotazione nasce prima del check-in e si chiude quando e'
+  // piena. `Stato check-in` e' l'unica cosa che l'Ingegnere guardera' davvero;
+  // `Da completare` gli dice cosa manca senza aprire nient'altro.
+  'Stato check-in', 'Da completare',
 ] as const
 
 export const COL_OSPITI = [

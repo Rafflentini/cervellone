@@ -14,6 +14,21 @@
 import { getSheets } from '../drive'
 import type { FoglioApi } from './foglio-init'
 
+/**
+ * Indice di colonna (0-based) -> lettera in notazione A1.
+ * Oltre la 26esima diventa AA, AB...: la scheda Soggiorni ne ha gia' 30, quindi
+ * un calcolo che si fermasse alla Z scriverebbe nel posto sbagliato.
+ */
+export function lettera(indice: number): string {
+  let n = indice
+  let s = ''
+  do {
+    s = String.fromCharCode(65 + (n % 26)) + s
+    n = Math.floor(n / 26) - 1
+  } while (n >= 0)
+  return s
+}
+
 /** Mappa titolo -> sheetId numerico, che serve per formattare. */
 async function proprietaSchede(spreadsheetId: string): Promise<Map<string, number>> {
   const sheets = await getSheets()
@@ -89,6 +104,18 @@ export const foglioGoogle: FoglioApi = {
       // una data — e il Config smetterebbe di dire quello che c'e' scritto.
       valueInputOption: 'RAW',
       requestBody: { values: valori },
+    })
+  },
+
+  async scriviIntestazioniInCoda(spreadsheetId, nome, daColonna, intestazioni) {
+    if (intestazioni.length === 0) return
+    const sheets = await getSheets()
+    const prima = lettera(daColonna)
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `'${nome}'!${prima}1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [[...intestazioni]] },
     })
   },
 

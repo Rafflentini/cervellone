@@ -31,6 +31,13 @@ export interface FoglioApi {
   creaScheda(spreadsheetId: string, nome: string): Promise<void>
   leggiPrimaRiga(spreadsheetId: string, nome: string): Promise<string[]>
   scrivi(spreadsheetId: string, nome: string, valori: string[][]): Promise<void>
+  /** Scrive nuove intestazioni a partire dalla colonna indicata (0-based). */
+  scriviIntestazioniInCoda(
+    spreadsheetId: string,
+    nome: string,
+    daColonna: number,
+    intestazioni: readonly string[],
+  ): Promise<void>
   congelaIntestazione(spreadsheetId: string, nome: string): Promise<void>
 }
 
@@ -40,6 +47,8 @@ export interface EsitoInizializzazione {
   create: string[]
   /** Schede che c'erano gia', con la loro intestazione: non toccate. */
   giaPronte: string[]
+  /** Colonne nuove aggiunte in coda a schede gia' esistenti. */
+  colonneAggiunte: string[]
   errore?: string
 }
 
@@ -49,6 +58,7 @@ export async function inizializzaFoglioCheckin(
 ): Promise<EsitoInizializzazione> {
   const create: string[] = []
   const giaPronte: string[] = []
+  const colonneAggiunte: string[] = []
 
   try {
     const esistenti = new Set(await api.elencaSchede(spreadsheetId))
@@ -64,6 +74,14 @@ export async function inizializzaFoglioCheckin(
       // stagione avviata.
       const prima = await api.leggiPrimaRiga(spreadsheetId, scheda.nome)
       if (prima.length > 0) {
+        // Lo schema cresce nel tempo. Le colonne nuove si AGGIUNGONO IN CODA,
+        // mai riordinando: spostare una colonna sposterebbe i dati sotto di
+        // essa, e il foglio resterebbe pieno di valori plausibili ma slittati.
+        const daAggiungere = scheda.intestazioni.filter((c) => !prima.includes(c))
+        if (daAggiungere.length > 0) {
+          await api.scriviIntestazioniInCoda(spreadsheetId, scheda.nome, prima.length, daAggiungere)
+          colonneAggiunte.push(...daAggiungere.map((c) => `${scheda.nome}: ${c}`))
+        }
         if (!create.includes(scheda.nome)) giaPronte.push(scheda.nome)
         continue
       }
@@ -73,12 +91,13 @@ export async function inizializzaFoglioCheckin(
       await api.congelaIntestazione(spreadsheetId, scheda.nome)
     }
 
-    return { ok: true, create, giaPronte }
+    return { ok: true, create, giaPronte, colonneAggiunte }
   } catch (err) {
     return {
       ok: false,
       create,
       giaPronte,
+      colonneAggiunte,
       errore: err instanceof Error ? err.message : String(err),
     }
   }

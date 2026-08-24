@@ -35,6 +35,10 @@ function fintoFoglio(iniziale: Record<string, string[][]> = {}) {
       chiamate.push(`scrivi:${nome}`)
       dati[nome] = valori
     },
+    async scriviIntestazioniInCoda(_id, nome, daColonna, intestazioni) {
+      chiamate.push(`intestazioniInCoda:${nome}:${daColonna}:${intestazioni.length}`)
+      dati[nome][0] = [...(dati[nome][0] ?? []), ...intestazioni]
+    },
     async congelaIntestazione(_id, nome) {
       chiamate.push(`congela:${nome}`)
     },
@@ -122,5 +126,34 @@ describe('quando qualcosa non riesce', () => {
     const esito = await inizializzaFoglioCheckin('FOGLIO-X', api)
     expect(esito.ok).toBe(false)
     expect(esito.create).toEqual(['Soggiorni', 'Ospiti'])
+  })
+})
+
+describe('lo schema che cresce', () => {
+  it('aggiunge in coda le colonne nuove a una scheda gia in uso', async () => {
+    // Le colonne si aggiungono, non si riordinano: spostarne una sposterebbe i
+    // dati sotto di essa, e il foglio resterebbe pieno di valori plausibili ma
+    // slittati di una posizione.
+    const vecchie = COL_SOGGIORNI.slice(0, -2) as unknown as string[]
+    const { api, dati, chiamate } = fintoFoglio({
+      Soggiorni: [vecchie, ['SOG-1', 'x']], Ospiti: [], Config: [], Tabelle: [],
+    })
+    const esito = await inizializzaFoglioCheckin('FOGLIO-X', api)
+
+    expect(esito.ok).toBe(true)
+    expect(esito.colonneAggiunte).toEqual([
+      'Soggiorni: Stato check-in', 'Soggiorni: Da completare',
+    ])
+    // I dati che c erano non sono stati toccati.
+    expect(dati.Soggiorni[1][0]).toBe('SOG-1')
+    expect(chiamate).not.toContain('scrivi:Soggiorni')
+  })
+
+  it('su una scheda gia allineata non aggiunge niente', async () => {
+    const { api } = fintoFoglio({
+      Soggiorni: [COL_SOGGIORNI as unknown as string[]], Ospiti: [], Config: [], Tabelle: [],
+    })
+    const esito = await inizializzaFoglioCheckin('FOGLIO-X', api)
+    expect(esito.colonneAggiunte.filter((c) => c.startsWith('Soggiorni'))).toEqual([])
   })
 })

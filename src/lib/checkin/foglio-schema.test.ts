@@ -28,7 +28,19 @@ describe('colonne dei Soggiorni', () => {
   it('aggiunge in coda le colonne che servono a chiudere il giro della fattura', () => {
     // La spec prevede di annotare numero e data dopo l emissione: in Codice.gs
     // non esisteva la cella dove scriverli.
-    expect(COL_SOGGIORNI.slice(25)).toEqual(['N. fattura', 'Data fattura', 'ID documento FIC'])
+    expect(COL_SOGGIORNI.slice(25, 28)).toEqual(['N. fattura', 'Data fattura', 'ID documento FIC'])
+  })
+
+  it('e in fondo lo stato della pratica, che e cio che si guarda per primo', () => {
+    expect(COL_SOGGIORNI.slice(28)).toEqual(['Stato check-in', 'Da completare'])
+  })
+
+  it('le colonne nuove stanno SEMPRE in fondo', () => {
+    // Inserirne una in mezzo sposterebbe tutti i dati sotto di essa: il foglio
+    // resterebbe pieno di valori plausibili ma slittati di una posizione.
+    expect(COL_SOGGIORNI.indexOf('Stato check-in')).toBeGreaterThan(
+      COL_SOGGIORNI.indexOf('Note'),
+    )
   })
 
   it('non ha colonne duplicate: la lettura per nome diventerebbe ambigua', () => {
