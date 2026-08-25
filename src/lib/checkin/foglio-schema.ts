@@ -95,6 +95,9 @@ export const CONFIG_DEFAULT: string[][] = [
   ['alloggiati_utente', '', 'Utente portale Alloggiati Web'],
   ['alloggiati_wskey', '', 'WebServiceKey — senza questa l invio resta manuale'],
   ['giorni_conservazione_documenti', '7', 'Dopo quanti giorni dal check-out le foto dei documenti si cancellano da sole. Tenerle oltre lo scopo e eccedente (Garante privacy).'],
+  ['consegna_chiavi_nome', '', 'Chi consegna le chiavi e fa il riconoscimento'],
+  ['consegna_chiavi_telefono', '', 'Con il prefisso, es. 393331234567. Serve al pulsante WhatsApp: apre la chat gia con lei.'],
+  ['consegna_chiavi_email', '', 'Se compilata, riceve una mail a ogni nuova prenotazione'],
 ]
 
 /** Righe di esempio del Tabelle, da sostituire con le tabelle ufficiali. */

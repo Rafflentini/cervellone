@@ -62,6 +62,9 @@ export function nuovoIdSoggiorno(ora: Date): string {
 }
 
 export interface DatiPrenotazione {
+  /** Dell ospite che ha prenotato: servono a fargli arrivare il link. */
+  telefono?: string
+  email?: string
   unita: string
   portale: string
   codPrenotazione: string
@@ -99,6 +102,8 @@ export async function creaPrenotazione(
     'Nazione': 'IT',
     'Inviato Alloggiati': 'NO',
     'Fattura emessa': 'NO',
+    'Telefono': pulito(d.telefono ?? ''),
+    'Email': pulito(d.email ?? ''),
     'Note': pulito(d.note),
     'Stato check-in': 'DA COMPILARE',
     'Ospiti dichiarati': pulito(d.ospitiAttesi),

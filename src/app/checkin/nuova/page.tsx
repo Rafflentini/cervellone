@@ -17,6 +17,16 @@ import { useSearchParams } from 'next/navigation'
 
 interface LinkOspite { progressivo: number; link: string }
 
+interface Creata {
+  id: string
+  link: string
+  linkOspiti: LinkOspite[]
+  whatsappOspite: string
+  whatsappConsegnaChiavi: string
+  consegnaChiavi?: { nome: string; telefono: string; email: string }
+  avvisi?: { ospite: string; consegnaChiavi: string }
+}
+
 /**
  * L'intestazione con il logo, uguale su tutte le pagine.
  *
@@ -45,11 +55,11 @@ function NuovaPrenotazione() {
   const [d, setD] = useState({
     unita: '', portale: 'Booking', codPrenotazione: '',
     checkin: '', checkout: '', ospitiAttesi: '2', importoLordo: '',
-    intestatario: '', note: '',
+    intestatario: '', telefono: '', email: '', note: '',
   })
   const [invio, setInvio] = useState(false)
   const [errori, setErrori] = useState<string[]>([])
-  const [fatta, setFatta] = useState<{ id: string; link: string; linkOspiti: LinkOspite[] } | null>(null)
+  const [fatta, setFatta] = useState<Creata | null>(null)
   const [copiato, setCopiato] = useState('')
 
   async function crea() {
@@ -100,18 +110,48 @@ function NuovaPrenotazione() {
               Manda questo. Compila tutto lui, oppure gira agli altri il link della loro scheda.
             </p>
             <div className="link">{fatta.link}</div>
-            <button className="btn btn-pri" onClick={() => copia(fatta.link, 'principale')}>
+            <a className="btn btn-pri" href={fatta.whatsappOspite} target="_blank" rel="noreferrer">
+              {d.telefono.trim()
+                ? 'Mandalo su WhatsApp all’ospite'
+                : 'Manda su WhatsApp (scegli il contatto)'}
+            </a>
+            <button className="btn btn-sec" onClick={() => copia(fatta.link, 'principale')}>
               {copiato === 'principale' ? 'Copiato ✓' : 'Copia il link'}
             </button>
-            <a
-              className="btn btn-sec"
-              href={`https://wa.me/?text=${encodeURIComponent(
-                `Buongiorno, per completare il check-in: ${fatta.link}`,
-              )}`}
-              target="_blank" rel="noreferrer"
-            >
-              Manda su WhatsApp
-            </a>
+            {fatta.avvisi?.ospite === 'inviata' && (
+              <div className="hint">Mandato anche per email.</div>
+            )}
+          </section>
+
+          {/*
+            Chi consegna le chiavi va avvisata: e' lei che completa i dati
+            mancanti al riconoscimento. Senza saperlo, si presenta senza sapere
+            chi trovera'.
+          */}
+          <section>
+            <h2>Avvisa chi consegna le chiavi</h2>
+            {fatta.consegnaChiavi?.telefono || fatta.consegnaChiavi?.email ? (
+              <>
+                <p className="spiega">
+                  {fatta.consegnaChiavi.nome || 'Chi fa la consegna'} riceve il riepilogo
+                  della prenotazione e il collegamento da cui vede tutto.
+                </p>
+                {fatta.consegnaChiavi.telefono && (
+                  <a className="btn btn-pri" href={fatta.whatsappConsegnaChiavi} target="_blank" rel="noreferrer">
+                    Avvisala su WhatsApp
+                  </a>
+                )}
+                {fatta.avvisi?.consegnaChiavi === 'inviata' && (
+                  <div className="hint">Avvisata anche per email.</div>
+                )}
+              </>
+            ) : (
+              <p className="spiega">
+                Nessun recapito impostato. Scrivi nome, telefono ed email nel foglio,
+                scheda <b>Config</b>, alle righe <b>consegna_chiavi_*</b> — e questo
+                riquadro si accende da solo.
+              </p>
+            )}
           </section>
 
           <section>
@@ -195,6 +235,30 @@ function NuovaPrenotazione() {
 
           <label>Nome di chi ha prenotato</label>
           <input value={d.intestatario} onChange={(e) => setD({ ...d, intestatario: e.target.value })} />
+
+          {/*
+            Il telefono serve al pulsante WhatsApp: con il numero, si apre la
+            chat gia' su quella persona e resta solo da premere invio. Senza,
+            il pulsante funziona lo stesso ma tocca cercare il contatto — che
+            e' l'unico passaggio in cui si sbaglia davvero.
+          */}
+          <label>Telefono dell&apos;ospite</label>
+          <input
+            inputMode="tel" placeholder="+39 333 1234567"
+            value={d.telefono} onChange={(e) => setD({ ...d, telefono: e.target.value })}
+          />
+          <div className="hint">
+            Copialo da Booking. Serve al pulsante WhatsApp: senza, tocca cercare il contatto a mano.
+          </div>
+
+          <label>Email dell&apos;ospite</label>
+          <input
+            type="email" value={d.email} onChange={(e) => setD({ ...d, email: e.target.value })}
+          />
+          <div className="hint">
+            Facoltativa. Se la scrivi <b>e</b> hai compilato le caselle degli avvisi nel foglio,
+            il link parte anche per email — utile come rete di sicurezza se il messaggio non viene letto.
+          </div>
 
           <label>Note</label>
           <input value={d.note} onChange={(e) => setD({ ...d, note: e.target.value })} />

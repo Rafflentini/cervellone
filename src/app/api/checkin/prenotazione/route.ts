@@ -13,6 +13,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import crypto from 'crypto'
 import { creaPrenotazione, type DatiPrenotazione } from '@/lib/checkin/pratica'
 import { linkPrenotazione, linkOspite } from '@/lib/checkin/token-prenotazione'
+import { leggiConfig } from '@/lib/checkin/foglio-lettura'
+import {
+  inviaAvvisi, linkWhatsApp, messaggioOspite, messaggioConsegnaChiavi,
+} from '@/lib/checkin/avvisi'
 
 function tokenGenerale(ricevuto: string | null): boolean {
   const atteso = process.env.CHECKIN_TOKEN
@@ -51,11 +55,56 @@ export async function POST(req: NextRequest) {
   try {
     const { id } = await creaPrenotazione(d, new Date())
     const base = req.nextUrl.origin
+    const link = linkPrenotazione(base, id) ?? ''
+    const linkGestione = `${base}/checkin/gestione?k=${encodeURIComponent(req.nextUrl.searchParams.get('k') ?? '')}`
+
+    /*
+      Chi consegna le chiavi va avvisata: e' lei che completa i dati mancanti al
+      momento del riconoscimento, e senza saperlo si presenta senza sapere chi
+      trovera'. I suoi recapiti stanno nel Config, non nel codice: cambiano
+      quando cambia la persona.
+    */
+    const cfg = await leggiConfig()
+    const consegnaChiavi = {
+      nome: cfg.consegna_chiavi_nome ?? '',
+      telefono: cfg.consegna_chiavi_telefono ?? '',
+      email: cfg.consegna_chiavi_email ?? '',
+    }
+
+    const testoOspite = messaggioOspite({ link, unita: d.unita, checkin: d.checkin })
+    const testoConsegnaChiavi = messaggioConsegnaChiavi({
+      linkGestione,
+      unita: d.unita,
+      checkin: d.checkin,
+      checkout: d.checkout,
+      ospiti,
+      intestatario: d.intestatario ?? '',
+    })
+
+    // Le email partono SOLO se gli indirizzi sono compilati: lasciarli vuoti
+    // spegne l'invio senza toccare il codice. Un avviso che non parte non deve
+    // mai far fallire la creazione — la prenotazione e' il dato, l'avviso una
+    // cortesia.
+    const avvisi = await inviaAvvisi({
+      emailOspite: d.email ?? '',
+      emailConsegnaChiavi: consegnaChiavi.email,
+      oggettoOspite: 'Check-in — LA REAL ESTATE',
+      oggettoConsegnaChiavi: `Nuova prenotazione: ${d.unita} dal ${d.checkin}`,
+      testoOspite,
+      testoConsegnaChiavi,
+    })
 
     return NextResponse.json({
       ok: true,
       id,
-      link: linkPrenotazione(base, id),
+      link,
+      linkGestione,
+      consegnaChiavi,
+      // I collegamenti che aprono WhatsApp gia' sulla persona giusta: un tocco,
+      // e nessun rischio di mandarlo al contatto sbagliato.
+      whatsappOspite: linkWhatsApp(d.telefono ?? '', testoOspite),
+      whatsappConsegnaChiavi: linkWhatsApp(consegnaChiavi.telefono, testoConsegnaChiavi),
+      avvisi,
       linkOspiti: Array.from({ length: ospiti }, (_, i) => ({
         progressivo: i + 1,
         link: linkOspite(base, id, i + 1),
