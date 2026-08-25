@@ -256,9 +256,27 @@ function Gestione() {
 
   return (
     <>
+      {/*
+        "Gestione check-in" e non "gestionale": gestionale, da solo, vuol dire
+        il programma dell'azienda, e si confonderebbe con Cervellone — che e'
+        tutto l'assistente e fa anche Restruktura — e con Fatture in Cloud. Il
+        nome dice COSA gestisce, e regge anche quando ci saranno le fatture
+        dentro: e' sempre il fascicolo di un soggiorno.
+
+        La societa' non si ripete nel sottotitolo: il marchio e' gia' li' sopra,
+        due righe piu' in alto.
+
+        E nemmeno il numero degli appartamenti, che pure ci starebbe bene:
+        l'unico elenco che il programma ha sottomano e' quello degli alloggi
+        CHE COMPAIONO NELLE PRENOTAZIONI, non dei cinque configurati. A inizio
+        stagione direbbe "1 appartamenti" — un numero falso, in intestazione,
+        dove si guarda senza verificare. Meglio una riga piu' corta.
+      */}
       <Intestazione
-        titolo="Check-in"
-        sotto={caricato ? `${totale} prenotazioni in tutto` : 'carico…'}
+        titolo="Gestione check-in"
+        sotto={caricato
+          ? `${totale} ${totale === 1 ? 'prenotazione' : 'prenotazioni'}`
+          : 'carico…'}
       />
 
       <div className="wrap">
