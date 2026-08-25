@@ -21,6 +21,7 @@ export default async function proxy(request: NextRequest) {
     || pathname.startsWith('/api/checkin/pratica')
     || pathname.startsWith('/api/checkin/logo')
     || pathname.startsWith('/api/checkin/documento')
+    || pathname.startsWith('/api/checkin/alloggiati')
     || pathname === '/checkin/nuova'
     || pathname.startsWith('/api/checkin/prenotazione')
 
