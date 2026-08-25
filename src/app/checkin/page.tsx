@@ -715,22 +715,6 @@ function CheckinForm() {
                   <span className="en">Type your country in Italian, or pick it from the list.</span>
                 </div>
 
-                <Eti it="Tipo documento" en="Document type" />
-                <select value={o.tipoDocumento} onChange={(e) => cambiaOspite(i, 'tipoDocumento', e.target.value)}>
-                  {TIPI_DOCUMENTO.map(([v, it, en]) => <option key={v} value={v}>{it} / {en}</option>)}
-                </select>
-
-                <div className="row">
-                  <div>
-                    <Eti it="Numero documento" en="Document number" />
-                    <input className="maiusc" value={o.numeroDocumento} onChange={(e) => cambiaOspite(i, 'numeroDocumento', e.target.value)} />
-                  </div>
-                  <div>
-                    <Eti it="Luogo di rilascio" en="Place of issue" />
-                    <input className="maiusc" value={o.luogoRilascio} onChange={(e) => cambiaOspite(i, 'luogoRilascio', e.target.value)} />
-                  </div>
-                </div>
-
                 <Eti it="Codice fiscale (obbligatorio per i cittadini italiani)" en="Italian tax code (only if you have one)" />
                 <input
                   className={`maiusc cf ${cf.classe}`} maxLength={16}
@@ -747,8 +731,8 @@ function CheckinForm() {
                 {inPratica && (
                   <div className="documenti">
                     <div className="titolo-doc">
-                      Foto del documento / Photo of your ID
-                      <span className="en">Fronte e retro · front and back</span>
+                      Documento d'identità / Your ID document
+                      <span className="en">Fronte e retro — foto o PDF · front and back, photo or PDF</span>
                     </div>
                     {(['fronte', 'retro'] as const).map((lato) => {
                       const prog = mioProgressivo ?? i + 1
@@ -760,22 +744,77 @@ function CheckinForm() {
                           <input
                             type="file"
                             accept="image/*,application/pdf"
-                            capture="environment"
+                            /*
+                              Niente `capture`: con quello il telefono apre
+                              DIRETTAMENTE la fotocamera e non offre la galleria.
+                              Ma l'ospite le foto del documento spesso ce le ha
+                              gia' salvate — obbligarlo a rifarle e' una
+                              scortesia inutile. Senza, compare la scelta
+                              normale: fotocamera, galleria o file.
+                            */
                             onChange={(e) => {
                               const f = e.target.files?.[0]
                               if (f) void caricaDocumento(prog, lato, f)
                               e.target.value = ''
                             }}
                           />
-                          {inCorso ? 'Invio…' : fatto ? `✓ ${lato} caricato` : `Foto ${lato}`}
+                          {inCorso ? 'Invio…' : fatto ? `✓ ${lato} caricato` : `Carica ${lato}`}
                         </label>
                       )
                     })}
                     <div className="hint">
-                      Le foto servono a registrare i dati e si cancellano da sole dopo il soggiorno.
-                      <span className="en">Photos are used to record your details and are deleted automatically after your stay.</span>
+                      Servono a registrare i dati e si cancellano da sole dopo il soggiorno.
+                      <span className="en">Used to record your details, then deleted automatically after your stay.</span>
+                    </div>
+
+                    {/*
+                      Gli estremi del documento stanno DOPO le foto, non prima.
+                      Quando la lettura automatica sara' attiva, chi carica una
+                      foto leggibile trovera' questi campi gia' pieni e non
+                      dovra' toccarli: chiederli prima vorrebbe dire far
+                      scrivere a mano qualcosa che stava per arrivare da solo.
+                    */}
+                    <Eti it="Tipo documento" en="Document type" />
+                    <select value={o.tipoDocumento} onChange={(e) => cambiaOspite(i, 'tipoDocumento', e.target.value)}>
+                      {TIPI_DOCUMENTO.map(([v, it, en]) => <option key={v} value={v}>{it} / {en}</option>)}
+                    </select>
+
+                    <div className="row">
+                      <div>
+                        <Eti it="Numero documento" en="Document number" />
+                        <input className="maiusc" value={o.numeroDocumento} onChange={(e) => cambiaOspite(i, 'numeroDocumento', e.target.value)} />
+                      </div>
+                      <div>
+                        <Eti it="Luogo di rilascio" en="Place of issue" />
+                        <input className="maiusc" value={o.luogoRilascio} onChange={(e) => cambiaOspite(i, 'luogoRilascio', e.target.value)} />
+                      </div>
                     </div>
                   </div>
+                )}
+
+                {/*
+                  Fuori dalla modalita' prenotazione le foto non ci sono, ma i
+                  dati del documento servono lo stesso: alla ragazza che
+                  registra un check-in al volo.
+                */}
+                {!inPratica && (
+                  <>
+                    <Eti it="Tipo documento" en="Document type" />
+                    <select value={o.tipoDocumento} onChange={(e) => cambiaOspite(i, 'tipoDocumento', e.target.value)}>
+                      {TIPI_DOCUMENTO.map(([v, it, en]) => <option key={v} value={v}>{it} / {en}</option>)}
+                    </select>
+
+                    <div className="row">
+                      <div>
+                        <Eti it="Numero documento" en="Document number" />
+                        <input className="maiusc" value={o.numeroDocumento} onChange={(e) => cambiaOspite(i, 'numeroDocumento', e.target.value)} />
+                      </div>
+                      <div>
+                        <Eti it="Luogo di rilascio" en="Place of issue" />
+                        <input className="maiusc" value={o.luogoRilascio} onChange={(e) => cambiaOspite(i, 'luogoRilascio', e.target.value)} />
+                      </div>
+                    </div>
+                  </>
                 )}
                 {/*
                   La casella la vede solo chi gestisce. Il regolamento ha nove casi
