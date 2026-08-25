@@ -225,6 +225,8 @@ function CheckinForm() {
   /** Quali foto risultano gia caricate, per lato e per ospite. */
   const [docCaricati, setDocCaricati] = useState<Record<string, boolean>>({})
   const [mancanze, setMancanze] = useState<string[]>([])
+  /** I link delle singole schede: servono all'intestatario per girarli. */
+  const [linkOspiti, setLinkOspiti] = useState<Array<{ progressivo: number; link: string | null }>>([])
 
   /**
    * Chi apre con un link di prenotazione non modifica il soggiorno: lo
@@ -274,6 +276,7 @@ function CheckinForm() {
 
         setColonneBloccate(pr.campiBloccati ?? [])
         setMioProgressivo(pr.mioProgressivo ?? null)
+        setLinkOspiti(pr.linkOspiti ?? [])
         setStatoPratica(pr.stato ?? '')
 
         const s = soggiornoDaColonne(pr.soggiorno ?? {})
@@ -649,6 +652,25 @@ function CheckinForm() {
                     </button>
                   )}
                 </h3>
+
+                {/*
+                  Il link della SUA scheda, da girare a chi non e' presente.
+                  Senza questo, chi compila non aveva modo di mandare agli altri
+                  la loro parte: il flusso restava a meta', e l'intestatario si
+                  ritrovava a dover chiedere i dati a voce e scriverli lui.
+                */}
+                {!mioProgressivo && linkOspiti[i]?.link && (
+                  <a
+                    className="manda"
+                    href={`https://wa.me/?text=${encodeURIComponent(
+                      `Ciao, completa qui la tua parte del check-in: ${linkOspiti[i].link}`,
+                    )}`}
+                    target="_blank" rel="noreferrer"
+                  >
+                    Compila lui? Mandagli il suo link
+                    <span className="en">Not with you? Send this guest their own link</span>
+                  </a>
+                )}
 
                 <Eti it="Tipo" en="Type" />
                 <select value={o.tipoAlloggiato} onChange={(e) => cambiaOspite(i, 'tipoAlloggiato', e.target.value)}>
@@ -1055,6 +1077,10 @@ const STILE = `
   .intestata .en{display:block;font-size:11px;font-style:italic;color:#8a94a6}
   .prevale{background:#fff6e5;border:1px solid #e0c48a;border-radius:8px;padding:10px 12px;font-size:12px;color:#6b4e00;line-height:1.5;margin:10px 0 4px}
   .prevale .en{display:block;font-size:11px;font-style:italic;opacity:.8}
+  .manda{display:block;text-align:center;margin:8px 0 4px;padding:9px;border-radius:7px;
+    border:1px dashed var(--blu);color:var(--blu);font-size:12.5px;font-weight:600;
+    text-decoration:none;background:#fff}
+  .manda .en{display:block;font-weight:400;font-size:10.5px;color:#8a94a6;font-style:italic}
   .documenti{margin-top:14px;padding-top:12px;border-top:1px dashed var(--bordo)}
   .titolo-doc{font-size:12px;font-weight:600;color:#4a5568;margin-bottom:8px}
   .titolo-doc .en{display:block;font-weight:400;font-size:11px;color:#8a94a6;font-style:italic}

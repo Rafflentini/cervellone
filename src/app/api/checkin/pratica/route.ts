@@ -18,7 +18,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rateLimit } from '@/lib/rate-limiter'
 import { risolviAccesso } from '@/lib/checkin/accesso'
 import { leggiPratica, salvaPratica, eliminaPratica } from '@/lib/checkin/pratica'
-import { linkScaduto } from '@/lib/checkin/token-prenotazione'
+import { linkScaduto, linkOspite } from '@/lib/checkin/token-prenotazione'
 import { CAMPI_DELLA_PRENOTAZIONE, oscuraRiservati } from '@/lib/checkin/merge-pratica'
 
 function parametri(req: NextRequest) {
@@ -53,7 +53,29 @@ export async function GET(req: NextRequest) {
 
   const miaScheda = accesso.livello.tipo === 'ospite' ? accesso.livello.progressivo : null
 
+  /*
+    I collegamenti delle singole schede servono ANCHE all'ospite intestatario:
+    e' lui che li gira agli altri, dal telefono, mentre compila. Finche' li
+    vedeva solo chi gestisce, il flusso restava a meta' — l'ospite non aveva
+    modo di mandare all'ospite 2 la sua parte.
+    Non concede niente di nuovo: l'intestatario puo' gia' scrivere in tutte le
+    schede. A un singolo ospite invece non si danno: lui vede solo la propria.
+  */
+  const quanti = Math.max(
+    Number(pratica.soggiorno['Ospiti dichiarati'] || 0),
+    Number(pratica.soggiorno['N. ospiti'] || 0),
+    pratica.ospiti.length,
+    1,
+  )
+  const linkOspiti = miaScheda
+    ? []
+    : Array.from({ length: quanti }, (_, i) => ({
+      progressivo: i + 1,
+      link: linkOspite(req.nextUrl.origin, pratica.id, i + 1),
+    }))
+
   return NextResponse.json({
+    linkOspiti,
     ok: true,
     id: pratica.id,
     livello: accesso.livello.tipo,

@@ -17,6 +17,28 @@ import { useSearchParams } from 'next/navigation'
 
 interface LinkOspite { progressivo: number; link: string }
 
+/**
+ * L'intestazione con il logo, uguale su tutte le pagine.
+ *
+ * Il marchio e' bordeaux su fondo BIANCO (il file si chiama 'Bianco' per il
+ * fondo, non per il tratto): percio' la fascia e' bianca con un filetto blu
+ * sotto, e il blu resta il colore di tutto il resto.
+ *
+ * Se il logo non si carica l'intestazione regge lo stesso: un logo mancante
+ * non deve impedire un check-in.
+ */
+function Intestazione({ titolo, sotto }: { titolo: string; sotto?: string }) {
+  return (
+    <header>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/api/checkin/logo" alt="LA Real Estate srls" className="logo" />
+      <div className="titolo">
+        <h1>{titolo}</h1>
+        {sotto && <p>{sotto}</p>}
+      </div>
+    </header>
+  )
+}
 function NuovaPrenotazione() {
   const k = useSearchParams().get('k') ?? ''
 
@@ -70,10 +92,7 @@ function NuovaPrenotazione() {
   if (fatta) {
     return (
       <>
-        <header>
-          <h1>Prenotazione aperta</h1>
-          <p>{fatta.id}</p>
-        </header>
+        <Intestazione titolo="Prenotazione aperta" sotto={fatta.id} />
         <div className="wrap">
           <section>
             <h2>Link per l&apos;ospite intestatario</h2>
@@ -102,7 +121,7 @@ function NuovaPrenotazione() {
             </p>
             {fatta.linkOspiti.map((l) => (
               <div className="riga-ospite" key={l.progressivo}>
-                <span>Ospite {l.progressivo}</span>
+                <span>Link della scheda dell’ospite {l.progressivo}</span>
                 <button className="btn-mini" onClick={() => copia(l.link, `o${l.progressivo}`)}>
                   {copiato === `o${l.progressivo}` ? 'Copiato ✓' : 'Copia'}
                 </button>
@@ -121,10 +140,7 @@ function NuovaPrenotazione() {
 
   return (
     <>
-      <header>
-        <h1>Nuova prenotazione</h1>
-        <p>LA REAL ESTATE SRLS — i dati che hai adesso, il resto lo compila l&apos;ospite</p>
-      </header>
+      <Intestazione titolo="Nuova prenotazione" sotto="I dati che hai adesso: il resto lo compila l’ospite" />
 
       <div className="wrap">
         {errori.length > 0 && (
@@ -209,9 +225,11 @@ const STILE = `
   *{box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     margin:0;padding:0 0 90px;background:var(--bg);color:#1a1a1a;font-size:16px}
-  header{background:var(--blu);color:#fff;padding:16px 18px;position:sticky;top:0;z-index:10}
-  header h1{margin:0;font-size:17px;font-weight:600}
-  header p{margin:3px 0 0;font-size:12px;opacity:.75}
+  header{background:#fff;border-bottom:3px solid var(--blu);padding:14px 18px 12px;
+    box-shadow:0 1px 6px rgba(31,56,100,.08)}
+  header .logo{display:block;height:34px;width:auto;max-width:100%;margin:0 0 9px}
+  header .titolo h1{margin:0;font-size:16px;font-weight:600;color:var(--blu)}
+  header .titolo p{margin:2px 0 0;font-size:11.5px;color:#6b7280;line-height:1.35}
   .wrap{padding:14px}
   section{background:#fff;border:1px solid var(--bordo);border-radius:10px;padding:14px;margin-bottom:12px}
   h2{font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--blu);margin:0 0 8px}

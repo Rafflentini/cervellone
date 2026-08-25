@@ -48,6 +48,28 @@ const ieri = () => new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
 const oggiISO = () => new Date().toISOString().slice(0, 10)
 const gg = (s: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? s.split('-').reverse().join('/') : '—')
 
+/**
+ * L'intestazione con il logo, uguale su tutte le pagine.
+ *
+ * Il marchio e' bordeaux su fondo BIANCO (il file si chiama 'Bianco' per il
+ * fondo, non per il tratto): percio' la fascia e' bianca con un filetto blu
+ * sotto, e il blu resta il colore di tutto il resto.
+ *
+ * Se il logo non si carica l'intestazione regge lo stesso: un logo mancante
+ * non deve impedire un check-in.
+ */
+function Intestazione({ titolo, sotto }: { titolo: string; sotto?: string }) {
+  return (
+    <header>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/api/checkin/logo" alt="LA Real Estate srls" className="logo" />
+      <div className="titolo">
+        <h1>{titolo}</h1>
+        {sotto && <p>{sotto}</p>}
+      </div>
+    </header>
+  )
+}
 function Gestione() {
   const k = useSearchParams().get('k') ?? ''
   const [pratiche, setPratiche] = useState<Pratica[]>([])
@@ -111,10 +133,7 @@ function Gestione() {
 
   return (
     <>
-      <header>
-        <h1>Check-in — La Real Estate</h1>
-        <p>{caricato ? `${pratiche.length} prenotazioni` : 'carico…'}</p>
-      </header>
+      <Intestazione titolo="Check-in" sotto={caricato ? `${pratiche.length} prenotazioni` : 'carico…'} />
 
       <div className="wrap">
         <div className="azioni">
@@ -238,10 +257,14 @@ function Gestione() {
                   </a>
                 )}
 
+                <div className="spiega-link">
+                  Link della singola scheda: chi lo riceve compila <b>solo la propria</b>
+                  e non vede gli altri ospiti.
+                </div>
                 <div className="ospiti-link">
                   {p.linkOspiti.map((l) => l.link && (
                     <button key={l.progressivo} className="btn-mini" onClick={() => copia(l.link!, `o-${p.id}-${l.progressivo}`)}>
-                      {copiato === `o-${p.id}-${l.progressivo}` ? '✓' : `Ospite ${l.progressivo}`}
+                      {copiato === `o-${p.id}-${l.progressivo}` ? 'Copiato ✓' : `Copia ospite ${l.progressivo}`}
                     </button>
                   ))}
                 </div>
@@ -269,9 +292,11 @@ const STILE = `
   *{box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     margin:0;padding:0 0 40px;background:var(--bg);color:#1a1a1a;font-size:16px}
-  header{background:#fff;border-bottom:3px solid var(--blu);padding:14px 18px;position:sticky;top:0;z-index:10}
-  header h1{margin:0;font-size:17px;font-weight:600;color:var(--blu)}
-  header p{margin:3px 0 0;font-size:12px;color:#6b7280}
+  header{background:#fff;border-bottom:3px solid var(--blu);padding:14px 18px 12px;
+    box-shadow:0 1px 6px rgba(31,56,100,.08)}
+  header .logo{display:block;height:34px;width:auto;max-width:100%;margin:0 0 9px}
+  header .titolo h1{margin:0;font-size:16px;font-weight:600;color:var(--blu)}
+  header .titolo p{margin:2px 0 0;font-size:11.5px;color:#6b7280;line-height:1.35}
   .wrap{padding:14px}
   .azioni{display:flex;gap:10px;margin-bottom:12px}
   .btn{flex:1;padding:13px;border:none;border-radius:8px;font-size:14px;font-weight:600;
@@ -304,6 +329,7 @@ const STILE = `
     border:1px solid var(--blu);background:#fff;color:var(--blu);font-size:12.5px;
     font-weight:600;cursor:pointer;text-align:center;text-decoration:none}
   .btn-mini.pieno{background:var(--blu);color:#fff}
+  .spiega-link{font-size:11px;color:#6b7280;margin-top:10px;line-height:1.4}
   .ospiti-link{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
   .ospiti-link .btn-mini{width:auto;flex:1;min-width:80px;margin-top:0}
   .questura{background:#fff;border:1px solid var(--bordo);border-radius:10px;padding:14px;margin-bottom:14px}
