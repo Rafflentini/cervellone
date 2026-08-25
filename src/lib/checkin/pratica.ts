@@ -102,6 +102,7 @@ export async function creaPrenotazione(
     'Nazione': 'IT',
     'Inviato Alloggiati': 'NO',
     'Fattura emessa': 'NO',
+    'Stato fattura': 'DA FARE',
     'Telefono': pulito(d.telefono ?? ''),
     'Email': pulito(d.email ?? ''),
     'Note': pulito(d.note),
@@ -270,4 +271,29 @@ export async function salvaPratica(
     segnalazioni: stato.segnalazioni,
     rifiutati: [...fusoSoggiorno.rifiutati, ...fusiOspiti.rifiutati],
   }
+}
+
+/**
+ * Scrive alcune celle sulla riga di un soggiorno, lasciando intatto il resto.
+ *
+ * Serve alle SEGNATURE: "file per la Questura generato il ...", "fattura
+ * emessa". Non passa da `salvaPratica` di proposito — quella ricalcola stato,
+ * imposta e mancanze, e ricalcolare tutto per spuntare una casella vuol dire
+ * dare a un gesto minimo la possibilita' di riscrivere una pratica intera.
+ *
+ * Si riscrive la RIGA per intero, come ovunque qui dentro: cosi' i campi che
+ * devono restare coerenti fra loro — `Stato fattura` e `Fattura emessa` —
+ * partono nella stessa scrittura e non possono divergere.
+ */
+export async function segnaSoggiorno(
+  id: string,
+  campi: Record<string, string>,
+  spreadsheetId: string = FOGLIO_CHECKIN_ID,
+): Promise<{ ok: boolean; errore?: string }> {
+  const pratica = await leggiPratica(id, spreadsheetId)
+  if (!pratica) return { ok: false, errore: `Prenotazione ${id} non trovata.` }
+
+  const mappa = { ...pratica.soggiorno, ...campi }
+  await aggiornaRiga(spreadsheetId, SCHEDA_SOGGIORNI, pratica.numeroRiga, aRiga(COL_SOGGIORNI, mappa))
+  return { ok: true }
 }

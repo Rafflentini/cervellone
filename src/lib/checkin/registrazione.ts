@@ -261,6 +261,7 @@ export function registraCheckin(
     'Imposta soggiorno €': String(imposta.importo),
     'Inviato Alloggiati': 'NO',
     'Fattura emessa': 'NO',
+    'Stato fattura': 'DA FARE',
     'Note': pulisci(p.note),
   })
 

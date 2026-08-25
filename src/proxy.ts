@@ -26,6 +26,9 @@ export default async function proxy(request: NextRequest) {
     || pathname === '/checkin/nuova'
     || pathname === '/checkin/gestione'
     || pathname.startsWith('/api/checkin/prenotazione')
+    // Difesa col token generale nella route, come le altre: la pagina di
+    // gestione la apre chi ha il collegamento, non chi ha la password dell app.
+    || pathname.startsWith('/api/checkin/segna')
 
   if (isPublic) return NextResponse.next()
 

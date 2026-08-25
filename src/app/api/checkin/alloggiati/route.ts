@@ -23,6 +23,8 @@ import { aMappa } from '@/lib/checkin/merge-pratica'
 import { leggiTabelle, chiaveLuogo } from '@/lib/checkin/foglio-lettura'
 import { generaAlloggiati, type OspiteAlloggiati } from '@/lib/checkin/alloggiati'
 import { tuttiIComuni } from '@/lib/checkin/comuni'
+import { idNelFile } from '@/lib/checkin/segnature'
+import { segnaSoggiorno } from '@/lib/checkin/pratica'
 
 export async function GET(req: NextRequest) {
   const s = req.nextUrl.searchParams
@@ -108,6 +110,8 @@ export async function GET(req: NextRequest) {
     const daInviare: OspiteAlloggiati[] = []
     /** Per ogni ospite, la struttura a cui va comunicato. */
     const strutturaPerOspite: string[] = []
+    /** Per ogni ospite, la prenotazione da cui viene: serve a segnarla dopo. */
+    const idPerOspite: string[] = []
 
     for (const [i, r] of ospiti.entries()) {
       if (i === 0) continue
@@ -116,6 +120,7 @@ export async function GET(req: NextRequest) {
       if (!soggiorno) continue
 
       strutturaPerOspite.push(struttura(String(soggiorno['Unità'] ?? '')))
+      idPerOspite.push(String(o['ID Soggiorno'] ?? '').trim())
       daInviare.push({
         tipoAlloggiato: o['Tipo alloggiato'] ?? '',
         dataArrivo: soggiorno['Check-in'] ?? '',
@@ -188,6 +193,29 @@ export async function GET(req: NextRequest) {
     // Con `?scarica=1` esce il file vero; altrimenti l'esito, che serve a
     // sapere PRIMA se vale la pena scaricarlo.
     if (s.get('scarica') === '1' && file.righe > 0) {
+      /*
+        Si annota che il file e' stato GENERATO, e si annota solo questo.
+
+        Non "inviato": scaricare un file non adempie a niente, il caricamento
+        sul Portale e' un altro gesto e lo fa una persona. Scrivere qui
+        "inviato" sarebbe il solito passaggio che sembra fatto — con la
+        differenza che qui la scadenza e' di 24 ore e non si recupera.
+
+        L'annotazione NON puo' far fallire lo scaricamento: se il foglio non
+        risponde si perde una data di comodo, se il file non esce si perde
+        l'adempimento. Non c'e' partita, e per questo l'errore finisce nel log
+        e il file parte lo stesso.
+      */
+      const daSegnare = idNelFile(idPerOspite, strutturaPerOspite, soloStruttura)
+      const oggi = new Date().toISOString().slice(0, 10)
+      await Promise.all(daSegnare.map(async (id) => {
+        try {
+          await segnaSoggiorno(id, { 'File Alloggiati del': oggi })
+        } catch (err) {
+          console.error(`[CHECKIN] segnatura file Questura non riuscita su ${id}:`, err)
+        }
+      }))
+
       return new NextResponse(file.contenuto, {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',

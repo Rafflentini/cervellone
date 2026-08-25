@@ -32,7 +32,16 @@ describe('colonne dei Soggiorni', () => {
   })
 
   it('e in fondo lo stato della pratica, che e cio che si guarda per primo', () => {
-    expect(COL_SOGGIORNI.slice(28)).toEqual(['Stato check-in', 'Da completare', 'Ospiti dichiarati'])
+    expect(COL_SOGGIORNI.slice(28, 31)).toEqual(['Stato check-in', 'Da completare', 'Ospiti dichiarati'])
+  })
+
+  it('tiene distinti i tre stati della fattura e la generazione del file Questura', () => {
+    // Due distinzioni che sembrano pignoleria e non lo sono:
+    //  - COMPILATA (preparata da Cervellone) non e' EMESSA (inviata davvero);
+    //  - generare il file per la Questura non e' averlo caricato sul Portale.
+    // In tutt'e due i casi confonderli vorrebbe dire dare per fatto un
+    // adempimento che nessuno ha compiuto.
+    expect(COL_SOGGIORNI.slice(31)).toEqual(['Stato fattura', 'File Alloggiati del'])
   })
 
   it('le colonne nuove stanno SEMPRE in fondo', () => {

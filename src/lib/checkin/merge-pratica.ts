@@ -86,6 +86,8 @@ export const CAMPI_DEL_SISTEMA: readonly string[] = [
   'ID documento FIC',
   'Stato check-in',
   'Da completare',
+  'Stato fattura',
+  'File Alloggiati del',
 ]
 
 function indice(colonne: readonly string[], nome: string): number {

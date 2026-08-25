@@ -42,6 +42,22 @@ export const COL_SOGGIORNI = [
   // abbassa (o si alza) solo con un gesto esplicito di chi compila: cosi' un
   // ospite in meno resta visibile invece di sparire per distrazione.
   'Ospiti dichiarati',
+  /*
+    25/08. La fattura ha TRE stati, non due: DA FARE -> COMPILATA -> EMESSA.
+    COMPILATA e' la fattura che Cervellone ha preparato su Fatture in Cloud;
+    EMESSA e' quella che l'Ingegnere ha davvero inviato. `Fattura emessa` e' un
+    SI/NO e non li contiene: resta al suo posto, derivata da questa (si
+    scrivono insieme, nella stessa riscrittura di riga, cosi' non divergono).
+  */
+  'Stato fattura',
+  /*
+    Il giorno in cui il file per la Questura e' stato GENERATO — che non e' il
+    giorno in cui e' stato caricato sul Portale. Tenerli distinti e' il punto:
+    scaricare un file non adempie a niente, e chiamarlo "inviato" sarebbe il
+    solito passaggio che sembra fatto. Questa la scrive il programma da solo;
+    `Inviato Alloggiati` resta il gesto umano.
+  */
+  'File Alloggiati del',
 ] as const
 
 export const COL_OSPITI = [
