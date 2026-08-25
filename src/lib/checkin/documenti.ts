@@ -76,19 +76,53 @@ async function cartellaOCrea(nome: string, genitore: string): Promise<string> {
   return (await cercaCartella(nome, genitore)) ?? creaCartella(nome, genitore)
 }
 
+/** Toglie da un nome di cartella tutto cio' che Drive fatica a gestire. */
+function nomeSicuro(s: string, ripiego: string): string {
+  const pulito = String(s ?? '')
+    .replace(/[\\/\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return pulito || ripiego
+}
+
 /**
- * La cartella della singola prenotazione, creata alla prima foto.
+ * Come si chiama la cartella di una prenotazione.
  *
- * Una cartella per prenotazione, e non un unico calderone: cosi' cancellare
- * significa togliere una cartella, non cercare file sparsi — e cercare file
- * sparsi e' il modo in cui qualcuno resta indietro.
+ * Il numero di prenotazione da solo NON basta: e' facoltativo (una prenotazione
+ * diretta puo' non averlo) e non e' garantito unico fra portali diversi.
+ * L'ID Soggiorno invece e' sempre presente e sempre unico, ma a chi sfoglia il
+ * Drive non dice niente.
+ *
+ * Quindi: data di arrivo davanti, per avere le cartelle in ordine dentro
+ * l'appartamento; poi il codice del portale se c'e', altrimenti l'ID.
+ */
+export function nomeCartellaPrenotazione(p: {
+  idSoggiorno: string
+  checkin: string
+  codPrenotazione: string
+}): string {
+  const data = /^\d{4}-\d{2}-\d{2}$/.test(String(p.checkin || '').trim())
+    ? p.checkin.trim()
+    : ''
+  const etichetta = nomeSicuro(p.codPrenotazione, p.idSoggiorno)
+  return data ? `${data} · ${etichetta}` : etichetta
+}
+
+/**
+ * La cartella dove finiscono le foto, creata alla prima.
+ *
+ * `Documenti check-in / <appartamento> / <data · prenotazione>`: si sfoglia per
+ * appartamento, che e' il modo in cui l'Ingegnere cerca le cose. Il calderone
+ * unico si sfoglia solo cercando, e cercare e' il modo in cui qualcosa resta
+ * indietro.
  */
 export async function cartellaPrenotazione(
-  idSoggiorno: string,
+  p: { idSoggiorno: string; unita: string; checkin: string; codPrenotazione: string },
   cartellaGenitore: string,
 ): Promise<string> {
   const radice = await cartellaOCrea(NOME_CARTELLA_RADICE, cartellaGenitore)
-  return cartellaOCrea(idSoggiorno, radice)
+  const appartamento = await cartellaOCrea(nomeSicuro(p.unita, 'Senza appartamento'), radice)
+  return cartellaOCrea(nomeCartellaPrenotazione(p), appartamento)
 }
 
 export type Lato = 'fronte' | 'retro'
@@ -101,6 +135,9 @@ export function nomeFile(idSoggiorno: string, progressivo: number, lato: Lato, m
 
 export async function salvaDocumento(params: {
   idSoggiorno: string
+  unita: string
+  checkin: string
+  codPrenotazione: string
   progressivo: number
   lato: Lato
   contenuto: Buffer
@@ -112,7 +149,7 @@ export async function salvaDocumento(params: {
   if (!tipoAmmesso(mime)) throw new Error(`Tipo di file non ammesso: ${mime}`)
   if (contenuto.length > MAX_BYTE) throw new Error('File troppo grande.')
 
-  const cartella = await cartellaPrenotazione(idSoggiorno, cartellaGenitore)
+  const cartella = await cartellaPrenotazione(params, cartellaGenitore)
   const drive = await getDrive()
 
   const { Readable } = await import('stream')

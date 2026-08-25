@@ -5,7 +5,7 @@
  * chiama quello che si salva, e quando si e' certi di poterlo cancellare.
  */
 import { describe, it, expect } from 'vitest'
-import { tipoAmmesso, nomeFile, MAX_BYTE } from './documenti'
+import { tipoAmmesso, nomeFile, nomeCartellaPrenotazione, MAX_BYTE } from './documenti'
 import { scadutiDaCancellare } from './conservazione'
 
 describe('cosa si accetta', () => {
@@ -96,5 +96,45 @@ describe('quando le foto si cancellano', () => {
       .toHaveLength(1)
     expect(scadutiDaCancellare([{ id: 'A', checkout: '2026-09-01', fileIds: ['f'] }], oggi, 9999))
       .toHaveLength(0)
+  })
+})
+
+describe('dove finiscono le foto su Drive', () => {
+  it('data davanti, cosi dentro l appartamento sono in ordine', () => {
+    expect(nomeCartellaPrenotazione({
+      idSoggiorno: 'SOG-20260825-080248', checkin: '2026-09-20', codPrenotazione: 'BK-4471182',
+    })).toBe('2026-09-20 · BK-4471182')
+  })
+
+  it('senza codice di prenotazione usa l ID, che c e sempre', () => {
+    // Una prenotazione diretta puo non avere un codice del portale.
+    expect(nomeCartellaPrenotazione({
+      idSoggiorno: 'SOG-20260825-080248', checkin: '2026-09-20', codPrenotazione: '',
+    })).toBe('2026-09-20 · SOG-20260825-080248')
+  })
+
+  it('senza data non lascia il nome monco', () => {
+    expect(nomeCartellaPrenotazione({
+      idSoggiorno: 'SOG-1', checkin: '', codPrenotazione: 'BK-9',
+    })).toBe('BK-9')
+  })
+
+  it('toglie le barre, che su Drive spezzerebbero il percorso', () => {
+    expect(nomeCartellaPrenotazione({
+      idSoggiorno: 'SOG-1', checkin: '2026-09-20', codPrenotazione: 'BK/12\\34',
+    })).toBe('2026-09-20 · BK 12 34')
+  })
+
+  it('un codice fatto di soli spazi vale come assente', () => {
+    expect(nomeCartellaPrenotazione({
+      idSoggiorno: 'SOG-1', checkin: '2026-09-20', codPrenotazione: '   ',
+    })).toBe('2026-09-20 · SOG-1')
+  })
+
+  it('il nome del FILE porta comunque l ID per esteso', () => {
+    // Cosi anche se due cartelle finissero per chiamarsi uguale, le foto
+    // restano distinguibili una per una.
+    expect(nomeFile('SOG-20260825-080248', 1, 'fronte', 'image/jpeg'))
+      .toContain('SOG-20260825-080248')
   })
 })

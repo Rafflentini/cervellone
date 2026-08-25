@@ -89,6 +89,9 @@ export async function POST(req: NextRequest) {
 
     const { fileId } = await salvaDocumento({
       idSoggiorno: accesso.id,
+      unita: pratica.soggiorno['Unità'] ?? '',
+      checkin: pratica.soggiorno['Check-in'] ?? '',
+      codPrenotazione: pratica.soggiorno['Cod. prenotazione'] ?? '',
       progressivo,
       lato: lato as Lato,
       contenuto,
