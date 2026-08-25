@@ -15,6 +15,7 @@ import { aMappa, aRiga, fondiSoggiorno, fondiOspiti, type Livello } from './merg
 import { calcolaStato } from './stato-checkin'
 import { leggiConfig, regoleDaConfig } from './foglio-lettura'
 import { calcolaImpostaSoggiorno } from './imposta-soggiorno'
+import { eliminaDocumento } from './documenti'
 
 export interface Pratica {
   id: string
@@ -118,10 +119,36 @@ export async function creaPrenotazione(
  * Rifiuta di cancellare una pratica gia' fatturata: un documento fiscale
  * emesso deve poter essere ricondotto alla riga che lo ha generato.
  */
+/** Gli identificativi delle foto di una pratica, senza i vuoti. */
+export function documentiDi(pratica: Pratica): string[] {
+  return pratica.ospiti
+    .flatMap((o) => [o.dati['Doc fronte'], o.dati['Doc retro']])
+    .map((x) => String(x ?? '').trim())
+    .filter(Boolean)
+}
+
+/**
+ * Toglie da Drive tutte le foto di una pratica.
+ *
+ * Non si ferma al primo errore: se una foto non si cancella, le altre devono
+ * sparire lo stesso. Fermarsi vorrebbe dire lasciarne dieci per colpa di una.
+ */
+export async function eliminaDocumentiDi(pratica: Pratica): Promise<number> {
+  let tolte = 0
+  for (const fileId of documentiDi(pratica)) {
+    try {
+      if (await eliminaDocumento(fileId)) tolte++
+    } catch (err) {
+      console.error('[CHECKIN] foto non cancellata:', err instanceof Error ? err.message : 'errore')
+    }
+  }
+  return tolte
+}
+
 export async function eliminaPratica(
   id: string,
   spreadsheetId: string = FOGLIO_CHECKIN_ID,
-): Promise<{ ok: boolean; errore?: string; righeTolte?: number }> {
+): Promise<{ ok: boolean; errore?: string; righeTolte?: number; fotoTolte?: number }> {
   const pratica = await leggiPratica(id, spreadsheetId)
   if (!pratica) return { ok: false, errore: 'Prenotazione non trovata.' }
 
@@ -132,11 +159,17 @@ export async function eliminaPratica(
     }
   }
 
+  // PRIMA le foto, poi le righe. Cancellando prima le righe si perderebbero
+  // gli identificativi dei file, e quelle foto resterebbero su Drive per
+  // sempre senza che nessuno sappia piu' a chi appartengono: un archivio di
+  // documenti d'identita' orfani, che e' il peggiore dei casi.
+  const fotoTolte = await eliminaDocumentiDi(pratica)
+
   const righeOspiti = pratica.ospiti.map((o) => o.numeroRiga)
   await eliminaRighe(spreadsheetId, SCHEDA_OSPITI, righeOspiti)
   await eliminaRighe(spreadsheetId, SCHEDA_SOGGIORNI, [pratica.numeroRiga])
 
-  return { ok: true, righeTolte: righeOspiti.length + 1 }
+  return { ok: true, righeTolte: righeOspiti.length + 1, fotoTolte }
 }
 
 export interface EsitoSalvataggio {
