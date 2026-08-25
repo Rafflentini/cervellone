@@ -86,6 +86,38 @@ function daForm(f: FormOspite): Ospite {
   }
 }
 
+/**
+ * Riduce la foto PRIMA di mandarla.
+ *
+ * Un telefono recente scatta a 12 megapixel: sono 4-6 MB, che non passano il
+ * limite della piattaforma e che su una tacca di segnale non partono proprio.
+ * A 1600 pixel di lato lungo un documento resta perfettamente leggibile e pesa
+ * qualche centinaio di kilobyte.
+ *
+ * C'e' anche un motivo che non riguarda i byte: la foto ridotta e' quella che
+ * poi conserviamo. Meno risoluzione del necessario e' meno dato personale
+ * custodito, e questa e' l'unica quantita' che conviene sempre minimizzare.
+ */
+async function riduciImmagine(file: File, latoMax = 1600): Promise<Blob> {
+  if (file.type === 'application/pdf') return file
+
+  const bitmap = await createImageBitmap(file)
+  const scala = Math.min(1, latoMax / Math.max(bitmap.width, bitmap.height))
+  const l = Math.round(bitmap.width * scala)
+  const a = Math.round(bitmap.height * scala)
+
+  const tela = document.createElement('canvas')
+  tela.width = l
+  tela.height = a
+  const ctx = tela.getContext('2d')
+  if (!ctx) return file
+  ctx.drawImage(bitmap, 0, 0, l, a)
+
+  return new Promise<Blob>((risolvi) => {
+    tela.toBlob((b) => risolvi(b ?? file), 'image/jpeg', 0.82)
+  })
+}
+
 /** Etichetta bilingue: italiano sopra, inglese sotto in corpo minore. */
 function Eti({ it, en }: { it: string; en: string }) {
   return (
@@ -188,6 +220,10 @@ function CheckinForm() {
   /** Se valorizzato, si compila SOLO la scheda di quell'ospite. */
   const [mioProgressivo, setMioProgressivo] = useState<number | null>(null)
   const [statoPratica, setStatoPratica] = useState('')
+  /** Quale foto si sta caricando, per non far premere due volte. */
+  const [docInvio, setDocInvio] = useState('')
+  /** Quali foto risultano gia caricate, per lato e per ospite. */
+  const [docCaricati, setDocCaricati] = useState<Record<string, boolean>>({})
   const [mancanze, setMancanze] = useState<string[]>([])
 
   /**
@@ -299,6 +335,38 @@ function CheckinForm() {
 
   const cambiaOspite = (i: number, campo: keyof Ospite, valore: string | boolean) =>
     setOspiti((prev) => prev.map((o, j) => (j === i ? { ...o, [campo]: valore } : o)))
+
+  /**
+   * Carica una foto del documento.
+   *
+   * Prima la riduce sul telefono, poi la manda. Ogni ospite carica solo per la
+   * propria scheda — e il controllo vero e' sul server, non qui.
+   */
+  async function caricaDocumento(progressivo: number, lato: 'fronte' | 'retro', file: File) {
+    setDocInvio(`${progressivo}-${lato}`)
+    try {
+      const ridotta = await riduciImmagine(file)
+      const res = await fetch(
+        `/api/checkin/documento?${q}&prog=${progressivo}&lato=${lato}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': ridotta.type || 'image/jpeg' },
+          body: ridotta,
+        },
+      )
+      const d = await res.json()
+      if (!d.ok) {
+        setEsito({ tipo: 'ko', testo: [d.errore ?? 'Foto non caricata.'] })
+        window.scrollTo(0, 0)
+        return
+      }
+      setDocCaricati((prec) => ({ ...prec, [`${progressivo}-${lato}`]: true }))
+    } catch {
+      setEsito({ tipo: 'ko', testo: ['Non sono riuscito a mandare la foto. Riprova.'] })
+    } finally {
+      setDocInvio('')
+    }
+  }
 
   /**
    * Quando il codice fiscale e' valido, i dati che contiene si compilano da
@@ -676,6 +744,39 @@ function CheckinForm() {
                 />
                 {cf.messaggio && <div className={`verifica ${cf.classe}`}>{cf.messaggio}</div>}
 
+                {inPratica && (
+                  <div className="documenti">
+                    <div className="titolo-doc">
+                      Foto del documento / Photo of your ID
+                      <span className="en">Fronte e retro · front and back</span>
+                    </div>
+                    {(['fronte', 'retro'] as const).map((lato) => {
+                      const prog = mioProgressivo ?? i + 1
+                      const chiave = `${prog}-${lato}`
+                      const fatto = docCaricati[chiave]
+                      const inCorso = docInvio === chiave
+                      return (
+                        <label className={`doc ${fatto ? 'fatto' : ''}`} key={lato}>
+                          <input
+                            type="file"
+                            accept="image/*,application/pdf"
+                            capture="environment"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0]
+                              if (f) void caricaDocumento(prog, lato, f)
+                              e.target.value = ''
+                            }}
+                          />
+                          {inCorso ? 'Invio…' : fatto ? `✓ ${lato} caricato` : `Foto ${lato}`}
+                        </label>
+                      )
+                    })}
+                    <div className="hint">
+                      Le foto servono a registrare i dati e si cancellano da sole dopo il soggiorno.
+                      <span className="en">Photos are used to record your details and are deleted automatically after your stay.</span>
+                    </div>
+                  </div>
+                )}
                 {/*
                   La casella la vede solo chi gestisce. Il regolamento ha nove casi
                   di esenzione: quello dei minori si calcola dalla data di nascita, gli
@@ -915,6 +1016,14 @@ const STILE = `
   .intestata .en{display:block;font-size:11px;font-style:italic;color:#8a94a6}
   .prevale{background:#fff6e5;border:1px solid #e0c48a;border-radius:8px;padding:10px 12px;font-size:12px;color:#6b4e00;line-height:1.5;margin:10px 0 4px}
   .prevale .en{display:block;font-size:11px;font-style:italic;opacity:.8}
+  .documenti{margin-top:14px;padding-top:12px;border-top:1px dashed var(--bordo)}
+  .titolo-doc{font-size:12px;font-weight:600;color:#4a5568;margin-bottom:8px}
+  .titolo-doc .en{display:block;font-weight:400;font-size:11px;color:#8a94a6;font-style:italic}
+  .doc{display:block;text-align:center;padding:12px;margin-bottom:8px;border-radius:8px;
+    border:1.5px dashed var(--blu);color:var(--blu);font-size:14px;font-weight:600;cursor:pointer;
+    background:#fff;text-transform:capitalize}
+  .doc input{display:none}
+  .doc.fatto{border-style:solid;border-color:var(--ok);color:var(--ok);background:#f2faf6}
   .tassa{display:flex;align-items:center;gap:12px;background:#eef2f9;border:1px solid var(--bordo);
     border-radius:8px;padding:10px 12px;margin-bottom:10px}
   .tassa .cifra{font-size:22px;font-weight:700;color:var(--blu);white-space:nowrap}

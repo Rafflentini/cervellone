@@ -41,7 +41,7 @@ async function getAuth(): Promise<any> {
   })
 }
 
-async function getDrive() {
+export async function getDrive() {
   return google.drive({ version: 'v3', auth: await getAuth() })
 }
 

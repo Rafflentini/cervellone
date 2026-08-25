@@ -48,6 +48,10 @@ export const COL_OSPITI = [
   'Data nascita', 'Comune nascita', 'Prov. nascita', 'Stato nascita', 'Cittadinanza',
   'Tipo documento', 'Numero documento', 'Luogo rilascio', 'Codice fiscale',
   'Esente imposta', 'Motivo esenzione',
+  // Identificativi Drive delle foto del documento, NON link condivisibili.
+  // Sono di passaggio: un lavoro notturno le cancella dopo i giorni indicati
+  // in Config, e svuota queste due celle.
+  'Doc fronte', 'Doc retro',
 ] as const
 
 export const COL_TABELLE = [
@@ -74,6 +78,7 @@ export const CONFIG_DEFAULT: string[][] = [
   ['scadenza_dichiarazione_giorno', '16', 'Dichiarazione e versamento entro il 16 del mese successivo — art. 6 e 7. Anche a zero.'],
   ['alloggiati_utente', '', 'Utente portale Alloggiati Web'],
   ['alloggiati_wskey', '', 'WebServiceKey — senza questa l invio resta manuale'],
+  ['giorni_conservazione_documenti', '7', 'Dopo quanti giorni dal check-out le foto dei documenti si cancellano da sole. Tenerle oltre lo scopo e eccedente (Garante privacy).'],
 ]
 
 /** Righe di esempio del Tabelle, da sostituire con le tabelle ufficiali. */
@@ -82,6 +87,13 @@ export const TABELLE_ESEMPIO: string[][] = [
   ['MARATEA', 'PZ', 'E919', '076044001', 'COMUNE'],
   ['GERMANIA', '', 'Z112', '100000100', 'STATO'],
 ]
+
+/**
+ * La cartella Drive operativa de LA REAL ESTATE: e' quella che contiene gia'
+ * Alloggiati, Documenti temporanei e App check-in. Le foto dei documenti
+ * finiscono in una sottocartella per prenotazione, mai condivisa.
+ */
+export const CARTELLA_LA_REAL_ESTATE = '16Ypk9yGfv7RQeIJfmMRXiCznfYw_fgmT'
 
 /** Il foglio adottato. NB: la spec del 21/08 indicava la copia sbagliata. */
 export const FOGLIO_CHECKIN_ID = '19UeD_Soy_zqTxxg1p6ZkQrOW4_0uct4vftQzy9iLmE4'

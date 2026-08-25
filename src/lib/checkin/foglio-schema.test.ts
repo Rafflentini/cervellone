@@ -70,6 +70,7 @@ describe('Config', () => {
 
   it('non contiene segreti: la WebServiceKey nasce vuota', () => {
     expect(valore('alloggiati_wskey')).toBe('')
+    expect(valore('giorni_conservazione_documenti')).toBe('7')
   })
 })
 
