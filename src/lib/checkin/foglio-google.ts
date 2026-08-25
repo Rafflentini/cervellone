@@ -212,6 +212,15 @@ export const foglioGoogle: FoglioApi = {
     })
   },
 
+  async leggiColonna(spreadsheetId, nome, indice) {
+    const righe = await leggiTutto(spreadsheetId, nome)
+    return righe.slice(1).map((r) => String(r[indice] ?? ''))
+  },
+
+  async aggiungiInFondo(spreadsheetId, nome, righe) {
+    await aggiungiRighe(spreadsheetId, nome, righe)
+  },
+
   async congelaIntestazione(spreadsheetId, nome) {
     const sheets = await getSheets()
     const sheetId = (await proprietaSchede(spreadsheetId)).get(nome)

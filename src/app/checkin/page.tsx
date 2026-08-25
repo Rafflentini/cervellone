@@ -1121,4 +1121,23 @@ const STILE = `
   .calcolo .esenti{font-weight:400;color:#6b7280}
   .blocco{font-size:11px;color:var(--err);margin-top:8px;line-height:1.4;text-align:center}
   .blocco .en{display:block;font-style:italic;opacity:.8}
+
+  /*
+    Da computer. Il modulo e' disegnato per il telefono — ed e' li' che verra'
+    compilato quasi sempre — ma su uno schermo largo restava una striscia
+    stirata da un bordo all'altro, con un marchio grande come una miniatura.
+    Qui il contenuto si raccoglie in una colonna centrata e l'intestazione
+    torna in proporzione. Nessuna regola cambia sotto gli 820px: il telefono
+    resta esattamente com'era.
+    Il padding calcolato tiene il logo allineato al bordo sinistro della
+    colonna, non centrato sopra di essa.
+  */
+  @media (min-width:820px){
+    header{padding:22px calc(50% - 360px) 18px}
+    header .logo{height:66px;margin:0 0 14px}
+    header .titolo h1{font-size:21px}
+    header .titolo p{font-size:13px}
+    .wrap{max-width:720px;margin:0 auto;padding:22px 0}
+    .barra>*{max-width:720px;margin-left:auto;margin-right:auto}
+  }
 `

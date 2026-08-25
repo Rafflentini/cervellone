@@ -6,7 +6,9 @@
  * +39, senza prefisso — aprirebbe una chat vuota o quella sbagliata.
  */
 import { describe, it, expect } from 'vitest'
-import { numeroPerWhatsApp, linkWhatsApp, messaggioOspite, messaggioConsegnaChiavi } from './avvisi'
+import {
+  numeroPerWhatsApp, linkWhatsApp, messaggioOspite, messaggioConsegnaChiavi, chiConsegnaLeChiavi,
+} from './avvisi'
 
 describe('il numero per WhatsApp', () => {
   it('toglie tutto cio che non e una cifra', () => {
@@ -87,5 +89,43 @@ describe('i messaggi', () => {
       ospiti: 2, intestatario: '',
     })
     expect(m).toContain('Nome non indicato')
+  })
+})
+
+describe('chi consegna le chiavi', () => {
+  it('accoppia ogni nome col proprio numero', () => {
+    expect(chiConsegnaLeChiavi('Anna | Sara', '3331111111|3332222222')).toEqual([
+      { nome: 'Anna', telefono: '3331111111' },
+      { nome: 'Sara', telefono: '3332222222' },
+    ])
+  })
+
+  it('una sola persona si scrive senza barra, come si e sempre fatto', () => {
+    expect(chiConsegnaLeChiavi('Anna', '3331111111')).toEqual([
+      { nome: 'Anna', telefono: '3331111111' },
+    ])
+  })
+
+  it('senza nessuno indicato non inventa una voce vuota', () => {
+    expect(chiConsegnaLeChiavi('', '')).toEqual([])
+    expect(chiConsegnaLeChiavi('  |  ', ' ')).toEqual([])
+  })
+
+  it('un nome senza numero resta senza numero, NON prende quello della collega', () => {
+    // Il caso che conta davvero. Se l elenco piu corto facesse slittare
+    // l accoppiamento, il riepilogo di una prenotazione — con nome dell ospite,
+    // date e appartamento — partirebbe al numero di un altra persona.
+    expect(chiConsegnaLeChiavi('Anna|Sara|Lucia', '3331111111')).toEqual([
+      { nome: 'Anna', telefono: '3331111111' },
+      { nome: 'Sara', telefono: '' },
+      { nome: 'Lucia', telefono: '' },
+    ])
+  })
+
+  it('un numero senza nome resta comunque contattabile', () => {
+    expect(chiConsegnaLeChiavi('', '3331111111|3332222222')).toEqual([
+      { nome: '', telefono: '3331111111' },
+      { nome: '', telefono: '3332222222' },
+    ])
   })
 })

@@ -4,7 +4,13 @@
  * I messaggi che partono quando si apre una prenotazione: all'ospite, perche'
  * compili, e a chi consegna le chiavi, perche' sappia chi arriva.
  *
- * Perche' l'email e non WhatsApp: mandare messaggi WhatsApp da un programma
+ * Due destinatari, due strade diverse, e non per scelta tecnica:
+ *  - all'OSPITE si puo' scrivere per email, perche' un indirizzo lo lascia
+ *    quasi sempre; il pulsante WhatsApp resta comunque;
+ *  - a chi CONSEGNA LE CHIAVI si scrive solo su WhatsApp: quelle ragazze una
+ *    casella di posta non ce l'hanno.
+ *
+ * Perche' l'email e non WhatsApp automatico: mandare messaggi WhatsApp da un programma
  * richiede le API ufficiali di Meta — account business verificato, numero
  * dedicato, modelli di messaggio approvati in anticipo. E' una pratica di
  * settimane, non una riga di codice. L'email invece Cervellone la manda gia'
@@ -74,9 +80,38 @@ export function messaggioConsegnaChiavi(p: {
   ].join('\n')
 }
 
+/**
+ * Chi consegna le chiavi: nome e numero, presi dal Config.
+ *
+ * Le ragazze che fanno la consegna NON hanno un indirizzo email — l'ha detto
+ * l'Ingegnere, e vale piu' di qualunque comodita' di implementazione: un
+ * avviso spedito a un indirizzo che non esiste non e' un avviso, e' un
+ * passaggio che sembra fatto. A loro si scrive su WhatsApp, e basta.
+ *
+ * Nel Config i valori si scrivono separati da "|", nomi e numeri nello stesso
+ * ordine. Se uno dei due elenchi e' piu' corto, la parte che manca resta vuota
+ * invece di far slittare l'accoppiamento — che vorrebbe dire il messaggio di
+ * una persona mandato al numero di un'altra.
+ */
+export interface ConsegnaChiavi {
+  nome: string
+  telefono: string
+}
+
+export function chiConsegnaLeChiavi(nomi: string, telefoni: string): ConsegnaChiavi[] {
+  const taglia = (s: string) =>
+    String(s || '').split('|').map((v) => v.trim()).filter((v) => v.length > 0)
+  const n = taglia(nomi)
+  const t = taglia(telefoni)
+  const quante = Math.max(n.length, t.length)
+  return Array.from({ length: quante }, (_, i) => ({
+    nome: n[i] ?? '',
+    telefono: t[i] ?? '',
+  }))
+}
+
 export interface EsitoAvvisi {
   ospite: 'inviata' | 'senza indirizzo' | 'non riuscita'
-  consegnaChiavi: 'inviata' | 'senza indirizzo' | 'non riuscita'
 }
 
 /**
@@ -88,11 +123,8 @@ export interface EsitoAvvisi {
  */
 export async function inviaAvvisi(p: {
   emailOspite: string
-  emailConsegnaChiavi: string
   testoOspite: string
-  testoConsegnaChiavi: string
   oggettoOspite: string
-  oggettoConsegnaChiavi: string
 }): Promise<EsitoAvvisi> {
   const manda = async (a: string, oggetto: string, testo: string) => {
     if (!a.trim()) return 'senza indirizzo' as const
@@ -112,8 +144,5 @@ export async function inviaAvvisi(p: {
     }
   }
 
-  return {
-    ospite: await manda(p.emailOspite, p.oggettoOspite, p.testoOspite),
-    consegnaChiavi: await manda(p.emailConsegnaChiavi, p.oggettoConsegnaChiavi, p.testoConsegnaChiavi),
-  }
+  return { ospite: await manda(p.emailOspite, p.oggettoOspite, p.testoOspite) }
 }

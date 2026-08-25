@@ -347,4 +347,13 @@ const STILE = `
   .esito{padding:14px;border-radius:8px;font-size:14px;line-height:1.5}
   .esito.ko{background:#fdeceb;border:1px solid var(--err);color:#8c1d18}
   .esito.neutro{background:#eef2f9;border:1px solid var(--bordo);color:#2b3a55}
+
+  /* Da computer: colonna centrata e marchio in proporzione. Vedi /checkin. */
+  @media (min-width:820px){
+    header{padding:22px calc(50% - 380px) 18px}
+    header .logo{height:66px;margin:0 0 14px}
+    header .titolo h1{font-size:21px}
+    header .titolo p{font-size:13px}
+    .wrap{max-width:760px;margin:0 auto;padding:22px 0}
+  }
 `

@@ -38,6 +38,9 @@ export interface FoglioApi {
     daColonna: number,
     intestazioni: readonly string[],
   ): Promise<void>
+  /** I valori di una colonna, intestazione esclusa. */
+  leggiColonna(spreadsheetId: string, nome: string, indice: number): Promise<string[]>
+  aggiungiInFondo(spreadsheetId: string, nome: string, righe: string[][]): Promise<void>
   congelaIntestazione(spreadsheetId: string, nome: string): Promise<void>
 }
 
@@ -49,6 +52,8 @@ export interface EsitoInizializzazione {
   giaPronte: string[]
   /** Colonne nuove aggiunte in coda a schede gia' esistenti. */
   colonneAggiunte: string[]
+  /** Righe di partenza comparse su una scheda gia' in uso (es. nuove impostazioni). */
+  righeAggiunte: string[]
   errore?: string
 }
 
@@ -59,6 +64,7 @@ export async function inizializzaFoglioCheckin(
   const create: string[] = []
   const giaPronte: string[] = []
   const colonneAggiunte: string[] = []
+  const righeAggiunte: string[] = []
 
   try {
     const esistenti = new Set(await api.elencaSchede(spreadsheetId))
@@ -82,6 +88,25 @@ export async function inizializzaFoglioCheckin(
           await api.scriviIntestazioniInCoda(spreadsheetId, scheda.nome, prima.length, daAggiungere)
           colonneAggiunte.push(...daAggiungere.map((c) => `${scheda.nome}: ${c}`))
         }
+
+        /*
+          Le RIGHE di partenza mancanti si aggiungono in fondo.
+          Vale per il Config: quando nasce un'impostazione nuova, la sua riga
+          deve comparire da sola sul foglio gia' in uso. Senza questo, ogni
+          impostazione aggiunta resterebbe invisibile all'Ingegnere — che
+          continuerebbe a non trovarla e a non poterla compilare.
+          Si confronta la PRIMA colonna, che nel Config e' la chiave.
+        */
+        if ((scheda.righe ?? []).length > 0) {
+          const esistenti = new Set(
+            (await api.leggiColonna(spreadsheetId, scheda.nome, 0)).map((v) => v.trim()),
+          )
+          const righeNuove = (scheda.righe ?? []).filter((r) => !esistenti.has(String(r[0] ?? '').trim()))
+          if (righeNuove.length > 0) {
+            await api.aggiungiInFondo(spreadsheetId, scheda.nome, righeNuove)
+            righeAggiunte.push(...righeNuove.map((r) => `${scheda.nome}: ${r[0]}`))
+          }
+        }
         if (!create.includes(scheda.nome)) giaPronte.push(scheda.nome)
         continue
       }
@@ -91,13 +116,14 @@ export async function inizializzaFoglioCheckin(
       await api.congelaIntestazione(spreadsheetId, scheda.nome)
     }
 
-    return { ok: true, create, giaPronte, colonneAggiunte }
+    return { ok: true, create, giaPronte, colonneAggiunte, righeAggiunte }
   } catch (err) {
     return {
       ok: false,
       create,
       giaPronte,
       colonneAggiunte,
+      righeAggiunte,
       errore: err instanceof Error ? err.message : String(err),
     }
   }

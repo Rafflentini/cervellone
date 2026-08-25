@@ -15,7 +15,7 @@ import { creaPrenotazione, type DatiPrenotazione } from '@/lib/checkin/pratica'
 import { linkPrenotazione, linkOspite } from '@/lib/checkin/token-prenotazione'
 import { leggiConfig } from '@/lib/checkin/foglio-lettura'
 import {
-  inviaAvvisi, linkWhatsApp, messaggioOspite, messaggioConsegnaChiavi,
+  inviaAvvisi, linkWhatsApp, messaggioOspite, messaggioConsegnaChiavi, chiConsegnaLeChiavi,
 } from '@/lib/checkin/avvisi'
 
 function tokenGenerale(ricevuto: string | null): boolean {
@@ -65,11 +65,10 @@ export async function POST(req: NextRequest) {
       quando cambia la persona.
     */
     const cfg = await leggiConfig()
-    const consegnaChiavi = {
-      nome: cfg.consegna_chiavi_nome ?? '',
-      telefono: cfg.consegna_chiavi_telefono ?? '',
-      email: cfg.consegna_chiavi_email ?? '',
-    }
+    const consegnaChiavi = chiConsegnaLeChiavi(
+      cfg.consegna_chiavi_nome ?? '',
+      cfg.consegna_chiavi_telefono ?? '',
+    )
 
     const testoOspite = messaggioOspite({ link, unita: d.unita, checkin: d.checkin })
     const testoConsegnaChiavi = messaggioConsegnaChiavi({
@@ -81,17 +80,14 @@ export async function POST(req: NextRequest) {
       intestatario: d.intestatario ?? '',
     })
 
-    // Le email partono SOLO se gli indirizzi sono compilati: lasciarli vuoti
+    // L'email all'ospite parte SOLO se l'indirizzo c'e': lasciarlo vuoto
     // spegne l'invio senza toccare il codice. Un avviso che non parte non deve
     // mai far fallire la creazione — la prenotazione e' il dato, l'avviso una
     // cortesia.
     const avvisi = await inviaAvvisi({
       emailOspite: d.email ?? '',
-      emailConsegnaChiavi: consegnaChiavi.email,
       oggettoOspite: 'Check-in — LA REAL ESTATE',
-      oggettoConsegnaChiavi: `Nuova prenotazione: ${d.unita} dal ${d.checkin}`,
       testoOspite,
-      testoConsegnaChiavi,
     })
 
     return NextResponse.json({
@@ -99,11 +95,15 @@ export async function POST(req: NextRequest) {
       id,
       link,
       linkGestione,
-      consegnaChiavi,
       // I collegamenti che aprono WhatsApp gia' sulla persona giusta: un tocco,
       // e nessun rischio di mandarlo al contatto sbagliato.
       whatsappOspite: linkWhatsApp(d.telefono ?? '', testoOspite),
-      whatsappConsegnaChiavi: linkWhatsApp(consegnaChiavi.telefono, testoConsegnaChiavi),
+      // Una voce per ciascuna delle ragazze indicate nel Config: chi consegna
+      // le chiavi non e' sempre la stessa persona, e non ha una email.
+      consegnaChiavi: consegnaChiavi.map((c) => ({
+        ...c,
+        whatsapp: linkWhatsApp(c.telefono, testoConsegnaChiavi),
+      })),
       avvisi,
       linkOspiti: Array.from({ length: ospiti }, (_, i) => ({
         progressivo: i + 1,

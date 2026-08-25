@@ -39,6 +39,13 @@ function fintoFoglio(iniziale: Record<string, string[][]> = {}) {
       chiamate.push(`intestazioniInCoda:${nome}:${daColonna}:${intestazioni.length}`)
       dati[nome][0] = [...(dati[nome][0] ?? []), ...intestazioni]
     },
+    async leggiColonna(_id, nome, indice) {
+      return (dati[nome] ?? []).slice(1).map((r) => String(r[indice] ?? ''))
+    },
+    async aggiungiInFondo(_id, nome, righe) {
+      chiamate.push(`aggiungiInFondo:${nome}:${righe.length}`)
+      dati[nome] = [...(dati[nome] ?? []), ...righe]
+    },
     async congelaIntestazione(_id, nome) {
       chiamate.push(`congela:${nome}`)
     },
@@ -151,6 +158,47 @@ describe('lo schema che cresce', () => {
     // I dati che c erano non sono stati toccati.
     expect(dati.Soggiorni[1][0]).toBe('SOG-1')
     expect(chiamate).not.toContain('scrivi:Soggiorni')
+  })
+
+  it('fa comparire nel Config le impostazioni nate dopo', async () => {
+    /*
+      Il difetto trovato il 25/08: le COLONNE nuove venivano aggiunte, le RIGHE
+      no. Il Config e' fatto di righe — quindi ogni impostazione aggiunta al
+      codice restava invisibile sul foglio gia' in uso, e l'Ingegnere non
+      poteva compilare una casella che non esisteva. Non falliva: taceva.
+    */
+    const [intestazione, prima, ...resto] = CONFIG_DEFAULT
+    const { api, dati } = fintoFoglio({
+      Soggiorni: [], Ospiti: [], Tabelle: [],
+      Config: [intestazione as string[], prima as string[]],
+    })
+    const esito = await inizializzaFoglioCheckin('FOGLIO-X', api)
+
+    expect(esito.ok).toBe(true)
+    // Le chiavi mancanti sono comparse, e quella che c'era non e' raddoppiata.
+    expect(dati.Config.map((r) => r[0])).toEqual(CONFIG_DEFAULT.map((r) => r[0]))
+    expect(esito.righeAggiunte).toEqual(resto.map((r) => `Config: ${r[0]}`))
+  })
+
+  it('rieseguita, NON duplica le righe del Config', async () => {
+    const { api, dati } = fintoFoglio({ Foglio1: [] })
+    await inizializzaFoglioCheckin('FOGLIO-X', api)
+    const secondo = await inizializzaFoglioCheckin('FOGLIO-X', api)
+
+    expect(secondo.righeAggiunte).toEqual([])
+    expect(dati.Config).toEqual(CONFIG_DEFAULT)
+  })
+
+  it('NON tocca il valore che l Ingegnere ha gia scritto in una riga', async () => {
+    // La riga esiste gia' con dentro un valore vero: reinizializzare non deve
+    // riportarla al vuoto di partenza.
+    const config = CONFIG_DEFAULT.map((r) => [...r] as string[])
+    config[1][1] = 'VALORE MIO'
+    const { api, dati } = fintoFoglio({
+      Soggiorni: [], Ospiti: [], Tabelle: [], Config: config,
+    })
+    await inizializzaFoglioCheckin('FOGLIO-X', api)
+    expect(dati.Config[1][1]).toBe('VALORE MIO')
   })
 
   it('su una scheda gia allineata non aggiunge niente', async () => {

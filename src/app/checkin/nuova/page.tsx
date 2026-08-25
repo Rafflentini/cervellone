@@ -22,9 +22,13 @@ interface Creata {
   link: string
   linkOspiti: LinkOspite[]
   whatsappOspite: string
-  whatsappConsegnaChiavi: string
-  consegnaChiavi?: { nome: string; telefono: string; email: string }
-  avvisi?: { ospite: string; consegnaChiavi: string }
+  /**
+   * Una voce per ciascuna delle ragazze indicate nel Config. Nessuna email:
+   * non ne hanno una, e un campo che non si puo' riempire e' solo un campo che
+   * resta vuoto per sempre.
+   */
+  consegnaChiavi?: { nome: string; telefono: string; whatsapp: string }[]
+  avvisi?: { ospite: string }
 }
 
 /**
@@ -130,26 +134,32 @@ function NuovaPrenotazione() {
           */}
           <section>
             <h2>Avvisa chi consegna le chiavi</h2>
-            {fatta.consegnaChiavi?.telefono || fatta.consegnaChiavi?.email ? (
+            {(fatta.consegnaChiavi ?? []).length > 0 ? (
               <>
                 <p className="spiega">
-                  {fatta.consegnaChiavi.nome || 'Chi fa la consegna'} riceve il riepilogo
-                  della prenotazione e il collegamento da cui vede tutto.
+                  Riceve il riepilogo della prenotazione e il collegamento da cui vede tutto.
+                  Un pulsante per ciascuna: parte su WhatsApp, gia&apos; col messaggio scritto.
                 </p>
-                {fatta.consegnaChiavi.telefono && (
-                  <a className="btn btn-pri" href={fatta.whatsappConsegnaChiavi} target="_blank" rel="noreferrer">
-                    Avvisala su WhatsApp
+                {(fatta.consegnaChiavi ?? []).map((c, i) => (
+                  <a
+                    key={i}
+                    className="btn btn-pri"
+                    href={c.whatsapp}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {c.telefono
+                      ? `Avvisa ${c.nome || 'chi fa la consegna'} su WhatsApp`
+                      : `${c.nome} — manca il numero, scegli il contatto`}
                   </a>
-                )}
-                {fatta.avvisi?.consegnaChiavi === 'inviata' && (
-                  <div className="hint">Avvisata anche per email.</div>
-                )}
+                ))}
               </>
             ) : (
               <p className="spiega">
-                Nessun recapito impostato. Scrivi nome, telefono ed email nel foglio,
+                Nessun recapito impostato. Scrivi nome e numero nel foglio,
                 scheda <b>Config</b>, alle righe <b>consegna_chiavi_*</b> — e questo
-                riquadro si accende da solo.
+                riquadro si accende da solo. Se le ragazze sono piu&apos; d&apos;una,
+                separale con <b>|</b>, nomi e numeri nello stesso ordine.
               </p>
             )}
           </section>
@@ -256,8 +266,8 @@ function NuovaPrenotazione() {
             type="email" value={d.email} onChange={(e) => setD({ ...d, email: e.target.value })}
           />
           <div className="hint">
-            Facoltativa. Se la scrivi <b>e</b> hai compilato le caselle degli avvisi nel foglio,
-            il link parte anche per email — utile come rete di sicurezza se il messaggio non viene letto.
+            Facoltativa. Se la scrivi, il link parte anche per email — una rete di sicurezza
+            se il messaggio WhatsApp non viene letto.
           </div>
 
           <label>Note</label>
@@ -319,4 +329,14 @@ const STILE = `
   .riga-ospite:last-child{border-bottom:none}
   .btn-mini{background:#fff;border:1px solid var(--blu);color:var(--blu);border-radius:6px;
     padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer}
+
+  /* Da computer: colonna centrata e marchio in proporzione. Vedi /checkin. */
+  @media (min-width:820px){
+    header{padding:22px calc(50% - 360px) 18px}
+    header .logo{height:66px;margin:0 0 14px}
+    header .titolo h1{font-size:21px}
+    header .titolo p{font-size:13px}
+    .wrap{max-width:720px;margin:0 auto;padding:22px 0}
+    .barra>*{max-width:720px;margin-left:auto;margin-right:auto}
+  }
 `
