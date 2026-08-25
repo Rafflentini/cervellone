@@ -27,20 +27,29 @@ import comuniGrezzi from './dati/comuni.json'
 export interface Comune {
   nome: string
   sigla: string
+  /** Codice catastale (Belfiore): serve al codice fiscale. */
   catastale: string
   /** Vuoto quando il comune ha piu' di un CAP: va scritto a mano. */
   cap: string
+  /**
+   * Codice del Portale Alloggiati, dalle tabelle ufficiali della Questura.
+   * Vuoto per 23 comuni su 7904: quelli fusi o rinominati di recente, dove
+   * l'elenco anagrafico e quello del Portale non concordano ancora. Chi e'
+   * nato li' viene SEGNALATO al momento di generare il file, non lasciato
+   * passare con un codice vuoto.
+   */
+  alloggiati: string
 }
 
-/** [nome, sigla, catastale, cap] — formato compatto per non gonfiare il bundle. */
-type RigaComune = [string, string, string, string]
+/** [nome, sigla, catastale, cap, alloggiati] — compatto per non gonfiare il bundle. */
+type RigaComune = [string, string, string, string, string]
 
 let cache: Comune[] | null = null
 
 export function tuttiIComuni(): Comune[] {
   if (!cache) {
-    cache = (comuniGrezzi as RigaComune[]).map(([nome, sigla, catastale, cap]) => ({
-      nome, sigla, catastale, cap,
+    cache = (comuniGrezzi as RigaComune[]).map(([nome, sigla, catastale, cap, alloggiati]) => ({
+      nome, sigla, catastale, cap, alloggiati,
     }))
   }
   return cache

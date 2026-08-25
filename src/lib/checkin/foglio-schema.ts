@@ -55,7 +55,7 @@ export const COL_OSPITI = [
 ] as const
 
 export const COL_TABELLE = [
-  'Denominazione', 'Provincia', 'Codice catastale (per CF)', 'Codice Alloggiati', 'Tipo (COMUNE/STATO)',
+  'Denominazione', 'Provincia', 'Codice catastale (per CF)', 'Codice Alloggiati', 'Tipo (COMUNE/STATO)', 'Note',
 ] as const
 
 /**

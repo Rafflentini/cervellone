@@ -21,6 +21,7 @@ import { leggiTutto } from '@/lib/checkin/foglio-google'
 import { aMappa } from '@/lib/checkin/merge-pratica'
 import { leggiTabelle, chiaveLuogo } from '@/lib/checkin/foglio-lettura'
 import { generaAlloggiati, type OspiteAlloggiati } from '@/lib/checkin/alloggiati'
+import { tuttiIComuni } from '@/lib/checkin/comuni'
 
 export async function GET(req: NextRequest) {
   const s = req.nextUrl.searchParams
@@ -43,12 +44,27 @@ export async function GET(req: NextRequest) {
       leggiTabelle(),
     ])
 
-    // Codice Portale a partire dalla denominazione. Le tabelle stanno nel
-    // foglio proprio perche' vanno caricate dalle fonti ufficiali e aggiornate
-    // senza rilasci.
-    const codici = new Map<string, string>()
-    for (const v of tabelle) if (v.alloggiati) codici.set(chiaveLuogo(v.denominazione), v.alloggiati)
-    const codice = (denominazione: string) => codici.get(chiaveLuogo(denominazione)) ?? ''
+    /*
+      Il codice del Portale a partire dalla denominazione, cercato in
+      quest'ordine:
+
+        1. la scheda `Tabelle` del foglio — che e' il posto delle ECCEZIONI e
+           degli stati esteri, e vince su tutto: se un codice va corretto, si
+           corregge li' senza aspettare un rilascio;
+        2. l'elenco dei comuni incorporato, con i codici ufficiali della
+           Questura uniti alle anagrafiche.
+
+      Chi non si trova in nessuno dei due non riceve un codice vuoto in
+      silenzio: viene segnalato col suo nome.
+    */
+    const daFoglio = new Map<string, string>()
+    for (const v of tabelle) if (v.alloggiati) daFoglio.set(chiaveLuogo(v.denominazione), v.alloggiati)
+
+    const daCodice = new Map<string, string>()
+    for (const c of tuttiIComuni()) if (c.alloggiati) daCodice.set(chiaveLuogo(c.nome), c.alloggiati)
+
+    const codice = (denominazione: string) =>
+      daFoglio.get(chiaveLuogo(denominazione)) ?? daCodice.get(chiaveLuogo(denominazione)) ?? ''
 
     const perId = new Map<string, Record<string, string>>()
     for (const [i, r] of soggiorni.entries()) {
