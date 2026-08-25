@@ -46,6 +46,12 @@ export async function POST(req: NextRequest) {
       url: `https://docs.google.com/spreadsheets/d/${foglioId}`,
       schede_create: esito.create,
       schede_gia_pronte: esito.giaPronte,
+      // Cosa e' CAMBIATO, non solo che e' andata bene. Su un foglio gia' in
+      // uso l'esito sarebbe sempre "tutte gia' pronte" — una risposta vera che
+      // non dice niente, e che nasconderebbe una colonna o una riga nuova non
+      // aggiunta.
+      colonne_aggiunte: esito.colonneAggiunte,
+      righe_aggiunte: esito.righeAggiunte,
       ...(esito.errore ? { errore: esito.errore } : {}),
     },
     { status: esito.ok ? 200 : 500 },
