@@ -75,8 +75,8 @@ describe('Config', () => {
 })
 
 describe('schede da creare', () => {
-  it('sono quattro, con i nomi attesi dal resto del sistema', () => {
-    expect(schedeDelFoglio().map((s) => s.nome)).toEqual(['Soggiorni', 'Ospiti', 'Config', 'Tabelle'])
+  it('hanno i nomi attesi dal resto del sistema', () => {
+    expect(schedeDelFoglio().map((s) => s.nome)).toEqual(['Soggiorni', 'Ospiti', 'Config', 'Tabelle', 'Strutture'])
   })
 
   it('Soggiorni e Ospiti nascono vuoti sotto l intestazione', () => {

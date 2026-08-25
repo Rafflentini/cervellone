@@ -15,7 +15,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { risolviAccesso } from '@/lib/checkin/accesso'
 import {
-  FOGLIO_CHECKIN_ID, SCHEDA_SOGGIORNI, SCHEDA_OSPITI, COL_SOGGIORNI, COL_OSPITI,
+  FOGLIO_CHECKIN_ID, SCHEDA_SOGGIORNI, SCHEDA_OSPITI, SCHEDA_STRUTTURE,
+  COL_SOGGIORNI, COL_OSPITI,
 } from '@/lib/checkin/foglio-schema'
 import { leggiTutto } from '@/lib/checkin/foglio-google'
 import { aMappa } from '@/lib/checkin/merge-pratica'
@@ -30,6 +31,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, errore: 'Non autorizzato.' }, { status: 401 })
   }
 
+  /** Facoltativo: limita a un solo appartamento. Vedi il commento sotto. */
+  const soloStruttura = s.get('struttura')?.trim() ?? ''
+
   // Senza data si intende ieri: e' la domanda che ci si fa la mattina.
   const richiesta = s.get('data')?.trim()
   const data = richiesta || new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
@@ -38,10 +42,11 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const [soggiorni, ospiti, tabelle] = await Promise.all([
+    const [soggiorni, ospiti, tabelle, strutture] = await Promise.all([
       leggiTutto(FOGLIO_CHECKIN_ID, SCHEDA_SOGGIORNI),
       leggiTutto(FOGLIO_CHECKIN_ID, SCHEDA_OSPITI),
       leggiTabelle(),
+      leggiTutto(FOGLIO_CHECKIN_ID, SCHEDA_STRUTTURE),
     ])
 
     /*
@@ -71,16 +76,46 @@ export async function GET(req: NextRequest) {
       if (i === 0) continue
       const m = aMappa(COL_SOGGIORNI, r)
       const id = String(m['ID Soggiorno'] ?? '').trim()
-      if (id && String(m['Check-in'] ?? '').trim() === data) perId.set(id, m)
+      if (!id || String(m['Check-in'] ?? '').trim() !== data) continue
+      // Le credenziali del Portale sono PER STRUTTURA: se gli appartamenti
+      // sono registrati separatamente, ognuno ha il suo account e vuole il
+      // suo file. Il tracciato non porta un codice struttura — la struttura
+      // e' l'account con cui si carica.
+      perId.set(id, m)
     }
 
+    /*
+      A quale STRUTTURA appartiene un appartamento.
+
+      Cinque appartamenti, tre CIN: il raggruppamento non e' per appartamento.
+      Le credenziali del Portale sono per struttura, quindi raggruppare per
+      appartamento produrrebbe cinque file dove ne servono tre, da caricare su
+      account che non esistono.
+
+      Finche' il CIN non e' compilato si ripiega sul nome dell'appartamento: il
+      sistema funziona lo stesso, solo diviso piu' del necessario.
+    */
+    const strutturaDi = new Map<string, string>()
+    for (const [i, r] of strutture.entries()) {
+      if (i === 0) continue
+      const appartamento = String(r[0] ?? '').trim()
+      const cin = String(r[1] ?? '').trim()
+      if (appartamento && cin) strutturaDi.set(chiaveLuogo(appartamento), cin)
+    }
+    const struttura = (u: string) =>
+      strutturaDi.get(chiaveLuogo(u)) ?? (String(u || '').trim() || 'Senza appartamento')
+
     const daInviare: OspiteAlloggiati[] = []
+    /** Per ogni ospite, la struttura a cui va comunicato. */
+    const strutturaPerOspite: string[] = []
+
     for (const [i, r] of ospiti.entries()) {
       if (i === 0) continue
       const o = aMappa(COL_OSPITI, r)
       const soggiorno = perId.get(String(o['ID Soggiorno'] ?? '').trim())
       if (!soggiorno) continue
 
+      strutturaPerOspite.push(struttura(String(soggiorno['Unità'] ?? '')))
       daInviare.push({
         tipoAlloggiato: o['Tipo alloggiato'] ?? '',
         dataArrivo: soggiorno['Check-in'] ?? '',
@@ -99,7 +134,56 @@ export async function GET(req: NextRequest) {
       })
     }
 
-    const file = generaAlloggiati(daInviare)
+    /*
+      Senza `scarica` si restituisce il quadro DIVISO PER APPARTAMENTO.
+
+      Non e' una comodita': le credenziali del Portale sono per struttura
+      ricettiva, e qui le strutture sono tre. Un totale unico farebbe credere
+      che basti un caricamento solo — e quel malinteso si scopre col cronometro
+      delle 24 ore che gira.
+    */
+    /** Solo gli ospiti di una struttura, mantenendo l'ordine. */
+    const soloDi = (nome: string) =>
+      daInviare.filter((_, i) => strutturaPerOspite[i] === nome)
+
+    if (s.get('scarica') !== '1') {
+      const nomi = [...new Set(strutturaPerOspite)].sort((a, b) => a.localeCompare(b))
+
+      const gruppi = nomi.map((nome) => {
+        const f = generaAlloggiati(soloDi(nome))
+        // Quali appartamenti finiscono in questa struttura: serve a capire a
+        // colpo d'occhio se il CIN e' stato compilato o si sta ripiegando.
+        const appartamenti = [...new Set(
+          [...perId.values()]
+            .map((m) => String(m['Unità'] ?? '').trim())
+            .filter((u) => struttura(u) === nome && u),
+        )]
+        return {
+          struttura: nome,
+          appartamenti,
+          righe: f.righe,
+          avvisi: f.avvisi,
+          pronto: f.avvisi.length === 0,
+        }
+      })
+
+      const tuttiGliAvvisi = gruppi.flatMap((g) => g.avvisi)
+
+      return NextResponse.json({
+        ok: tuttiGliAvvisi.length === 0,
+        data,
+        righe: daInviare.length,
+        // Un file per struttura: il totale unico farebbe credere che basti un
+        // caricamento solo, e quel malinteso si scopre col cronometro che gira.
+        gruppi,
+        avvisi: tuttiGliAvvisi,
+        ...(tuttiGliAvvisi.length > 0
+          ? { attenzione: 'Il portale rifiuta il file intero se una riga e incompleta. Sistema prima gli avvisi.' }
+          : {}),
+      })
+    }
+
+    const file = generaAlloggiati(soloStruttura ? soloDi(soloStruttura) : daInviare)
 
     // Con `?scarica=1` esce il file vero; altrimenti l'esito, che serve a
     // sapere PRIMA se vale la pena scaricarlo.
@@ -107,7 +191,7 @@ export async function GET(req: NextRequest) {
       return new NextResponse(file.contenuto, {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
-          'Content-Disposition': `attachment; filename="Alloggiati_${data.replace(/-/g, '')}.txt"`,
+          'Content-Disposition': `attachment; filename="Alloggiati_${data.replace(/-/g, '')}${soloStruttura ? '_' + soloStruttura.replace(/[^A-Za-z0-9]/g, '') : ''}.txt"`,
         },
       })
     }
@@ -115,6 +199,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: file.avvisi.length === 0,
       data,
+      ...(soloStruttura ? { struttura: soloStruttura } : {}),
       righe: file.righe,
       avvisi: file.avvisi,
       // Il portale rifiuta il file INTERO se una riga e' incompleta: dirlo qui

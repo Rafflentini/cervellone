@@ -19,6 +19,7 @@ export const SCHEDA_SOGGIORNI = 'Soggiorni'
 export const SCHEDA_OSPITI = 'Ospiti'
 export const SCHEDA_CONFIG = 'Config'
 export const SCHEDA_TABELLE = 'Tabelle'
+export const SCHEDA_STRUTTURE = 'Strutture'
 
 /**
  * Le prime 25 colonne sono quelle di Codice.gs, nell'ordine originale.
@@ -52,6 +53,21 @@ export const COL_OSPITI = [
   // Sono di passaggio: un lavoro notturno le cancella dopo i giorni indicati
   // in Config, e svuota queste due celle.
   'Doc fronte', 'Doc retro',
+] as const
+
+/**
+ * Le strutture ricettive: NON coincidono con gli appartamenti.
+ *
+ * Le credenziali del Portale Alloggiati sono per STRUTTURA, e piu'
+ * appartamenti possono appartenere alla stessa. Al 25/08 sono 5 appartamenti
+ * e 3 CIN. Raggruppare per appartamento produrrebbe cinque file dove ne
+ * servono tre, e tre caricamenti su account che non esistono.
+ *
+ * Per far stare due appartamenti nella stessa struttura, si ripete lo stesso
+ * CIN su due righe.
+ */
+export const COL_STRUTTURE = [
+  'Appartamento', 'CIN', 'Utente Alloggiati', 'Note',
 ] as const
 
 export const COL_TABELLE = [
@@ -106,11 +122,25 @@ export interface SchedaDaCreare {
   righe?: string[][]
 }
 
+/** Una riga per appartamento, col CIN da compilare. */
+export function strutturePartenza(): string[][] {
+  const unita = (CONFIG_DEFAULT.find((r) => r[0] === 'unita')?.[1] ?? '').split('|')
+    .map((u) => u.trim()).filter(Boolean)
+  return unita.map((u) => [u, '', '', ''])
+}
+
 export function schedeDelFoglio(): SchedaDaCreare[] {
   return [
     { nome: SCHEDA_SOGGIORNI, intestazioni: COL_SOGGIORNI },
     { nome: SCHEDA_OSPITI, intestazioni: COL_OSPITI },
     { nome: SCHEDA_CONFIG, intestazioni: CONFIG_DEFAULT[0], righe: CONFIG_DEFAULT.slice(1) },
     { nome: SCHEDA_TABELLE, intestazioni: COL_TABELLE, righe: TABELLE_ESEMPIO },
+    // Nasce gia' con una riga per appartamento: il CIN lo scrive l'Ingegnere,
+    // e finche' e' vuoto il raggruppamento ripiega sull'appartamento.
+    {
+      nome: SCHEDA_STRUTTURE,
+      intestazioni: COL_STRUTTURE,
+      righe: strutturePartenza(),
+    },
   ]
 }

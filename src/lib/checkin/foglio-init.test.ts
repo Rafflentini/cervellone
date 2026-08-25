@@ -13,7 +13,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { inizializzaFoglioCheckin, type FoglioApi } from './foglio-init'
-import { COL_SOGGIORNI, CONFIG_DEFAULT } from './foglio-schema'
+import { COL_SOGGIORNI, CONFIG_DEFAULT, schedeDelFoglio } from './foglio-schema'
 
 /** Foglio finto in memoria: schede -> righe. */
 function fintoFoglio(iniziale: Record<string, string[][]> = {}) {
@@ -47,12 +47,14 @@ function fintoFoglio(iniziale: Record<string, string[][]> = {}) {
 }
 
 describe('foglio mai inizializzato', () => {
-  it('crea tutte e quattro le schede e ci scrive le intestazioni', async () => {
+  it('crea tutte le schede e ci scrive le intestazioni', async () => {
     const { api, dati, chiamate } = fintoFoglio({ Foglio1: [] })
     const esito = await inizializzaFoglioCheckin('FOGLIO-X', api)
 
     expect(esito.ok).toBe(true)
-    expect(esito.create).toEqual(['Soggiorni', 'Ospiti', 'Config', 'Tabelle'])
+    // Derivato dallo schema: il test deve rompersi se una scheda non viene
+    // creata, non ogni volta che se ne aggiunge una.
+    expect(esito.create).toEqual(schedeDelFoglio().map((s) => s.nome))
     expect(dati.Soggiorni[0]).toEqual([...COL_SOGGIORNI])
     expect(chiamate).toContain('congela:Soggiorni')
   })
@@ -78,7 +80,7 @@ describe('eseguita due volte', () => {
 
     expect(secondo.ok).toBe(true)
     expect(secondo.create).toEqual([])
-    expect(secondo.giaPronte).toEqual(['Soggiorni', 'Ospiti', 'Config', 'Tabelle'])
+    expect(secondo.giaPronte).toEqual(schedeDelFoglio().map((s) => s.nome))
   })
 
   it('NON cancella i soggiorni gia registrati', async () => {

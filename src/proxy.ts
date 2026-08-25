@@ -22,8 +22,9 @@ export default async function proxy(request: NextRequest) {
     || pathname.startsWith('/api/checkin/logo')
     || pathname.startsWith('/api/checkin/documento')
     || pathname.startsWith('/api/checkin/alloggiati')
+    || pathname.startsWith('/api/checkin/pratiche')
     || pathname === '/checkin/nuova'
-    || pathname === '/checkin/alloggiati'
+    || pathname === '/checkin/gestione'
     || pathname.startsWith('/api/checkin/prenotazione')
 
   if (isPublic) return NextResponse.next()
