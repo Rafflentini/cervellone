@@ -453,3 +453,96 @@ describe('runMemoriaExtract — l esito del run non puo fallire in silenzio', ()
     )
   })
 })
+
+// ── Quanto si e perso, non solo quante volte (self-audit 2026-W36) ────────────
+// Il report del 31/08 diceva "1 run ha scartato contenuto illeggibile: quella
+// memoria e' persa" con severita alta. Il contenuto perso erano 29 caratteri.
+// Il conteggio degli EVENTI non distingue un frammento vuoto da una giornata
+// intera: senza la quantita, l'allarme non e' interpretabile.
+
+describe('runMemoriaExtract — l esito dice QUANTO e stato scartato', () => {
+  function esitoScritto() {
+    const call = mockUpdate.mock.calls.find((args: any[]) =>
+      args[0] && typeof args[0] === 'object' && 'status' in args[0] && 'completed_at' in args[0]
+    )
+    return call?.[0]
+  }
+
+  it('registra i caratteri scartati quando una parte e illeggibile', async () => {
+    const testo = 'x'.repeat(29)
+    mockLte.mockReturnValue({
+      order: vi.fn().mockReturnValue({
+        order: vi.fn().mockResolvedValue({
+          data: [
+            { id: 1, conversation_id: 'conv-corta', role: 'user', content: testo, created_at: '2026-08-24T18:14:22Z' },
+          ],
+          error: null,
+        }),
+      }),
+    })
+
+    // Il modello risponde in prosa invece che in JSON: parseExtraction ritorna null.
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'Non ci sono informazioni rilevanti da estrarre.' }],
+      usage: { input_tokens: 40, output_tokens: 12 },
+      stop_reason: 'end_turn',
+    })
+
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    const res = await runMemoriaExtract('2026-08-24')
+
+    expect(res.skipped_chunks).toBe(1)
+    const esito = esitoScritto()
+    expect(esito?.status).toBe('partial')
+    // La riga deve dire i caratteri, altrimenti "memoria persa" e "29 caratteri"
+    // si leggono allo stesso modo.
+    expect(esito?.error_message).toMatch(/caratteri/)
+    // Cio che si e perso e' la PARTE di trascrizione, prefisso di ruolo incluso:
+    // e' il testo che il modello non e' riuscito a leggere, non il solo messaggio.
+    const trascrizionePersa = `[user]: ${testo}`
+    expect(esito?.error_message).toContain(String(trascrizionePersa.length))
+  })
+
+  it('le entita fuori elenco non gonfiano i caratteri scartati: il testo e stato letto', async () => {
+    // Servono ENTRAMBE le perdite nello stesso run, altrimenti il numero di
+    // caratteri non compare affatto nel messaggio e l'asserzione sarebbe vera
+    // per il motivo sbagliato: un test che non muore quando il codice mente.
+    const persa = 'x'.repeat(29)
+    const letta = 'y'.repeat(500)
+    mockLte.mockReturnValue({
+      order: vi.fn().mockReturnValue({
+        order: vi.fn().mockResolvedValue({
+          data: [
+            { id: 1, conversation_id: 'conv-persa', role: 'user', content: persa, created_at: '2026-08-24T18:14:22Z' },
+            { id: 2, conversation_id: 'conv-letta', role: 'user', content: letta, created_at: '2026-08-24T18:20:00Z' },
+          ],
+          error: null,
+        }),
+      }),
+    })
+
+    // conv-persa: il modello risponde in prosa → parte persa per intero.
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'Non ci sono informazioni rilevanti da estrarre.' }],
+      usage: { input_tokens: 40, output_tokens: 12 },
+      stop_reason: 'end_turn',
+    })
+    // conv-letta: JSON valido, ma con un tipo di entita fuori elenco.
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '{"summary":"riassunto valido","entita":[{"name":"Tizio","type":"tipo_non_ammesso","context":"c"}]}' }],
+      usage: { input_tokens: 200, output_tokens: 50 },
+      stop_reason: 'end_turn',
+    })
+
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    await runMemoriaExtract('2026-08-24')
+
+    const esito = esitoScritto()
+    expect(esito?.status).toBe('partial')
+    expect(esito?.error_message).toContain('entita scartate')
+    // I caratteri contati devono essere SOLO quelli della parte persa: il testo
+    // di conv-letta e' stato letto e riassunto, non e' andato perduto.
+    const soloLaParsePersa = `[user]: ${persa}`.length
+    expect(esito?.error_message).toContain(`(${soloLaParsePersa} caratteri)`)
+  })
+})

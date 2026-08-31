@@ -29,6 +29,9 @@ export interface AnalysisResult {
   summary: {
     error_rate_pct: number
     hallucination_rate_pct: number
+    /** Denominatore della percentuale: senza, "err 100%" non si puo' interpretare. */
+    model_calls_total: number
+    model_error_count: number
     total_cost: number
     avg_per_day: number
     breaker_events: number
@@ -43,6 +46,14 @@ export interface AnalysisResult {
 
 const THRESHOLD_MODEL_ERROR_RATE = 0.05      // 5%
 const THRESHOLD_HALLUCINATION_RATE = 0.02    // 2%
+
+// Sotto questo numero di chiamate una percentuale non e' una misura: con UNA
+// chiamata sola, un errore fa "100%" e supera qualunque soglia. E' esattamente
+// quello che ha fatto il report del 2026-W36 in una settimana di ferie. Sotto il
+// minimo si guardano gli errori in numero, che restano veri a ogni campione.
+const MIN_SAMPLE_MODEL = 20
+// Quanti errori in assoluto meritano comunque una riga, anche a campione piccolo.
+const THRESHOLD_MODEL_ERROR_BURST = 3
 const THRESHOLD_GMAIL_DEAD_DAYS = 5          // 5 giorni senza attività = anomalia
 const THRESHOLD_GMAIL_FLOOD_PER_DAY = 20    // >20 critici/giorno = flood
 const THRESHOLD_COST_PER_DAY = 1.0          // $1/giorno
@@ -60,13 +71,17 @@ export function analyze(input: AnalysisInput): AnalysisResult {
   // ── D1: Model Health ────────────────────────────────────────────────────────
   let error_rate_pct = 0
   let hallucination_rate_pct = 0
+  let model_calls_total = 0
+  let model_error_count = 0
 
   if (input.modelHealth.ok && input.modelHealth.data) {
     const d = input.modelHealth.data
     error_rate_pct = parseFloat((d.error_rate * 100).toFixed(2))
     hallucination_rate_pct = parseFloat((d.hallucination_rate * 100).toFixed(2))
 
-    if (d.error_rate > THRESHOLD_MODEL_ERROR_RATE) {
+    const campioneSufficiente = d.total >= MIN_SAMPLE_MODEL
+
+    if (campioneSufficiente && d.error_rate > THRESHOLD_MODEL_ERROR_RATE) {
       anomalies.push({
         code: 'MODEL_ERROR_HIGH',
         severity: 'high',
@@ -76,7 +91,19 @@ export function analyze(input: AnalysisInput): AnalysisResult {
       })
     }
 
-    if (d.hallucination_rate > THRESHOLD_HALLUCINATION_RATE) {
+    // Campione troppo piccolo per una percentuale, ma gli errori restano contabili:
+    // tacere del tutto rifarebbe l'errore opposto, cioe' un audit che non vigila.
+    if (!campioneSufficiente && (d.error_count ?? 0) >= THRESHOLD_MODEL_ERROR_BURST) {
+      anomalies.push({
+        code: 'MODEL_ERROR_BURST',
+        severity: 'medium',
+        description: `${d.error_count} errori modello su ${d.total} chiamate. Troppe poche chiamate per un tasso (minimo ${MIN_SAMPLE_MODEL}), ma sono molti in assoluto.`,
+        proposed_action: 'Ispeziona le singole righe model_health: a questo volume vanno lette una per una, non mediate.',
+        raw: { error_count: d.error_count, total: d.total },
+      })
+    }
+
+    if (campioneSufficiente && d.hallucination_rate > THRESHOLD_HALLUCINATION_RATE) {
       anomalies.push({
         code: 'MODEL_HALLUCINATION',
         severity: 'high',
@@ -85,6 +112,9 @@ export function analyze(input: AnalysisInput): AnalysisResult {
         raw: { hallucination_rate: d.hallucination_rate },
       })
     }
+
+    model_calls_total = d.total
+    model_error_count = d.error_count ?? 0
   }
 
   // ── D2: Circuit Breaker ─────────────────────────────────────────────────────
@@ -193,7 +223,10 @@ export function analyze(input: AnalysisInput): AnalysisResult {
       anomalies.push({
         code: 'MEMORIA_PARZIALE',
         severity: 'high',
-        description: `${d.partial_count} run memoria-extract hanno scartato contenuto illeggibile: quella memoria e' persa.`,
+        // Il dettaglio (quante parti, quanti caratteri) va in faccia a chi legge:
+        // senza, "quella memoria e' persa" suona identico per 29 caratteri e per
+        // una giornata intera, e la severita alta diventa impossibile da tarare.
+        description: `${d.partial_count} run memoria-extract hanno scartato contenuto illeggibile: quella memoria e' persa.${partialRun?.error_message ? ` Ultimo: ${partialRun.error_message}.` : ''}`,
         proposed_action: 'Controlla error_message dei run parziali. Se ricorre, abbassa CHUNK_CHAR_BUDGET in memoria-extract.ts o verifica le risposte del modello.',
         raw: { partial_count: d.partial_count, last_partial: partialRun?.error_message },
       })
@@ -245,6 +278,8 @@ export function analyze(input: AnalysisInput): AnalysisResult {
     summary: {
       error_rate_pct,
       hallucination_rate_pct,
+      model_calls_total,
+      model_error_count,
       total_cost,
       avg_per_day,
       breaker_events,
@@ -281,10 +316,20 @@ export function formatReport(
       .join('\n\n')
   }
 
-  // Model summary
-  const modelSummary = s.error_rate_pct > 0
-    ? `err ${s.error_rate_pct}%`
-    : 'ok'
+  // Model summary. La percentuale si mostra SOLO col denominatore accanto, e sotto
+  // campione minimo non si mostra affatto: "err 100%" su una chiamata sola ha
+  // fatto sembrare un guasto quello che era un errore isolato in una settimana
+  // di ferie. Il numero di errori, invece, e' vero a qualunque campione.
+  const chiamate = `${s.model_calls_total} ${s.model_calls_total === 1 ? 'chiamata' : 'chiamate'}`
+  const errori = `${s.model_error_count} ${s.model_error_count === 1 ? 'errore' : 'errori'}`
+  let modelSummary: string
+  if (s.model_calls_total === 0) {
+    modelSummary = 'nessuna chiamata registrata'
+  } else if (s.model_calls_total < MIN_SAMPLE_MODEL) {
+    modelSummary = `${errori} su ${chiamate} (campione sotto il minimo per una percentuale)`
+  } else {
+    modelSummary = `err ${s.error_rate_pct}% su ${chiamate}`
+  }
 
   // Gmail summary
   const gmailSummary = `${s.gmail_actions_count} azioni`
@@ -295,7 +340,7 @@ export function formatReport(
 ${narrative}
 
 🔍 *Dimensioni monitorate*
-• Modelli: ${modelSummary} (err ${s.error_rate_pct}%)
+• Modelli: ${modelSummary}
 • Circuit breaker: ${s.breaker_events} eventi
 • Mail: ${gmailSummary}
 • Memoria: ${s.memoria_ok_count}/7 ok, costo $${s.total_cost.toFixed(3)}

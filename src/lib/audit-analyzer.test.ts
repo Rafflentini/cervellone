@@ -15,6 +15,8 @@ function cleanInput(): AnalysisInput {
         mitigated_count: 0,
         error_rate: 0.01,      // 1% — sotto soglia 5%
         hallucination_rate: 0.01, // 1% — sotto soglia 2%
+        error_count: 1,
+        hallucination_count: 1,
       },
     },
     breakerEvents: {
@@ -304,5 +306,59 @@ describe('formatReport', () => {
     const report = formatReport(result, '2026-W19', 'Settimana con anomalie.', 'run-xyz')
     expect(report).toContain('MODEL_ERROR_HIGH')
     expect(report).toContain('high')
+  })
+})
+
+// ── La percentuale ha bisogno di un campione (self-audit 2026-W36) ────────────
+// Il report del 31/08 diceva "err 100%" su UNA chiamata sola. Il fatto vero era
+// "un errore"; il 100% era un artefatto del denominatore.
+
+describe('MODEL_ERROR_HIGH — soglia minima di campione', () => {
+  function conModelHealth(over: Partial<NonNullable<AnalysisInput['modelHealth']['data']>>): AnalysisInput {
+    const input = cleanInput()
+    input.modelHealth.data = {
+      rows: [],
+      total: 1,
+      mitigated_count: 0,
+      error_rate: 0,
+      hallucination_rate: 0,
+      error_count: 0,
+      hallucination_count: 0,
+      ...over,
+    }
+    return input
+  }
+
+  it('una sola chiamata andata storta non e un tasso di errore del 100%', () => {
+    const result = analyze(conModelHealth({ total: 1, error_rate: 1, error_count: 1 }))
+    expect(result.anomalies.find(a => a.code === 'MODEL_ERROR_HIGH')).toBeUndefined()
+  })
+
+  it('vale anche per le allucinazioni: una su una non e il 100%', () => {
+    const result = analyze(conModelHealth({ total: 1, hallucination_rate: 1, hallucination_count: 1 }))
+    expect(result.anomalies.find(a => a.code === 'MODEL_HALLUCINATION')).toBeUndefined()
+  })
+
+  it('ma sotto campione gli errori in ASSOLUTO non vengono nascosti', () => {
+    const result = analyze(conModelHealth({ total: 8, error_rate: 3 / 8, error_count: 3 }))
+    const burst = result.anomalies.find(a => a.code === 'MODEL_ERROR_BURST')
+    expect(burst).toBeDefined()
+    expect(burst!.description).toContain('3')
+    expect(burst!.description).toContain('8')
+  })
+
+  it('con campione sufficiente il tasso torna a valere', () => {
+    const result = analyze(conModelHealth({ total: 40, error_rate: 0.1, error_count: 4 }))
+    const alto = result.anomalies.find(a => a.code === 'MODEL_ERROR_HIGH')
+    expect(alto).toBeDefined()
+    expect(alto!.description).toContain('40')
+  })
+
+  it('il report dice quante chiamate stanno dietro la percentuale', () => {
+    const result = analyze(conModelHealth({ total: 1, error_rate: 1, error_count: 1 }))
+    const testo = formatReport(result, '2026-W36', 'sintesi', 'run-1')
+    // Non deve piu comparire un "100%" nudo: il numeratore da solo mente.
+    expect(testo).not.toMatch(/err 100%/)
+    expect(testo).toContain('1 chiamata')
   })
 })

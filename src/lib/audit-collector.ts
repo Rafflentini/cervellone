@@ -12,6 +12,9 @@ export interface DimensionResult<T> {
   error?: string
 }
 
+/** Eta massima dell'heartbeat di un cron gmail prima di dirlo fermo. Vedi nota in collectGmailHealth. */
+const HEARTBEAT_MAX_AGE_H = 96
+
 // ── Helper: ISO date string per N giorni fa ───────────────────────────────────
 
 function daysAgoISO(n: number): string {
@@ -42,6 +45,9 @@ export interface ModelHealthData {
   mitigated_count: number
   error_rate: number
   hallucination_rate: number
+  /** Errori in numero, non in percentuale: sotto campione e' l'unico dato che regge. */
+  error_count: number
+  hallucination_count: number
 }
 
 /**
@@ -85,7 +91,15 @@ export async function collectModelHealth(): Promise<DimensionResult<ModelHealthD
 
   return {
     ok: true,
-    data: { rows: aggregated, total, mitigated_count: mitigatedCount, error_rate, hallucination_rate },
+    data: {
+      rows: aggregated,
+      total,
+      mitigated_count: mitigatedCount,
+      error_rate,
+      hallucination_rate,
+      error_count: errorCount,
+      hallucination_count: hallucinationCount,
+    },
   }
 }
 
@@ -186,7 +200,15 @@ export async function collectGmailHealth(): Promise<DimensionResult<GmailHealthD
   // Heartbeat cron: gmail-alerts/gmail-morning aggiornano un timestamp di ultima
   // esecuzione su cervellone_config ad OGNI run, anche nei giorni "silenti" (nessuna
   // mail critica / nessuna non letta). Leggerlo evita i falsi positivi GMAIL_*_DEAD.
-  // Soglia 48h: il cron è giornaliero, quindi >2gg senza run = davvero rotto.
+  // Soglia 96h, non 48h: NESSUNO dei due cron gira nel fine settimana.
+  //   gmail-alerts  */30 7-16 * * 1-5 → ultimo giro possibile venerdi 16:30
+  //   gmail-morning 0 6 * * 1-5       → ultimo giro possibile venerdi 06:00
+  //   self-audit    0 6 * * 1         → legge lunedi alle 06:00
+  // Il vuoto legittimo del fine settimana vale quindi fino a 72h, e con 48h
+  // l'allarme GMAIL_ALERTS_DEAD scattava OGNI lunedi per costruzione; per
+  // gmail-morning era testa o croce, secondo quale dei due cron delle 06:00
+  // partiva per primo. 96h stanno sopra il vuoto vero e sotto la settimana,
+  // quindi un cron davvero fermo viene comunque colto al giro dopo.
   let alertsCronRecent = false
   let summaryCronRecent = false
   const { data: cfgRows } = await supabase
@@ -195,7 +217,7 @@ export async function collectGmailHealth(): Promise<DimensionResult<GmailHealthD
     .in('key', ['gmail_alert_check_last_run', 'gmail_summary_last_run'])
     .order('key')
   if (cfgRows) {
-    const cutoff = Date.now() - 48 * 60 * 60 * 1000
+    const cutoff = Date.now() - HEARTBEAT_MAX_AGE_H * 60 * 60 * 1000
     const isRecent = (v: unknown): boolean => {
       if (typeof v !== 'string') return false
       const t = Date.parse(v)
@@ -240,7 +262,10 @@ export interface MemoriaRunsData {
 export async function collectMemoriaRuns(): Promise<DimensionResult<MemoriaRunsData>> {
   const today = todayISO()
   const since7 = new Date()
-  since7.setDate(since7.getDate() - 7)
+  // -8 e non -7: il controllo dei buchi sotto guarda fino a oggi-8, e un giorno
+  // che la query non chiede non puo' risultare presente. Con -7 il giorno di
+  // confine risultava mancante OGNI settimana, comunque fossero andate le cose.
+  since7.setUTCDate(since7.getUTCDate() - 8)
   const sinceStr = dateISO(since7)
 
   const { data, error } = await supabase

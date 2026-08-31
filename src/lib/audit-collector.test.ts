@@ -9,11 +9,17 @@ const mockGte = vi.fn()
 const mockOrder = vi.fn()
 const mockIn = vi.fn()
 
+// La tabella interrogata va ricordata: collectGmailHealth fa DUE query diverse
+// (gmail_processed_messages e cervellone_config) sulla stessa catena di mock, e
+// senza distinguerle l'heartbeat riceverebbe le righe delle mail.
+let currentTable = ''
+
 vi.mock('@/lib/supabase', () => ({
   supabase: {
-    from: vi.fn(() => ({
-      select: mockSelect,
-    })),
+    from: vi.fn((table: string) => {
+      currentTable = table
+      return { select: mockSelect }
+    }),
   },
 }))
 
@@ -201,5 +207,118 @@ describe('collectCostEstimate', () => {
     const result = await collectCostEstimate()
     expect(result.ok).toBe(false)
     expect(result.error).toBeDefined()
+  })
+})
+
+// ── Difetti dello strumento di misura (self-audit 2026-W36) ───────────────────
+// Tre allarmi su quattro non descrivevano Cervellone: descrivevano l'audit.
+
+describe('collectMemoriaRuns — la finestra chiesta e la finestra controllata', () => {
+  it('non dichiara mancante un giorno che la query non ha nemmeno chiesto', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-31T06:00:00Z')) // lunedi, ora del self-audit
+
+    // Il DB contiene il run di OGNI giorno dal 23 al 29 agosto: nessun buco vero.
+    const righeNelDb = [
+      '2026-08-29', '2026-08-28', '2026-08-27', '2026-08-26',
+      '2026-08-25', '2026-08-24', '2026-08-23',
+    ].map(d => ({
+      date_processed: d, status: 'ok', conversations_count: 1,
+      entities_count: 1, llm_cost_estimate_usd: 0.001, error_message: null,
+    }))
+
+    // Il mock applica DAVVERO il .gte passato dal codice, come farebbe Postgres.
+    // Senza questo il test girerebbe su un payload che la produzione non
+    // restituisce mai, e il difetto resterebbe verde.
+    let sogliaGte = ''
+    mockGte.mockImplementation((_col: string, val: string) => {
+      sogliaGte = val
+      return { order: mockOrder }
+    })
+    mockOrder.mockImplementation(() => Promise.resolve({
+      data: righeNelDb.filter(r => r.date_processed >= sogliaGte),
+      error: null,
+    }))
+    mockSelect.mockReturnValue({ gte: mockGte, eq: mockEq, in: mockIn, order: mockOrder })
+
+    const { collectMemoriaRuns } = await import('./audit-collector')
+    const result = await collectMemoriaRuns()
+
+    expect(result.data!.missing_dates).toEqual([])
+  })
+
+  it('un buco vero dentro la finestra resta visibile', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-31T06:00:00Z'))
+
+    const righeNelDb = ['2026-08-29', '2026-08-28', '2026-08-27', '2026-08-25', '2026-08-24', '2026-08-23']
+      .map(d => ({
+        date_processed: d, status: 'ok', conversations_count: 1,
+        entities_count: 1, llm_cost_estimate_usd: 0.001, error_message: null,
+      }))
+
+    let sogliaGte = ''
+    mockGte.mockImplementation((_col: string, val: string) => {
+      sogliaGte = val
+      return { order: mockOrder }
+    })
+    mockOrder.mockImplementation(() => Promise.resolve({
+      data: righeNelDb.filter(r => r.date_processed >= sogliaGte),
+      error: null,
+    }))
+    mockSelect.mockReturnValue({ gte: mockGte, eq: mockEq, in: mockIn, order: mockOrder })
+
+    const { collectMemoriaRuns } = await import('./audit-collector')
+    const result = await collectMemoriaRuns()
+
+    expect(result.data!.missing_dates).toEqual(['2026-08-26'])
+  })
+})
+
+describe('collectGmailHealth — heartbeat e il buco del fine settimana', () => {
+  function mockDueTabelle(mailRows: unknown[], configRows: unknown[]) {
+    mockOrder.mockImplementation(() => Promise.resolve({
+      data: currentTable === 'cervellone_config' ? configRows : mailRows,
+      error: null,
+    }))
+    mockIn.mockReturnValue({ order: mockOrder })
+    mockGte.mockReturnValue({ order: mockOrder, in: mockIn })
+    mockSelect.mockReturnValue({ gte: mockGte, eq: mockEq, in: mockIn, order: mockOrder })
+  }
+
+  it('fermo dal venerdi sera non e morto: e il fine settimana', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-31T06:00:00Z')) // lunedi 06:00 = ora del self-audit
+
+    mockDueTabelle([], [
+      // gmail-alerts gira */30 7-16 lun-ven: l'ultimo giro possibile e venerdi 16:30.
+      // Da li al lunedi mattina passano 61,5 ore senza che nulla sia rotto.
+      { key: 'gmail_alert_check_last_run', value: '2026-08-28T16:30:00.000Z' },
+      // gmail-morning gira 06:00 lun-ven, stessa ora dell'audit: se l'audit lo
+      // precede, l'ultimo giro e venerdi 06:00, cioe 72 ore prima.
+      { key: 'gmail_summary_last_run', value: '2026-08-28T06:00:00.000Z' },
+    ])
+
+    const { collectGmailHealth } = await import('./audit-collector')
+    const result = await collectGmailHealth()
+
+    expect(result.data!.alertsCronRecent).toBe(true)
+    expect(result.data!.summaryCronRecent).toBe(true)
+  })
+
+  it('un cron fermo da oltre una settimana resta rilevato', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-31T06:00:00Z'))
+
+    mockDueTabelle([], [
+      { key: 'gmail_alert_check_last_run', value: '2026-08-20T16:30:00.000Z' },
+      { key: 'gmail_summary_last_run', value: '2026-08-20T06:00:00.000Z' },
+    ])
+
+    const { collectGmailHealth } = await import('./audit-collector')
+    const result = await collectGmailHealth()
+
+    expect(result.data!.alertsCronRecent).toBe(false)
+    expect(result.data!.summaryCronRecent).toBe(false)
   })
 })

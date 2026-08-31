@@ -242,6 +242,12 @@ export async function runMemoriaExtract(
 
     // Step 6 (cont.): Per ogni gruppo → spezza in chunk e chiama Anthropic
     let skippedChunks = 0
+    // Quanto testo e' andato perso davvero. Il conteggio degli eventi da solo non
+    // distingue un frammento di 29 caratteri da una giornata intera, e l'audit li
+    // annuncia con la stessa severita: senza la quantita non e' interpretabile.
+    // Si incrementa SOLO dove la parte e' persa per intero, non dove il testo e'
+    // stato letto e riassunto e sono cadute le sole entita.
+    let caratteriScartati = 0
 
     for (const [convId, convMsgs] of groups.entries()) {
       const transcript = convMsgs
@@ -274,7 +280,8 @@ export async function runMemoriaExtract(
 
           if (!parsed) {
             skippedChunks++
-            console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId} illeggibile (stop_reason=${resp.stop_reason}) — scartata`)
+            caratteriScartati += chunks[i].length
+            console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId} illeggibile (stop_reason=${resp.stop_reason}) — scartati ${chunks[i].length} caratteri`)
             continue
           }
           if (parsed.summary) allSummaries.push(parsed.summary)
@@ -292,8 +299,9 @@ export async function runMemoriaExtract(
           // altrimenti un rifiuto non-Error (es. null) esplode qui dentro e la giornata
           // collassa comunque — la stessa patologia che questo task doveva eliminare.
           skippedChunks++
+          caratteriScartati += chunks[i].length
           const msg = err instanceof Error ? err.message : String(err)
-          console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId} fallita: ${msg}`)
+          console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId} fallita (${chunks[i].length} caratteri persi): ${msg}`)
           continue
         }
       }
@@ -382,7 +390,7 @@ export async function runMemoriaExtract(
         // Il messaggio dice QUALE perdita e' avvenuta: chi legge l'audit non deve
         // dedurre "testo illeggibile" quando invece era un'entita fuori elenco.
         error_message: [
-          skippedChunks > 0 ? `${skippedChunks} parti illeggibili scartate` : null,
+          skippedChunks > 0 ? `${skippedChunks} parti illeggibili scartate (${caratteriScartati} caratteri)` : null,
           entitaScartate > 0 ? `${entitaScartate} entita scartate` : null,
         ].filter(Boolean).join(', ') || null,
       })
