@@ -416,6 +416,7 @@ export async function callClaudeStream(
   let forcedAction = false // force-action: ri-prompt UNA volta se il modello promette un'azione senza chiamare tool
   let forcedArchiveCorrection = false // anti-bugia: ri-prompt UNA volta se afferma archiviazione senza esito reale
   let archiveToolSucceeded = false // true se archivia_foto/archivia_documento è andato a buon fine nel turno
+  let consecutiveNoText = 0 // solo osservabilità: quante iterazioni di fila senza testo (vedi FIX 2 set 2026)
   const MAX_ITERATIONS = 10 // PER-004 fix
 
   const cfg = await getConfig()
@@ -436,9 +437,8 @@ export async function callClaudeStream(
     const iterStartLen = fullResponse.length // force-action: confine per scartare il testo-promessa se ri-promptiamo
     // REL-003 + resilienza mid-stream: consumo con retry su errori transitori (overloaded/529/
     // rete/timeout). onAttemptStart azzera il parziale dell'iterazione (fullResponse a iterStartLen
-    // + iterationHasText) così un re-tentativo non duplica nella persistenza; sul web il testo già
+    // così un re-tentativo non duplica nella persistenza; sul web il testo già
     // streammato è cosmetico, fullResponse persistito resta corretto.
-    let iterationHasText = false
     const final = await consumeStreamWithRetry({
       createStream: () => client.messages.stream({
         model: modelConfig.model,
@@ -450,13 +450,12 @@ export async function callClaudeStream(
       }, {
         headers: { 'anthropic-beta': 'files-api-2025-04-14' },
       }),
-      onAttemptStart: () => { fullResponse = fullResponse.slice(0, iterStartLen); iterationHasText = false },
+      onAttemptStart: () => { fullResponse = fullResponse.slice(0, iterStartLen) },
       onRetry: (n, err) => console.warn(`STREAM(web) retry ${n}: ${err instanceof Error ? err.message : err}`),
       onEvent: (event) => {
         if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
           fullResponse += event.delta.text
           callbacks.onText(event.delta.text)
-          iterationHasText = true
         }
         if (event.type === 'content_block_start' && (event as any).content_block?.type === 'server_tool_use') {
           const serverToolName = (event as any).content_block?.name ?? 'server_tool'
@@ -511,7 +510,21 @@ export async function callClaudeStream(
       }
       break
     }
-    if (!iterationHasText && i > 0) break
+
+    // FIX 2 set 2026: qui c'era `if (!iterationHasText && i > 0) break`, cioe' lo
+    // stesso break che il path Telegram si e' gia' tolto col Fix Bug 5 (vedi il
+    // commento a callClaudeStreamTelegram). Interrompeva PRIMA di eseguire i tool
+    // dell'iterazione corrente: incatenare due tool senza scrivere testo in mezzo
+    // — leggi intestazione del Registro, poi scrivi la riga — e' comportamento
+    // normale del modello, e faceva morire il turno in silenzio. Peggio: il
+    // re-prompt force-action qui sopra dice "non descrivere l'intenzione, agisci",
+    // cioe' spinge il modello proprio verso l'iterazione senza testo che poi
+    // veniva buttata via. La correzione non era mai stata portata sul web.
+    // Il loop resta limitato da MAX_ITERATIONS e dal budget token.
+    const textBlocks = final.content.filter(b => b.type === 'text')
+    if (textBlocks.length === 0) consecutiveNoText++
+    else consecutiveNoText = 0
+    console.log(`STREAM(web) iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} texts=${textBlocks.length} fullLen=${fullResponse.length} consNoText=${consecutiveNoText}`)
 
     const toolResults = await executeToolBlocks(toolBlocks, conversationId)
     if (toolResults.length === 0) break
@@ -525,11 +538,20 @@ export async function callClaudeStream(
     applyIncrementalCacheBreakpoint(currentMessages)
   }
 
+  // Parità col path Telegram (FIX Bug 5): se per qualunque motivo il loop finisce
+  // senza che il modello abbia mai prodotto testo, l'utente riceveva una risposta
+  // a ZERO caratteri — indistinguibile da un bot che ignora. Meglio dirlo.
+  if (fullResponse.length === 0) {
+    fullResponse = '⚠️ Non sono riuscito a sintetizzare una risposta. Riformuli la richiesta o specifichi il file/contesto, per favore.'
+    console.warn(`STREAM(web) EMPTY: fullResponse vuoto dopo ${iterations} iter, applicato fallback`)
+    callbacks.onText(fullResponse)
+  }
+
   await logApiUsage({
     entryPoint: request.entryPoint ?? 'chat',
     model: modelConfig.model,
     usage: accUsage,
-    meta: { iterations, runAborted: isRunOverBudget(accUsage) },
+    meta: { iterations, consecutiveNoText, runAborted: isRunOverBudget(accUsage) },
   })
 
   // NB: nessuna scrittura in messages - vedi la nota a inizio funzione.

@@ -688,9 +688,12 @@ export default function ChatPage() {
         batchTimeoutRef.current = null
       }
       flushBatch()
-      // Salva risposta assistente
+      // Salva risposta assistente. La guardia sul vuoto c'era solo nel ramo
+      // AbortError qui sotto: nel percorso normale una risposta a zero caratteri
+      // finiva in `messages` come riga muta, che poi il turno dopo veniva scartata
+      // dalla history. Il turno spariva due volte, senza lasciare traccia.
       rispostaInCorsoRef.current = null
-      await saveMessage(convId, 'assistant', fullText)
+      if (fullText.trim()) await saveMessage(convId, 'assistant', fullText)
       // Aggiorna lista conversazioni (senza ricaricare messaggi)
       loadConversations().catch(() => {})
     } catch (err) {
