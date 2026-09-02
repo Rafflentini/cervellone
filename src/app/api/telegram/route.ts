@@ -45,6 +45,10 @@ export async function POST(request: NextRequest) {
   }
 
   let errorChatId: number | null = null
+  // Arretrati drenati dalla coda e non ancora consegnati al lavoro vero: sono
+  // gia' marcati letti, quindi finche' stanno qui dentro vanno restituiti su
+  // QUALUNQUE uscita — return anticipati e catch esterno compresi.
+  let arretratiFuoriCoda: Array<{ testo: string; created_at: string }> = []
   let typingInterval: NodeJS.Timeout | null = null
 
   try {
@@ -108,6 +112,16 @@ export async function POST(request: NextRequest) {
         await sendTelegramMessage(chatId, `🎙 _Trascrizione:_ ${userText}`).catch(() => {})
       }
     }
+
+    // Quello che l'Ingegnere ha DAVVERO scritto o detto, fotografato qui e non
+    // dopo. Serve alla coda e al classificatore, e il punto e' proprio il
+    // momento: `message.text || message.caption` non basta — per un VOCALE sono
+    // entrambi vuoti, il contenuto e' la trascrizione appena scritta in
+    // `userText`. Da qui in giu' invece `userText` si sporca di frasi
+    // fabbricate dal codice ("Analizza questo file: ...", "la foto NON e' stata
+    // salvata..."), che riproposte al turno dopo sarebbero ordini su allegati
+    // che non ci sono piu'.
+    const testoOriginale = userText.trim()
 
     // ── Document ──
     if (message.document) {
@@ -433,6 +447,10 @@ export async function POST(request: NextRequest) {
       await closeActiveProject(convId)
       const { clearFotoContesto } = await import('@/lib/foto-contesto')
       await clearFotoContesto(convId)
+      // Anche la coda: una conversazione "nuova" non deve nascere coi messaggi
+      // arretrati della precedente dentro.
+      const { svuotaCoda } = await import('@/lib/telegram-coda')
+      await svuotaCoda(chatId)
       await sendTelegramMessage(chatId, 'Conversazione azzerata. La memoria permanente è intatta.')
       return NextResponse.json({ ok: true })
     }
@@ -715,6 +733,10 @@ export async function POST(request: NextRequest) {
       } catch (err: unknown) {
         console.error('[/reset] durable run cleanup failed (best-effort):', err instanceof Error ? err.message : String(err))
       }
+      // Anche la coda: "puoi rimandare il messaggio" e poi riproporglielo
+      // insieme all'"anzi lascia stare" arrivato dopo sarebbe peggio del blocco.
+      const { svuotaCoda } = await import('@/lib/telegram-coda')
+      await svuotaCoda(chatId)
       await sendTelegramMessage(chatId, '✅ Sbloccato. Puoi rimandare il messaggio.')
       return NextResponse.json({ ok: true })
     }
@@ -805,8 +827,47 @@ export async function POST(request: NextRequest) {
     console.log(`[MUTEX] chat=${chatId} msgId=${msgId} claimed=${lockClaimed} reason=${lockReason}`)
 
     if (!lockClaimed) {
-      await sendTelegramMessage(chatId, '⏳ Sto ancora elaborando il messaggio precedente, attenda un momento.')
+      // Prima qui il messaggio veniva SCARTATO: nessuna coda, e il dedup era
+      // gia' stato scritto sopra, quindi nemmeno Telegram poteva riconsegnarlo.
+      // "Attenda un momento" suonava come un rinvio ed era un addio.
+      // Si accoda il testo VERO dell'Ingegnere, non `userText`: quello a questo
+      // punto puo' essere una frase fabbricata dal codice ("Analizza questo
+      // file: ...", "la foto NON e' stata salvata..."), che riproposta al turno
+      // dopo sarebbe un ordine su un allegato che non c'e' piu'.
+      // I comandi non si accodano: il dispatch sta a monte del drenaggio,
+      // quindi non verrebbero mai eseguiti — comparirebbero solo come testo.
+      const accodabile = testoOriginale && !testoOriginale.startsWith('/')
+      const { accodaMessaggio } = await import('@/lib/telegram-coda')
+      const accodato = accodabile ? await accodaMessaggio(chatId, testoOriginale) : false
+      await sendTelegramMessage(
+        chatId,
+        accodato
+          // "appena ho finito" sarebbe falso: nessuno drena a fine turno, il
+          // recupero avviene all'inizio del messaggio successivo. Meglio dirlo.
+          ? '⏳ Sto ancora finendo il messaggio precedente. Il suo l\'ho messo da parte e lo leggo al suo prossimo messaggio — non serve riscriverlo tutto.'
+          : '⏳ Sto ancora elaborando il messaggio precedente, attenda un momento.',
+      )
       return NextResponse.json({ ok: true })
+    }
+
+    // Tenuti da parte: se il turno esce senza processarli vanno RIMESSI in coda,
+    // altrimenti li avremmo marcati letti e poi buttati — peggio di prima.
+    let arretratiDrenati: import('@/lib/telegram-coda').MessaggioInCoda[] = []
+
+    // Ora che il lock e' nostro, recuperiamo cio' che era arrivato mentre il
+    // turno precedente girava: viene anteposto al messaggio corrente, marcato
+    // come "non ancora letto" perche' il modello non lo scambi per un
+    // ripensamento. Best-effort: se la coda non risponde, il turno prosegue.
+    try {
+      const { drenaCoda, formatCoda } = await import('@/lib/telegram-coda')
+      arretratiDrenati = await drenaCoda(chatId)
+      if (arretratiDrenati.length > 0) {
+        console.log(`[CODA] chat=${chatId} recuperati=${arretratiDrenati.length}`)
+        userText = formatCoda(arretratiDrenati) + userText
+        arretratiFuoriCoda = arretratiDrenati.map(a => ({ testo: a.testo, created_at: a.created_at }))
+      }
+    } catch (err) {
+      console.error('[CODA] recupero fallito:', err instanceof Error ? err.message : err)
     }
 
     // ── Typing + thinking timeout ──
@@ -989,10 +1050,38 @@ export async function POST(request: NextRequest) {
       }
     } catch { /* best-effort: l'avviso non deve mai bloccare il messaggio */ }
 
-    if (await shouldUseDurable(userText, fileBlocks)) {
+    // Il testo dell'Ingegnere PIU' gli arretrati, senza la cornice.
+    // Escluderli era sbagliato: si finisce in coda proprio perche' il bot era su
+    // una task lunga, quindi l'arretrato e' spesso a sua volta una task lunga —
+    // un "prepara il preventivo Blasi" accodato non avrebbe mai preso il ramo
+    // durable perche' si classificava solo l'"ok" corrente.
+    // La cornice va tolta lo stesso: un pattern del classificatore e' ancorato
+    // a `^` e un prefisso lo disinnescherebbe.
+    const testoPerClassificatore = [
+      ...arretratiDrenati.map(a => a.testo),
+      testoOriginale,
+    ].filter(Boolean).join('\n')
+    if (await shouldUseDurable(testoPerClassificatore || userText, fileBlocks)) {
       const activeRun = await getActiveRunForChat(String(chatId))
       if (activeRun) {
-        await sendTelegramMessage(chatId, '⏳ Ho già una task lunga in corso per questa chat. Attenda che finisca (o usi /reset se è bloccata).')
+        // Si esce senza processare niente: gli arretrati sono gia' marcati
+        // letti, quindi vanno RESTITUITI con la loro eta' originale, insieme al
+        // messaggio corrente. E' lo scenario tipico, non un caso limite:
+        // durante una run durable il mutex e' libero, quindi il drenaggio
+        // scatta sempre, e la finestra della run e' di mezz'ora.
+        const { riaccodaMessaggi, accodaMessaggio } = await import('@/lib/telegram-coda')
+        let persi = await riaccodaMessaggi(chatId, arretratiFuoriCoda)
+        arretratiDrenati = []
+        arretratiFuoriCoda = [] // restituiti: il catch esterno non deve rifarlo
+        if (testoOriginale && !testoOriginale.startsWith('/')) {
+          if (!await accodaMessaggio(chatId, testoOriginale)) persi += 1
+        }
+
+        // La promessa va detta solo se e' vera: qui prima si affermava sempre
+        // di aver messo da parte, ignorando l'esito della scrittura.
+        await sendTelegramMessage(chatId, persi === 0
+          ? '⏳ Ho già una task lunga in corso per questa chat. Attenda che finisca (o usi /reset se è bloccata). Quello che mi ha scritto l\'ho messo da parte.'
+          : '⏳ Ho già una task lunga in corso per questa chat. Attenda che finisca (o usi /reset se è bloccata). ⚠️ NON sono riuscito a mettere da parte quello che mi ha scritto: me lo rimandi dopo.')
         if (typingInterval) { clearInterval(typingInterval); typingInterval = null }
         await safeSupabase(() =>
           supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId).eq('request_id', requestId)
@@ -1011,6 +1100,9 @@ export async function POST(request: NextRequest) {
         maxRunTokens: MAX_DURABLE_RUN_TOKENS,
       }
       const run = await start(runAgentTask, [input])
+      // Il testo (arretrati inclusi) e' dentro `input`: da qui il lavoro e'
+      // partito. Se `createRun` qui sotto fallisce, restituirli li duplicherebbe.
+      arretratiFuoriCoda = []
       await createRun({
         id: run.runId,
         channel: 'telegram',
@@ -1023,6 +1115,9 @@ export async function POST(request: NextRequest) {
         supabase.from('telegram_active_jobs').delete().eq('chat_id', chatId).eq('request_id', requestId)
       )
     } else {
+      // Da qui il testo (arretrati compresi) vive dentro il lavoro in corso:
+      // il catch esterno non deve piu' restituirli, o li duplicherebbe.
+      arretratiFuoriCoda = []
       waitUntil(bgProcess())
     }
 
@@ -1030,6 +1125,17 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     if (typingInterval) clearInterval(typingInterval)
     console.error('TELEGRAM error:', err)
+    // Gli arretrati erano gia' marcati letti: se il turno muore qui, senza
+    // restituirli sarebbero persi. Toppare un `return` alla volta non basta —
+    // la perdita passa soprattutto da qui.
+    if (errorChatId && arretratiFuoriCoda.length > 0) {
+      try {
+        const { riaccodaMessaggi } = await import('@/lib/telegram-coda')
+        await riaccodaMessaggi(errorChatId, arretratiFuoriCoda)
+      } catch (e) {
+        console.error('[CODA] restituzione dopo errore fallita:', e instanceof Error ? e.message : e)
+      }
+    }
     if (errorChatId) {
       const msg = err instanceof Error ? err.message : String(err)
       await sendTelegramMessage(errorChatId, `⚠️ ${msg.slice(0, 300)}`).catch(() => {})
