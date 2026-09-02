@@ -134,6 +134,20 @@ export async function executeSelfTools(name: string, input: Record<string, unkno
         configMap[row.key] = row.value
       }
 
+      // prompt_extra: mostrare il valore grezzo del DB e' fuorviante, perche' se
+      // e' stato scritto dal bot il guardrail di provenienza lo scarta e in
+      // conversazione non arriva. Lo strumento deve riportare cio' che e' ATTIVO,
+      // non cio' che e' memorizzato: e' esattamente la divergenza che ha reso
+      // invisibile l'incidente del 1 settembre.
+      const promptExtraRow = config.find(r => r.key === 'prompt_extra')
+      const promptExtraSelfWritten = String(promptExtraRow?.updated_by ?? '').startsWith('cervellone')
+      const promptExtraRaw = String(promptExtraRow?.value ?? '').trim()
+      const promptExtraStato = !promptExtraRaw
+        ? '(nessuna)'
+        : promptExtraSelfWritten
+          ? `(NON ATTIVE — scritte da me, quindi scartate dal guardrail di provenienza. In conversazione non arrivano.) Testo memorizzato: ${promptExtraRaw}`
+          : promptExtraRaw
+
       // Percorso assoluto e NON '../tools': da src/lib/tools/self.ts quello relativo
       // può risolvere sia a src/lib/tools.ts sia alla directory src/lib/tools/, e
       // funziona solo perché quest'ultima non ha un index.ts. Aggiungerne uno —
@@ -164,7 +178,7 @@ TOOL DISPONIBILI:
 ${toolNames.map(t => `- ${t}`).join('\n')}
 - web_search (built-in Anthropic)
 
-ISTRUZIONI EXTRA: ${configMap.prompt_extra || '(nessuna)'}
+ISTRUZIONI EXTRA: ${promptExtraStato}
 
 ULTIMA MODIFICA CONFIG:
 ${config.map(r => `- ${r.key}: aggiornato ${new Date(r.updated_at).toLocaleString('it')} da ${r.updated_by}`).join('\n')}
@@ -311,6 +325,27 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
 
       if (!CHIAVI_VALIDE.includes(chiave)) {
         return `Chiave "${chiave}" non valida. Chiavi disponibili: ${CHIAVI_VALIDE.join(', ')}`
+      }
+
+      // prompt_extra NON è scrivibile da qui, e va detto invece di fingere.
+      // getPromptExtra() (src/lib/prompts.ts) scarta il valore se `updated_by`
+      // inizia per "cervellone", e questo tool firma sempre così: la scrittura
+      // riusciva, veniva sempre scartata, e la risposta diceva "attiva dalla
+      // prossima richiesta". Il 1 settembre 2026 l'Ingegnere si è sentito dire
+      // "salvato per tutte le sessioni future" di una regola mai entrata in un
+      // prompt. Il guardrail è giusto — il bot non deve poter riscrivere il
+      // proprio system prompt — quindi si corregge la bugia, non la difesa.
+      // Non scriviamo nemmeno in DB: un valore lì dentro verrebbe riletto da
+      // cervellone_info come se fosse attivo.
+      if (chiave === 'prompt_extra') {
+        return `❌ NON POSSO modificare prompt_extra: non ho il permesso di riscrivere il mio system prompt.
+
+Esiste una protezione che scarta qualunque valore scritto da me: anche salvandolo, NON entrerebbe in nessuna conversazione. Non dire all'utente che è stato salvato — non lo sarebbe.
+
+Cosa funziona davvero:
+- \`ricorda\` — memoria esplicita, questa viene riletta davvero;
+- \`registra_apprendimento\` — aggiunge una lezione a una procedura esistente;
+- per una regola stabile nel prompt di sistema serve l'Ingegnere: la modifica va fatta da lui, non da me.`
       }
 
       // Parsa il valore come JSON
