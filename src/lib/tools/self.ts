@@ -1,7 +1,7 @@
 import { supabase } from '../supabase'
 import { sendTelegramMessage } from '../telegram-helpers'
 import { promoteModel } from '../circuit-breaker'
-import { migliorePerFamiglia, formatModelliDisponibili } from '../model-families'
+import { migliorePerFamiglia, formatModelliDisponibili, famigliaDi } from '../model-families'
 import type { ToolDefinition } from './types'
 
 /**
@@ -188,7 +188,7 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
     }
 
     case 'cervellone_check_aggiornamenti': {
-      const applica = input.applica !== false // default true
+      let applica = input.applica !== false // default true
 
       try {
         // Interroga l'API Anthropic per i modelli disponibili.
@@ -213,6 +213,10 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
         // Se ne restano fuori, dirlo: un elenco parziale presentato come
         // completo e' il difetto che ha causato l'incidente Fable.
         const paginaIncompleta = data.has_more === true
+        // Se l'elenco non basta per concludere, non basta nemmeno per SCRIVERE:
+        // dire "questo elenco non e' completo" e promuovere sulla sua base nello
+        // stesso respiro era incoerente.
+        if (paginaIncompleta) applica = false
 
         if (!models.length) {
           return 'Nessun modello trovato dall\'API Anthropic.'
@@ -222,12 +226,6 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
         const claudeModels = models
           .filter(m => m.id.startsWith('claude-') && !m.id.includes('embed'))
           .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
-
-        // Le famiglie su cui la configurazione lavora davvero. NON sono l'elenco
-        // di cio' che esiste: quello si ricava dagli id (vedi model-families.ts).
-        // Tenerle separate e' il punto: il 1 settembre 2026 il bot ha concluso
-        // che Fable 5.1 non esistesse perche' il report elencava solo queste tre.
-        const FAMIGLIE_IN_USO = ['sonnet', 'opus', 'haiku']
 
         const bestOpus = migliorePerFamiglia(claudeModels, 'opus')
         const bestSonnet = migliorePerFamiglia(claudeModels, 'sonnet')
@@ -258,7 +256,22 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
         if (newComplex !== currentComplex) changes.push({ key: 'model_complex', from: currentComplex, to: newComplex })
         if (newDigest !== currentDigest) changes.push({ key: 'model_digest', from: currentDigest, to: newDigest })
 
-        let report = formatModelliDisponibili(claudeModels, FAMIGLIE_IN_USO)
+        // Le famiglie in uso si RICAVANO da cio' che la config scrive davvero,
+        // non si elencano a mano: una lista scritta a mano tornava a dire che
+        // haiku e' "in uso" mentre nessuna chiave la usa piu' — lo stesso
+        // difetto dell'elenco hardcoded, in scala minore.
+        // Dai valori CORRENTI, non da quelli proposti: il warning dice "la
+        // configurazione non usa", cioe' parla del presente. Derivandolo dai
+        // nuovi, con un cambio in sospeso il report diceva "non uso fable" tre
+        // righe sopra "model_complex: claude-fable-5-1" — report contro realta',
+        // la stessa classe di difetto che questo modulo esiste per chiudere.
+        const FAMIGLIE_IN_USO = [...new Set(
+          [currentDefault, currentComplex, currentDigest]
+            .filter(m => m && m !== 'sconosciuto')
+            .map(m => famigliaDi(m)),
+        )]
+
+        let report = formatModelliDisponibili(claudeModels, FAMIGLIE_IN_USO, models.length)
         if (paginaIncompleta) {
           report += `\n⚠️ L'API dice che ci sono ALTRI modelli oltre a questi: l'elenco sopra NON è completo. Non concludere che un modello non esiste solo perché non è qui.\n`
         }
@@ -273,7 +286,12 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
           // "Aggiornato" vale DENTRO le famiglie che uso. Dire "sto usando i
           // modelli migliori disponibili" mentre ne esiste una piu' capace che
           // non guardo e' esattamente la frase che ha fatto sbagliare il bot.
-          report += `✅ AGGIORNATO nelle famiglie che uso (${FAMIGLIE_IN_USO.join(', ')}): sto già usando le versioni più recenti.`
+          // Set vuoto = non ho potuto leggere la config, non "sono aggiornato su
+          // niente": la frase con le parentesi vuote sarebbe un'affermazione di
+          // completezza su un insieme vuoto.
+          report += FAMIGLIE_IN_USO.length > 0
+            ? `✅ AGGIORNATO nelle famiglie che uso (${FAMIGLIE_IN_USO.join(', ')}): sto già usando le versioni più recenti.`
+            : `⚠️ Non ho potuto leggere quali modelli sto usando: non posso dire se sono aggiornato.`
           return report
         }
 
@@ -312,7 +330,12 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
             console.error('Cache invalidation failed (non-critical):', err)
           }
         } else {
-          report += `\n⏸️ Aggiornamento NON applicato (modalità anteprima). Richiama con applica=true per applicare.`
+          // Biforcato sul motivo: se a bloccare e' stata la paginazione, dire
+          // "richiama con applica=true" a chi lo aveva GIA' passato e' un invito
+          // a rifare la stessa cosa all'infinito.
+          report += paginaIncompleta
+            ? `\n⏸️ Aggiornamento NON applicato: l'elenco dei modelli è incompleto, non è una base sicura per cambiare configurazione.`
+            : `\n⏸️ Aggiornamento NON applicato (modalità anteprima). Richiama con applica=true per applicare.`
         }
 
         return report

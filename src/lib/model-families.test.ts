@@ -44,6 +44,13 @@ describe('famigliaDi', () => {
     // Il punto di tutto: nessuna lista scritta a mano da aggiornare.
     expect(famigliaDi('claude-qualcosa-9')).toBe('qualcosa')
   })
+
+  it('un id degenere non produce una famiglia vuota', () => {
+    // Una stringa vuota genererebbe righe ": claude-" e un warning con un
+    // elemento vuoto in testa: sporco, e a costo zero da evitare.
+    expect(famigliaDi('')).toBe('altro')
+    expect(famigliaDi('claude-')).toBe('altro')
+  })
 })
 
 describe('elenco dei modelli disponibili', () => {
@@ -67,10 +74,45 @@ describe('elenco dei modelli disponibili', () => {
   it('dice che una famiglia esiste ma non e in uso, invece di ometterla', () => {
     const out = formatModelliDisponibili(MODELLI_VERI, IN_USO)
 
-    expect(out).toContain('ESISTONO ma che la configurazione non usa')
-    expect(out).toContain('fable')
+    // Assert ANCORATO sui nomi elencati: un `toContain('fable')` sarebbe vero
+    // anche se il warning nominasse le famiglie SBAGLIATE, perche' 'fable'
+    // compare comunque nella riga dell'elenco sopra. Sarebbe verde per il
+    // motivo sbagliato, e direbbe al modello che le famiglie in uso non sono
+    // in uso: corruzione peggiore dell'incidente originale.
+    expect(out).toMatch(/configurazione non usa: fable\.$/m)
+    for (const f of IN_USO) {
+      expect(out).not.toMatch(new RegExp(`configurazione non usa:.*\\b${f}\\b`, 'm'))
+    }
     // la distinzione che e' mancata nell'incidente
     expect(out).toContain('non le sto usando, è diverso')
+    // e il divieto di agire da solo
+    expect(out).toContain('NON cambiare la configurazione di tua iniziativa')
+  })
+
+  it('una famiglia IN USO assente dall API viene stampata come "nessuno"', () => {
+    // Ometterla farebbe tornare l'assenza indistinguibile dal silenzio: il
+    // vecchio codice, con tutti i suoi difetti, almeno scriveva "Haiku: nessuno".
+    const senzaHaiku = MODELLI_VERI.filter(m => famigliaDi(m.id) !== 'haiku')
+
+    const out = formatModelliDisponibili(senzaHaiku, IN_USO)
+
+    expect(out).toMatch(/^haiku: nessuno$/m)
+  })
+
+  it('segnala i modelli scartati dal filtro, non solo quelli raggruppati', () => {
+    // Il totale contava le righe DOPO il filtro claude-/embed: copriva il
+    // raggruppamento ma non il filtro, cioe' proprio il punto in cui un id puo'
+    // sparire — la stessa superficie dell'incidente Fable.
+    const out = formatModelliDisponibili(MODELLI_VERI, IN_USO, MODELLI_VERI.length + 3)
+
+    expect(out).toContain(`${MODELLI_VERI.length} su ${MODELLI_VERI.length + 3}`)
+    expect(out).toContain('NON sono in questo elenco')
+    expect(out).toContain("L'elenco non è tutto ciò che esiste")
+  })
+
+  it('senza scarti non inventa avvisi', () => {
+    const out = formatModelliDisponibili(MODELLI_VERI, IN_USO, MODELLI_VERI.length)
+    expect(out).not.toContain('NON sono in questo elenco')
   })
 
   it('quando tutte le famiglie sono in uso non avvisa di niente', () => {
