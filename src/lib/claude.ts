@@ -417,22 +417,38 @@ export async function callClaudeStream(
   let forcedArchiveCorrection = false // anti-bugia: ri-prompt UNA volta se afferma archiviazione senza esito reale
   let archiveToolSucceeded = false // true se archivia_foto/archivia_documento è andato a buon fine nel turno
   let consecutiveNoText = 0 // iterazioni di fila senza testo: oltre NO_TEXT_LIMIT si forza la sintesi
+  // Serve a detectHallucination: senza, "ho cercato il file" verrebbe giudicato
+  // una promessa a vuoto anche quando i tool sono stati eseguiti davvero.
+  let totalToolCalls = 0
   const MAX_ITERATIONS = 10 // PER-004 fix
   const NO_TEXT_LIMIT = 5 // stesso valore del path Telegram: sotto, i flussi legittimi a piu' tool si romperebbero
 
   const cfg = await getConfig()
   const fileBlocks = extractLatestFileBlocks(request.messages)
   const cheap = await shouldUseCheapModel(userQuery, fileBlocks)
-  const effectiveModel = cheap ? CHEAP_MODEL : cfg.model
+  // Parita' col path Telegram (che fa lo stesso, vedi callClaudeStreamTelegram):
+  // se il circuit breaker ha fatto rollback, `model_active` e' il modello buono
+  // e `model_default` puo' essere quello rotto. Leggendo solo cfg.model la chat
+  // web restava sul rotto mentre Telegram era gia' tornato a funzionare.
+  const activeModel = await getActiveModel().catch(() => cfg.model)
+  const effectiveModel = cheap ? CHEAP_MODEL : activeModel
   const isOpus = effectiveModel.includes('opus')
   const modelConfig: ModelConfig = {
     model: effectiveModel,
     thinkingBudget: resolveThinkingBudget(userQuery, isOpus),
     maxTokens: isOpus ? 32_000 : 16_000,
   }
-  console.log(`MODEL: ${effectiveModel} (cheap=${cheap}) for "${userQuery.slice(0, 50)}"`)
+  console.log(`MODEL(web): ${effectiveModel} (cheap=${cheap}) for "${userQuery.slice(0, 50)}"`)
   const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget, isDeepThink(userQuery))
 
+  // Senza questo try, un errore API risale alla route e `recordOutcome` in fondo
+  // non viene MAI eseguito — cioe' proprio il caso (modello rotto, 404) per cui
+  // il circuit breaker esiste. Telegram ce l'ha; portare il breaker sul web
+  // senza il try sarebbe stato teatro: il pezzo che fa scattare il rollback e'
+  // esattamente questo. L'eccezione viene RILANCIATA, perche' la route mostra
+  // gia' l'errore all'utente e quel comportamento non deve cambiare.
+  let apiErrorOccurred = false
+  try {
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     iterations = i + 1
     const iterStartLen = fullResponse.length // force-action: confine per scartare il testo-promessa se ri-promptiamo
@@ -460,6 +476,11 @@ export async function callClaudeStream(
         }
         if (event.type === 'content_block_start' && (event as any).content_block?.type === 'server_tool_use') {
           const serverToolName = (event as any).content_block?.name ?? 'server_tool'
+          // Contati anche questi: web_search e code_execution girano lato
+          // Anthropic e non passano da executeToolBlocks, quindi un turno
+          // risolto solo con una ricerca ("Verifico la normativa...") avrebbe
+          // totalToolCalls a zero e sarebbe giudicato una promessa a vuoto.
+          totalToolCalls += 1
           callbacks.onToolStart?.(serverToolName)
         }
       },
@@ -472,6 +493,7 @@ export async function callClaudeStream(
       break
     }
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
+    totalToolCalls += toolBlocks.length
     // Il contatore va aggiornato PRIMA del ramo di uscita, come su Telegram:
     // le iterazioni che fanno `continue` (anti-bugia, force-action) hanno sempre
     // testo, quindi devono azzerarlo. Aggiornandolo dopo, restavano fuori e il
@@ -584,6 +606,29 @@ export async function callClaudeStream(
       break
     }
   }
+  } catch (err) {
+    apiErrorOccurred = true
+    const apiError = errorDetails(err)
+    console.warn(`[STREAM(web) API ERROR] model=${modelConfig.model}: ${apiError.message.slice(0, 200)}`)
+    if (isBillingError(apiError.details)) {
+      await notifyAnthropicBillingIfNeeded(apiError.details).catch(() => {})
+    }
+    // L'esito va registrato PRIMA di rilanciare, o il breaker non vedrebbe mai
+    // gli errori della chat web.
+    recordOutcome(modelConfig.model, 'api_error', {
+      fullLen: fullResponse.length,
+      consecutiveNoText,
+      requestId: conversationId,
+      details: apiError.details.slice(0, 500),
+    }).catch(e => console.error('[CB] recordOutcome(web api_error) failed:', e))
+    await logApiUsage({
+      entryPoint: request.entryPoint ?? 'chat',
+      model: modelConfig.model,
+      usage: accUsage,
+      meta: { iterations, consecutiveNoText, outcome: 'api_error', totalToolCalls, apiError: true },
+    }).catch(() => {})
+    throw err
+  }
 
   // Parità col path Telegram (FIX Bug 5): se per qualunque motivo il loop finisce
   // senza che il modello abbia mai prodotto testo, l'utente riceveva una risposta
@@ -594,11 +639,41 @@ export async function callClaudeStream(
     callbacks.onText(fullResponse)
   }
 
+  // Parita' col path Telegram: il web non registrava NESSUN outcome, quindi i
+  // suoi fallimenti non contavano per il circuit breaker. Conseguenza concreta:
+  // con un model_default rotto Telegram si auto-riparava dopo ~5 messaggi
+  // (5 outcome 'api_error' fanno scattare il rollback) mentre la chat web
+  // restava ferma a tempo indeterminato — e per giunta senza contribuire a far
+  // scattare il rollback che l'avrebbe salvata.
+  const FALLBACK_PREFIX = '⚠️ Non sono riuscito a sintetizzare'
+  const outcome: ModelOutcome = apiErrorOccurred
+    ? 'api_error'
+    : fullResponse.startsWith(FALLBACK_PREFIX)
+      ? 'empty'
+      // Stesso ordine di Telegram: un turno che ha dovuto forzare la sintesi e'
+      // degradato, non riuscito. Classificarlo 'success' — come faceva la prima
+      // versione — avrebbe INIETTATO successi proprio nei turni andati male,
+      // rendendo il breaker piu' difficile da far scattare invece che piu' facile.
+      : consecutiveNoText >= NO_TEXT_LIMIT
+        ? 'force_text'
+        // `isCompletedOrConditional` e' il guard che il force-action applica
+        // gia' 100 righe sopra: senza, "Ho preparato il documento. Se vuole
+        // glielo mando" viene contato come promessa mancata. Misurato sui
+        // messaggi web veri: 6 falsi positivi su 8.
+        : detectHallucination(fullResponse, totalToolCalls) && !isCompletedOrConditional(fullResponse)
+          ? 'hallucination'
+          : 'success'
+  recordOutcome(modelConfig.model, outcome, {
+    fullLen: fullResponse.length,
+    consecutiveNoText,
+    requestId: conversationId,
+  }).catch(err => console.error('[CB] recordOutcome(web) failed:', err))
+
   await logApiUsage({
     entryPoint: request.entryPoint ?? 'chat',
     model: modelConfig.model,
     usage: accUsage,
-    meta: { iterations, consecutiveNoText, runAborted: isRunOverBudget(accUsage) },
+    meta: { iterations, consecutiveNoText, outcome, totalToolCalls, runAborted: isRunOverBudget(accUsage) },
   })
 
   // NB: nessuna scrittura in messages - vedi la nota a inizio funzione.

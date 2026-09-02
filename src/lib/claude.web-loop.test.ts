@@ -26,6 +26,8 @@ interface FakeTurn {
   text: string
   /** blocchi tool_use richiesti dal modello in questa iterazione */
   toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }>
+  /** tool eseguiti da Anthropic (web_search, code_execution) */
+  serverTools?: string[]
   stopReason: string
 }
 
@@ -42,6 +44,11 @@ const mockStream = vi.fn(() => {
   }
   for (const t of turn.toolUses) {
     events.push({ type: 'content_block_start', content_block: { type: 'tool_use', id: t.id, name: t.name } })
+  }
+  // I tool server-side (web_search, code_execution) arrivano come
+  // `server_tool_use` e NON passano da executeToolBlocks.
+  for (const nome of turn.serverTools ?? []) {
+    events.push({ type: 'content_block_start', content_block: { type: 'server_tool_use', name: nome } })
   }
 
   const content = [
@@ -102,11 +109,29 @@ vi.mock('./cheap-routing', () => ({
 }))
 vi.mock('./telegram-helpers', () => ({ sendTelegramMessage: async () => undefined }))
 
+// Circuit breaker: `getActiveModel` e `recordOutcome` sono i due pezzi che il
+// path web NON aveva. Il resto del modulo resta quello vero — mockare
+// detectHallucination renderebbe vacuo il test sull'outcome.
+const recordOutcomeCalls: Array<{ model: string; outcome: string }> = []
+let modelloAttivo = 'claude-sonnet-5'
+vi.mock('./circuit-breaker', async (orig) => {
+  const actual = await orig<typeof import('./circuit-breaker')>()
+  return {
+    ...actual,
+    getActiveModel: async () => modelloAttivo,
+    recordOutcome: async (model: string, outcome: string) => {
+      recordOutcomeCalls.push({ model, outcome })
+    },
+  }
+})
+
 import { callClaudeStream } from './claude'
 
 beforeEach(() => {
   turnIndex = 0
   executedTools.length = 0
+  recordOutcomeCalls.length = 0
+  modelloAttivo = 'claude-sonnet-5'
   mockExecuteTool.mockClear()
   mockStream.mockClear()
 })
@@ -183,6 +208,103 @@ describe('callClaudeStream — tool concatenati senza testo in mezzo', () => {
     // Il numero e' volutamente esatto: se qualcuno alza il tetto, questo test cade.
     expect(executedTools).toHaveLength(6)
     expect(new Set(executedTools)).toEqual(new Set(['scrivi_riga_registro']))
+  })
+
+  it('usa il modello ATTIVO, non quello di default, se il breaker ha fatto rollback', async () => {
+    // Il path Telegram lo fa da sempre. Il web leggeva solo model_default:
+    // con un default rotto, Telegram tornava a funzionare dopo il rollback e la
+    // chat web restava sul modello rotto a tempo indeterminato.
+    modelloAttivo = 'claude-sonnet-5-fallback'
+    scriptedTurns = [{ text: 'ok', toolUses: [], stopReason: 'end_turn' }]
+
+    await run()
+
+    const primaChiamata = mockStream.mock.calls[0] as unknown as [{ model: string }]
+    expect(primaChiamata[0]).toMatchObject({ model: 'claude-sonnet-5-fallback' })
+  })
+
+  it('registra l esito sul circuit breaker, come fa Telegram', async () => {
+    // Senza, i fallimenti della chat web non contavano per far scattare il
+    // rollback — quindi il web non contribuiva nemmeno a salvarsi da solo.
+    scriptedTurns = [{ text: 'Fatto, ecco il risultato.', toolUses: [], stopReason: 'end_turn' }]
+
+    await run()
+
+    expect(recordOutcomeCalls).toHaveLength(1)
+    expect(recordOutcomeCalls[0].outcome).toBe('success')
+  })
+
+  it('un turno muto viene registrato come "empty", non come riuscito', async () => {
+    scriptedTurns = [{ text: '', toolUses: [], stopReason: 'end_turn' }]
+
+    await run()
+
+    expect(recordOutcomeCalls[0].outcome).toBe('empty')
+  })
+
+  it('registra sul modello DAVVERO usato', async () => {
+    // La finestra del breaker e' chiavata sul modello: registrare sotto l'id
+    // sbagliato lo disattiverebbe in silenzio.
+    modelloAttivo = 'claude-opus-5'
+    scriptedTurns = [{ text: 'ok', toolUses: [], stopReason: 'end_turn' }]
+
+    await run()
+
+    expect(recordOutcomeCalls[0].model).toBe('claude-opus-5')
+  })
+
+  it('un errore API viene registrato PRIMA di essere rilanciato', async () => {
+    // Senza il try attorno al loop, l'eccezione risaliva alla route e
+    // recordOutcome non veniva mai eseguito: il breaker non vedeva NESSUN
+    // errore della chat web, cioe' proprio il caso per cui esiste.
+    mockStream.mockImplementationOnce(() => { throw new Error('404 model not found') })
+
+    await expect(run()).rejects.toThrow(/404/)
+
+    expect(recordOutcomeCalls).toHaveLength(1)
+    expect(recordOutcomeCalls[0].outcome).toBe('api_error')
+  })
+
+  it('una promessa a vuoto e una promessa MANTENUTA non sono la stessa cosa', async () => {
+    // "Ho preparato il documento. Se vuole glielo mando" contiene un verbo di
+    // azione ma il lavoro e' fatto: senza il guard veniva contato come
+    // fallimento. Sui messaggi web veri erano 6 falsi positivi su 8.
+    scriptedTurns = [{
+      text: 'Ho preparato il documento. Se vuole glielo mando anche in PDF.',
+      toolUses: [], stopReason: 'end_turn',
+    }]
+
+    await run()
+
+    expect(recordOutcomeCalls[0].outcome).toBe('success')
+  })
+
+  it('una ricerca sul web conta come lavoro fatto, non come promessa a vuoto', async () => {
+    // web_search e code_execution girano lato Anthropic e non passano da
+    // executeToolBlocks: senza contarli, un turno risolto con una ricerca
+    // avrebbe zero tool e "Verifico la normativa..." sarebbe giudicato una
+    // promessa mancata.
+    scriptedTurns = [{
+      text: 'Verifico la normativa sui ponteggi e le riporto il riferimento.',
+      toolUses: [], serverTools: ['web_search'], stopReason: 'end_turn',
+    }]
+
+    await run()
+
+    expect(recordOutcomeCalls[0].outcome).toBe('success')
+  })
+
+  it('un turno che ha dovuto forzare la sintesi non e un successo', async () => {
+    // Classificarlo 'success' iniettava successi nei turni degradati, rendendo
+    // il breaker piu' difficile da far scattare invece che piu' facile.
+    scriptedTurns = [
+      { text: 'Scrivo la riga.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+      { text: '', toolUses: [{ id: 't1', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+    ]
+
+    await run()
+
+    expect(recordOutcomeCalls[0].outcome).toBe('force_text')
   })
 
   it('non restituisce mai una risposta muta: se il modello non scrive mai, lo dice', async () => {
