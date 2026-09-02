@@ -422,6 +422,17 @@ export async function POST(request: NextRequest) {
       // Cancella solo i messaggi della chat, NON la memoria (embeddings)
       // La memoria deve persistere SEMPRE — contiene documenti, analisi, regole
       await safeSupabase(() => supabase.from('messages').delete().eq('conversation_id', convId))
+      // Chiude anche il progetto attivo. Il conversationId e' deterministico per
+      // chat, quindi senza questo il cantiere resta "attivo" per sempre: dopo un
+      // /nuova il modello non ha piu' nessuna storia — non puo' sapere su cosa
+      // stiamo lavorando — ma l'archiviazione foto continuerebbe a dedurre il
+      // cantiere di prima. L'utente ha appena creduto di ripulire il tavolo.
+      // Niente `.catch()`: nessuna delle due lancia — loggano da sé e tornano
+      // un esito. Un catch qui sarebbe codice morto che sembra prudenza.
+      const { closeActiveProject } = await import('@/lib/working-memory')
+      await closeActiveProject(convId)
+      const { clearFotoContesto } = await import('@/lib/foto-contesto')
+      await clearFotoContesto(convId)
       await sendTelegramMessage(chatId, 'Conversazione azzerata. La memoria permanente è intatta.')
       return NextResponse.json({ ok: true })
     }

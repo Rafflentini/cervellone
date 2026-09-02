@@ -11,6 +11,10 @@ import {
   DrivePolicyError,
 } from './drive'
 import { supabase } from './supabase'
+import {
+  getFotoContesto, setFotoContesto,
+  FOTO_CONTESTO_MAX_MS, FOTO_CONTESTO_CONFERMA_MS,
+} from './foto-contesto'
 import { GoogleAuthDeadError } from './google-token-health'
 import { splitRecentOlder, clusterByTime, type PendingRow } from './foto-archive-pending'
 // Logica pura di matching (testata in foto-archive-match.test.ts).
@@ -208,8 +212,9 @@ async function listaFotoDaArchiviare(conversationId?: string): Promise<string> {
 async function archiviaFoto(input: Record<string, unknown>, conversationId?: string): Promise<string> {
   if (!conversationId) return fail({ error: 'conversationId mancante' })
 
-  const ambito = parseAmbito(input.ambito)
-  const nome = cleanString(input.nome)
+  // `let`: se mancano, si prendono dal progetto attivo (vedi il ponte sotto).
+  let ambito = parseAmbito(input.ambito)
+  let nome = cleanString(input.nome)
   const lavorazione = cleanString(input.lavorazione)
   const data = cleanString(input.data)
   const cartellaFotoHint = cleanString(input.cartella_foto)
@@ -226,8 +231,54 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
   // un'ALTRA cartella. Si usa solo dopo un need:'conferma_ricollocazione'.
   const ricolloca = input.ricolloca === true || input.ricolloca === 'true'
 
+  // ── Ponte col progetto attivo ────────────────────────────────────────────
+  // Fino al 2 settembre 2026 questi due `fail` erano definitivi: senza cantiere
+  // esplicito il tool si rifiutava, e il modello ripartiva da "in quale cantiere
+  // le metto?" a OGNI foto. Il progetto attivo esisteva gia' in project_state ma
+  // nessuno lo leggeva qui: due sistemi che non si parlavano. Risultato misurato
+  // in produzione: 103 foto caricate su Drive e mai archiviate.
+  // Best-effort: se non c'e' un progetto attivo si torna al comportamento di
+  // prima, non si inventa nulla.
+  // Il cantiere l'ha detto lui? Serve dopo, per decidere se la finestra riparte.
+  const nomeEsplicito = Boolean(nome)
+  let dedotto: string | undefined
+  let ambitoDedotto = false
+  if (!nome || !ambito) {
+    const ctx = await getFotoContesto(conversationId).catch(() => null)
+    if (ctx && ctx.etaMs <= FOTO_CONTESTO_MAX_MS) {
+      if (!nome) { nome = ctx.cantiere; dedotto = ctx.cantiere }
+      if (!ambito) { ambito = ctx.ambito; ambitoDedotto = true }
+    } else if (ctx && ctx.etaMs <= FOTO_CONTESTO_CONFERMA_MS && !nome) {
+      // Il contesto c'e' ma non e' della stessa sessione di scatti: dedurre in
+      // silenzio qui e' il modo in cui le foto finiscono nella commessa
+      // sbagliata, e nessuno se ne accorge. Un tap costa nulla, una foto
+      // archiviata nel posto sbagliato non si recupera.
+      return fail({
+        need: 'conferma_cantiere',
+        cantiere: ctx.cantiere,
+        // Il "come si conferma" va scritto qui, come per conferma_batch e
+        // conferma_ricollocazione: senza, dopo il si' dell'Ingegnere il modello
+        // richiama di nuovo SENZA nome, riottiene lo stesso need, e gira in tondo.
+        message: `Non mi ha detto il cantiere. L'ultima volta ho archiviato su "${ctx.cantiere}", ma non è di questa sessione: chieda all'Ingegnere se queste foto sono dello stesso cantiere PRIMA di archiviare. Se conferma, richiama archivia_foto con nome:"${ctx.cantiere}". Se dice un altro cantiere, usa quello.`,
+      })
+    }
+  }
+
   if (!ambito) return fail({ need: 'ambito' })
   if (!nome) return fail({ error: 'nome richiesto' })
+
+  // Costruita QUI, non in fondo: i rami di ricollocazione e di errore parziale
+  // escono prima, e sono quelli in cui le foto sono GIA' state spostate su
+  // Drive. Erano proprio i casi in cui il cantiere dedotto non veniva detto —
+  // scritture reali senza nessun avviso, la combinazione peggiore.
+  // Anche l'ambito dedotto va detto: sceglie fra l'albero dell'impresa e quello
+  // dello studio tecnico, cioe' fra due societa' diverse. Ereditarlo in silenzio
+  // faceva finire le foto nell'albero sbagliato senza una parola.
+  // Concatenate, non alternative: quando sono dedotti ENTRAMBI — il caso piu'
+  // comune — un ternario avrebbe taciuto proprio l'ambito.
+  const notaProgettoAttivo =
+    (dedotto ? ` (cantiere non indicato: ho usato "${dedotto}", quello dell'ultima archiviazione — mi dica se sbagliato)` : '') +
+    (ambitoDedotto ? ` (ambito non indicato: ho usato "${ambito}", come nell'ultima archiviazione)` : '')
 
   // Niente foto in attesa → non creare cartelle a vuoto, segnala chiaramente.
   const { rows: pendingRows, error: pendingError } = await fetchOpenPending(conversationId)
@@ -662,7 +713,7 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
         + ` NON dichiarare queste foto archiviate in ${path}.`
         + (spostate > 0 ? ` Le altre ${spostate} foto sono state spostate in ${path}.` : '')
         + (erroriMove > 0 ? ` Inoltre ${erroriMove} foto NON sono state spostate e restano IN ATTESA.` : '')
-        + notaDb + notaRiconciliate + notaRiconciliazioneKo,
+        + notaProgettoAttivo + notaDb + notaRiconciliate + notaRiconciliazioneKo,
     })
   }
 
@@ -682,7 +733,7 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
       riconciliate,
       errori_riconciliazione: erroriRiconciliazione,
       path,
-      message: `Spostate ${spostate}/${totale} foto.${notaDb}${notaRiconciliate}${notaRiconciliazioneKo} ${restano} NON spostate e restano IN ATTESA. NON dichiarare l'archiviazione completata: riprova o segnala all'Ingegnere.`,
+      message: `Spostate ${spostate}/${totale} foto.${notaProgettoAttivo}${notaDb}${notaRiconciliate}${notaRiconciliazioneKo} ${restano} NON spostate e restano IN ATTESA. NON dichiarare l'archiviazione completata: riprova o segnala all'Ingegnere.`,
     })
   }
 
@@ -708,6 +759,30 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
       ? `Archiviate ${spostate} foto in ${path}.`
       : `Tutte le ${spostate} foto spostate e verificate in ${path}.`
 
+  // L'altro verso del ponte, ed e' quello che conta: dopo un'archiviazione
+  // riuscita il cantiere diventa il progetto attivo DA SOLO. Nessuna tool call
+  // in piu' da parte del modello, nessun comando per l'Ingegnere — il criterio
+  // e' "funziona se lui non fa nulla?". Prima lo stato si scriveva solo se il
+  // modello si ricordava di chiamare imposta_progetto_attivo, e in tutta la
+  // storia del database quella riga e' stata scritta UNA volta sola.
+  // Nessuna guardia su `spostate`: arrivare a questo return significa che il
+  // cantiere e' stato risolto e la cartella trovata — anche quando le foto
+  // erano gia' al posto giusto (riconciliazione) il contesto e' quello, ed e'
+  // giusto ricordarlo. Una guardia `spostate > 0` sembrerebbe prudente ma non
+  // difenderebbe nessun caso reale.
+  //
+  // Si memorizza `subjectFolder.name` (la cartella DAVVERO risolta), non
+  // l'input grezzo del modello: "Rossi" oggi e' un match forte, domani con una
+  // seconda commessa dello stesso committente diventa ambiguo. La stringa qui
+  // viene ri-data in pasto al matching a ogni deduzione futura.
+  //
+  // `confermato` solo se il cantiere l'ha indicato l'Ingegnere: una deduzione
+  // non deve rinnovare la propria finestra, o un giro di tre cantieri nella
+  // stessa giornata finirebbe tutto nel primo senza che scatti mai la conferma.
+  // Best-effort: se fallisce, l'archiviazione resta valida.
+  await setFotoContesto(conversationId, subjectFolder.name, ambito, nomeEsplicito)
+    .catch(err => console.warn('[foto] contesto foto non aggiornato:', err))
+
   // Tutti i move riusciti (anche se qualche update DB è fallito): archiviazione OK.
   return ok({
     archiviate: spostate,
@@ -719,7 +794,7 @@ async function archiviaFoto(input: Record<string, unknown>, conversationId?: str
     errori_riconciliazione: erroriRiconciliazione,
     recenti_non_archiviate: recentiNonArchiviate,
     vecchie_non_archiviate: !includiVecchie ? older.length : 0,
-    message: `${testa}${notaDb}${notaRiconciliate}${notaRiconciliazioneKo}${notaResidue}${notaOrfani}`,
+    message: `${testa}${notaProgettoAttivo}${notaDb}${notaRiconciliate}${notaRiconciliazioneKo}${notaResidue}${notaOrfani}`,
   })
 }
 
@@ -878,8 +953,8 @@ export const FOTO_ARCHIVE_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        ambito: { type: 'string', enum: ['cantiere', 'progetto'], description: 'Impresa edile/cantiere oppure studio tecnico/progetto.' },
-        nome: { type: 'string', description: 'Nome o parte del nome del cantiere/progetto.' },
+        ambito: { type: 'string', enum: ['cantiere', 'progetto'], description: 'Impresa edile/cantiere oppure studio tecnico/progetto. Se lo ometti viene ripreso dall\'ultima archiviazione di questa conversazione.' },
+        nome: { type: 'string', description: 'Nome o parte del nome del cantiere/progetto. Omettilo SOLO se l\'Ingegnere non lo ha indicato: viene ripreso dall\'ultima archiviazione se recente, e la risposta dice quale è stato usato — riportaglielo sempre. Se il contesto non è recente torna need:"conferma_cantiere".' },
         lavorazione: { type: 'string', description: 'Lavorazione o descrizione breve della sessione foto.' },
         data: { type: 'string', description: 'Data lavorazione in formato YYYY-MM-DD.' },
         cartella_foto: { type: 'string', description: 'OPZIONALE — nome (anche parziale) della sottocartella foto da usare, es. "Documentazione Fotografica". Se omesso, viene rilevata automaticamente.' },

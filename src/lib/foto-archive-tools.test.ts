@@ -85,6 +85,18 @@ vi.mock('./supabase', () => ({
   supabase: { from: (table: string) => makeBuilder(table) },
 }))
 
+// ── Mock progetto attivo ────────────────────────────────────────────────────
+// working-memory passa da getSupabaseServer(), non dal client mockato sopra.
+const { getFotoContesto, setFotoContesto } = vi.hoisted(() => ({
+  getFotoContesto: vi.fn(async (_c: string) => null as unknown),
+  setFotoContesto: vi.fn(async (_c: string, _n: string, _a: string, _conf: boolean) => true),
+}))
+// Le COSTANTI restano quelle vere: mockarle renderebbe i test sulle soglie vacui.
+vi.mock('./foto-contesto', async (orig) => {
+  const actual = await orig<typeof import('./foto-contesto')>()
+  return { ...actual, getFotoContesto, setFotoContesto }
+})
+
 import { executeFotoArchiveTool } from './foto-archive-tools'
 
 // ── Fixture ─────────────────────────────────────────────────────────────────
@@ -146,6 +158,252 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+})
+
+/**
+ * Il ponte fra "so su che cantiere stiamo lavorando" e "dove va questa foto".
+ *
+ * Prima non esisteva: `archivia_foto` pretendeva il cantiere dal modello e
+ * falliva senza, mentre `project_state` conteneva gia' il progetto attivo e
+ * nessuno lo leggeva qui. Due sistemi che non si parlavano. Misura in
+ * produzione al 2 settembre 2026: 103 foto su Drive mai archiviate, e la riga
+ * del progetto attivo scritta UNA volta sola in tutta la storia del database —
+ * perche' dipendeva dal fatto che il modello si ricordasse di chiamare un tool.
+ */
+describe('archivia_foto — ponte col progetto attivo', () => {
+  /** Contesto foto scritto `min` minuti fa. */
+  function contestoFoto(nome: string, min: number, ambito = 'cantiere') {
+    return { cantiere: nome, ambito, etaMs: min * 60_000 }
+  }
+
+  it('senza cantiere indicato usa quello dell ultima archiviazione, se recente', async () => {
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(contestoFoto('Commessa 2026-007', 20))
+
+    const out = await executeFotoArchiveTool('archivia_foto', { data: '2026-08-17' }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    expect(res.ok).toBe(true)
+    expect(moveFile).toHaveBeenCalledTimes(2)
+    // e lo DICE: archiviare nel posto dedotto senza dirlo e' peggio che chiedere
+    expect(res.message).toContain('Commessa 2026-007')
+    expect(res.message).toContain('cantiere non indicato')
+  })
+
+  it('un contesto senza eta leggibile non viene usato in silenzio', async () => {
+    // `etaMs = Infinity` e' cio' che getFotoContesto restituisce quando il
+    // timestamp manca o e' spazzatura. In dubbio si chiede, non si deduce.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue({ cantiere: 'Commessa 2026-007', ambito: 'cantiere', etaMs: Infinity })
+
+    const out = await executeFotoArchiveTool('archivia_foto', { data: '2026-08-17' }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    expect(res.ok).toBe(false)
+    expect(res.need).not.toBe('conferma_cantiere')
+    expect(moveFile).not.toHaveBeenCalled()
+  })
+
+  it('se il contesto non e recente chiede conferma invece di dedurre', async () => {
+    // La contaminazione A->B: archivia su A, poi passa a B senza archiviare, poi
+    // manda foto di B. Dedurre in silenzio le manderebbe su A, e su dati non
+    // riproducibili nessuno se ne accorge. Un tap costa nulla.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(contestoFoto('Commessa Alfa', 60 * 30)) // 30 ore fa
+
+    const out = await executeFotoArchiveTool('archivia_foto', { data: '2026-08-17' }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    expect(res.ok).toBe(false)
+    expect(res.need).toBe('conferma_cantiere')
+    expect(res.cantiere).toBe('Commessa Alfa')
+    expect(moveFile).not.toHaveBeenCalled()
+  })
+
+  it('un contesto oltre la scadenza non viene usato affatto', async () => {
+    // Oltre i 7 giorni il blocco PROGETTO ATTIVO sparisce dal system prompt:
+    // usarlo qui significherebbe dedurre da un dato che il modello non vede.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(contestoFoto('Commessa Alfa', 60 * 24 * 9)) // 9 giorni
+
+    const out = await executeFotoArchiveTool('archivia_foto', { data: '2026-08-17' }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    expect(res.need).not.toBe('conferma_cantiere')
+    expect(res.error ?? res.need).toBeTruthy()
+    expect(moveFile).not.toHaveBeenCalled()
+  })
+
+  it('eredita anche il solo ambito quando manca solo quello', async () => {
+    // Il ramo "uno dei due manca": con `nome` esplicito e `ambito` assente.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(contestoFoto('Commessa Alfa', 10))
+
+    const out = await executeFotoArchiveTool('archivia_foto', {
+      nome: 'Commessa 2026-007', data: '2026-08-17',
+    }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    expect(res.ok).toBe(true)
+    // il nome esplicito ha vinto, l'ambito e' stato ereditato
+    expect(res.path).toContain('Commessa 2026-007')
+    expect(res.message).not.toContain('cantiere non indicato')
+    // e l'ereditarieta' dell'ambito va DETTA: sceglie fra l'albero dell'impresa
+    // e quello dello studio tecnico, cioe' fra due societa' diverse. Ereditarlo
+    // in silenzio faceva finire le foto nell'albero sbagliato senza una parola.
+    expect(res.message).toContain('ambito non indicato')
+  })
+
+  it('l ambito indicato non viene sovrascritto da quello dedotto', async () => {
+    // Raggiungibile solo quando manca il nome ma l'ambito c'e'. Se il contesto
+    // sovrascrivesse l'ambito esplicito, le foto finirebbero nell'albero
+    // dell'ALTRA societa' (impresa vs studio tecnico) senza una parola.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(contestoFoto('Commessa 2026-007', 10, 'cantiere'))
+
+    const out = await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'progetto', data: '2026-08-17',
+    }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    // 'progetto' cerca sotto la radice Studio, dove quella commessa non c'e':
+    // deve fallire, non ripiegare di nascosto sulla radice Cantieri.
+    expect(res.ok).toBe(false)
+    expect(moveFile).not.toHaveBeenCalled()
+  })
+
+  it('dopo un archivio riuscito ricorda il cantiere DA SOLO, con la cartella risolta', async () => {
+    // Il verso che conta: senza tool call del modello e senza comandi per
+    // l'Ingegnere. Criterio: funziona se lui non fa nulla?
+    // E memorizza il nome della cartella VERA ("... Rossi"), non l'input
+    // parziale: quella stringa viene ri-usata per il matching futuro.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+
+    await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Commessa 2026-007', data: '2026-08-17',
+    }, 'chat-1')
+
+    // cartella VERA ("... Rossi"), non l'input parziale; e `confermato = true`
+    // perche' il nome l'ha indicato l'Ingegnere.
+    expect(setFotoContesto).toHaveBeenCalledWith('chat-1', 'Commessa 2026-007 Rossi', 'cantiere', true)
+  })
+
+  it('una deduzione NON rinnova la propria finestra', async () => {
+    // Il giro di cantieri: archivia su A alle 08:00, alle 09:30 manda foto di B
+    // senza dirlo, alle 11:00 foto di C. Se ogni deduzione rinnovasse
+    // l'orologio, la richiesta di conferma non scatterebbe MAI e la giornata
+    // intera finirebbe in A. Per questo si salva `confermato = false`.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(contestoFoto('Commessa 2026-007', 30))
+
+    await executeFotoArchiveTool('archivia_foto', { data: '2026-08-17' }, 'chat-1')
+
+    expect(setFotoContesto).toHaveBeenCalledWith('chat-1', 'Commessa 2026-007 Rossi', 'cantiere', false)
+  })
+
+  it('senza contesto foto NON inventa: chiede come prima', async () => {
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(null)
+
+    const out = await executeFotoArchiveTool('archivia_foto', { data: '2026-08-17' }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    expect(res.ok).toBe(false)
+    expect(moveFile).not.toHaveBeenCalled()
+  })
+
+  it('il cantiere indicato dall Ingegnere batte quello dedotto', async () => {
+    // Passa SOLO `nome`: cosi' il ponte viene davvero attraversato. Passando
+    // anche `ambito` la guardia esterna lo saltava in blocco e il test era
+    // verde senza aver mai esercitato la precedenza che dichiarava di provare.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(contestoFoto('Commessa Alfa', 10))
+
+    const out = await executeFotoArchiveTool('archivia_foto', {
+      nome: 'Beta Ristrutturazione', data: '2026-08-17',
+    }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    expect(res.ok).toBe(true)
+    expect(res.path).toContain('Beta')
+    expect(res.message).not.toContain('cantiere non indicato')
+  })
+
+  it('legge il contesto della PROPRIA conversazione', async () => {
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(contestoFoto('Commessa 2026-007', 10))
+
+    await executeFotoArchiveTool('archivia_foto', { data: '2026-08-17' }, 'chat-42')
+
+    expect(getFotoContesto).toHaveBeenCalledWith('chat-42')
+  })
+
+  it('anche quando qualche spostamento fallisce, il messaggio resta completo', async () => {
+    // Questo ramo non era toccato da NESSUN test: una sostituzione automatica
+    // ne ha cancellato "${spostate}/${totale}" lasciando "Spostate / foto.",
+    // il typecheck non se n'e' accorto (e' sintatticamente valido) e la suite
+    // e' rimasta verde. Ed e' il ramo in cui le foto sono GIA' state spostate:
+    // un messaggio monco li' e' un conteggio che l'Ingegnere non riceve.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(contestoFoto('Commessa 2026-007', 10))
+    let n = 0
+    moveFile.mockImplementation(async () => {
+      n += 1
+      return n === 1 ? 'File spostato nella nuova cartella' : 'Errore: quota superata'
+    })
+
+    const out = await executeFotoArchiveTool('archivia_foto', { data: '2026-08-17' }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    expect(res.ok).toBe(false)
+    expect(res.stato).toBe('parziale')
+    expect(res.message).toMatch(/Spostate 1\/2 foto/)
+    // e il cantiere dedotto va detto PROPRIO qui, dove ci sono scritture reali
+    expect(res.message).toContain('cantiere non indicato')
+  })
+
+  it('un cantiere indicato si archivia anche col contesto vecchio', async () => {
+    // La richiesta di conferma vale SOLO quando il cantiere manca. Se l'ha
+    // detto l'Ingegnere non si chiede niente, per quanto vecchio sia il contesto.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(contestoFoto('Commessa Alfa', 60 * 40)) // 40 ore
+
+    const out = await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Commessa 2026-007', data: '2026-08-17',
+    }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    expect(res.ok).toBe(true)
+    expect(res.need).toBeUndefined()
+    expect(moveFile).toHaveBeenCalledTimes(2)
+  })
+
+  it('la richiesta di conferma dice COME confermare', async () => {
+    // Senza, dopo il si' dell'Ingegnere il modello richiama ancora senza nome,
+    // riottiene lo stesso need e gira in tondo. Tutti gli altri need: del file
+    // dicono come si prosegue.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+    getFotoContesto.mockResolvedValue(contestoFoto('Commessa Alfa', 60 * 30))
+
+    const out = await executeFotoArchiveTool('archivia_foto', { data: '2026-08-17' }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    expect(res.need).toBe('conferma_cantiere')
+    expect(res.message).toContain('nome:"Commessa Alfa"')
+  })
+
+  it('un tentativo fallito non sposta il contesto su un cantiere sbagliato', async () => {
+    // Cantiere inesistente: si esce prima, e il progetto attivo NON cambia.
+    mockHandler = (op) => (op.op === 'select' ? { data: clusterB, error: null } : { data: null, error: null })
+
+    const out = await executeFotoArchiveTool('archivia_foto', {
+      ambito: 'cantiere', nome: 'Cantiere Che Non Esiste', data: '2026-08-17',
+    }, 'chat-1')
+    const res = JSON.parse(out!)
+
+    expect(res.ok).toBe(false)
+    expect(setFotoContesto).not.toHaveBeenCalled()
+  })
 })
 
 describe('archivia_foto — residuo del gruppo (BUG E)', () => {
