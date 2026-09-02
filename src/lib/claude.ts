@@ -416,8 +416,9 @@ export async function callClaudeStream(
   let forcedAction = false // force-action: ri-prompt UNA volta se il modello promette un'azione senza chiamare tool
   let forcedArchiveCorrection = false // anti-bugia: ri-prompt UNA volta se afferma archiviazione senza esito reale
   let archiveToolSucceeded = false // true se archivia_foto/archivia_documento è andato a buon fine nel turno
-  let consecutiveNoText = 0 // solo osservabilità: quante iterazioni di fila senza testo (vedi FIX 2 set 2026)
+  let consecutiveNoText = 0 // iterazioni di fila senza testo: oltre NO_TEXT_LIMIT si forza la sintesi
   const MAX_ITERATIONS = 10 // PER-004 fix
+  const NO_TEXT_LIMIT = 5 // stesso valore del path Telegram: sotto, i flussi legittimi a piu' tool si romperebbero
 
   const cfg = await getConfig()
   const fileBlocks = extractLatestFileBlocks(request.messages)
@@ -471,6 +472,14 @@ export async function callClaudeStream(
       break
     }
     const toolBlocks = final.content.filter(b => b.type === 'tool_use')
+    // Il contatore va aggiornato PRIMA del ramo di uscita, come su Telegram:
+    // le iterazioni che fanno `continue` (anti-bugia, force-action) hanno sempre
+    // testo, quindi devono azzerarlo. Aggiornandolo dopo, restavano fuori e il
+    // numero salvato in api_usage non era il vero conteggio consecutivo.
+    const textBlocks = final.content.filter(b => b.type === 'text')
+    if (textBlocks.length === 0) consecutiveNoText++
+    else consecutiveNoText = 0
+    console.log(`STREAM(web) iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} texts=${textBlocks.length} fullLen=${fullResponse.length} consNoText=${consecutiveNoText}`)
 
     if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') {
       // FORCE-ACTION (parità con callClaudeStreamTelegram): se il modello ha PROMESSO
@@ -520,12 +529,8 @@ export async function callClaudeStream(
     // re-prompt force-action qui sopra dice "non descrivere l'intenzione, agisci",
     // cioe' spinge il modello proprio verso l'iterazione senza testo che poi
     // veniva buttata via. La correzione non era mai stata portata sul web.
-    // Il loop resta limitato da MAX_ITERATIONS e dal budget token.
-    const textBlocks = final.content.filter(b => b.type === 'text')
-    if (textBlocks.length === 0) consecutiveNoText++
-    else consecutiveNoText = 0
-    console.log(`STREAM(web) iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} texts=${textBlocks.length} fullLen=${fullResponse.length} consNoText=${consecutiveNoText}`)
-
+    // Il loop resta limitato da MAX_ITERATIONS, dal budget token e dalla sintesi
+    // forzata a NO_TEXT_LIMIT qui sotto.
     const toolResults = await executeToolBlocks(toolBlocks, conversationId)
     if (toolResults.length === 0) break
     if (archiveToolSucceededIn(toolBlocks, toolResults)) archiveToolSucceeded = true
@@ -536,6 +541,48 @@ export async function callClaudeStream(
       { role: 'user' as const, content: toolResults },
     ]
     applyIncrementalCacheBreakpoint(currentMessages)
+
+    // FIX Bug 5, seconda meta' — quella che conta. Togliere il break senza questa
+    // lascia il web PEGGIO di prima su un rischio preciso: un modello che si
+    // impunta su una scrittura (scrivi_riga_registro, archivia_foto, invio mail)
+    // prima veniva fermato al primo giro dal break, ora arriverebbe a 10
+    // esecuzioni REALI. Righe duplicate sul Registro e foto doppie sono guasti
+    // gia' visti qui. Dopo NO_TEXT_LIMIT giri senza testo si forza una sintesi
+    // con tool_choice=none: il modello non puo' piu' chiamare tool e DEVE
+    // rispondere. Cosi' il web si ferma a 5 come Telegram, e l'utente riceve una
+    // risposta vera invece di una scusa.
+    if (consecutiveNoText >= NO_TEXT_LIMIT) {
+      console.log(`STREAM(web) force-text: ${consecutiveNoText} iter consecutive senza testo, forzo tool_choice=none`)
+      try {
+        const synthStartLen = fullResponse.length
+        const synthFinal = await consumeStreamWithRetry({
+          createStream: () => client.messages.stream({
+            model: modelConfig.model,
+            max_tokens: modelConfig.maxTokens,
+            system: systemBlocks,
+            messages: currentMessages,
+            tools,
+            tool_choice: { type: 'none' as const },
+            ...modelOpts,
+          }, {
+            headers: { 'anthropic-beta': 'files-api-2025-04-14' },
+          }),
+          onAttemptStart: () => { fullResponse = fullResponse.slice(0, synthStartLen) },
+          onRetry: (n, err) => console.warn(`STREAM(web) force-text retry ${n}: ${err instanceof Error ? err.message : err}`),
+          onEvent: (event) => {
+            if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+              fullResponse += event.delta.text
+              callbacks.onText(event.delta.text)
+            }
+          },
+        })
+        accUsage = addUsage(accUsage, synthFinal.usage as unknown as UsageTokens)
+        console.log(`STREAM(web) force-text done fullLen=${fullResponse.length}`)
+      } catch (err) {
+        console.warn(`STREAM(web) force-text FAIL:`, err instanceof Error ? err.message : err)
+      }
+      break
+    }
   }
 
   // Parità col path Telegram (FIX Bug 5): se per qualunque motivo il loop finisce

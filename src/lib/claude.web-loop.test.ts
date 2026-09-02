@@ -161,8 +161,28 @@ describe('callClaudeStream — tool concatenati senza testo in mezzo', () => {
     const out = await run()
 
     expect(executedTools).toEqual(['leggi_intestazione_registro', 'scrivi_riga_registro'])
-    // il sintomo utente: risposta a zero caratteri
-    expect(out.length).toBeGreaterThan(0)
+    // Non basta "una stringa qualsiasi": il messaggio di scusa la soddisfarebbe,
+    // e un fix che esegue i tool ma poi interrompe comunque passerebbe il test.
+    expect(out).toContain('Riga creata')
+  })
+
+  it('un modello che si impunta su una scrittura non la esegue 10 volte', async () => {
+    // Il rischio introdotto togliendo il break: prima il loop si fermava al primo
+    // giro muto, quindi un modello bloccato su scrivi_riga_registro scriveva UNA
+    // riga. Senza la sintesi forzata ne scriverebbe dieci. Righe duplicate sul
+    // Registro e foto doppie sono guasti gia' visti in produzione.
+    scriptedTurns = [
+      { text: 'Scrivo la riga.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+      // da qui in poi il fake stream ripete l'ultimo turno all'infinito
+      { text: '', toolUses: [{ id: 't1', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+    ]
+
+    await run()
+
+    // 1 con testo + NO_TEXT_LIMIT (5) muti, poi scatta tool_choice=none.
+    // Il numero e' volutamente esatto: se qualcuno alza il tetto, questo test cade.
+    expect(executedTools).toHaveLength(6)
+    expect(new Set(executedTools)).toEqual(new Set(['scrivi_riga_registro']))
   })
 
   it('non restituisce mai una risposta muta: se il modello non scrive mai, lo dice', async () => {
