@@ -1,6 +1,7 @@
 import { supabase } from '../supabase'
 import { sendTelegramMessage } from '../telegram-helpers'
 import { promoteModel } from '../circuit-breaker'
+import { migliorePerFamiglia, formatModelliDisponibili } from '../model-families'
 import type { ToolDefinition } from './types'
 
 /**
@@ -190,8 +191,10 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
       const applica = input.applica !== false // default true
 
       try {
-        // Interroga l'API Anthropic per i modelli disponibili
-        const response = await fetch('https://api.anthropic.com/v1/models', {
+        // Interroga l'API Anthropic per i modelli disponibili.
+        // limit=100: senza, l'API pagina col default e un modello puo' restare
+        // fuori pagina — un'altra via per cui l'elenco "completo" non lo e'.
+        const response = await fetch('https://api.anthropic.com/v1/models?limit=100', {
           headers: {
             'x-api-key': process.env.ANTHROPIC_API_KEY || '',
             'anthropic-version': '2023-06-01',
@@ -202,8 +205,14 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
           return `Errore API Anthropic: HTTP ${response.status}. Impossibile controllare modelli disponibili.`
         }
 
-        const data = await response.json() as { data?: Array<{ id: string; display_name?: string; created_at?: string }> }
+        const data = await response.json() as {
+          data?: Array<{ id: string; display_name?: string; created_at?: string }>
+          has_more?: boolean
+        }
         const models = data.data || []
+        // Se ne restano fuori, dirlo: un elenco parziale presentato come
+        // completo e' il difetto che ha causato l'incidente Fable.
+        const paginaIncompleta = data.has_more === true
 
         if (!models.length) {
           return 'Nessun modello trovato dall\'API Anthropic.'
@@ -214,16 +223,14 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
           .filter(m => m.id.startsWith('claude-') && !m.id.includes('embed'))
           .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
 
-        // Trova il miglior modello per famiglia
-        const findBest = (family: string) => {
-          const candidates = claudeModels.filter(m => m.id.includes(family))
-          // Ordina per versione (il più recente = id più alto alfabeticamente per modelli con stesso prefisso)
-          return candidates[0]?.id || null
-        }
+        // Le famiglie su cui la configurazione lavora davvero. NON sono l'elenco
+        // di cio' che esiste: quello si ricava dagli id (vedi model-families.ts).
+        // Tenerle separate e' il punto: il 1 settembre 2026 il bot ha concluso
+        // che Fable 5.1 non esistesse perche' il report elencava solo queste tre.
+        const FAMIGLIE_IN_USO = ['sonnet', 'opus', 'haiku']
 
-        const bestOpus = findBest('opus')
-        const bestSonnet = findBest('sonnet')
-        const bestHaiku = findBest('haiku')
+        const bestOpus = migliorePerFamiglia(claudeModels, 'opus')
+        const bestSonnet = migliorePerFamiglia(claudeModels, 'sonnet')
 
         // Leggi config attuale
         const { data: config } = await supabase
@@ -251,10 +258,11 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
         if (newComplex !== currentComplex) changes.push({ key: 'model_complex', from: currentComplex, to: newComplex })
         if (newDigest !== currentDigest) changes.push({ key: 'model_digest', from: currentDigest, to: newDigest })
 
-        let report = `🔍 MODELLI CLAUDE DISPONIBILI (da API Anthropic):\n\n`
-        report += `Opus: ${claudeModels.filter(m => m.id.includes('opus')).map(m => m.id).join(', ') || 'nessuno'}\n`
-        report += `Sonnet: ${claudeModels.filter(m => m.id.includes('sonnet')).map(m => m.id).join(', ') || 'nessuno'}\n`
-        report += `Haiku: ${claudeModels.filter(m => m.id.includes('haiku')).map(m => m.id).join(', ') || 'nessuno'}\n\n`
+        let report = formatModelliDisponibili(claudeModels, FAMIGLIE_IN_USO)
+        if (paginaIncompleta) {
+          report += `\n⚠️ L'API dice che ci sono ALTRI modelli oltre a questi: l'elenco sopra NON è completo. Non concludere che un modello non esiste solo perché non è qui.\n`
+        }
+        report += '\n'
 
         report += `CONFIGURAZIONE ATTUALE:\n`
         report += `- model_default (conversazione): ${currentDefault}\n`
@@ -262,7 +270,10 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
         report += `- model_digest (digestione file): ${currentDigest}\n\n`
 
         if (changes.length === 0) {
-          report += `✅ SEI GIÀ AGGIORNATO — stai usando i modelli migliori disponibili.`
+          // "Aggiornato" vale DENTRO le famiglie che uso. Dire "sto usando i
+          // modelli migliori disponibili" mentre ne esiste una piu' capace che
+          // non guardo e' esattamente la frase che ha fatto sbagliare il bot.
+          report += `✅ AGGIORNATO nelle famiglie che uso (${FAMIGLIE_IN_USO.join(', ')}): sto già usando le versioni più recenti.`
           return report
         }
 
