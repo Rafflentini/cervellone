@@ -8,6 +8,7 @@
 import { matchSkills } from './skills'
 import { SYSTEM_CACHE_SPLIT } from './system-prompt-split'
 import { supabase } from './supabase'
+import { buildRegoleContext } from './regole-proposte'
 
 // ─── Config cache (prompt_extra, TTL 60 s) ───────────────────────────────────
 
@@ -356,13 +357,18 @@ CONDIVISIONE DOCUMENTI: i link /doc sono PRIVATI. Per dare un documento a un est
 Dai del Lei all'Ingegnere. Rispondi in italiano.`
 
 export async function getChatSystemPrompt(userQuery: string): Promise<string> {
-  const [skillContext, promptExtra] = await Promise.all([
+  const [skillContext, promptExtra, regoleContext] = await Promise.all([
     matchSkills(userQuery),
     getPromptExtra(),
+    buildRegoleContext().catch(() => ''),
   ])
   // STATICO (cachato 1h) | SYSTEM_CACHE_SPLIT | VARIABILE (data/ora/skill/prompt_extra, NON cachato).
   // Audit 10 giu: data+ora+skill dentro il blocco cachato lo bustavano ~ogni minuto.
   let variable = currentDateTimeContext() + skillContext
+  // Le regole che il bot ha proposto e l'Ingegnere ha confermato. Stanno nel
+  // blocco VARIABILE (non cachato) come prompt_extra: una regola appena
+  // confermata deve valere dal messaggio dopo, non dopo un'ora di cache.
+  if (regoleContext) variable += '\n\n' + regoleContext
   if (promptExtra) {
     variable += '\n\nISTRUZIONI AGGIUNTIVE (prompt_extra, modificabile via cervellone_modifica):\n' + promptExtra
   }
@@ -370,13 +376,18 @@ export async function getChatSystemPrompt(userQuery: string): Promise<string> {
 }
 
 export async function getTelegramSystemPrompt(userQuery: string): Promise<string> {
-  const [skillContext, promptExtra] = await Promise.all([
+  const [skillContext, promptExtra, regoleContext] = await Promise.all([
     matchSkills(userQuery),
     getPromptExtra(),
+    buildRegoleContext().catch(() => ''),
   ])
   // STATICO (BASE_PROMPT + nota Telegram, immutabile) | split | VARIABILE (non cachato).
   const staticPart = BASE_PROMPT + '\nStai comunicando via Telegram. Rispondi conciso.'
   let variable = currentDateTimeContext() + skillContext
+  // Le regole che il bot ha proposto e l'Ingegnere ha confermato. Stanno nel
+  // blocco VARIABILE (non cachato) come prompt_extra: una regola appena
+  // confermata deve valere dal messaggio dopo, non dopo un'ora di cache.
+  if (regoleContext) variable += '\n\n' + regoleContext
   if (promptExtra) {
     variable += '\n\nISTRUZIONI AGGIUNTIVE (prompt_extra, modificabile via cervellone_modifica):\n' + promptExtra
   }

@@ -17,16 +17,28 @@
 import { describe, it, expect, vi } from 'vitest'
 
 const updateCalls: Array<{ key: string; payload: Record<string, unknown> }> = []
+const proposte: Array<Record<string, unknown>> = []
 
 vi.mock('../supabase', () => ({
   supabase: {
-    from: () => ({
+    from: (table: string) => ({
       update: (payload: Record<string, unknown>) => ({
         eq: async (_col: string, key: string) => {
           updateCalls.push({ key, payload })
           return { error: null }
         },
       }),
+      insert: (payload: Record<string, unknown>) => {
+        proposte.push({ table, ...payload })
+        return {
+          select: () => ({
+            single: async () => ({
+              data: { id: '11111111-2222-3333-4444-555555555555', testo: payload.testo },
+              error: null,
+            }),
+          }),
+        }
+      },
     }),
   },
 }))
@@ -36,8 +48,9 @@ vi.mock('../circuit-breaker', () => ({ promoteModel: async () => '' }))
 import { executeSelfTools } from './self'
 
 describe('cervellone_modifica su prompt_extra', () => {
-  it('non dichiara salvata una regola che il guardrail scartera sempre', async () => {
+  it('non dichiara salvata una regola: la propone e chiede conferma', async () => {
     updateCalls.length = 0
+    proposte.length = 0
 
     const out = await executeSelfTools('cervellone_modifica', {
       chiave: 'prompt_extra',
@@ -45,15 +58,21 @@ describe('cervellone_modifica su prompt_extra', () => {
       motivo: 'regola comportamentale permanente',
     })
 
-    // Non deve affermare il successo: quel testo non entrera' in nessun prompt.
+    // Non deve affermare il successo: finche' l'Ingegnere non conferma, quel
+    // testo non entra in nessun prompt.
     expect(out).not.toContain('CONFIGURAZIONE AGGIORNATA')
     expect(out).not.toContain('attiva dalla prossima richiesta')
-    // Deve dire perche', cosi' il modello puo' riferirlo onestamente all'utente.
-    expect(String(out).toLowerCase()).toContain('non pos')
+    expect(out).toContain('NON ANCORA ATTIVA')
+    // Deve consegnare al modello il comando esatto da riferire all'utente.
+    expect(out).toContain('/regola_ok_11111111-2222-3333-4444-555555555555')
 
-    // E soprattutto: non deve scrivere nulla in DB, per non lasciare in giro un
-    // valore che `cervellone_info` poi rileggerebbe come se fosse attivo.
+    // Non tocca prompt_extra in cervellone_config: un valore li' dentro
+    // verrebbe riletto da cervellone_info come se fosse attivo.
     expect(updateCalls).toHaveLength(0)
+    // La proposta finisce nella sua tabella, in stato 'proposta'.
+    expect(proposte).toHaveLength(1)
+    expect(proposte[0].table).toBe('cervellone_regole')
+    expect(proposte[0].stato).toBe('proposta')
   })
 
   it('le altre chiavi di configurazione restano scrivibili', async () => {

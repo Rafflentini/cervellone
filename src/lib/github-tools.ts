@@ -36,6 +36,13 @@ const PROTECTED_PATHS = [
   'src/app/api/auth', // route auth reali (route.ts, google/, google/callback/)
   'src/lib/google-oauth.ts', // gestione OAuth
   'src/proxy.ts', // middleware/proxy
+  // Le "regole sulle regole". Il bot puo' mergiare una PR da solo (autonomia
+  // voluta, per non restare bloccato dal telefono), quindi senza questi tre la
+  // conferma su /regola_ok2_ non proteggerebbe niente: basterebbe una PR che
+  // modifica il system prompt per aggirarla. E' la porta accanto, non la porta.
+  'src/lib/github-tools.ts', // altrimenti puo' togliersi da solo le protezioni
+  'src/lib/prompts.ts', // il system prompt: chi e' e cosa deve fare
+  'src/lib/regole-proposte.ts', // il meccanismo di conferma delle regole
 ]
 
 function isProtectedPath(path: string): boolean {

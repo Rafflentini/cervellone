@@ -338,14 +338,21 @@ Puoi modificare qualsiasi parametro con il tool cervellone_modifica.`
       // Non scriviamo nemmeno in DB: un valore lì dentro verrebbe riletto da
       // cervellone_info come se fosse attivo.
       if (chiave === 'prompt_extra') {
-        return `❌ NON POSSO modificare prompt_extra: non ho il permesso di riscrivere il mio system prompt.
+        const { proponiRegola } = await import('../regole-proposte')
+        const p = await proponiRegola(valore, motivo, 'cervellone_modifica')
+        if (!p) {
+          return '❌ Non sono riuscito a preparare la proposta. Riprova con un testo non vuoto.'
+        }
+        return `📝 REGOLA PREPARATA, NON ANCORA ATTIVA.
 
-Esiste una protezione che scarta qualunque valore scritto da me: anche salvandolo, NON entrerebbe in nessuna conversazione. Non dire all'utente che è stato salvato — non lo sarebbe.
+"${p.testo}"
 
-Cosa funziona davvero:
-- \`ricorda\` — memoria esplicita, questa viene riletta davvero;
-- \`registra_apprendimento\` — aggiunge una lezione a una procedura esistente;
-- per una regola stabile nel prompt di sistema serve l'Ingegnere: la modifica va fatta da lui, non da me.`
+Non posso attivarla da solo: le mie istruzioni permanenti le conferma l'Ingegnere, altrimenti basterebbe una mail o un documento che leggo per riscrivermi le regole.
+
+DILLO ESATTAMENTE COSÌ all'Ingegnere — non dire che è già salvata:
+"Per renderla valida sempre, confermi con /regola_ok_${p.id} — oppure /regola_no_${p.id} se non la vuole."
+
+Una volta confermata vale in tutte le conversazioni. Le regole attive si vedono con /regole.`
       }
 
       // Parsa il valore come JSON

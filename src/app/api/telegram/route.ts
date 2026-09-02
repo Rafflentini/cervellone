@@ -426,7 +426,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
     if (userText === '/help') {
-      await sendTelegramMessage(chatId, '🧠 *Comandi Cervellone*\n\n/nuova — Azzera conversazione\n/opus [minuti] — Opus a tempo (default 60 min)\n/sonnet — Modello standard\n/modello — Mostra modello attivo\n/aggiorna — Controlla aggiornamenti\n/skill — Lista skill disponibili\n/help — Questa lista')
+      // /reset mancava proprio qui: e' l'unica via d'uscita quando il bot resta
+      // bloccato su un messaggio precedente, ed era invisibile all'utente.
+      await sendTelegramMessage(chatId, '🧠 *Comandi Cervellone*\n\n/nuova — Azzera conversazione\n/reset — Sblocca il bot se è fermo su un messaggio\n/regole — Regole che ho imparato e Lei ha confermato\n/opus [minuti] — Opus a tempo (default 60 min)\n/sonnet — Modello standard\n/modello — Mostra modello attivo\n/aggiorna — Controlla aggiornamenti\n/skill — Lista skill disponibili\n/help — Questa lista')
       return NextResponse.json({ ok: true })
     }
     const opusMinutes = parseOpusCommand(userText)
@@ -637,6 +639,38 @@ export async function POST(request: NextRequest) {
         : mAccOk
           ? await mod.confirmStep1(uuid)
           : await mod.cancelPending(uuid)
+      await sendTelegramMessage(chatId, r.message)
+      return NextResponse.json({ ok: true })
+    }
+
+    // ── Regole che il bot propone su se stesso: le conferma l'Ingegnere ──
+    // Il canale di apprendimento era chiuso dal 6 giugno (guardrail di provenienza
+    // su prompt_extra): il bot proponeva, il sistema scartava, e gli rispondeva
+    // "salvato". Ora la proposta e' una riga con uno stato, e solo un comando
+    // digitato qui la porta dentro al prompt. Nessun testo letto da fuori ci arriva.
+    if (userText.trim().toLowerCase() === '/regole') {
+      const { formatRegoleList } = await import('@/lib/regole-proposte')
+      await sendTelegramMessage(chatId, await formatRegoleList())
+      return NextResponse.json({ ok: true })
+    }
+    // Doppia conferma, come per le cartelle Drive: /regola_ok_ mostra il testo
+    // LETTO DAL DATABASE, /regola_ok2_ lo attiva. Cosi' cio' che l'Ingegnere
+    // approva lo scrive la route, non il modello — che potrebbe parafrasarlo.
+    // ok2 va testato PRIMA di ok, altrimenti il prefisso piu' corto lo mangia.
+    const UUID_RE = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+    const mRegOk2 = userText.match(new RegExp(`^/regola_ok2_${UUID_RE}\\b`, 'i'))
+    const mRegOk = userText.match(new RegExp(`^/regola_ok_${UUID_RE}\\b`, 'i'))
+    const mRegNo = userText.match(new RegExp(`^/regola_no_${UUID_RE}\\b`, 'i'))
+    const mRegVia = userText.match(new RegExp(`^/regola_via_${UUID_RE}\\b`, 'i'))
+    if (mRegOk2 || mRegOk || mRegNo || mRegVia) {
+      const mod = await import('@/lib/regole-proposte')
+      const r = mRegOk2
+        ? await mod.confermaRegola(mRegOk2[1])
+        : mRegOk
+          ? await mod.anteprimaRegola(mRegOk[1])
+          : mRegNo
+            ? await mod.rifiutaRegola(mRegNo[1])
+            : await mod.rimuoviRegola(mRegVia![1])
       await sendTelegramMessage(chatId, r.message)
       return NextResponse.json({ ok: true })
     }
