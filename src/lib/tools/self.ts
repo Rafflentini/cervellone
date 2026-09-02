@@ -1,6 +1,6 @@
 import { supabase } from '../supabase'
 import { sendTelegramMessage } from '../telegram-helpers'
-import { promoteModel } from '../circuit-breaker'
+import { promoteModel, assertModelloEsiste } from '../circuit-breaker'
 import { migliorePerFamiglia, formatModelliDisponibili, famigliaDi } from '../model-families'
 import type { ToolDefinition } from './types'
 
@@ -94,7 +94,7 @@ export const SELF_TOOLS: ToolDefinition[] = [
         },
         valore: {
           type: 'string',
-          description: 'Nuovo valore (stringa JSON). Es: "claude-opus-4-7" per modello, "200000" per thinking budget',
+          description: 'Nuovo valore (stringa JSON). Es: "claude-opus-5" per modello, "200000" per thinking budget',
         },
         motivo: {
           type: 'string',
@@ -106,13 +106,16 @@ export const SELF_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'promuovi_modello',
-    description: `Promuove un nuovo modello Claude a default (model_default). L'attuale default diventa stable di backup. SOLO admin. Usa quando Anthropic rilascia una nuova versione e l'hai testata. Esempio: "claude-opus-4-8" o "claude-opus-5".`,
+    // "SOLO admin" era prosa: nessun controllo a runtime lo applicava. Meglio
+    // dire il vero — l'id viene verificato contro l'API, ma la DECISIONE di
+    // cambiare modello resta dell'Ingegnere, e costa.
+    description: `Promuove un nuovo modello Claude a default (model_default). L'attuale default diventa stable di backup. NON usarlo di tua iniziativa: cambiare modello cambia i costi, e lo decide l'Ingegnere — serve una sua richiesta esplicita. L'id viene verificato contro l'elenco dell'API Anthropic: se non esiste, la promozione viene rifiutata. Esempio: "claude-opus-5".`,
     input_schema: {
       type: 'object' as const,
       properties: {
         new_default: {
           type: 'string',
-          description: 'Identificatore modello, es. "claude-opus-4-8". Deve iniziare con "claude-".',
+          description: 'Identificatore modello, es. "claude-opus-5". Deve iniziare con "claude-" ed esistere davvero nell\'elenco dell\'API Anthropic.',
         },
       },
       required: ['new_default'],
@@ -387,6 +390,20 @@ DILLO ESATTAMENTE COSÌ all'Ingegnere — non dire che è già salvata:
 "Per renderla valida sempre, confermi con /regola_ok_${p.id} — oppure /regola_no_${p.id} se non la vuole."
 
 Una volta confermata vale in tutte le conversazioni. Le regole attive si vedono con /regole.`
+      }
+
+      // Le chiavi che contengono un id di modello passano dalla STESSA verifica
+      // di promuovi_modello. Senza, la difesa proteggeva una porta mentre quella
+      // accanto restava spalancata: questo tool scriveva model_default senza
+      // nemmeno controllare il prefisso, nello stesso file, 120 righe piu' su.
+      // E qui non c'e' nemmeno la semantica di backup — model_stable non viene
+      // aggiornato, quindi un id sbagliato non avrebbe nulla su cui ripiegare.
+      if (chiave === 'model_default' || chiave === 'model_complex' || chiave === 'model_digest') {
+        try {
+          await assertModelloEsiste(valore.replace(/"/g, '').trim())
+        } catch (err) {
+          return `❌ ${err instanceof Error ? err.message : String(err)}`
+        }
       }
 
       // Parsa il valore come JSON

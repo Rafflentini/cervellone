@@ -444,6 +444,65 @@ export async function resetBreaker(): Promise<void> {
 /**
  * Promuove un nuovo modello a default. Il vecchio default diventa stable.
  */
+/**
+ * Chiede all'API di Anthropic se quel modello esiste davvero. Lancia se non
+ * esiste O se non si riesce a chiedere: promuovere un id non verificabile e'
+ * esattamente il rischio da cui questa funzione difende.
+ */
+export async function assertModelloEsiste(modelId: string): Promise<void> {
+  if (!modelId || !modelId.startsWith('claude-')) {
+    throw new Error(`Modello non valido: "${modelId}". Deve iniziare con "claude-".`)
+  }
+
+  let ids: string[]
+  let elencoIncompleto = false
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+      headers: {
+        'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+        'anthropic-version': '2023-06-01',
+      },
+      // Senza timeout, una chiamata che pende blocca il turno dell'utente fino
+      // al tetto della function. E' l'unico fetch del repo che ne era sprovvisto.
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (res.status === 401 || res.status === 403) {
+      // "Riprova fra poco" non risolvera' mai una variabile d'ambiente assente:
+      // confondere configurazione e rete manda a sbattere chi legge.
+      throw new Error('ANTHROPIC_API_KEY mancante o non valida — non è un problema di rete')
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+    const body = await res.json() as { data?: Array<{ id: string }>; has_more?: boolean }
+    ids = (body.data ?? []).map(m => m.id)
+    elencoIncompleto = body.has_more === true
+  } catch (err) {
+    throw new Error(
+      `Non ho potuto verificare che "${modelId}" esista (${err instanceof Error ? err.message : String(err)}). ` +
+      `NON lo cambio: se l'id fosse sbagliato il bot smetterebbe di rispondere.`,
+    )
+  }
+
+  // Elenco vuoto NON significa "il modello non esiste": significa che non ho
+  // capito la risposta. Dichiarare un'inesistenza sulla base di una lista vuota
+  // e' esattamente l'"elenco mutilato" che ha causato l'incidente Fable.
+  if (ids.length === 0) {
+    throw new Error(
+      `Non ho potuto verificare "${modelId}": l'API ha risposto senza elencare nessun modello. NON lo cambio.`,
+    )
+  }
+
+  if (!ids.includes(modelId)) {
+    // Se l'elenco e' troncato, "non esiste" sarebbe un'affermazione piu' forte
+    // del dato: si rifiuta lo stesso, ma dicendo la cosa giusta.
+    throw new Error(
+      elencoIncompleto
+        ? `Non ho trovato "${modelId}" fra i primi ${ids.length} modelli, e l'elenco dell'API è INCOMPLETO: non posso dire che non esista, ma non lo cambio senza esserne sicuro.`
+        : `Il modello "${modelId}" NON esiste nell'elenco dell'API Anthropic. Non lo cambio. Modelli disponibili: ${ids.join(', ')}.`,
+    )
+  }
+}
+
 export async function promoteModel(newDefault: string): Promise<{
   oldDefault: string
   oldStable: string
@@ -453,6 +512,19 @@ export async function promoteModel(newDefault: string): Promise<{
   if (!newDefault || !newDefault.startsWith('claude-')) {
     throw new Error(`Modello non valido: "${newDefault}". Deve iniziare con "claude-".`)
   }
+
+  // Il prefisso non basta: e' passato per tre mesi come unico controllo, e il
+  // 1 settembre 2026 il bot ha tentato di promuovere un id che credeva reale
+  // solo perche' il suo strumento di verifica gli aveva mostrato un elenco
+  // mutilato. Un id inventato riscriverebbe model_default e model_active, e da
+  // li' in poi ogni chiamata darebbe 404: Telegram si riprende dopo ~5 messaggi
+  // (il breaker traccia gli outcome e fa rollback), la chat web NO — non e'
+  // coperta dal breaker, e resterebbe ferma finche' qualcuno non digita /sonnet.
+  //
+  // L'elenco autoritativo esiste ed e' a una chiamata di distanza: si chiede a
+  // lui. FAIL CLOSED se non si riesce a verificare — il costo di un rifiuto
+  // sbagliato e' "riprova", quello di un'accettazione sbagliata e' il bot fermo.
+  await assertModelloEsiste(newDefault)
 
   const { data } = await supabase
     .from('cervellone_config')
