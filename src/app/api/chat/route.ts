@@ -10,6 +10,7 @@ import { rateLimit } from '@/lib/rate-limiter'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { supabase } from '@/lib/supabase'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
+import { confirmSalStep1, confirmSalStep2, cancelSal } from '@/lib/sal-tools'
 import { isWorkingMemoryEnabled, buildProcedureContext, buildActiveProjectContext } from '@/lib/working-memory'
 import { buildTemplateContext } from '@/lib/template-context'
 import { buildArtifactsPointer, captureArtifact } from '@/lib/artifact-capture'
@@ -121,67 +122,65 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // ─── Dispatcher /invia_<uuid> + /annulla_<uuid> per mail subagent V19 ───
-  // Stesso pattern di src/app/api/telegram/route.ts:283-296. PRIMA di chiamare LLM
-  // (altrimenti il modello vede il comando come msg normale e risponde "non posso
-  // bypassare il dispatcher"). Conferma pending send via web chat allineata a Telegram.
-  const mInvia = userQuery.match(/^\/invia_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-  const mAnnulla = userQuery.match(/^\/annulla_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  // ─── Comandi di conferma, PRIMA di chiamare il modello ───
+  //
+  // Vanno intercettati qui: se arrivassero all'LLM, li vedrebbe come messaggi
+  // normali e risponderebbe "non posso bypassare il dispatcher".
+  //
+  // Fino al 3 settembre 2026 la chat web ne gestiva quattro famiglie e Telegram
+  // sette. Le tre mancanti — /sal_*, /regola_*, /condividi_ok_ — erano il buco
+  // piu' insidioso dell'equipollenza, perche' era GIA' raggiungibile: i tool
+  // sono gli stessi su entrambi i canali, quindi il modello puo' proporre un SAL
+  // o una regola dalla chat web, e li' quel comando era solo testo. Il flusso si
+  // apriva e non si poteva chiudere. Vedi [[feedback_due_canali_equipollenti]].
+  const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+  const comando = (nome: string) => userQuery.match(new RegExp(`^/${nome}_${UUID}\\b`, 'i'))
+
+  // I quattro blocchi che c'erano prima ripetevano queste otto righe una per
+  // famiglia di comandi: aggiungerne altre tre a copia-incolla e' esattamente il
+  // modo in cui in questo repo sono nate tutte le divergenze.
+  const rispostaSemplice = (testo: string) =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(testo))
+          controller.close()
+        },
+      }),
+      { headers: { 'Content-Type': 'text/plain; charset=utf-8' } },
+    )
+
+  // Mail subagent V19: /invia_<uuid> · /annulla_<uuid>
+  const mInvia = comando('invia')
+  const mAnnulla = comando('annulla')
   if (mInvia || mAnnulla) {
     const uuid = (mInvia ?? mAnnulla)![1]
     const mod = await import('@/v19/tools/email/telegram-confirm')
-    const r = mInvia
-      ? await mod.confirmPendingSend(uuid)
-      : await mod.cancelPendingSend(uuid)
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(r.message))
-        controller.close()
-      },
-    })
-    return new Response(stream, {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-    })
+    const r = mInvia ? await mod.confirmPendingSend(uuid) : await mod.cancelPendingSend(uuid)
+    return rispostaSemplice(r.message)
   }
 
   // ─── Conferma invio mail a LINGUAGGIO NATURALE: "invia pure mail" (parità Telegram) ───
   if (/^\s*(s[iì][,.\s]+)?(conferm[oai]\s+(l'?\s*)?invio|(invia|manda|spedisci)(la|lo|tela)?(\s+pure)?\s+(la\s+|quella\s+)?(mail|email|e-?mail|messaggio))(\s+pure)?\s*[.!…]*\s*$/i.test(userQuery)) {
     const { confirmLatestPendingSend } = await import('@/v19/tools/email/telegram-confirm')
     const r = await confirmLatestPendingSend()
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(r.message))
-        controller.close()
-      },
-    })
-    return new Response(stream, {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-    })
+    return rispostaSemplice(r.message)
   }
 
-  const mConferma = userQuery.match(/^\/conferma_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-  const mIgnora = userQuery.match(/^\/ignora_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  // Proposte documento: /conferma_<uuid> · /ignora_<uuid>
+  const mConferma = comando('conferma')
+  const mIgnora = comando('ignora')
   if (mConferma || mIgnora) {
     const uuid = (mConferma ?? mIgnora)![1]
     const mod = await import('@/lib/doc-proposte-actions')
-    const r = mConferma
-      ? await mod.confirmProposta(uuid)
-      : await mod.ignoraProposta(uuid)
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(r.message))
-        controller.close()
-      },
-    })
-    return new Response(stream, {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-    })
+    const r = mConferma ? await mod.confirmProposta(uuid) : await mod.ignoraProposta(uuid)
+    return rispostaSemplice(r.message)
   }
 
   // Governance accesso cartelle Drive — doppia conferma (parità con Telegram)
-  const mAccOk2 = userQuery.match(/^\/accesso_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-  const mAccOk = userQuery.match(/^\/accesso_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-  const mAccNo = userQuery.match(/^\/accesso_no_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  const mAccOk2 = comando('accesso_ok2')
+  const mAccOk = comando('accesso_ok')
+  const mAccNo = comando('accesso_no')
   if (mAccOk2 || mAccOk || mAccNo) {
     const uuid = (mAccOk2 ?? mAccOk ?? mAccNo)![1]
     const mod = await import('@/lib/drive-policy-actions')
@@ -190,21 +189,13 @@ export async function POST(request: NextRequest) {
       : mAccOk
         ? await mod.confirmStep1(uuid)
         : await mod.cancelPending(uuid)
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(r.message))
-        controller.close()
-      },
-    })
-    return new Response(stream, {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-    })
+    return rispostaSemplice(r.message)
   }
 
-  // FIC bozze documenti - doppia conferma (parita con Telegram)
-  const mFicOk2 = userQuery.match(/^\/fic_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-  const mFicOk = userQuery.match(/^\/fic_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-  const mFicNo = userQuery.match(/^\/fic_no_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+  // FIC bozze documenti — doppia conferma (parità con Telegram)
+  const mFicOk2 = comando('fic_ok2')
+  const mFicOk = comando('fic_ok')
+  const mFicNo = comando('fic_no')
   if (mFicOk2 || mFicOk || mFicNo) {
     const uuid = (mFicOk2 ?? mFicOk ?? mFicNo)![1]
     const message = mFicOk2
@@ -212,15 +203,57 @@ export async function POST(request: NextRequest) {
       : mFicOk
         ? await confirmFicStep1(uuid)
         : await cancelFic(uuid)
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(message))
-        controller.close()
-      },
-    })
-    return new Response(stream, {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-    })
+    return rispostaSemplice(message)
+  }
+
+  // SAL — doppia conferma. Mancava sul web: il modello poteva proporre
+  // /sal_ok_<uuid> dalla chat e l'Ingegnere non aveva modo di confermarlo.
+  const mSalOk2 = comando('sal_ok2')
+  const mSalOk = comando('sal_ok')
+  const mSalNo = comando('sal_no')
+  if (mSalOk2 || mSalOk || mSalNo) {
+    const uuid = (mSalOk2 ?? mSalOk ?? mSalNo)![1]
+    const message = mSalOk2
+      ? await confirmSalStep2(uuid)
+      : mSalOk
+        ? await confirmSalStep1(uuid)
+        : await cancelSal(uuid)
+    return rispostaSemplice(message)
+  }
+
+  // Regole apprese — doppia conferma. `/regola_ok_` mostra il testo LETTO DAL
+  // DATABASE, `/regola_ok2_` lo attiva: cosi' cio' che l'Ingegnere approva lo
+  // scrive la route, non il modello, che potrebbe parafrasarlo.
+  if (userQuery.trim().toLowerCase() === '/regole') {
+    const { formatRegoleList } = await import('@/lib/regole-proposte')
+    return rispostaSemplice(await formatRegoleList())
+  }
+  const mRegOk2 = comando('regola_ok2')
+  const mRegOk = comando('regola_ok')
+  const mRegNo = comando('regola_no')
+  const mRegVia = comando('regola_via')
+  if (mRegOk2 || mRegOk || mRegNo || mRegVia) {
+    const mod = await import('@/lib/regole-proposte')
+    const r = mRegOk2
+      ? await mod.confermaRegola(mRegOk2[1])
+      : mRegOk
+        ? await mod.anteprimaRegola(mRegOk[1])
+        : mRegNo
+          ? await mod.rifiutaRegola(mRegNo[1])
+          : await mod.rimuoviRegola(mRegVia![1])
+    return rispostaSemplice(r.message)
+  }
+
+  // Privacy doc: conferma condivisione → firma e invia il link a scadenza
+  const mShareOk = comando('condividi_ok')
+  if (mShareOk) {
+    const { confirmShareProposal } = await import('@/lib/share-proposte')
+    const url = await confirmShareProposal(mShareOk[1])
+    return rispostaSemplice(
+      url
+        ? `🔗 Link di condivisione (scade tra i giorni indicati):\n${url}\n\nChi ha il link vede il documento finché non scade.`
+        : '⚠️ Proposta di condivisione non trovata, già usata o scaduta.',
+    )
   }
 
   // FASE 1 Memoria procedurale (flag-gated, OFF di default): se attiva, carica la
