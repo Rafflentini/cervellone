@@ -27,9 +27,27 @@ export async function saveMessageWithEmbedding(
   content: string,
   projectId?: string | null,
 ) {
-  const sanitized = sanitizeForStorage(content)
+  await saveMessageOnly(conversationId, role, content)
+  await saveEmbeddingOnly(conversationId, role, content, projectId)
+}
 
-  // Sempre salva in messages (per history Telegram)
+/**
+ * Scrive la riga in `messages` SENZA generarne l'embedding.
+ *
+ * Serve ai turni non consegnati (errore API, turno muto, budget esaurito). Li'
+ * le due cose vanno separate:
+ * - la STORIA deve conservare quello che l'utente ha letto, o resta una domanda
+ *   senza risposta e al turno dopo il bot rifa' da capo un lavoro gia' fatto;
+ * - la MEMORIA no. Un "non sono riuscito a sintetizzare" supera
+ *   MIN_EMBEDDING_LENGTH e diventerebbe recuperabile da searchMemory come se
+ *   fosse conoscenza.
+ */
+export async function saveMessageOnly(
+  conversationId: string,
+  role: string,
+  content: string,
+): Promise<void> {
+  const sanitized = sanitizeForStorage(content)
   try {
     await supabase.from('messages').insert({
       conversation_id: conversationId,
@@ -39,8 +57,6 @@ export async function saveMessageWithEmbedding(
   } catch (err) {
     logWarn(`Messages insert failed: ${(err as Error).message}`)
   }
-
-  await saveEmbeddingOnly(conversationId, role, content, projectId)
 }
 
 /**

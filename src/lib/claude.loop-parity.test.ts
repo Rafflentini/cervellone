@@ -100,11 +100,15 @@ vi.mock('./tools', () => ({
 // scrive utente+assistente a DB e il web no (li scrive il browser). E' una
 // differenza VOLUTA fra i canali, e un test qui sotto la pinna — senza,
 // l'unificazione potrebbe farla sparire producendo righe doppie sul web.
-const savedMessages: Array<{ role: string; text: string }> = []
+const savedMessages: Array<{ role: string; text: string; embeddato: boolean }> = []
 vi.mock('./memory', () => ({
   searchMemory: async () => '',
   saveMessageWithEmbedding: async (_convId: string, role: string, text: string) => {
-    savedMessages.push({ role, text })
+    savedMessages.push({ role, text, embeddato: true })
+  },
+  // Storia si', memoria semantica no: e' la via usata dai turni non consegnati.
+  saveMessageOnly: async (_convId: string, role: string, text: string) => {
+    savedMessages.push({ role, text, embeddato: false })
   },
 }))
 // Catena Supabase permissiva: getConfig usa .select().in(), gli helper billing
@@ -803,10 +807,14 @@ describe('budget: troncare una run non e la stessa cosa che concluderla', () => 
     expect(out).toContain('budget di elaborazione')
   })
 
-  it('il testo di un turno fallito non entra in memoria, su nessun motivo', async () => {
-    // Superava MIN_EMBEDDING_LENGTH, quindi veniva EMBEDDATO: il "non sono
-    // riuscito a sintetizzare" diventava recuperabile da searchMemory come se
-    // fosse conoscenza. La guardia c'era solo per api_error.
+  it('un turno fallito entra nella storia ma NON nella memoria semantica', async () => {
+    // Due errori opposti, evitati entrambi.
+    // Embeddarlo: il "non sono riuscito a sintetizzare" supera
+    // MIN_EMBEDDING_LENGTH e diventa recuperabile da searchMemory come se fosse
+    // conoscenza. La guardia esisteva solo per api_error, un motivo su tre.
+    // Non scriverlo affatto: il messaggio UTENTE e' gia' stato salvato prima del
+    // try, quindi resterebbe una domanda senza risposta e al turno dopo il
+    // modello rifarebbe da capo il lavoro parziale gia' fatto.
     for (const [motivo, prepara] of [
       ['empty', () => { scriptedTurns = [{ text: '', toolUses: [], stopReason: 'end_turn' }] }],
       ['budget', () => { scriptedTurns = [{ text: 'Comincio.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' }] }],
@@ -820,7 +828,21 @@ describe('budget: troncare una run non e la stessa cosa che concluderla', () => 
         async () => {},
       )
 
-      expect(savedMessages.map(m => m.role), `motivo ${motivo}`).toEqual(['user'])
+      const assistente = savedMessages.filter(m => m.role === 'assistant')
+      expect(assistente, `motivo ${motivo}: la risposta deve restare nella storia`).toHaveLength(1)
+      expect(assistente[0].embeddato, `motivo ${motivo}: non deve finire in memoria`).toBe(false)
     }
+  })
+
+  it('un turno riuscito invece finisce anche in memoria', async () => {
+    // Controllo positivo: senza, il test qui sopra sarebbe verde anche se
+    // NESSUN messaggio venisse mai embeddato.
+    scriptedTurns = [{ text: 'Fatto, ecco il risultato completo del lavoro richiesto.', toolUses: [], stopReason: 'end_turn' }]
+
+    await callClaudeStreamTelegram(richiestaBase('telegram'), async () => {})
+
+    const assistente = savedMessages.filter(m => m.role === 'assistant')
+    expect(assistente).toHaveLength(1)
+    expect(assistente[0].embeddato).toBe(true)
   })
 })

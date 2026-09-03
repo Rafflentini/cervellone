@@ -7,7 +7,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { getToolDefinitions, executeTool } from './tools'
-import { searchMemory, saveMessageWithEmbedding } from './memory'
+import { searchMemory, saveMessageWithEmbedding, saveMessageOnly } from './memory'
 import { logError } from './sanitize'
 import { consumeStreamWithRetry } from './stream-retry'
 import { supabase } from './supabase'
@@ -848,17 +848,26 @@ export async function runAgentTurn(
   // registrazione dell'esito qui sotto.
   await consegnaSicura('consegna finale', () => sink.onFinal?.(fullResponse))
 
-  // La condizione era `!apiErrorOccurred`, cioe' copriva un motivo su tre: il
-  // testo di un turno muto ("non sono riuscito a sintetizzare") e quello di una
-  // run troncata finivano in `messages` e, superando MIN_EMBEDDING_LENGTH,
-  // venivano EMBEDDATI — quindi recuperabili da searchMemory come se fossero
-  // conoscenza. E' la stessa malattia curata a valle nei chiamanti, lasciata
-  // viva alla sorgente.
-  // NB: cosi' un parziale che l'utente ha letto non entra in memoria. E' una
-  // perdita nota e voluta qui: persistere i parziali marcandoli come tali e'
-  // una decisione a parte (vedi la spec del 3 set).
-  if (policy.persistAssistantMessage && conversationId && fullResponse && !turnoNonConsegnato) {
-    saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
+  // Storia e memoria sono due cose diverse, e un turno fallito va in una sola.
+  //
+  // Prima la condizione era `!apiErrorOccurred`, cioe' un motivo su tre: il
+  // testo di un turno muto e quello di una run troncata finivano in `messages`
+  // E venivano EMBEDDATI — superano MIN_EMBEDDING_LENGTH — quindi recuperabili
+  // da searchMemory come se fossero conoscenza.
+  //
+  // Ma non scriverli affatto e' il rimedio peggiore del male: il messaggio
+  // UTENTE e' gia' stato scritto incondizionatamente prima del try, quindi
+  // resterebbe una domanda senza risposta, e al turno successivo il modello non
+  // avrebbe traccia del lavoro parziale gia' fatto — il "riscrive tutto da capo"
+  // gia' visto in produzione.
+  //
+  // Quindi: un turno non consegnato entra nella STORIA (l'utente l'ha letto) ma
+  // NON nella memoria semantica.
+  if (policy.persistAssistantMessage && conversationId && fullResponse) {
+    const salva = turnoNonConsegnato
+      ? saveMessageOnly(conversationId, 'assistant', fullResponse)
+      : saveMessageWithEmbedding(conversationId, 'assistant', fullResponse)
+    salva.catch(() => {})
   }
 
   const FALLBACK_PREFIX = '⚠️ Non sono riuscito a sintetizzare'
