@@ -48,7 +48,11 @@ export const DOCUMENT_TEMPLATE_TOOLS: ToolDefinition[] = [
         titolo: { type: 'string' },
         parole_chiave: { type: 'array', items: { type: 'string' } },
         tipo_sorgente: { type: 'string', enum: ['docx', 'pdf_form', 'pdf_flat', 'html', 'builtin'] },
-        metodo: { type: 'string', enum: ['B_html', 'builtin_cigo'] },
+        metodo: {
+          type: 'string',
+          enum: ['A_docx', 'B_html', 'builtin_cigo'],
+          description: 'A_docx = riempie il file .docx ORIGINALE su Drive, lasciando impaginazione, font e intestazione IDENTICI (richiede master_drive_id). E il metodo da preferire ogni volta che esiste gia un modello Word dello studio. B_html = ricostruisce il documento da un HTML nostro (richiede html_template): usalo SOLO se un file originale non esiste, perche la resa e una nostra imitazione, non il documento dello studio.',
+        },
         master_drive_id: { type: 'string' },
         html_template: { type: 'string' },
         campi: { type: 'array', items: { type: 'object' } },
@@ -227,6 +231,44 @@ async function compila(input: Record<string, unknown>): Promise<string> {
     let msg = `Pacchetto CIGO generato per ${mapped.beneficiari.length} operai: ${fileName}\n${webViewLink}\n(Relazione Allegato 10 + CSV beneficiari + bollettino, dove disponibile. Non ho inviato nulla.)`
     if (warnings.length) msg += `\n\nAvvertenze: ${warnings.join('\n')}`
     return msg
+  }
+
+  // metodo A_docx — riempie il .docx ORIGINALE, senza reimpaginarlo.
+  //
+  // È la differenza che conta: B_html ricostruisce il documento da un HTML
+  // nostro (font, margini, intestazione rifatti a occhio), A_docx apre il file
+  // dell'Ingegnere e tocca SOLO i segnaposto. Quello che non è un segnaposto
+  // esce identico perché non viene mai riscritto.
+  if (tpl.metodo === 'A_docx') {
+    if (!tpl.master_drive_id) return `Il modello "${slug}" è di tipo A_docx ma non ha un file master su Drive: non c'è niente da riempire.`
+    const { downloadFileBase64 } = await import('./drive')
+    const { riempiDocx } = await import('./template-fill-docx')
+
+    let master: { base64: string; name: string }
+    try {
+      master = await downloadFileBase64(tpl.master_drive_id)
+    } catch (err) {
+      return `Non riesco a scaricare il modello originale da Drive (${err instanceof Error ? err.message : err}). Il documento NON è stato generato.`
+    }
+
+    const esito = riempiDocx(Buffer.from(master.base64, 'base64'), valori)
+    if (!esito.ok || !esito.buffer) {
+      return `Non sono riuscito a riempire il modello "${tpl.titolo}": ${esito.error ?? 'errore sconosciuto'}. Il documento NON è stato generato.`
+    }
+
+    const fileName = `${slug}_${todayTag()}.docx`
+    const { webViewLink } = await uploadBinaryToDrive(
+      esito.buffer,
+      fileName,
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      folderId,
+    )
+    // I campi rimasti vuoti si DICONO. Un documento consegnato come "pronto" con
+    // dentro dei buchi è il modo piu' veloce per mandarlo a un committente cosi'.
+    const avviso = esito.mancanti?.length
+      ? `\n\n⚠️ Questi campi sono rimasti VUOTI nel documento: ${esito.mancanti.join(', ')}. Vanno completati prima di inviarlo.`
+      : ''
+    return `Documento generato dal Suo modello originale: ${fileName}\n${webViewLink}\n(Impaginazione del file "${master.name}" invariata: ho sostituito solo i campi. Non ho inviato nulla.)${avviso}`
   }
 
   // metodo B_html

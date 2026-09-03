@@ -7,7 +7,8 @@ vi.mock('./document-templates', () => ({
   setDatiFissi: vi.fn(),
   normalizeSlug: (s: string) => s.toLowerCase(),
 }))
-vi.mock('./drive', () => ({ uploadBinaryToDrive: vi.fn() }))
+vi.mock('./drive', () => ({ uploadBinaryToDrive: vi.fn(), downloadFileBase64: vi.fn() }))
+vi.mock('./template-fill-docx', () => ({ riempiDocx: vi.fn(), estraiSegnaposto: vi.fn() }))
 vi.mock('./pdf-generator', () => ({ generatePdfFromHtml: vi.fn() }))
 vi.mock('@/v19/tools/cigo', () => ({ generaAllegato10Cigo: vi.fn() }))
 
@@ -16,6 +17,7 @@ import * as dt from './document-templates'
 import * as drive from './drive'
 import * as pdf from './pdf-generator'
 import * as cigo from '@/v19/tools/cigo'
+import * as docx from './template-fill-docx'
 
 beforeEach(() => vi.clearAllMocks())
 
@@ -277,5 +279,86 @@ describe('mapCigoInput', () => {
     const out = mapCigoInput({ lr_nome_cognome: 'Rossi', lr_qualifica: 'socio', beneficiari: [] })
     const lr = out.legale_rappresentante as Record<string, unknown>
     expect(lr.qualifica).toBeUndefined()
+  })
+})
+
+describe('compila_modello — metodo A_docx: il .docx dell Ingegnere, non una nostra imitazione', () => {
+  // Progettato l'11 giugno 2026, costruito il 3 settembre. La differenza con
+  // B_html non e' tecnica, e' di risultato: B_html reimpagina il documento a
+  // modo nostro, A_docx apre il file originale e tocca solo i segnaposto.
+  // Qui si verifica il CABLAGGIO (il motore ha i suoi 10 test in
+  // template-fill-docx.test.ts): che il master venga scaricato, riempito e
+  // ricaricato come .docx.
+  const modelloA = {
+    slug: 'lettera_incarico', titolo: 'Lettera di incarico', metodo: 'A_docx',
+    master_drive_id: 'drive-master-123', campi: [], dati_fissi: {}, formati_output: ['docx'],
+  }
+
+  it('scarica il master, lo riempie e restituisce un .docx', async () => {
+    ;(dt.getTemplate as any).mockResolvedValue(modelloA)
+    ;(drive.downloadFileBase64 as any).mockResolvedValue({ base64: Buffer.from('finto').toString('base64'), name: 'Lettera incarico.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+    ;(docx.riempiDocx as any).mockReturnValue({ ok: true, buffer: Buffer.from('riempito') })
+    ;(drive.uploadBinaryToDrive as any).mockResolvedValue({ webViewLink: 'https://drive/x' })
+
+    const out = await executeDocumentTemplateTool('compila_modello', {
+      slug: 'lettera_incarico', valori: { committente: 'DLC (NW) LIMITED' },
+    })
+
+    expect(drive.downloadFileBase64).toHaveBeenCalledWith('drive-master-123')
+    // Deve caricare un .docx, non un PDF: il punto e' restituire il formato
+    // originale, modificabile.
+    const [, nomeFile, mime] = (drive.uploadBinaryToDrive as any).mock.calls[0]
+    expect(String(nomeFile)).toMatch(/\.docx$/)
+    expect(String(mime)).toContain('wordprocessingml')
+    expect(out).toContain('https://drive/x')
+    // E deve DIRE che l'impaginazione non e' stata toccata: e' la ragione per
+    // cui questo metodo esiste.
+    expect(out).toMatch(/invariat/i)
+    // Nessun PDF generato: quella e' la strada B.
+    expect(pdf.generatePdfFromHtml).not.toHaveBeenCalled()
+  })
+
+  it('dichiara i campi rimasti vuoti invece di consegnare il documento come pronto', async () => {
+    // Un documento consegnato come "pronto" con dentro dei buchi e' il modo piu'
+    // veloce per mandarlo cosi' a un committente.
+    ;(dt.getTemplate as any).mockResolvedValue(modelloA)
+    ;(drive.downloadFileBase64 as any).mockResolvedValue({ base64: 'AA==', name: 'M.docx', mimeType: 'x' })
+    ;(docx.riempiDocx as any).mockReturnValue({ ok: true, buffer: Buffer.from('r'), mancanti: ['protocollo', 'data'] })
+    ;(drive.uploadBinaryToDrive as any).mockResolvedValue({ webViewLink: 'https://drive/y' })
+
+    const out = await executeDocumentTemplateTool('compila_modello', { slug: 'lettera_incarico', valori: {} })
+
+    expect(out).toContain('protocollo')
+    expect(out).toMatch(/VUOTI|completat/i)
+  })
+
+  it('se Drive non da il master, NON dice che il documento e pronto', async () => {
+    ;(dt.getTemplate as any).mockResolvedValue(modelloA)
+    ;(drive.downloadFileBase64 as any).mockRejectedValue(new Error('404 file not found'))
+
+    const out = await executeDocumentTemplateTool('compila_modello', { slug: 'lettera_incarico', valori: {} })
+
+    expect(out).toMatch(/NON è stato generato/i)
+    expect(drive.uploadBinaryToDrive).not.toHaveBeenCalled()
+  })
+
+  it('se il riempimento fallisce, non carica un file rotto su Drive', async () => {
+    ;(dt.getTemplate as any).mockResolvedValue(modelloA)
+    ;(drive.downloadFileBase64 as any).mockResolvedValue({ base64: 'AA==', name: 'M.docx', mimeType: 'x' })
+    ;(docx.riempiDocx as any).mockReturnValue({ ok: false, error: 'segnaposto {apro} mai chiuso' })
+
+    const out = await executeDocumentTemplateTool('compila_modello', { slug: 'lettera_incarico', valori: {} })
+
+    expect(out).toContain('mai chiuso')
+    expect(drive.uploadBinaryToDrive).not.toHaveBeenCalled()
+  })
+
+  it('un modello A_docx senza master non finge di poter lavorare', async () => {
+    ;(dt.getTemplate as any).mockResolvedValue({ ...modelloA, master_drive_id: null })
+
+    const out = await executeDocumentTemplateTool('compila_modello', { slug: 'lettera_incarico', valori: {} })
+
+    expect(out).toMatch(/niente da riempire/i)
+    expect(drive.downloadFileBase64).not.toHaveBeenCalled()
   })
 })

@@ -15,7 +15,7 @@ export interface CampoModello {
   colonne?: CampoColonna[] // solo tipo 'tabella'
 }
 
-export type MetodoModello = 'B_html' | 'builtin_cigo'
+export type MetodoModello = 'A_docx' | 'B_html' | 'builtin_cigo'
 
 export interface DocumentTemplate {
   slug: string
@@ -104,6 +104,12 @@ export async function createTemplate(
   // FIX 5: B_html requires html_template; enforce size limit; sanitize
   if (input.metodo === 'B_html' && !input.html_template) {
     return { ok: false, error: 'Il metodo B_html richiede un html_template' }
+  }
+  // A_docx riempie il .docx ORIGINALE: senza il file master non c'e' niente da
+  // riempire, e un modello salvato senza sarebbe una promessa che al momento di
+  // compilare non si puo' mantenere. Meglio rifiutare adesso.
+  if (input.metodo === 'A_docx' && !input.master_drive_id?.trim()) {
+    return { ok: false, error: 'Il metodo A_docx richiede master_drive_id: l\'id del file .docx originale su Drive, che verrà riempito senza essere reimpaginato.' }
   }
   if (input.html_template && input.html_template.length > 500_000) {
     return { ok: false, error: 'html_template troppo grande (max 500KB)' }
