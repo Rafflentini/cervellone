@@ -13,7 +13,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import PizZip from 'pizzip'
-import { riempiDocx, estraiSegnaposto } from './template-fill-docx'
+import { riempiDocx, estraiSegnaposto, verificaMasterDocx } from './template-fill-docx'
 
 /** Un .docx minimo ma vero: zip con la struttura OOXML che Word si aspetta. */
 function docxCon(paragrafi: string[]): Buffer {
@@ -166,3 +166,148 @@ describe('riempiDocx — sostituisce i segnaposto e NON tocca il resto', () => {
     expect(res.buffer).toBeUndefined()
   })
 })
+
+/**
+ * Un .docx con carta intestata: il segnaposto sta nell'INTESTAZIONE, non nel
+ * corpo. È il caso normale dei modelli dello studio, non un caso limite.
+ */
+function docxConIntestazione(intestazione: string, corpo: string[]): Buffer {
+  const p = (t: string) => `<w:p><w:r><w:t xml:space="preserve">${t}</w:t></w:r></w:p>`
+  const zip = new PizZip()
+  zip.file('[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+    `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+    `<Default Extension="xml" ContentType="application/xml"/>` +
+    `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+    `<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>` +
+    `</Types>`)
+  zip.folder('_rels')!.file('.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>` +
+    `</Relationships>`)
+  const word = zip.folder('word')!
+  word.file('document.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+    `<w:body>${corpo.map(p).join('')}<w:sectPr><w:headerReference w:type="default" r:id="rId10" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></w:sectPr></w:body></w:document>`)
+  word.file('header1.xml',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${p(intestazione)}</w:hdr>`)
+  word.folder('_rels')!.file('document.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+    `</Relationships>`)
+  return zip.generate({ type: 'nodebuffer' }) as Buffer
+}
+
+describe('estraiSegnaposto — legge anche la carta intestata, non solo il corpo', () => {
+  it('trova un segnaposto che sta SOLO nell intestazione', () => {
+    // getFullText() senza argomento legge solo word/document.xml, ma render()
+    // riempie anche le intestazioni: leggendo il solo corpo, una carta
+    // intestata dello studio sembrerebbe priva di segnaposto pur essendo
+    // perfettamente riempibile. (audit avversariale 3 set 2026)
+    const doc = docxConIntestazione('Spett.le {committente}', ['Oggetto: {oggetto}'])
+
+    const res = estraiSegnaposto(doc)
+
+    expect(res.ok).toBe(true)
+    expect(res.campi).toContain('committente')
+    expect(res.campi).toContain('oggetto')
+  })
+
+  it('il segnaposto in intestazione viene davvero riempito', () => {
+    // CONTROLLO POSITIVO: prova che leggerlo non e teoria — il motore lo compila.
+    const doc = docxConIntestazione('Spett.le {committente}', ['Corpo'])
+
+    const res = riempiDocx(doc, { committente: 'DLC (NW) LIMITED' })
+
+    expect(res.ok).toBe(true)
+    const header = new PizZip(res.buffer!).file('word/header1.xml')!.asText()
+    expect(header).toContain('DLC (NW) LIMITED')
+    expect(res.mancanti).toBeUndefined()
+  })
+})
+
+describe('verificaMasterDocx — rifiuta solo cio di cui e certa', () => {
+  it('accetta un master con segnaposto e dice quali sono', () => {
+    const doc = docxCon(['Spett.le {committente}', 'Oggetto: {oggetto}'])
+
+    const res = verificaMasterDocx(doc)
+
+    expect(res.ok).toBe(true)
+    expect(res.campi).toEqual(['committente', 'oggetto'])
+  })
+
+  it('RIFIUTA un master senza nemmeno un segnaposto', () => {
+    // È il caso che rendeva insegna_modello una bugia: si registrava il modello,
+    // la risposta diceva "da ora puoi chiedermi di riprodurlo", e in compilazione
+    // usciva una copia identica del master con dentro zero dati.
+    const doc = docxCon(['RESTRUKTURA S.r.l.', 'Lettera di incarico', 'Distinti saluti'])
+
+    const res = verificaMasterDocx(doc)
+
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/segnaposto/i)
+  })
+
+  it('RIFIUTA un file che non e un .docx, DICENDO che il problema e il file', () => {
+    // Il messaggio deve distinguere i due casi: mandare a cercare segnaposto
+    // dentro un PDF fa perdere tempo su un file che non e il problema.
+    // (mutation testing: senza questa asserzione, togliere il controllo
+    // sull illeggibilita non faceva fallire niente — il PDF cadeva comunque nel
+    // ramo "zero segnaposto" con il messaggio sbagliato.)
+    const res = verificaMasterDocx(Buffer.from('%PDF-1.7 questo e un pdf'))
+
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/non è un \.docx leggibile/i)
+    expect(res.error).not.toMatch(/scrivi i punti variabili/i)
+  })
+
+  it('ACCETTA un master i cui segnaposto stanno nella carta intestata', () => {
+    // La regressione che l audit ha trovato: la prima versione della guardia
+    // rifiutava esattamente il documento per cui questo binario esiste.
+    const doc = docxConIntestazione('Spett.le {committente}', ['Testo fisso'])
+
+    const res = verificaMasterDocx(doc, ['committente'])
+
+    expect(res.ok).toBe(true)
+    expect(res.dichiaratiAssenti).toBeUndefined()
+  })
+
+  it('AVVISA di un campo dichiarato che nel master non esiste, senza rifiutare', () => {
+    // Un campo dichiarato ma assente viene chiesto all utente e poi si perde:
+    // va detto. Ma non e motivo di rifiuto, perche la corrispondenza non e mai
+    // esatta e un falso rifiuto renderebbe irregistrabile un documento valido.
+    const doc = docxCon(['Spett.le {committente}'])
+
+    const res = verificaMasterDocx(doc, ['committente', 'protocollo'])
+
+    expect(res.ok).toBe(true)
+    expect(res.dichiaratiAssenti).toEqual(['protocollo'])
+  })
+
+  it('un campo annidato {cliente.nome} soddisfa il campo dichiarato "cliente"', () => {
+    // CONTROLLO POSITIVO del test precedente: senza questo, un avviso emesso
+    // SEMPRE passerebbe comunque, e in produzione segnalerebbe come mancante
+    // ogni campo con sottocampi.
+    const doc = docxCon(['{cliente.nome} {cliente.cognome}'])
+
+    const res = verificaMasterDocx(doc, ['cliente'])
+
+    expect(res.ok).toBe(true)
+    expect(res.dichiaratiAssenti).toBeUndefined()
+  })
+
+  it('non segnala nulla quando i campi dichiarati sono un sottoinsieme di quelli del master', () => {
+    const doc = docxCon(['{committente}', '{oggetto}', '{data}'])
+
+    const res = verificaMasterDocx(doc, ['committente'])
+
+    expect(res.ok).toBe(true)
+    expect(res.dichiaratiAssenti).toBeUndefined()
+  })
+})
+

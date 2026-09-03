@@ -6,6 +6,12 @@ import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
 import { getActiveModel } from '@/lib/circuit-breaker'
 import { logApiUsage } from '@/lib/api-usage'
+import {
+  puoSovrascrivereGiornataVuota,
+  fondiEntita,
+  type RigaSummary,
+  type RigaEntita,
+} from '@/lib/memoria-sovrascrittura'
 
 // ── Prompt extraction conservativa (letterale da spec) ────────────────────────
 
@@ -189,6 +195,30 @@ export async function runMemoriaExtract(
 
     // Giornata vuota
     if (msgList.length === 0) {
+      // I messaggi possono essere spariti DOPO che la giornata e' stata
+      // riassunta: 4 giornate di giugno hanno un riassunto ricostruito a mano e
+      // zero righe rimaste in `messages`. Riscriverle qui significherebbe
+      // sostituire la conoscenza con "Nessuna attività rilevante" — e siccome
+      // message_count tornerebbe 0, la perdita sparirebbe anche dal raggio
+      // dell'audit. Non ci sono backup: si guarda prima di scrivere.
+      const { data: esistente } = await supabase
+        .from('cervellone_summary_giornaliero')
+        .select('summary_text, message_count')
+        .eq('data', target)
+        .maybeSingle()
+
+      if (!puoSovrascrivereGiornataVuota(esistente as RigaSummary | null)) {
+        console.warn(`[memoria-extract] ${target}: 0 messaggi in tabella ma il riassunto esistente ha contenuto — NON sovrascritto`)
+        await supabase.from('cervellone_memoria_extraction_runs').update({
+          status: 'ok',
+          completed_at: new Date().toISOString(),
+          conversations_count: 0,
+          entities_count: 0,
+          llm_cost_estimate_usd: 0,
+        }).eq('run_id', runId)
+        return { ok: true, conversations: 0, entities: 0, tokens: 0, cost_usd: 0 }
+      }
+
       await supabase.from('cervellone_summary_giornaliero').upsert({
         data: target,
         summary_text: 'Nessuna attività rilevante',
@@ -383,14 +413,24 @@ export async function runMemoriaExtract(
         console.warn(`[memoria-extract] entita "${e.name}" scartata: tipo "${e.type}" non ammesso`)
         continue
       }
-      // TODO: atomic increment via stored proc per concurrency futura
-      // Per ora: upsert con mention_count=1 (overwrite) — sufficiente per single-cron daily.
+      // Prima qui si scriveva sempre `mention_count: 1` e `contexts_json:
+      // [nuovo]`. L'effetto non era un contatore impreciso: ogni nuova menzione
+      // CANCELLAVA tutto lo storico di quell'entita'. Una entita' alla volta, in
+      // silenzio. Ora si legge cio' che c'e' e si fonde (fondiEntita e'
+      // idempotente per giornata, quindi rielaborare non gonfia il contatore).
+      const { data: entitaEsistente } = await supabase
+        .from('cervellone_entita_menzionate')
+        .select('mention_count, contexts_json, last_seen_at')
+        .eq('name', e.name)
+        .eq('type', e.type)
+        .maybeSingle()
+
+      const fusa = fondiEntita(entitaEsistente as RigaEntita | null, e.context, target)
+
       const { error: entErr } = await supabase.from('cervellone_entita_menzionate').upsert({
         name: e.name,
         type: e.type,
-        last_seen_at: target,
-        mention_count: 1,
-        contexts_json: [e.context],
+        ...fusa,
       }, { onConflict: 'name,type' })
 
       if (entErr) {

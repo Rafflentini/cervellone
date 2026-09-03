@@ -44,9 +44,24 @@ export function estraiSegnaposto(docx: Buffer): { ok: boolean; campi?: string[];
   try {
     const zip = new PizZip(docx)
     const doc = new Docxtemplater(zip, { delimiters: DELIMITERS, paragraphLoop: true, linebreaks: true })
-    // `getFullText()` restituisce il testo del documento con i segnaposto ancora
-    // dentro: è il modo previsto per ispezionarli senza compilare.
-    const testo = doc.getFullText()
+    // `getFullText()` SENZA argomento legge solo `word/document.xml`, mentre
+    // `render()` riempie anche intestazioni e piè di pagina. Su una carta
+    // intestata — cioè il caso normale di questo binario — il `{committente}`
+    // sta in intestazione: leggendo il solo corpo il documento sembrerebbe
+    // privo di segnaposto pur essendo perfettamente riempibile.
+    // `targets` è l'elenco tipizzato delle parti che il motore compila
+    // ("used to know which files are templated", docxtemplater.d.ts:213).
+    const parti: string[] = doc.targets ?? []
+    const testo = parti
+      .map((p) => {
+        try {
+          return doc.getFullText(p)
+        } catch {
+          // Una parte non testuale non è un errore: semplicemente non contiene testo.
+          return ''
+        }
+      })
+      .join('\n')
     const trovati = [...testo.matchAll(/\{([^{}]+)\}/g)]
       .map((m) => m[1].trim())
       // `#nome` e `/nome` aprono e chiudono un blocco ripetuto: il campo è lo
@@ -130,6 +145,66 @@ function normalizzaValori(valori: Record<string, unknown>): Record<string, unkno
     out[k] = typeof v === 'string' ? v : String(v)
   }
   return out
+}
+
+export interface EsitoVerificaMaster {
+  ok: boolean
+  error?: string
+  /** I segnaposto realmente presenti nel master (corpo, intestazioni, piè di pagina). */
+  campi?: string[]
+  /**
+   * Campi dichiarati in registrazione che nel master non compaiono. È un
+   * AVVISO, non un rifiuto: vedi la nota sotto.
+   */
+  dichiaratiAssenti?: string[]
+}
+
+/**
+ * Controlla che un master .docx sia davvero riempibile, PRIMA di registrarlo.
+ *
+ * Senza questo, `insegna_modello` accettava qualunque `master_drive_id` senza
+ * mai aprire il file e rispondeva *"Modello salvato, da ora puoi chiedermi di
+ * riprodurlo"*. Un PDF al posto di un .docx, o un Word senza un solo `{campo}`,
+ * producevano una registrazione che sembrava riuscita e che in compilazione
+ * restituiva una copia intatta del master, con zero dati dentro. È la stessa
+ * famiglia delle mail dichiarate spedite: il messaggio di successo arriva prima
+ * del fatto.
+ *
+ * **Rifiuta solo ciò di cui è certa** — file illeggibile, zero segnaposto — e
+ * per il resto avvisa. Un primo tentativo di questa guardia rifiutava anche i
+ * campi dichiarati e non trovati: sbagliato in tre modi diversi, perché
+ * `{cliente.nome}` non è il campo `cliente`, `{#voci}` è un blocco e non un
+ * campo, e prima della correzione qui sopra le intestazioni non si leggevano
+ * affatto. Una guardia che blocca il caso normale è peggio del buco che chiude.
+ */
+export function verificaMasterDocx(docx: Buffer, campiDichiarati?: string[]): EsitoVerificaMaster {
+  const letto = estraiSegnaposto(docx)
+  if (!letto.ok) {
+    return { ok: false, error: `Il file indicato non è un .docx leggibile (${letto.error}). Il modello NON è stato registrato.` }
+  }
+
+  const campi = letto.campi ?? []
+  if (campi.length === 0) {
+    return {
+      ok: false,
+      campi: [],
+      error:
+        "Il file non contiene nemmeno un segnaposto: non c'è niente da riempire. " +
+        'Apri il .docx e scrivi i punti variabili come {committente}, {oggetto}, {data} — ' +
+        'poi registralo di nuovo. Il modello NON è stato registrato.',
+    }
+  }
+
+  // Un campo dichiarato ma assente verrebbe chiesto all'utente e poi non
+  // finirebbe da nessuna parte. Si DICE, non si blocca: la corrispondenza non è
+  // mai esatta (`{cliente.nome}` soddisfa un campo `cliente`, un blocco
+  // `{#voci}` dichiara le proprie colonne) e un falso rifiuto renderebbe un
+  // documento valido irregistrabile per sempre.
+  const soddisfatto = (nome: string) =>
+    campi.some((c) => c === nome || c.startsWith(`${nome}.`) || nome.startsWith(`${c}.`))
+  const assenti = (campiDichiarati ?? []).filter((c) => c.trim() !== '' && !soddisfatto(c))
+
+  return { ok: true, campi, ...(assenti.length ? { dichiaratiAssenti: assenti } : {}) }
 }
 
 /**

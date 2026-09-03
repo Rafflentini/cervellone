@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import PizZip from 'pizzip'
 
 vi.mock('./document-templates', () => ({
   getTemplate: vi.fn(),
@@ -8,7 +9,13 @@ vi.mock('./document-templates', () => ({
   normalizeSlug: (s: string) => s.toLowerCase(),
 }))
 vi.mock('./drive', () => ({ uploadBinaryToDrive: vi.fn(), downloadFileBase64: vi.fn() }))
-vi.mock('./template-fill-docx', () => ({ riempiDocx: vi.fn(), estraiSegnaposto: vi.fn() }))
+// `verificaMasterDocx` resta QUELLA VERA: e' il pezzo che decide se un modello
+// e' registrabile, e verificarne un mock non proverebbe niente.
+vi.mock('./template-fill-docx', async (orig) => ({
+  ...(await orig<typeof import('./template-fill-docx')>()),
+  riempiDocx: vi.fn(),
+  estraiSegnaposto: vi.fn(),
+}))
 vi.mock('./pdf-generator', () => ({ generatePdfFromHtml: vi.fn() }))
 vi.mock('@/v19/tools/cigo', () => ({ generaAllegato10Cigo: vi.fn() }))
 
@@ -360,5 +367,121 @@ describe('compila_modello — metodo A_docx: il .docx dell Ingegnere, non una no
 
     expect(out).toMatch(/niente da riempire/i)
     expect(drive.downloadFileBase64).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * insegna_modello con metodo A_docx.
+ *
+ * Prima non esisteva UN SOLO test su questo tool: si poteva registrare un
+ * modello puntando a un PDF, o a un Word senza segnaposto, e la risposta era
+ * "Modello salvato, da ora puoi chiedermi di riprodurlo". Il file non veniva
+ * mai aperto. (audit avversariale 3 set 2026)
+ */
+describe('insegna_modello A_docx — il master si apre PRIMA di dire che e salvato', () => {
+  function zipDocx(paragrafi: string[]): string {
+    const corpo = paragrafi
+      .map((t) => `<w:p><w:r><w:t xml:space="preserve">${t}</w:t></w:r></w:p>`)
+      .join('')
+    const zip = new PizZip()
+    zip.file('[Content_Types].xml',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+      `<Default Extension="xml" ContentType="application/xml"/>` +
+      `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+      `</Types>`)
+    zip.folder('_rels')!.file('.rels',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>` +
+      `</Relationships>`)
+    zip.folder('word')!.file('document.xml',
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+      `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      `<w:body>${corpo}</w:body></w:document>`)
+    return (zip.generate({ type: 'nodebuffer' }) as Buffer).toString('base64')
+  }
+
+  const base = {
+    slug: 'lettera_incarico', titolo: 'Lettera di incarico',
+    tipo_sorgente: 'docx', metodo: 'A_docx', master_drive_id: 'ID_MASTER',
+  }
+
+  it('RIFIUTA un master che non e un .docx e NON registra niente', async () => {
+    ;(drive.downloadFileBase64 as any).mockResolvedValue({
+      base64: Buffer.from('%PDF-1.7 sono un pdf').toString('base64'), name: 'modello.pdf',
+    })
+
+    const out = await executeDocumentTemplateTool('insegna_modello', { ...base, campi: [{ nome: 'committente' }] })
+
+    expect(out).toMatch(/non è un \.docx leggibile/i)
+    expect(dt.createTemplate).not.toHaveBeenCalled()
+  })
+
+  it('RIFIUTA un .docx senza nemmeno un segnaposto', async () => {
+    ;(drive.downloadFileBase64 as any).mockResolvedValue({ base64: zipDocx(['Testo fisso, niente da riempire']), name: 'm.docx' })
+
+    const out = await executeDocumentTemplateTool('insegna_modello', { ...base, campi: [] })
+
+    expect(out).toMatch(/nemmeno un segnaposto/i)
+    expect(dt.createTemplate).not.toHaveBeenCalled()
+  })
+
+  it('REGISTRA un master valido — controllo positivo dei due rifiuti sopra', async () => {
+    // Senza questo, una guardia che rifiuta SEMPRE passerebbe i due test
+    // precedenti e renderebbe il tool inservibile.
+    ;(drive.downloadFileBase64 as any).mockResolvedValue({ base64: zipDocx(['Spett.le {committente}']), name: 'm.docx' })
+    ;(dt.createTemplate as any).mockResolvedValue({ ok: true, slug: 'lettera_incarico' })
+
+    const out = await executeDocumentTemplateTool('insegna_modello', { ...base, campi: [{ nome: 'committente', tipo: 'testo', label: 'Committente' }] })
+
+    expect(out).toMatch(/Modello salvato/)
+    expect(dt.createTemplate).toHaveBeenCalledTimes(1)
+  })
+
+  it('registra l id RIPULITO, lo stesso che ha verificato', async () => {
+    // Un id incollato con uno spazio o un a-capo passava il controllo e poi
+    // falliva per sempre in compilazione.
+    ;(drive.downloadFileBase64 as any).mockResolvedValue({ base64: zipDocx(['{committente}']), name: 'm.docx' })
+    ;(dt.createTemplate as any).mockResolvedValue({ ok: true, slug: 'x' })
+
+    await executeDocumentTemplateTool('insegna_modello', { ...base, master_drive_id: ' ID_MASTER\n', campi: [] })
+
+    expect((drive.downloadFileBase64 as any).mock.calls[0][0]).toBe('ID_MASTER')
+    expect((dt.createTemplate as any).mock.calls[0][0].master_drive_id).toBe('ID_MASTER')
+  })
+
+  it('senza campi dichiarati li legge dal documento', async () => {
+    ;(drive.downloadFileBase64 as any).mockResolvedValue({ base64: zipDocx(['{committente}', '{oggetto}']), name: 'm.docx' })
+    ;(dt.createTemplate as any).mockResolvedValue({ ok: true, slug: 'x' })
+
+    await executeDocumentTemplateTool('insegna_modello', { ...base, campi: [] })
+
+    const campi = (dt.createTemplate as any).mock.calls[0][0].campi
+    expect(campi.map((c: any) => c.nome)).toEqual(['committente', 'oggetto'])
+  })
+
+  it('AVVISA di un campo dichiarato e assente, ma registra lo stesso', async () => {
+    ;(drive.downloadFileBase64 as any).mockResolvedValue({ base64: zipDocx(['{committente}']), name: 'm.docx' })
+    ;(dt.createTemplate as any).mockResolvedValue({ ok: true, slug: 'x' })
+
+    const out = await executeDocumentTemplateTool('insegna_modello', {
+      ...base, campi: [{ nome: 'committente' }, { nome: 'protocollo' }],
+    })
+
+    expect(out).toMatch(/Modello salvato/)
+    expect(out).toMatch(/protocollo/)
+    expect(dt.createTemplate).toHaveBeenCalledTimes(1)
+  })
+
+  it('un campi malformato non fa esplodere il tool', async () => {
+    ;(drive.downloadFileBase64 as any).mockResolvedValue({ base64: zipDocx(['{committente}']), name: 'm.docx' })
+    ;(dt.createTemplate as any).mockResolvedValue({ ok: false, error: 'campi deve essere un array' })
+
+    const out = await executeDocumentTemplateTool('insegna_modello', { ...base, campi: { committente: 'x' } })
+
+    expect(out).not.toMatch(/is not a function/)
+    expect(out).toMatch(/campi deve essere un array/)
   })
 })

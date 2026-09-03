@@ -305,21 +305,73 @@ export async function executeDocumentTemplateTool(
     }
 
     if (name === 'insegna_modello') {
+      const metodo = (input.metodo as DocumentTemplate['metodo']) ?? 'B_html'
+      // `campi` arriva dal modello e lo schema del tool non ne valida la forma:
+      // un array di stringhe, o un oggetto, non devono far esplodere il tool con
+      // "campi.map is not a function". Se non è un array lo si lascia passare
+      // com'è: `createTemplate` ha già il messaggio giusto ("campi deve essere
+      // un array"), e sovrappporgliene un altro peggiora la diagnosi.
+      const campiInput = input.campi
+      let campi = (Array.isArray(campiInput) ? campiInput : []) as CampoModello[]
+      const masterIdPulito = String(input.master_drive_id ?? '').trim()
+      let avvisoCampi = ''
+
+      // A_docx: il master si APRE prima di registrarlo. Senza questo controllo
+      // bastava un master_drive_id non vuoto per rispondere "Modello salvato,
+      // da ora puoi chiedermi di riprodurlo" — anche puntando a un PDF, o a un
+      // Word senza un solo segnaposto. La registrazione sembrava riuscita e la
+      // compilazione restituiva una copia intatta del master, vuota di dati.
+      if (metodo === 'A_docx') {
+        if (!masterIdPulito) return "Il metodo A_docx richiede master_drive_id: l'id del file .docx originale su Drive."
+
+        const { downloadFileBase64 } = await import('./drive')
+        const { verificaMasterDocx } = await import('./template-fill-docx')
+
+        let master: { base64: string; name: string }
+        try {
+          master = await downloadFileBase64(masterIdPulito)
+        } catch (err) {
+          return `Non riesco a scaricare il file master da Drive (${err instanceof Error ? err.message : err}). Il modello NON è stato registrato.`
+        }
+
+        const verifica = verificaMasterDocx(
+          Buffer.from(master.base64, 'base64'),
+          campi.map((c) => c?.nome).filter((n): n is string => typeof n === 'string' && n.trim() !== ''),
+        )
+        if (!verifica.ok) return verifica.error ?? 'Il file master non è utilizzabile. Il modello NON è stato registrato.'
+
+        // Se nessuno ha dichiarato i campi, li dichiara il documento stesso:
+        // è il modo previsto perché nessuno debba trascriverli a mano.
+        if (campi.length === 0) {
+          campi = (verifica.campi ?? []).map((nome) => ({ nome, tipo: 'testo', label: nome, obbligatorio: false } as CampoModello))
+        }
+
+        // I campi dichiarati che nel documento non compaiono si DICONO: verrebbero
+        // chiesti all'utente e poi non finirebbero da nessuna parte.
+        if (verifica.dichiaratiAssenti?.length) {
+          avvisoCampi = `\n\n⚠️ Questi campi sono dichiarati ma nel documento non compaiono: ${verifica.dichiaratiAssenti.join(', ')}. Verrebbero chiesti e poi persi. Segnaposto trovati nel master: ${(verifica.campi ?? []).join(', ')}.`
+        }
+      }
+
       const res = await createTemplate({
         slug: String(input.slug ?? ''),
         titolo: String(input.titolo ?? ''),
         parole_chiave: (input.parole_chiave as string[]) ?? [],
         tipo_sorgente: String(input.tipo_sorgente ?? 'html'),
-        metodo: (input.metodo as DocumentTemplate['metodo']) ?? 'B_html',
-        master_drive_id: (input.master_drive_id as string) ?? null,
+        metodo,
+        // L'id si registra RIPULITO, lo stesso che è stato verificato. Un id
+        // incollato con uno spazio o un a-capo passava il controllo e poi
+        // falliva per sempre in compilazione: proprio la divergenza fra "ciò
+        // che si verifica" e "ciò che si usa" che questa guardia deve chiudere.
+        master_drive_id: masterIdPulito || null,
         html_template: (input.html_template as string) ?? null,
-        campi: (input.campi as CampoModello[]) ?? [],
+        campi: Array.isArray(campiInput) ? campi : (campiInput as CampoModello[]),
         formati_output: (input.formati_output as string[]) ?? ['pdf'],
         dove_salvare: (input.dove_salvare as string) ?? null,
         mai_inviare: input.mai_inviare === undefined ? true : Boolean(input.mai_inviare),
       })
       if (!res.ok) return `Non sono riuscito a salvare il modello: ${res.error}`
-      return `Modello salvato (slug: ${res.slug}). Da ora puoi chiedermi di riprodurlo: ti chiedo solo i dati variabili.`
+      return `Modello salvato (slug: ${res.slug}). Da ora puoi chiedermi di riprodurlo: ti chiedo solo i dati variabili.${avvisoCampi}`
     }
 
     if (name === 'compila_modello') {
