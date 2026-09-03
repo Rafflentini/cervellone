@@ -218,6 +218,14 @@ async function compila(input: Record<string, unknown>): Promise<string> {
     if (mapped.beneficiari.length === 0) {
       return 'Per il CIGO mi servono gli operai coinvolti (cognome, nome, codice fiscale, qualifica, ore TOTALI di stop). Forniscili nella richiesta, oppure salvali una volta come operai abituali con imposta_dati_fissi.'
     }
+    // Zero ore per TUTTI: succede quando i beneficiari arrivano dal fallback
+    // `operai_abituali` dei dati fissi, dove le ore non si salvano — sono
+    // variabili per periodo. La guardia sopra conta le persone, non le ore:
+    // senza questa, il CSV per l'INPS esce con OreCIG=0 su ogni riga, cioe' una
+    // domanda di integrazione salariale che non chiede niente. E nessuno lo dice.
+    if (mapped.beneficiari.every((b) => !b.ore_perse_settimana_1)) {
+      return `Ho ${mapped.beneficiari.length} operai ma NESSUNA ora di sospensione: il pacchetto per l'INPS uscirebbe con zero ore richieste per tutti. Dimmi le ore TOTALI di stop nel periodo per ciascun operaio (le ore cambiano a ogni periodo, per questo non stanno nei dati fissi). Il pacchetto NON e' stato generato.`
+    }
     const out = await generaAllegato10Cigo(mapped, {})
     const zip = (out as { zipBuffer?: Buffer }).zipBuffer
     if (!zip) return 'Non sono riuscito a generare il pacchetto CIGO (ZIP mancante).'

@@ -485,3 +485,59 @@ describe('insegna_modello A_docx — il master si apre PRIMA di dire che e salva
     expect(out).toMatch(/campi deve essere un array/)
   })
 })
+
+describe('CIGO — un pacchetto INPS non parte con zero ore', () => {
+  const tplCigo = {
+    slug: 'cigo_allegato10', titolo: 'CIGO', metodo: 'builtin_cigo',
+    campi: [
+      { nome: 'periodo_dal', label: 'dal', tipo: 'data', obbligatorio: true },
+      { nome: 'periodo_al', label: 'al', tipo: 'data', obbligatorio: true },
+    ],
+    dati_fissi: {}, formati_output: ['pdf'], mai_inviare: true,
+  }
+
+  it('RIFIUTA quando ci sono operai ma nessuno ha ore', async () => {
+    // Il caso vero: i beneficiari arrivano dal fallback operai_abituali dei dati
+    // fissi, dove le ore non si salvano perche cambiano a ogni periodo. La
+    // guardia zero-operai conta le PERSONE e passa; il CSV per l INPS uscirebbe
+    // con OreCIG=0 su ogni riga, senza un avviso. (audit 3 set 2026)
+    ;(dt.getTemplate as any).mockResolvedValue(tplCigo)
+
+    const out = await executeDocumentTemplateTool('compila_modello', {
+      slug: 'cigo_allegato10',
+      valori: {
+        periodo_dal: '2026-06-01', periodo_al: '2026-06-11',
+        operai_abituali: [
+          { cognome: 'ROSSI', nome: 'MARIO', codice_fiscale: 'RSSMRA80A01H501U', qualifica: 'Muratore' },
+          { cognome: 'VERDI', nome: 'LUCA', codice_fiscale: 'VRDLCU90A01F205E', qualifica: 'Manovale' },
+        ],
+      },
+    })
+
+    expect(cigo.generaAllegato10Cigo).not.toHaveBeenCalled()
+    expect(out).toMatch(/zero ore|nessuna ora/i)
+    expect(out).toMatch(/NON e' stato generato/i)
+  })
+
+  it('GENERA quando almeno un operaio ha le ore — controllo positivo', async () => {
+    // Senza questo, un rifiuto incondizionato passerebbe il test qui sopra e
+    // renderebbe il CIGO impossibile da produrre.
+    ;(dt.getTemplate as any).mockResolvedValue(tplCigo)
+    ;(cigo.generaAllegato10Cigo as any).mockResolvedValue({ zipBuffer: Buffer.from('ZIP'), warnings: [] })
+    ;(drive.uploadBinaryToDrive as any).mockResolvedValue({ id: 'z', webViewLink: 'https://drive/ok' })
+
+    const out = await executeDocumentTemplateTool('compila_modello', {
+      slug: 'cigo_allegato10',
+      valori: {
+        periodo_dal: '2026-06-01', periodo_al: '2026-06-11',
+        beneficiari: [
+          { cognome: 'ROSSI', nome: 'MARIO', codice_fiscale: 'RSSMRA80A01H501U', ore: 16 },
+          { cognome: 'VERDI', nome: 'LUCA', codice_fiscale: 'VRDLCU90A01F205E', ore: 0 },
+        ],
+      },
+    })
+
+    expect(cigo.generaAllegato10Cigo).toHaveBeenCalledOnce()
+    expect(out).toContain('https://drive/ok')
+  })
+})
