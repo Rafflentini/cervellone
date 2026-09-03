@@ -252,6 +252,34 @@ export interface MemoriaRunsData {
   /** Run che hanno scartato contenuto illeggibile: memoria persa, ma non un errore. */
   partial_count: number
   missing_dates: string[]
+  /**
+   * Giornate CON messaggi il cui riassunto non dice niente.
+   *
+   * E' il controllo che per tre mesi e' mancato: l'audit verificava che i run
+   * esistessero e fossero `ok`, non che avessero prodotto qualcosa. Misurato a
+   * mano il 3 set 2026: 30 giornate con messaggi, 28 col riassunto "Nessuna
+   * attività rilevante", 927 messaggi archiviati come giornate vuote — e ogni
+   * singolo run era `ok`.
+   *
+   * Il filtro guarda il CONTENUTO: quelle righe non sono vuote, contengono 26
+   * caratteri che dicono una cosa falsa. Un controllo su null/'' non ne
+   * troverebbe nemmeno una. [[feedback_misura_non_e_dato]]
+   */
+  giornate_senza_riassunto: string[]
+  /** Messaggi complessivi in quelle giornate: 2 giornate e 927 messaggi non pesano uguale. */
+  messaggi_senza_riassunto: number
+}
+
+/** La stringa che una giornata scrive quando non e' successo davvero niente. */
+const RIASSUNTO_VUOTO = 'Nessuna attività rilevante'
+
+/** True se il riassunto di una giornata non contiene nulla di utile. */
+export function riassuntoSenzaContenuto(summaryText: string | null | undefined): boolean {
+  const t = String(summaryText ?? '')
+  if (t.startsWith('⚠️ Estrazione non riuscita')) return true
+  // Le parti vengono unite con " | ": una giornata puo' essere fatta di N
+  // "Nessuna attività rilevante" in fila.
+  return t.replace(new RegExp(`${RIASSUNTO_VUOTO}( \\| )?`, 'g'), '').trim() === ''
 }
 
 /**
@@ -295,9 +323,31 @@ export async function collectMemoriaRuns(): Promise<DimensionResult<MemoriaRunsD
     }
   }
 
+  // Il controllo che mancava: non "il run e' girato", ma "ne e' uscito qualcosa".
+  // Volutamente su TUTTO lo storico e non sui 7 giorni: l'arretrato non si
+  // riduce da solo, e un numero che scompare dalla finestra torna invisibile.
+  let giornate_senza_riassunto: string[] = []
+  let messaggi_senza_riassunto = 0
+  const { data: sommari } = await supabase
+    .from('cervellone_summary_giornaliero')
+    .select('data, message_count, summary_text')
+    .gt('message_count', 0)
+    .order('data', { ascending: false })
+  for (const r of (sommari ?? []) as Array<{ data: string; message_count: number; summary_text: string }>) {
+    if (riassuntoSenzaContenuto(r.summary_text)) {
+      giornate_senza_riassunto.push(r.data)
+      messaggi_senza_riassunto += r.message_count ?? 0
+    }
+  }
+  // Le piu' recenti per prime: sono quelle che si rielaborano meglio.
+  giornate_senza_riassunto = giornate_senza_riassunto.slice(0, 60)
+
   return {
     ok: true,
-    data: { runs, ok_count, error_count, partial_count, missing_dates },
+    data: {
+      runs, ok_count, error_count, partial_count, missing_dates,
+      giornate_senza_riassunto, messaggi_senza_riassunto,
+    },
   }
 }
 

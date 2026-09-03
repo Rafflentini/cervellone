@@ -101,7 +101,11 @@ function setCleanCollectors() {
   })
   mockCollectMemoriaRuns.mockResolvedValue({
     ok: true,
-    data: { runs: [], ok_count: 5, error_count: 0, missing_dates: [] },
+    // partial_count e i due campi "senza riassunto" mancavano: il runner ne
+    // legge la lunghezza, e un fixture incompleto faceva collassare TUTTO
+    // l'audit con "Cannot read properties of undefined". Ora l'analizzatore e'
+    // difensivo, ma il fixture deve comunque somigliare al dato vero.
+    data: { runs: [], ok_count: 5, error_count: 0, partial_count: 0, missing_dates: [], giornate_senza_riassunto: [], messaggi_senza_riassunto: 0 },
   })
   mockCollectCostEstimate.mockResolvedValue({
     ok: true,

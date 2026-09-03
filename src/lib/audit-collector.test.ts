@@ -8,6 +8,10 @@ const mockEq = vi.fn()
 const mockGte = vi.fn()
 const mockOrder = vi.fn()
 const mockIn = vi.fn()
+//  serve al controllo "giornate con messaggi ma senza riassunto": la
+// query filtra message_count > 0. Senza, il collector esplode nei test mentre
+// in produzione funziona — una divergenza fra strumento e realta'.
+const mockGt = vi.fn()
 
 // La tabella interrogata va ricordata: collectGmailHealth fa DUE query diverse
 // (gmail_processed_messages e cervellone_config) sulla stessa catena di mock, e
@@ -29,18 +33,20 @@ function resolveWith(data: unknown[], error = null) {
   // Chain terminale è sempre .order() che risolve. .in() è chainabile a .order().
   mockOrder.mockResolvedValue({ data, error })
   mockIn.mockReturnValue({ order: mockOrder })
+  mockGt.mockReturnValue({ order: mockOrder })
   mockGte.mockReturnValue({ order: mockOrder, in: mockIn })
   mockEq.mockReturnValue({ gte: mockGte, order: mockOrder, in: mockIn })
-  mockSelect.mockReturnValue({ gte: mockGte, eq: mockEq, in: mockIn, order: mockOrder })
+  mockSelect.mockReturnValue({ gte: mockGte, gt: mockGt, eq: mockEq, in: mockIn, order: mockOrder })
 }
 
 function resolveError(message: string) {
   const err = { message }
   mockOrder.mockResolvedValue({ data: null, error: err })
   mockIn.mockReturnValue({ order: mockOrder })
+  mockGt.mockReturnValue({ order: mockOrder })
   mockGte.mockReturnValue({ order: mockOrder, in: mockIn })
   mockEq.mockReturnValue({ gte: mockGte, order: mockOrder, in: mockIn })
-  mockSelect.mockReturnValue({ gte: mockGte, eq: mockEq, in: mockIn, order: mockOrder })
+  mockSelect.mockReturnValue({ gte: mockGte, gt: mockGt, eq: mockEq, in: mockIn, order: mockOrder })
 }
 
 beforeEach(() => {
@@ -239,7 +245,7 @@ describe('collectMemoriaRuns — la finestra chiesta e la finestra controllata',
       data: righeNelDb.filter(r => r.date_processed >= sogliaGte),
       error: null,
     }))
-    mockSelect.mockReturnValue({ gte: mockGte, eq: mockEq, in: mockIn, order: mockOrder })
+    mockSelect.mockReturnValue({ gte: mockGte, gt: mockGt, eq: mockEq, in: mockIn, order: mockOrder })
 
     const { collectMemoriaRuns } = await import('./audit-collector')
     const result = await collectMemoriaRuns()
@@ -266,7 +272,7 @@ describe('collectMemoriaRuns — la finestra chiesta e la finestra controllata',
       data: righeNelDb.filter(r => r.date_processed >= sogliaGte),
       error: null,
     }))
-    mockSelect.mockReturnValue({ gte: mockGte, eq: mockEq, in: mockIn, order: mockOrder })
+    mockSelect.mockReturnValue({ gte: mockGte, gt: mockGt, eq: mockEq, in: mockIn, order: mockOrder })
 
     const { collectMemoriaRuns } = await import('./audit-collector')
     const result = await collectMemoriaRuns()
@@ -282,8 +288,9 @@ describe('collectGmailHealth — heartbeat e il buco del fine settimana', () => 
       error: null,
     }))
     mockIn.mockReturnValue({ order: mockOrder })
-    mockGte.mockReturnValue({ order: mockOrder, in: mockIn })
-    mockSelect.mockReturnValue({ gte: mockGte, eq: mockEq, in: mockIn, order: mockOrder })
+    mockGt.mockReturnValue({ order: mockOrder })
+  mockGte.mockReturnValue({ order: mockOrder, in: mockIn })
+    mockSelect.mockReturnValue({ gte: mockGte, gt: mockGt, eq: mockEq, in: mockIn, order: mockOrder })
   }
 
   it('fermo dal venerdi sera non e morto: e il fine settimana', async () => {
@@ -320,5 +327,35 @@ describe('collectGmailHealth — heartbeat e il buco del fine settimana', () => 
 
     expect(result.data!.alertsCronRecent).toBe(false)
     expect(result.data!.summaryCronRecent).toBe(false)
+  })
+})
+
+describe('riassuntoSenzaContenuto — guarda il CONTENUTO, non il vuoto', () => {
+  it('riconosce la stringa che dice "non e successo niente"', async () => {
+    const { riassuntoSenzaContenuto } = await import('./audit-collector')
+    expect(riassuntoSenzaContenuto('Nessuna attività rilevante')).toBe(true)
+    // Le parti vengono unite con " | ": una giornata puo' esserne fatta di N.
+    expect(riassuntoSenzaContenuto('Nessuna attività rilevante | Nessuna attività rilevante')).toBe(true)
+    expect(riassuntoSenzaContenuto('Nessuna attività rilevante | Nessuna attività rilevante | Nessuna attività rilevante')).toBe(true)
+  })
+
+  it('riconosce il marcatore di estrazione fallita', async () => {
+    const { riassuntoSenzaContenuto } = await import('./audit-collector')
+    expect(riassuntoSenzaContenuto('⚠️ Estrazione non riuscita: 74 messaggi in 1 conversazioni, nessun riassunto prodotto. Da rielaborare.')).toBe(true)
+  })
+
+  it('riconosce vuoto e null', async () => {
+    const { riassuntoSenzaContenuto } = await import('./audit-collector')
+    expect(riassuntoSenzaContenuto('')).toBe(true)
+    expect(riassuntoSenzaContenuto(null)).toBe(true)
+    expect(riassuntoSenzaContenuto(undefined)).toBe(true)
+  })
+
+  it('NON scarta un riassunto vero, nemmeno se contiene quella frase in mezzo', async () => {
+    // Controllo positivo. Una giornata reale puo' avere una conversazione vuota
+    // e una piena: quella giornata NON e' da rielaborare.
+    const { riassuntoSenzaContenuto } = await import('./audit-collector')
+    expect(riassuntoSenzaContenuto('L\'ingegnere ha chiesto del caso Blasi Giuseppe.')).toBe(false)
+    expect(riassuntoSenzaContenuto('Nessuna attività rilevante | Recovery automatico del cantiere Paterno')).toBe(false)
   })
 })

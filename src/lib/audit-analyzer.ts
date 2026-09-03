@@ -241,6 +241,28 @@ export function analyze(input: AnalysisInput): AnalysisResult {
         raw: { missing_dates: d.missing_dates },
       })
     }
+
+    // Il controllo che per tre mesi e' mancato. L'audit verificava che i run
+    // esistessero e fossero 'ok', non che avessero prodotto qualcosa: al 3 set
+    // 2026 c'erano 28 giornate con messaggi archiviate come vuote, 927 messaggi,
+    // e OGNI run era 'ok'. Severita' alta: non e' un allarme su un rischio, e'
+    // memoria che manca adesso.
+    // Difensivo con intenzione: un campo assente (dato vecchio, chiamante che
+    // non lo passa) non deve poter far collassare TUTTO l'audit — e' la
+    // patologia che questo file esiste per curare, un piano piu' in basso.
+    const giornateVuote = d.giornate_senza_riassunto ?? []
+    if (giornateVuote.length > 0) {
+      anomalies.push({
+        code: 'MEMORIA_VUOTA',
+        severity: 'high',
+        // Il numero di MESSAGGI e' la parte che rende il dato interpretabile:
+        // "2 giornate" e "927 messaggi" non sono la stessa perdita, e senza
+        // quel numero l'audit le annuncerebbe con la stessa voce.
+        description: `${giornateVuote.length} giornate con messaggi non hanno prodotto alcun riassunto (${d.messaggi_senza_riassunto ?? 0} messaggi archiviati come "nessuna attività"): ${giornateVuote.slice(0, 3).join(', ')}${giornateVuote.length > 3 ? '...' : ''}.`,
+        proposed_action: 'Chiedi al bot "quali giornate sono da rielaborare" e poi "rielabora <data>", una per volta (tool memoria_giornate_da_rielaborare / memoria_rielabora).',
+        raw: { giornate: giornateVuote.slice(0, 20), messaggi: d.messaggi_senza_riassunto ?? 0 },
+      })
+    }
   }
 
   // ── D5: Costo ───────────────────────────────────────────────────────────────

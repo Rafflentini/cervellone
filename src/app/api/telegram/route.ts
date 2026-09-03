@@ -73,7 +73,21 @@ export async function POST(request: NextRequest) {
     const rlKey = hasMediaUpload ? `tg_media_${chatId}` : `tg_${chatId}`
     const rlMax = hasMediaUpload ? 90 : 5
     if (!rateLimit(rlKey, 60_000, rlMax)) {
-      await sendTelegramMessage(chatId, '⚠️ Troppi messaggi. Attenda un momento.')
+      // Il messaggio deve dire cosa e' andato PERSO, non solo di aspettare.
+      // "Troppi messaggi, attenda un momento" suona come un rinvio: l'utente
+      // aspetta e va avanti, convinto che quella foto sia arrivata. Invece
+      // questo webhook viene scartato QUI e il file non esiste da nessuna parte
+      // — la stessa perdita silenziosa del 14 giugno, con un avviso che la
+      // nasconde meglio.
+      //
+      // Il rate limit sta PRIMA del dedup, quindi rimandare lo stesso file
+      // funziona davvero: dirlo e' un consiglio eseguibile, non una scusa.
+      await sendTelegramMessage(
+        chatId,
+        hasMediaUpload
+          ? '⚠️ *Questo file NON è stato salvato*: troppi invii in un minuto.\n\nAttenda una decina di secondi e *lo rimandi* — gli altri file già inviati sono al sicuro.'
+          : '⚠️ Troppi messaggi di fila: questo non è stato preso in carico. Attenda un momento e lo rimandi.',
+      )
       return NextResponse.json({ ok: true })
     }
 

@@ -58,6 +58,9 @@ function cleanInput(): AnalysisInput {
         partial_count: 0,
         error_count: 0,
         missing_dates: [],
+        // Il caso sano: ogni giornata con messaggi ha prodotto un riassunto.
+        giornate_senza_riassunto: [],
+        messaggi_senza_riassunto: 0,
       },
     },
     costEstimate: {
@@ -360,5 +363,55 @@ describe('MODEL_ERROR_HIGH — soglia minima di campione', () => {
     // Non deve piu comparire un "100%" nudo: il numeratore da solo mente.
     expect(testo).not.toMatch(/err 100%/)
     expect(testo).toContain('1 chiamata')
+  })
+})
+
+describe('analyze — MEMORIA_VUOTA: il controllo che per tre mesi e mancato', () => {
+  // L'audit verificava che i run memoria-extract esistessero e fossero 'ok',
+  // non che avessero prodotto qualcosa. Al 3 set 2026: 28 giornate con messaggi
+  // archiviate come vuote, 927 messaggi, e OGNI run era 'ok'. Nessuna anomalia
+  // e' mai stata alzata. [[feedback_misura_non_e_dato]]
+  it('segnala le giornate con messaggi da cui non e uscito nulla', () => {
+    const input = cleanInput()
+    input.memoriaRuns.data!.giornate_senza_riassunto = ['2026-08-17', '2026-08-13', '2026-08-05']
+    input.memoriaRuns.data!.messaggi_senza_riassunto = 198
+
+    const result = analyze(input)
+    const a = result.anomalies.find(x => x.code === 'MEMORIA_VUOTA')
+
+    expect(a).toBeDefined()
+    // Alta: non e' un allarme su un rischio, e' memoria che manca adesso.
+    expect(a!.severity).toBe('high')
+    // Il numero di MESSAGGI e' cio' che rende il dato interpretabile: "3
+    // giornate" e "198 messaggi" non sono la stessa perdita.
+    expect(a!.description).toContain('198')
+    expect(a!.description).toContain('2026-08-17')
+    // L'azione proposta deve essere eseguibile dall'Ingegnere, non un "indaga".
+    expect(a!.proposed_action).toContain('rielabora')
+  })
+
+  it('quando tutte le giornate hanno un riassunto NON alza nulla', () => {
+    // Controllo positivo al contrario: senza, l'anomalia potrebbe scattare
+    // sempre e il test sopra sarebbe verde per il motivo sbagliato.
+    const result = analyze(cleanInput())
+
+    expect(result.anomalies.find(x => x.code === 'MEMORIA_VUOTA')).toBeUndefined()
+  })
+
+  it('run tutti "ok" NON bastano a dichiarare la memoria sana', () => {
+    // E' il cuore del difetto: i run erano ok E la memoria era vuota. Le due
+    // cose devono poter convivere nel report.
+    const input = cleanInput()
+    input.memoriaRuns.data!.ok_count = 30
+    input.memoriaRuns.data!.error_count = 0
+    input.memoriaRuns.data!.partial_count = 0
+    input.memoriaRuns.data!.giornate_senza_riassunto = ['2026-08-17']
+    input.memoriaRuns.data!.messaggi_senza_riassunto = 74
+
+    const result = analyze(input)
+
+    expect(result.anomalies.find(x => x.code === 'MEMORIA_ERROR')).toBeUndefined()
+    expect(result.anomalies.find(x => x.code === 'MEMORIA_PARZIALE')).toBeUndefined()
+    expect(result.anomalies.find(x => x.code === 'MEMORIA_VUOTA')).toBeDefined()
   })
 })
