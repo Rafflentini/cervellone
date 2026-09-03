@@ -196,10 +196,11 @@ describe('runMemoriaExtract', () => {
     // Un errore su una singola conversazione non fa piu fallire l'intera giornata
     expect(result.ok).toBe(true)
     expect(result.skipped_chunks).toBeGreaterThan(0)
-
-    // UPDATE runs con status='partial' deve essere stato chiamato
+    // Nessuna parte e' stata letta → dalla giornata non si e' estratto NULLA.
+    // Non e' 'partial': una giornata di lavoro archiviata come vuota non e' un
+    // esito parzialmente riuscito, ed e' quello che per mesi si e' dichiarato 'ok'.
     expect(mockUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'partial', error_message: expect.stringContaining('illeggibili') })
+      expect.objectContaining({ status: 'error', error_message: expect.stringContaining('illeggibili') })
     )
 
     // summary_giornaliero viene comunque scritto (col fallback, nessun contenuto recuperato)
@@ -208,7 +209,10 @@ describe('runMemoriaExtract', () => {
       args[0] && typeof args[0] === 'object' && 'summary_text' in args[0]
     )
     expect(summaryUpsertCall).toBeDefined()
-    expect(summaryUpsertCall?.[0].summary_text).toBe('Nessuna attività rilevante')
+    // La riga NON puo' dire "nessuna attivita": da una giornata con messaggi non si
+    // e' estratto niente, ed e' la cosa che va detta. Quella stringa e' riservata
+    // alle giornate DAVVERO vuote (ramo msgList.length === 0).
+    expect(summaryUpsertCall?.[0].summary_text).toContain('Estrazione non riuscita')
   })
 
   // ── Test 3a: Errore non-Error lanciato da una parte ────────────────────────
@@ -233,10 +237,17 @@ describe('runMemoriaExtract', () => {
     const { runMemoriaExtract } = await import('./memoria-extract')
     const result = await runMemoriaExtract('2026-05-06')
 
+    // Quello che questo test protegge e' che un rifiuto non-Error non faccia
+    // COLLASSARE la funzione: torna, scrive la riga e dichiara la perdita.
+    // L'asserzione era `status !== 'error'`, usata come sinonimo di "non e'
+    // collassata" — ma dal 3 set 2026 'error' ha un altro significato: "da
+    // questa giornata non si e' estratto niente", che qui e' vero e va detto.
+    // Quindi si verifica l'intenzione vera, non il vecchio sinonimo.
     expect(result.ok).toBe(true)
     expect(result.skipped_chunks).toBeGreaterThan(0)
-    expect(mockUpdate).not.toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'error' })
+    expect(result.error).toBeUndefined()
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ completed_at: expect.any(String) })
     )
   })
 
@@ -493,7 +504,7 @@ describe('runMemoriaExtract — l esito dice QUANTO e stato scartato', () => {
 
     expect(res.skipped_chunks).toBe(1)
     const esito = esitoScritto()
-    expect(esito?.status).toBe('partial')
+    expect(esito?.status).toBe('error') // nulla estratto: la giornata va rielaborata
     // La riga deve dire i caratteri, altrimenti "memoria persa" e "29 caratteri"
     // si leggono allo stesso modo.
     expect(esito?.error_message).toMatch(/caratteri/)
@@ -538,11 +549,109 @@ describe('runMemoriaExtract — l esito dice QUANTO e stato scartato', () => {
     await runMemoriaExtract('2026-08-24')
 
     const esito = esitoScritto()
-    expect(esito?.status).toBe('partial')
+    expect(esito?.status).toBe('partial') // una parte E' stata letta e riassunta: perdita parziale, non totale
     expect(esito?.error_message).toContain('entita scartate')
     // I caratteri contati devono essere SOLO quelli della parte persa: il testo
     // di conv-letta e' stato letto e riassunto, non e' andato perduto.
     const soloLaParsePersa = `[user]: ${persa}`.length
     expect(esito?.error_message).toContain(`(${soloLaParsePersa} caratteri)`)
+  })
+})
+
+describe('runMemoriaExtract — "non ho estratto niente" non puo somigliare a "non e successo niente"', () => {
+  // E' la riga che ha reso il guasto indiagnosticabile per mesi:
+  //   allSummaries.join(' | ') || 'Nessuna attività rilevante'
+  // scriveva la STESSA stringa usata per una giornata davvero vuota. Misurato il
+  // 3 set 2026: 30 giornate con messaggi, 28 con quella stringa, 927 messaggi
+  // archiviati come "non e successo niente" — fra cui il 17 agosto (74 messaggi)
+  // e il 5 agosto (66, il caso Blasi, col cliente nominato dieci volte).
+  // Nessun controllo poteva accorgersene: la riga non era vuota, conteneva 26
+  // caratteri che dicevano una cosa falsa. [[feedback_misura_non_e_dato]]
+  function giornataCon(messaggi: Array<{ conversation_id: string; content: string }>) {
+    mockLte.mockReturnValue({
+      order: vi.fn().mockReturnValue({
+        order: vi.fn().mockResolvedValue({
+          data: messaggi.map((m, i) => ({
+            id: i + 1, conversation_id: m.conversation_id, role: 'user',
+            content: m.content, created_at: '2026-08-05T10:00:00Z',
+          })),
+          error: null,
+        }),
+      }),
+    })
+  }
+  function esitoScritto() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const call = mockUpdate.mock.calls.find((args: any[]) =>
+      args[0] && typeof args[0] === 'object' && 'status' in args[0] && 'completed_at' in args[0]
+    )
+    return call?.[0]
+  }
+  function summaryScritto() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const call = mockUpsert.mock.calls.find((args: any[]) =>
+      args[0] && typeof args[0] === 'object' && 'summary_text' in args[0]
+    )
+    return call?.[0]
+  }
+
+  it('una giornata con messaggi da cui non si estrae nulla lo DICE, e non e "ok"', async () => {
+    giornataCon([{ conversation_id: 'conv-blasi', content: 'il fabbricato di Blasi Giuseppe, controlla se ha saldato' }])
+    // JSON valido ma senza riassunto: parseExtraction riesce, il contenuto no.
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: JSON.stringify({ entita: [], eventi: [] }) }],
+      usage: { input_tokens: 300, output_tokens: 20 },
+      stop_reason: 'end_turn',
+    })
+
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    await runMemoriaExtract('2026-08-05')
+
+    expect(summaryScritto()?.summary_text).toContain('Estrazione non riuscita')
+    expect(summaryScritto()?.summary_text).not.toBe('Nessuna attività rilevante')
+    // Il numero di messaggi va nella riga: "1 messaggi" e "74 messaggi" non sono
+    // la stessa perdita, e l'audit li leggerebbe con la stessa severita'.
+    expect(summaryScritto()?.summary_text).toMatch(/1 messagg/)
+    expect(esitoScritto()?.status).toBe('error')
+    expect(esitoScritto()?.error_message).toMatch(/NESSUN riassunto/)
+  })
+
+  it('una parte letta ma senza riassunto viene CONTATA, non buttata in silenzio', async () => {
+    // Due conversazioni: una risponde, l'altra torna JSON valido senza summary.
+    // Prima questo secondo caso veniva scartato senza incrementare alcun
+    // contatore, quindi il run restava 'ok' e la perdita non lasciava traccia.
+    giornataCon([
+      { conversation_id: 'conv-a', content: 'sopralluogo eseguito da Blasi Giuseppe' },
+      { conversation_id: 'conv-b', content: 'seconda conversazione della giornata' },
+    ])
+    mockCreate
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: JSON.stringify({ summary: 'Sopralluogo eseguito', entita: [], eventi: [] }) }],
+        usage: { input_tokens: 100, output_tokens: 20 },
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: JSON.stringify({ summary: '', entita: [], eventi: [] }) }],
+        usage: { input_tokens: 100, output_tokens: 20 },
+      })
+
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    await runMemoriaExtract('2026-08-05')
+
+    // Qualcosa e' stato estratto → non e' un fallimento totale, ma NON e' 'ok'.
+    expect(esitoScritto()?.status).toBe('partial')
+    expect(esitoScritto()?.error_message).toMatch(/senza riassunto/)
+    expect(summaryScritto()?.summary_text).toContain('Sopralluogo eseguito')
+  })
+
+  it('una giornata DAVVERO vuota continua a dire "Nessuna attività rilevante"', async () => {
+    // Controllo positivo: la stringa non e' stata proibita, e' stata riservata al
+    // caso in cui e' vera. Senza questo test, l'unico modo di far passare i due
+    // sopra sarebbe cancellarla del tutto.
+    giornataCon([]) // nessun messaggio nella finestra del giorno
+    const { runMemoriaExtract } = await import('./memoria-extract')
+    await runMemoriaExtract('2026-05-06')
+
+    expect(summaryScritto()?.summary_text).toBe('Nessuna attività rilevante')
+    expect(esitoScritto()?.status).toBe('ok')
   })
 })

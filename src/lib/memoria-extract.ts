@@ -248,6 +248,8 @@ export async function runMemoriaExtract(
     // Si incrementa SOLO dove la parte e' persa per intero, non dove il testo e'
     // stato letto e riassunto e sono cadute le sole entita.
     let caratteriScartati = 0
+    /** Parti lette ma senza riassunto: perdita muta, prima non contata da nessuno. */
+    let sommariVuoti = 0
 
     for (const [convId, convMsgs] of groups.entries()) {
       const transcript = convMsgs
@@ -284,7 +286,17 @@ export async function runMemoriaExtract(
             console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId} illeggibile (stop_reason=${resp.stop_reason}) — scartati ${chunks[i].length} caratteri`)
             continue
           }
-          if (parsed.summary) allSummaries.push(parsed.summary)
+          if (parsed.summary) {
+            allSummaries.push(parsed.summary)
+          } else {
+            // Il chunk e' stato letto ma non contiene riassunto. Prima veniva
+            // buttato QUI senza incrementare alcun contatore: il run restava 'ok'
+            // e la perdita non lasciava traccia da nessuna parte. E' la terza
+            // porta della stessa malattia (dopo il troncamento e le entita non
+            // ammesse), e l'unica che non era ancora chiusa.
+            sommariVuoti++
+            console.warn(`[memoria-extract] parte ${i + 1}/${chunks.length} di ${convId}: letta ma senza riassunto`)
+          }
           if (Array.isArray(parsed.entita)) {
             allEntita.push(...parsed.entita)
           } else if (parsed.entita !== undefined) {
@@ -320,7 +332,24 @@ export async function runMemoriaExtract(
     })
 
     // Step 7a: Aggrega summary
-    const summaryAggregato = allSummaries.filter(Boolean).join(' | ') || 'Nessuna attività rilevante'
+    //
+    // ⚠️ Qui c'era `|| 'Nessuna attività rilevante'`, ed è la riga che ha reso
+    // il guasto INDIAGNOSTICABILE per mesi. Quella stringa è la stessa che si
+    // scrive per una giornata DAVVERO vuota (vedi il ramo `msgList.length === 0`
+    // sopra): quindi "non sono riuscito a estrarre niente" e "non è successo
+    // niente" finivano nel database identici.
+    //
+    // Misurato il 3 set 2026: 30 giornate con messaggi, 28 con questa stringa,
+    // 927 messaggi archiviati come "non è successo niente" — fra cui il 17 agosto
+    // (74 messaggi) e il 5 agosto (66, il caso Blasi, con il cliente nominato
+    // dieci volte). Nessun controllo poteva accorgersene, perché la riga non era
+    // vuota: conteneva 26 caratteri che dicevano una cosa falsa.
+    //
+    // Ora una giornata con messaggi da cui non si è estratto nulla lo DICE.
+    const nienteEstratto = allSummaries.filter(Boolean).length === 0
+    const summaryAggregato = nienteEstratto
+      ? `⚠️ Estrazione non riuscita: ${msgList.length} messaggi in ${groups.size} conversazioni, nessun riassunto prodotto. Da rielaborare.`
+      : allSummaries.filter(Boolean).join(' | ')
     const conversationIds = Array.from(groups.keys())
     const costUsd = estimateCost(totalInputTokens, totalOutputTokens)
 
@@ -382,7 +411,12 @@ export async function runMemoriaExtract(
     const { error: statusErr } = await supabase
       .from('cervellone_memoria_extraction_runs')
       .update({
-        status: skippedChunks > 0 || entitaScartate > 0 ? 'partial' : 'ok',
+        // `nienteEstratto` non è 'partial': è un fallimento pieno. Una giornata
+        // di lavoro archiviata come vuota non è un esito parzialmente riuscito,
+        // ed è quello che per mesi si è dichiarato 'ok'.
+        status: nienteEstratto
+          ? 'error'
+          : skippedChunks > 0 || entitaScartate > 0 || sommariVuoti > 0 ? 'partial' : 'ok',
         completed_at: new Date().toISOString(),
         conversations_count: conversationIds.length,
         entities_count: entitaSalvate,
@@ -390,7 +424,9 @@ export async function runMemoriaExtract(
         // Il messaggio dice QUALE perdita e' avvenuta: chi legge l'audit non deve
         // dedurre "testo illeggibile" quando invece era un'entita fuori elenco.
         error_message: [
+          nienteEstratto ? `NESSUN riassunto prodotto su ${msgList.length} messaggi: giornata da rielaborare` : null,
           skippedChunks > 0 ? `${skippedChunks} parti illeggibili scartate (${caratteriScartati} caratteri)` : null,
+          sommariVuoti > 0 ? `${sommariVuoti} parti lette ma senza riassunto` : null,
           entitaScartate > 0 ? `${entitaScartate} entita scartate` : null,
         ].filter(Boolean).join(', ') || null,
       })
