@@ -180,6 +180,36 @@ va provato mutando il codice che copre — se il test non muore, non è un test.
 | `runAgentTurn` diventa il nuovo monolite | ~330 righe con una sola responsabilità (un turno agentico). Sink e policy sono le uniche variabili. |
 | Il path Telegram non è coperto oggi → il refactor rompe qualcosa di non testato | È esattamente il motivo per cui i test di caratterizzazione Telegram si scrivono **prima**. |
 
+## Cosa ha trovato l'audit (3 set 2026)
+
+Tre revisori avversariali in parallelo, dopo l'implementazione. Riassunto di cosa è stato corretto e
+cosa resta aperto.
+
+**Corretto prima del deploy:**
+
+| | Difetto | Origine |
+|---|---|---|
+| A1 | Togliendo il rethrow sul web, la pipeline dopo lo stream (`captureArtifact`, salvataggio documenti) girava **anche sulle risposte troncate da un errore**: mezza lettera che finisce con "⚠️ Errore temporaneo" veniva archiviata come bozza pronta, e al turno dopo il modello la ritrovava mutilata. **Regressione introdotta da questo lavoro.** Chiuso con `onApiError` sul sink e sui callback web: la route ora salta l'archiviazione, come faceva l'eccezione. |
+| A2 | Un throw della consegna (il `controller.enqueue` di uno stream chiuso lancia in modo **sincrono**) saltava `recordOutcome` e `logApiUsage` — il breaker restava cieco proprio sui turni finiti male. Chiuso con `consegnaSicura`. Il primo tentativo di correzione (`Promise.resolve(...).catch()`) **non funzionava**, perché valuta la chiamata prima di avvolgerla: l'ha scoperto il test, non la rilettura. |
+| A3 | Una scheda chiusa a metà risposta faceva registrare `api_error` su un modello sano — cinque bastavano a far rollbackare il circuit breaker. Chiuso guardando `controller.enqueue` nella route. |
+| A4 | I tool server-side venivano **ricontati a ogni ri-tentativo** dello stream. Effetto solo sulla telemetria (`detectHallucination` guarda `> 0`), ma il conteggio era falso. |
+| A5 | `logApiUsage` finale non protetto: un blip di Supabase faceva fallire un turno già consegnato. |
+| A6 | Quattro guardie del loop (anti-bugia archiviazione, force-action, rollback del parziale, notifica di ri-tentativo) **non erano tenute ferme da nessun test**: disattivandole i 39 test restavano verdi. Coperte. Il ramo che preserva la risposta parziale dopo un errore a metà turno era scoperto **su entrambi i canali** ed è nuovo sul web. |
+
+**Aperto, non toccato qui — merita il suo lavoro:**
+
+> **Sul web il browser persiste il testo che il loop ha scartato.** `runAgentTurn` riavvolge
+> `fullResponse` in quattro punti (ri-tentativo, anti-bugia, force-action, sintesi), ma il client ha
+> già ricevuto quei delta e a `chat/page.tsx:696` salva l'accumulato. Conseguenza: **sul canale web il
+> force-action e l'anti-bugia non proteggono nulla di ciò che l'utente legge e che rientra come
+> contesto nei turni successivi** — proteggono solo il valore di ritorno. È **preesistente**, identico
+> prima di questo lavoro, e il commento che diceva "sul web il testo già streammato è cosmetico,
+> `fullResponse` persistito resta corretto" era **falso**: sul web nessuno persiste `fullResponse`
+> lato server.
+>
+> La cura giusta non è un marker nello stream: è spostare la persistenza della chat web sul server,
+> che chiude anche la divergenza #5 qui sotto (messaggio perso se il browser crolla). Va progettata.
+
 ## Fuori scopo — ma censito
 
 Il loop è la parte **coperta** della divergenza. Attorno ai due entry-point ce n'è di più, e va

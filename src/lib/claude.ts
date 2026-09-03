@@ -315,6 +315,12 @@ export interface ClaudeRequest {
 export interface ClaudeStreamCallbacks {
   onText: (text: string) => void
   onToolStart?: (toolName: string) => void
+  /**
+   * Il turno e' fallito per un errore dell'API: il testo che arriva e' un
+   * messaggio d'errore, non una risposta. Il chiamante NON deve trattarlo come
+   * lavoro riuscito (archiviare bozze, salvare documenti).
+   */
+  onApiError?: () => void
 }
 
 // ── Cost control (26 mag 2026) ──
@@ -430,8 +436,25 @@ export interface ChannelSink {
   onThinking?(chars: number): void | Promise<void>
   /** Un tool eseguito da Anthropic (web_search, code_execution) e' partito. */
   onServerTool?(name: string): void | Promise<void>
-  /** Un tentativo di stream riparte da capo: il parziale dell'iterazione e' stato buttato. */
+  /**
+   * Sta per partire un tentativo di stream, e il parziale dell'iterazione e'
+   * stato riportato all'inizio.
+   *
+   * ATTENZIONE: scatta prima di OGNI tentativo, incluso il primo, e a ogni
+   * iterazione del tool-loop (vedi `stream-retry.ts`) — non solo sui
+   * ri-tentativi. Serve per azzerare stato per-iterazione (timer di throttling).
+   * NON usarlo per annullare testo gia' consegnato all'utente: cancellerebbe
+   * anche quello delle iterazioni precedenti, che era corretto.
+   */
   onAttemptStart?(): void
+  /**
+   * Il turno e' fallito per un errore dell'API, e quello che segue e' un
+   * messaggio d'errore, non una risposta. Serve al chiamante per NON trattare
+   * il testo come lavoro riuscito: sul web la pipeline dopo lo stream salva
+   * bozze e documenti, e una risposta troncata a meta' verrebbe archiviata come
+   * se fosse finita.
+   */
+  onApiError?(): void
   /** Consegna finale, per i canali che riscrivono il messaggio invece di appendere. */
   onFinal?(text: string): void | Promise<void>
 }
@@ -494,10 +517,28 @@ export async function runAgentTurn(
    * fallback per turno muto. Va fatto uscire dal sink, o su un canale che
    * appende (il web) l'utente non lo vedrebbe mai — restava nel valore di
    * ritorno e basta.
+   *
+   * La consegna non puo' far fallire il turno. `emit` viene usato anche DENTRO
+   * il catch dell'errore API, e li' il sink web scrive su uno stream HTTP che
+   * spesso e' gia' chiuso — e' la disconnessione del client a causare l'errore.
+   * Un throw qui salterebbe recordOutcome e logApiUsage: il circuit breaker
+   * resterebbe cieco proprio sui turni finiti male, cioe' l'unico caso per cui
+   * esiste. Il testo resta comunque in `fullResponse`.
    */
+  const consegnaSicura = async (cosa: string, fn: () => void | Promise<void>) => {
+    // try/catch e non `Promise.resolve(fn()).catch()`: `controller.enqueue` di
+    // uno stream chiuso lancia in modo SINCRONO, quindi l'eccezione uscirebbe
+    // prima ancora che ci sia una Promise da agganciare.
+    try {
+      await fn()
+    } catch (err) {
+      console.warn(`STREAM(${policy.tag}) consegna fallita (${cosa}):`, err instanceof Error ? err.message : err)
+    }
+  }
+
   const emit = async (testo: string) => {
     fullResponse += testo
-    await sink.onText(testo, fullResponse)
+    await consegnaSicura('testo del loop', () => sink.onText(testo, fullResponse))
   }
 
   const cfg = await getConfig()
@@ -534,10 +575,23 @@ export async function runAgentTurn(
       iterations = i + 1
       const iterStartLen = fullResponse.length // confine per scartare il testo-promessa se ri-promptiamo
       let thinkingChars = 0
+      // Tool server-side visti in QUESTA iterazione. Sommati a totalToolCalls solo
+      // quando lo stream e' andato a buon fine: contarli dentro onEvent li faceva
+      // contare di nuovo a ogni ri-tentativo.
+      let serverToolsIter = 0
       // REL-003 + resilienza mid-stream: consumo con retry su errori transitori
       // (overloaded/529/rete/timeout) → un blip a meta' non uccide piu' il turno.
-      // onAttemptStart azzera il parziale dell'iterazione, cosi' un re-tentativo
-      // non duplica nella persistenza.
+      // onAttemptStart riporta il parziale all'inizio dell'iterazione, cosi' il
+      // valore RESTITUITO non contiene il tentativo buttato.
+      //
+      // ATTENZIONE, e non e' un dettaglio: questo NON basta sul canale web. Il
+      // browser ha gia' ricevuto quei delta e persiste cio' che ha ricevuto
+      // (chat/page.tsx), non cio' che questa funzione restituisce. Quindi sul web
+      // il testo scartato — dal ri-tentativo, ma anche dal force-action e
+      // dall'anti-bugia poco sotto — resta nella conversazione salvata e rientra
+      // come contesto nei turni successivi. E' un difetto noto e precedente a
+      // questo refactor; la cura e' spostare la persistenza web sul server.
+      // Vedi docs/superpowers/specs/2026-09-03-loop-unificato-design.md.
       const final = await consumeStreamWithRetry({
         createStream: () => client.messages.stream({
           model: modelConfig.model,
@@ -552,6 +606,12 @@ export async function runAgentTurn(
         onAttemptStart: () => {
           fullResponse = fullResponse.slice(0, iterStartLen)
           thinkingChars = 0
+          // Anche i tool server-side vanno riazzerati: un web_search gia'
+          // annunciato prima che lo stream cadesse verrebbe riemesso dal
+          // tentativo successivo e contato due volte. Il conteggio gonfio rende
+          // detectHallucination MENO propenso a scattare, cioe' fa passare per
+          // riuscito un turno che era una promessa a vuoto.
+          serverToolsIter = 0
           sink.onAttemptStart?.()
         },
         onRetry: (n, err) => console.warn(`STREAM(${policy.tag}) retry ${n}: ${err instanceof Error ? err.message : err}`),
@@ -579,11 +639,12 @@ export async function runAgentTurn(
             // Anthropic e non passano da executeToolBlocks, quindi un turno
             // risolto solo con una ricerca ("Verifico la normativa...") avrebbe
             // totalToolCalls a zero e sarebbe giudicato una promessa a vuoto.
-            totalToolCalls += 1
+            serverToolsIter += 1
             await sink.onServerTool?.(serverToolName)
           }
         },
       })
+      totalToolCalls += serverToolsIter
       accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
       // Guard rail cost-control: stop se la run ha superato il budget token
       if (isRunOverBudget(accUsage, runBudget)) {
@@ -709,7 +770,13 @@ export async function runAgentTurn(
     apiErrorOccurred = true
     const apiError = errorDetails(err)
     apiErrorRecordDetails = apiError.details
-    console.warn(`[STREAM(${policy.tag}) API ERROR] model=${modelConfig.model}: ${apiError.message.slice(0, 200)}`)
+    // `details` e non `message`: contiene anche status= e type=, che sono la
+    // differenza fra "so cos'e' successo" e "un 404 generico". Prima finivano
+    // solo in recordOutcome, che dai log non si legge.
+    console.warn(`[STREAM(${policy.tag}) API ERROR] model=${modelConfig.model}: ${apiErrorRecordDetails.slice(0, 300)}`)
+    // Il chiamante deve sapere che quello che segue e' un errore, non una
+    // risposta: sul web la pipeline post-stream archivia bozze e documenti.
+    try { sink.onApiError?.() } catch { /* la notifica non deve rompere il turno */ }
     if (isBillingError(apiErrorRecordDetails)) {
       // Il .catch() e' necessario: siamo gia' dentro un catch, un errore qui
       // sfuggirebbe e ucciderebbe il turno al posto del messaggio d'errore.
@@ -735,7 +802,9 @@ export async function runAgentTurn(
     await emit('⚠️ Non sono riuscito a sintetizzare una risposta. Riformuli la richiesta o specifichi il file/contesto, per favore.')
   }
   console.log(`STREAM(${policy.tag}) done fullLen=${fullResponse.length} apiError=${apiErrorOccurred}`)
-  await sink.onFinal?.(fullResponse)
+  // Stessa ragione di `emit`: la consegna finale non deve poter impedire la
+  // registrazione dell'esito qui sotto.
+  await consegnaSicura('consegna finale', () => sink.onFinal?.(fullResponse))
 
   if (policy.persistAssistantMessage && conversationId && fullResponse && !apiErrorOccurred) {
     saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
@@ -779,7 +848,11 @@ export async function runAgentTurn(
       apiError: apiErrorOccurred,
       runAborted: isRunOverBudget(accUsage, runBudget),
     },
-  })
+    // Un blip di Supabase sulla contabilita' consumi non deve far fallire un
+    // turno gia' consegnato all'utente: senza il .catch(), la route ci
+    // metterebbe sopra un banner d'errore su una risposta perfettamente
+    // riuscita.
+  }).catch(err => console.error('[api-usage] logApiUsage fallita:', err instanceof Error ? err.message : err))
 
   return fullResponse
 }
@@ -800,6 +873,7 @@ export async function callClaudeStream(
     {
       onText: (delta) => { callbacks.onText(delta) },
       onServerTool: (nome) => { callbacks.onToolStart?.(nome) },
+      onApiError: () => { callbacks.onApiError?.() },
     },
     { tag: 'web', entryPoint: 'chat', persistUserMessage: false, persistAssistantMessage: false },
   )

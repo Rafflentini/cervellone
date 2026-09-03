@@ -150,7 +150,7 @@ vi.mock('./circuit-breaker', async (orig) => {
   }
 })
 
-import { callClaudeStream, callClaudeStreamTelegram } from './claude'
+import { callClaudeStream, callClaudeStreamTelegram, runAgentTurn, type ChannelSink } from './claude'
 
 beforeEach(() => {
   turnIndex = 0
@@ -514,5 +514,140 @@ describe('cio che resta diverso, di proposito', () => {
         expect.objectContaining({ key: 'anthropic_billing_alerted', value: 'false' }),
       )
     }
+  })
+})
+
+// ── Le guardie del loop ──
+// Trovate scoperte dal mutation testing durante l'audit del 3 set 2026:
+// disattivandole i 39 test di parita' restavano tutti verdi. Sono le guardie che
+// impediscono al bot di dichiarare lavoro non fatto — cioe' esattamente quelle
+// che nessuno si accorge se smettono di funzionare.
+describe.each(CANALI)('guardie del loop, canale %s', (_canale, esegui, entryPoint) => {
+  const run = () => esegui(richiestaBase(entryPoint))
+
+  it('non consegna un archivio dichiarato ma mai avvenuto', async () => {
+    // Il modello afferma di aver archiviato le foto senza che nessuna chiamata
+    // ad archivia_foto sia andata a buon fine. Il loop lo ri-promptta UNA volta
+    // e SCARTA la frase falsa, invece di consegnarla all'utente.
+    scriptedTurns = [
+      { text: 'Ho archiviato le foto nella cartella del cantiere.', toolUses: [], stopReason: 'end_turn' },
+      { text: 'Chiedo scusa: quelle foto non risultano ancora archiviate.', toolUses: [], stopReason: 'end_turn' },
+    ]
+
+    const out = await run()
+
+    // Non basta che ci sia la ritrattazione: la bugia non deve restare nel testo.
+    expect(out).not.toContain('Ho archiviato le foto')
+    expect(out).toContain('non risultano ancora archiviate')
+  })
+
+  it('non consegna una promessa al posto dell azione', async () => {
+    // "Ora cerco il file" senza chiamare nessun tool: l'azione NON e' stata
+    // eseguita. Il loop ri-promptta perche' agisca davvero, e scarta la promessa.
+    scriptedTurns = [
+      { text: 'Ora cerco il file sul Drive.', toolUses: [], stopReason: 'end_turn' },
+      { text: '', toolUses: [{ id: 't1', name: 'leggi_intestazione_registro', input: {} }], stopReason: 'tool_use' },
+      { text: 'Trovato: si chiama Registro Cantieri.', toolUses: [], stopReason: 'end_turn' },
+    ]
+
+    const out = await run()
+
+    expect(executedTools).toEqual(['leggi_intestazione_registro'])
+    expect(out).not.toContain('Ora cerco il file')
+    expect(out).toContain('Trovato')
+  })
+
+  it('un errore a meta turno non cancella quello che il bot aveva gia detto', async () => {
+    // Il caso vero: il bot legge 5 mail, comincia la sintesi, poi l'API cade.
+    // Prima del 24 maggio il messaggio d'errore SOVRASCRIVEVA tutto il lavoro
+    // gia' fatto. Il ramo che lo preserva non era coperto da nessun test: i due
+    // test d'errore fallivano alla PRIMA chiamata, quindi esercitavano solo il
+    // caso "nessun testo prodotto".
+    scriptedTurns = [
+      { text: 'Ho letto le prime 5 mail: due sono fatture.', toolUses: [{ id: 't1', name: 'leggi_intestazione_registro', input: {} }], stopReason: 'tool_use' },
+    ]
+    const implNormale = mockStream.getMockImplementation()!
+    mockStream.mockImplementationOnce(implNormale)
+    mockStream.mockImplementationOnce(() => { throw new Error('404 model not found') })
+
+    const out = await run()
+
+    expect(out).toContain('Ho letto le prime 5 mail')
+    expect(out).toContain('temporaneamente non disponibile')
+    expect(out).toContain('risposta parziale')
+    expect(recordOutcomeCalls[0].outcome).toBe('api_error')
+  })
+})
+
+// ── Il contratto fra motore e canale ──
+// `runAgentTurn` e' il motore nudo: qui si verifica che avvisi il canale nei
+// momenti in cui il canale DEVE saperlo. Senza queste notifiche il chiamante web
+// archivia come lavoro finito una risposta troncata da un errore.
+describe('runAgentTurn — cosa il motore promette al canale', () => {
+  function sinkSpia() {
+    const eventi: string[] = []
+    const sink: ChannelSink = {
+      onText: () => { eventi.push('text') },
+      onAttemptStart: () => { eventi.push('attemptStart') },
+      onApiError: () => { eventi.push('apiError') },
+      onFinal: () => { eventi.push('final') },
+      onServerTool: () => { eventi.push('serverTool') },
+    }
+    return { sink, eventi }
+  }
+
+  const policyProva = { tag: 'prova', entryPoint: 'chat', persistUserMessage: false, persistAssistantMessage: false }
+
+  it('avvisa il canale quando il turno e fallito per un errore API', async () => {
+    // E' il segnale che sostituisce l'eccezione che il web rilanciava fino al
+    // 3 set 2026. Senza, la route salva bozze e documenti da una risposta
+    // troncata a meta': "Gentile Ing. ... ⚠️ Errore temporaneo del servizio AI"
+    // finisce archiviata come lettera pronta.
+    mockStream.mockImplementationOnce(() => { throw new Error('404 model not found') })
+    const { sink, eventi } = sinkSpia()
+
+    await runAgentTurn(richiestaBase('chat'), sink, policyProva)
+
+    expect(eventi).toContain('apiError')
+  })
+
+  it('NON avvisa di errore un turno riuscito', async () => {
+    scriptedTurns = [{ text: 'Fatto.', toolUses: [], stopReason: 'end_turn' }]
+    const { sink, eventi } = sinkSpia()
+
+    await runAgentTurn(richiestaBase('chat'), sink, policyProva)
+
+    expect(eventi).not.toContain('apiError')
+    expect(eventi).toContain('final')
+  })
+
+  it('avvisa il canale a ogni ri-tentativo dello stream', async () => {
+    // Telegram ci azzera i timer di consegna: senza, dopo un blip di rete il
+    // messaggio resta fermo sul parziale gia' buttato via.
+    scriptedTurns = [{ text: 'Fatto.', toolUses: [], stopReason: 'end_turn' }]
+    mockStream.mockImplementationOnce(() => { throw new Error('overloaded') })
+    const { sink, eventi } = sinkSpia()
+
+    await runAgentTurn(richiestaBase('chat'), sink, policyProva)
+
+    // Uno per il primo tentativo, uno per il ri-tentativo dopo il 529.
+    expect(eventi.filter(e => e === 'attemptStart').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('una consegna che fallisce non impedisce di registrare l esito', async () => {
+    // Sul web il sink scrive su uno stream HTTP che, quando l'utente chiude la
+    // scheda, e' gia' chiuso e lancia. Se quel throw sfuggisse, salterebbe
+    // recordOutcome: il circuit breaker resterebbe cieco proprio sui turni
+    // finiti male, che sono l'unico motivo per cui esiste.
+    mockStream.mockImplementationOnce(() => { throw new Error('404 model not found') })
+    const sinkRotto: ChannelSink = {
+      onText: () => { throw new Error('Invalid state: Controller is already closed') },
+      onFinal: () => { throw new Error('Invalid state: Controller is already closed') },
+    }
+
+    await runAgentTurn(richiestaBase('chat'), sinkRotto, policyProva)
+
+    expect(recordOutcomeCalls).toHaveLength(1)
+    expect(recordOutcomeCalls[0].outcome).toBe('api_error')
   })
 })

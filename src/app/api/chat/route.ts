@@ -256,22 +256,39 @@ export async function POST(request: NextRequest) {
   const encoder = new TextEncoder()
   const readable = new ReadableStream({
     async start(controller) {
+      // Il turno e' finito su un errore dell'API? Fino al 3 set 2026 lo si
+      // capiva dal fatto che callClaudeStream RILANCIAVA, e il catch qui sotto
+      // saltava tutta l'archiviazione. Ora il motore restituisce un messaggio
+      // leggibile invece di lanciare (parita' con Telegram), quindi il segnale
+      // arriva da qui. Senza, una risposta troncata a meta' — "Gentile Ing. ...
+      // ⚠️ Errore temporaneo del servizio AI" — verrebbe archiviata come bozza
+      // finita, e al turno dopo il modello la ritroverebbe mutilata.
+      let turnoFallito = false
+      // Se il client ha abbandonato (tab chiusa, navigazione), il controller e'
+      // chiuso e enqueue lancia. Non e' un guasto del modello: lasciarlo
+      // propagare farebbe registrare 'api_error' sul modello attivo, e cinque
+      // schede chiuse a meta' basterebbero a far rollbackare un modello sano.
+      const invia = (testo: string) => {
+        try { controller.enqueue(encoder.encode(testo)) } catch { /* client andato via */ }
+      }
       try {
         const fullResponse = await callClaudeStream(
           { messages: trimmedMessages, systemPrompt: await getChatSystemPrompt(userQuery), userQuery, conversationId, hasFiles, workingContext },
           {
-            onText: (text) => controller.enqueue(encoder.encode(text)),
-            onToolStart: () => controller.enqueue(encoder.encode('\n\n🔍 *Cerco informazioni...*\n\n')),
+            onText: (text) => invia(text),
+            onToolStart: () => invia('\n\n🔍 *Cerco informazioni...*\n\n'),
+            onApiError: () => { turnoFallito = true },
           },
         )
 
-        if (conversationId) {
+        if (conversationId && !turnoFallito) {
           captureArtifact(conversationId, fullResponse).catch(() => {})
           captureImageExtraction(conversationId, fullResponse, uploadedImageRefs).catch(() => {})
         }
 
-        // Estrai document blocks e salva come documenti linkabili
-        const responseBlocks = parseDocumentBlocks(fullResponse)
+        // Estrai document blocks e salva come documenti linkabili.
+        // Su turno fallito non si salva niente: il testo e' troncato a meta'.
+        const responseBlocks = turnoFallito ? [] : parseDocumentBlocks(fullResponse)
         const docLinks: string[] = []
 
         for (const block of responseBlocks) {
@@ -297,12 +314,14 @@ export async function POST(request: NextRequest) {
         }
 
         if (docLinks.length > 0) {
-          controller.enqueue(encoder.encode(docLinks.join('\n')))
+          invia(docLinks.join('\n'))
         }
       } catch (err) {
+        // Rete di sicurezza per gli errori NON-API (il motore quelli li gestisce
+        // da se'): guasti della pipeline di archiviazione, Supabase, ecc.
         const msg = err instanceof Error ? err.message : String(err)
         console.error('CHAT error:', msg)
-        controller.enqueue(encoder.encode(`\n\n⚠️ ${msg.slice(0, 300)}`))
+        invia(`\n\n⚠️ ${msg.slice(0, 300)}`)
       } finally {
         controller.close()
       }
