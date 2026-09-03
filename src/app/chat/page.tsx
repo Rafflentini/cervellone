@@ -125,6 +125,10 @@ export default function ChatPage() {
   const pezziAudioRef = useRef<Blob[]>([])
   const inizioRegistrazioneRef = useRef<number>(0)
   const [trascrizioneInCorso, setTrascrizioneInCorso] = useState(false)
+  // True sui browser senza SpeechRecognition: si registra e trascrive il server,
+  // quindi non compare testo mentre si parla e va detto all'utente.
+  const [soloRegistrazione, setSoloRegistrazione] = useState(false)
+  const timerRegistrazioneRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -318,7 +322,14 @@ export default function ChatPage() {
     }, 100)
   }, [messages])
 
+  /** Tetto alla registrazione senza riconoscimento del browser: nessuno la chiude. */
+  const MAX_REGISTRAZIONE_MS = 5 * 60 * 1000
+
   function stopAudioAnalysis() {
+    if (timerRegistrazioneRef.current) {
+      clearTimeout(timerRegistrazioneRef.current)
+      timerRegistrazioneRef.current = null
+    }
     cancelAnimationFrame(animFrameRef.current)
     // PRIMA il registratore, poi le tracce: fermare lo stream per primo lascia
     // MediaRecorder senza l'ultimo blocco di audio, e la dettatura arriverebbe
@@ -438,10 +449,28 @@ export default function ChatPage() {
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!SpeechRecognition) {
-      alert('Il tuo browser non supporta il riconoscimento vocale. Usa Chrome o Edge.')
+      // Niente riconoscimento nel browser (Firefox, Safari vecchi): si registra
+      // e basta, e trascrive il server — lo stesso motore di Telegram.
+      //
+      // Prima qui c'era `alert('Usa Chrome o Edge')`. Aveva senso finche' la
+      // trascrizione avveniva SOLO nel browser; da quando esiste /api/trascrivi
+      // quel messaggio nega una funzione che c'e'. Si perde solo il testo che
+      // compare mentre si parla: la trascrizione arriva quando si smette.
+      setSoloRegistrazione(true)
+      startAudioAnalysis()
+      setIsRecording(true)
+      // Nel modo normale e' il riconoscimento del browser a chiudere da solo sul
+      // silenzio. Qui non c'e' nessuno a farlo: senza un tetto, un microfono
+      // dimenticato aperto registra finche' la pagina resta viva.
+      if (timerRegistrazioneRef.current) clearTimeout(timerRegistrazioneRef.current)
+      timerRegistrazioneRef.current = setTimeout(() => {
+        stopAudioAnalysis()
+        setIsRecording(false)
+      }, MAX_REGISTRAZIONE_MS)
       return
     }
 
+    setSoloRegistrazione(false)
     const recognition = new SpeechRecognition()
     recognition.lang = 'it-IT'
     recognition.continuous = true
@@ -1363,7 +1392,7 @@ export default function ChatPage() {
               value={input}
               onChange={(e) => { setInput(e.target.value); autoResize() }}
               onKeyDown={handleKeyDown}
-              placeholder={isRecording ? 'Sto ascoltando...' : trascrizioneInCorso ? 'Sto trascrivendo...' : 'Scrivi un messaggio...'}
+              placeholder={isRecording ? (soloRegistrazione ? 'Sto registrando... (il testo arriva quando smetti)' : 'Sto ascoltando...') : trascrizioneInCorso ? 'Sto trascrivendo...' : 'Scrivi un messaggio...'}
               rows={1}
               className={`w-full resize-none text-gray-900 placeholder-gray-400 text-sm outline-none bg-transparent max-h-40 ${isRecording ? 'placeholder-red-400' : ''}`}
             />
