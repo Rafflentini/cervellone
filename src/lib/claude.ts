@@ -526,6 +526,8 @@ export async function runAgentTurn(
   let apiErrorOccurred = false
   let apiErrorRecordDetails = ''
   let runAbortedBudget = false
+  /** True appena il loop scrive al posto del modello: il turno non e' lavoro compiuto. */
+  let turnoNonConsegnato = false
 
   /**
    * Avvisa il canale che il turno non e' lavoro compiuto. Va chiamato in TUTTI
@@ -534,6 +536,7 @@ export async function runAgentTurn(
    * archiviare gli altri due.
    */
   const segnalaFallimento = (motivo: MotivoFallimento) => {
+    turnoNonConsegnato = true
     try { sink.onTurnFailed?.(motivo) } catch { /* la notifica non deve rompere il turno */ }
   }
 
@@ -671,15 +674,26 @@ export async function runAgentTurn(
       })
       totalToolCalls += serverToolsIter
       accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
-      // Guard rail cost-control: stop se la run ha superato il budget token
-      if (isRunOverBudget(accUsage, runBudget)) {
+      const toolBlocks = final.content.filter(b => b.type === 'tool_use')
+      // Il modello ha chiuso da solo: non ha chiesto altri tool, il turno e' suo
+      // e finito. Serve al guard rail qui sotto per distinguere "tronco un lavoro
+      // a meta'" da "il lavoro era gia' finito".
+      const modelloHaChiuso = toolBlocks.length === 0 || final.stop_reason === 'end_turn'
+      // Guard rail cost-control: il budget serve a fermare una run che sta
+      // scappando, non a bocciare un lavoro CONCLUSO che per sua natura costava
+      // tanto. Senza `&& !modelloHaChiuso`, un turno completo — documento chiuso,
+      // stop_reason end_turn — che sfiorava il tetto veniva dichiarato fallito:
+      // il chiamante saltava l'archiviazione, la riga in `documents` non veniva
+      // scritta e all'utente arrivava il markup ~~~document grezzo invece del
+      // link. E capita proprio sulle richieste pesanti (preventivo, computo,
+      // POS, SAL), cioe' quelle che non si vogliono perdere.
+      if (isRunOverBudget(accUsage, runBudget) && !modelloHaChiuso) {
         console.warn(`run_aborted_budget: ${runTokens(accUsage)} > ${runBudget} tokens (iter=${iterations})`)
-        await emit('\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._')
         segnalaFallimento('budget')
         runAbortedBudget = true
+        await emit('\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._')
         break
       }
-      const toolBlocks = final.content.filter(b => b.type === 'tool_use')
       totalToolCalls += toolBlocks.length
       const textBlocks = final.content.filter(b => b.type === 'text')
       // Il contatore va aggiornato PRIMA del ramo di uscita: le iterazioni che
@@ -834,7 +848,16 @@ export async function runAgentTurn(
   // registrazione dell'esito qui sotto.
   await consegnaSicura('consegna finale', () => sink.onFinal?.(fullResponse))
 
-  if (policy.persistAssistantMessage && conversationId && fullResponse && !apiErrorOccurred) {
+  // La condizione era `!apiErrorOccurred`, cioe' copriva un motivo su tre: il
+  // testo di un turno muto ("non sono riuscito a sintetizzare") e quello di una
+  // run troncata finivano in `messages` e, superando MIN_EMBEDDING_LENGTH,
+  // venivano EMBEDDATI — quindi recuperabili da searchMemory come se fossero
+  // conoscenza. E' la stessa malattia curata a valle nei chiamanti, lasciata
+  // viva alla sorgente.
+  // NB: cosi' un parziale che l'utente ha letto non entra in memoria. E' una
+  // perdita nota e voluta qui: persistere i parziali marcandoli come tali e'
+  // una decisione a parte (vedi la spec del 3 set).
+  if (policy.persistAssistantMessage && conversationId && fullResponse && !turnoNonConsegnato) {
     saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
   }
 

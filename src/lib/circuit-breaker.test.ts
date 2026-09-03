@@ -242,3 +242,81 @@ describe('recordOutcome — threshold', () => {
     expect(limitMock).toHaveBeenCalled()
   })
 })
+
+describe('recordOutcome — una run troncata dal budget non depone contro il modello', () => {
+  // Il breaker fa rollback dopo 3 esiti non-success su 5. `run_aborted` marca una
+  // run fermata dal guard rail di costo: la richiesta era grossa, il modello non
+  // c'entra. Contarla fra i fallimenti farebbe cadere un modello SANO dopo tre
+  // richieste pesanti di fila — lo stesso falso segnale (misura sbagliata →
+  // rollback immotivato) chiuso il 3 set su web_search e sulle promesse
+  // mantenute. Ma non e' nemmeno un successo: registrarla come tale farebbe
+  // sparire dalla telemetria un runaway da 200K token.
+  //
+  // Senza questi test la regola era solo un commento: mutando l'insieme degli
+  // esiti non imputabili la suite restava verde (audit 3 set).
+  beforeEach(() => {
+    vi.clearAllMocks()
+    invalidateCache()
+  })
+
+  function mockConFinestra(rows: { outcome: string }[]) {
+    const insertMock = vi.fn().mockReturnValue({
+      then: (cb: (arg: { error: null }) => void) => { cb({ error: null }); return Promise.resolve() },
+    })
+    const limitMock = vi.fn().mockResolvedValue({ data: rows, error: null })
+    const orderMock = vi.fn().mockReturnValue({ limit: limitMock })
+    const eqCanary = vi.fn().mockReturnValue({ order: orderMock })
+    const eqModel = vi.fn().mockReturnValue({ eq: eqCanary })
+    const selectMock = vi.fn().mockReturnValue({ eq: eqModel })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(supabase.from as any).mockImplementation(() => ({ insert: insertMock, select: selectMock }))
+    return { limitMock }
+  }
+
+  /** Il breaker logga questa riga subito prima di fare rollback. */
+  function haFattoRollback(spia: ReturnType<typeof vi.spyOn>): boolean {
+    return spia.mock.calls.some((c: unknown[]) => String(c[0] ?? '').includes('threshold tripped'))
+  }
+
+  it('non fa nemmeno partire il controllo della soglia', async () => {
+    const { limitMock } = mockConFinestra([])
+
+    await recordOutcome('claude-opus-latest', 'run_aborted')
+
+    expect(limitMock).not.toHaveBeenCalled()
+  })
+
+  it('tre run troncate su cinque NON fanno scattare il rollback', async () => {
+    mockConFinestra([
+      { outcome: 'run_aborted' },
+      { outcome: 'run_aborted' },
+      { outcome: 'run_aborted' },
+      { outcome: 'success' },
+      { outcome: 'success' },
+    ])
+    const spia = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await recordOutcome('claude-opus-latest', 'empty')
+
+    expect(haFattoRollback(spia)).toBe(false)
+    spia.mockRestore()
+  })
+
+  it('ma tre VERI fallimenti su cinque lo fanno scattare', async () => {
+    // Controllo positivo: senza, il test qui sopra sarebbe verde anche con il
+    // breaker completamente spento.
+    mockConFinestra([
+      { outcome: 'empty' },
+      { outcome: 'hallucination' },
+      { outcome: 'api_error' },
+      { outcome: 'success' },
+      { outcome: 'success' },
+    ])
+    const spia = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await recordOutcome('claude-opus-latest', 'empty')
+
+    expect(haFattoRollback(spia)).toBe(true)
+    spia.mockRestore()
+  })
+})

@@ -757,3 +757,70 @@ describe('gli adattatori pubblici avvisano il chiamante di un turno fallito', ()
     expect(recordOutcomeCalls[0].outcome).toBe('run_aborted')
   })
 })
+
+// ── Il budget non deve bocciare un lavoro gia' finito ──
+describe('budget: troncare una run non e la stessa cosa che concluderla', () => {
+  const LETTERA_COMPLETA =
+    '~~~document\n<h1>Lettera al committente</h1><p>Gentile Ing. Lentini, in riferimento alla Sua del 2 settembre.</p>\n~~~\n' +
+    'Ecco la lettera pronta.'
+
+  it('un turno CONCLUSO che ha sforato il tetto non e un fallimento', async () => {
+    // Il guard rail serve a fermare una run che sta scappando, non a bocciare un
+    // lavoro concluso che per sua natura costava tanto. Con il controllo di
+    // budget prima del break naturale, un turno completo (documento chiuso,
+    // stop_reason end_turn) veniva dichiarato fallito: il chiamante saltava
+    // l'archiviazione, la riga in `documents` non veniva scritta e all'utente
+    // arrivava il markup ~~~document grezzo invece del link. Proprio sulle
+    // richieste pesanti — preventivo, computo, POS, SAL.
+    scriptedTurns = [{ text: LETTERA_COMPLETA, toolUses: [], stopReason: 'end_turn' }]
+    const motivi: MotivoFallimento[] = []
+
+    const out = await callClaudeStream(
+      { ...richiestaBase('chat'), maxRunTokens: 1 } as Richiesta,
+      { onText: () => {}, onTurnFailed: (m) => motivi.push(m) },
+    )
+
+    expect(motivi).toEqual([])
+    expect(out).not.toContain('budget di elaborazione')
+    expect(out).toContain('Lettera al committente')
+    expect(recordOutcomeCalls[0].outcome).toBe('success')
+  })
+
+  it('ma una run che vuole continuare viene troncata davvero', async () => {
+    // Il controllo positivo: senza, il test qui sopra sarebbe soddisfatto anche
+    // da un guard rail completamente disattivato.
+    scriptedTurns = [
+      { text: 'Comincio.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+    ]
+    const motivi: MotivoFallimento[] = []
+
+    const out = await callClaudeStream(
+      { ...richiestaBase('chat'), maxRunTokens: 1 } as Richiesta,
+      { onText: () => {}, onTurnFailed: (m) => motivi.push(m) },
+    )
+
+    expect(motivi).toEqual(['budget'])
+    expect(out).toContain('budget di elaborazione')
+  })
+
+  it('il testo di un turno fallito non entra in memoria, su nessun motivo', async () => {
+    // Superava MIN_EMBEDDING_LENGTH, quindi veniva EMBEDDATO: il "non sono
+    // riuscito a sintetizzare" diventava recuperabile da searchMemory come se
+    // fosse conoscenza. La guardia c'era solo per api_error.
+    for (const [motivo, prepara] of [
+      ['empty', () => { scriptedTurns = [{ text: '', toolUses: [], stopReason: 'end_turn' }] }],
+      ['budget', () => { scriptedTurns = [{ text: 'Comincio.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' }] }],
+    ] as const) {
+      savedMessages.length = 0
+      turnIndex = 0
+      prepara()
+
+      await callClaudeStreamTelegram(
+        { ...richiestaBase('telegram'), maxRunTokens: motivo === 'budget' ? 1 : undefined } as Richiesta,
+        async () => {},
+      )
+
+      expect(savedMessages.map(m => m.role), `motivo ${motivo}`).toEqual(['user'])
+    }
+  })
+})

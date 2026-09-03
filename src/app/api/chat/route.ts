@@ -277,7 +277,7 @@ export async function POST(request: NextRequest) {
           {
             onText: (text) => invia(text),
             onToolStart: () => invia('\n\n🔍 *Cerco informazioni...*\n\n'),
-            onTurnFailed: () => { turnoFallito = true },
+            onTurnFailed: (motivo) => { turnoFallito = true; console.warn(`[chat] turno non consegnato (${motivo}): niente archiviazione`) },
           },
         )
 
