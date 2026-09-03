@@ -111,6 +111,15 @@ export default function ChatPage() {
   const analyserRef = useRef<AnalyserNode | null>(null)
   const animFrameRef = useRef<number>(0)
   const streamRef = useRef<MediaStream | null>(null)
+  // Registrazione dell'audio dettato: gira sullo STESSO stream gia' aperto per
+  // l'animazione delle barrette, quindi non chiede un secondo permesso al
+  // microfono. Serve a far trascrivere la dettatura dal server, con lo stesso
+  // motore di Telegram — il riconoscimento del browser resta solo per mostrare
+  // le parole mentre si parla. Vedi src/app/api/trascrivi/route.ts.
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const pezziAudioRef = useRef<Blob[]>([])
+  const inizioRegistrazioneRef = useRef<number>(0)
+  const [trascrizioneInCorso, setTrascrizioneInCorso] = useState(false)
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -306,6 +315,14 @@ export default function ChatPage() {
 
   function stopAudioAnalysis() {
     cancelAnimationFrame(animFrameRef.current)
+    // PRIMA il registratore, poi le tracce: fermare lo stream per primo lascia
+    // MediaRecorder senza l'ultimo blocco di audio, e la dettatura arriverebbe
+    // al server troncata sul finale — cioe' proprio dove di solito sta la parte
+    // che conta ("...e mandalo a Blasi").
+    if (recorderRef.current) {
+      try { if (recorderRef.current.state !== 'inactive') recorderRef.current.stop() } catch { /* gia' fermo */ }
+      recorderRef.current = null
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop())
       streamRef.current = null
@@ -318,9 +335,62 @@ export default function ChatPage() {
     setAudioLevels([0, 0, 0, 0, 0])
   }
 
+  /**
+   * Manda al server la dettatura appena registrata e, se torna qualcosa di
+   * meglio, sostituisce il testo nella casella.
+   *
+   * Perche' sostituire e non aggiungere: il riconoscimento del browser e quello
+   * del server hanno ascoltato lo STESSO audio. Quello del server conosce i nomi
+   * veri dei clienti e dei cantieri e scarta le frasi che il trascrittore
+   * inventa sul silenzio, quindi vince lui. Se pero' non ha capito nulla, si
+   * tiene quello che aveva scritto il browser: non si peggiora mai.
+   */
+  async function trascriviDalServer(blob: Blob, durataSec: number) {
+    if (blob.size === 0) return
+    setTrascrizioneInCorso(true)
+    try {
+      const form = new FormData()
+      form.append('audio', blob, 'dettatura.webm')
+      form.append('durata', String(durataSec))
+      const res = await fetch('/api/trascrivi', { method: 'POST', body: form })
+      const esito = await res.json().catch(() => null)
+      if (esito?.testo) {
+        setInput(esito.testo)
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto'
+          textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 160) + 'px'
+        }
+      }
+    } catch {
+      // Il testo del browser resta: una trascrizione mancata non deve
+      // cancellare quello che l'Ingegnere ha appena dettato.
+    } finally {
+      setTrascrizioneInCorso(false)
+    }
+  }
+
   function startAudioAnalysis() {
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
       streamRef.current = stream
+
+      // Registrazione parallela sullo stesso stream. Best-effort: se il browser
+      // non supporta MediaRecorder resta la dettatura del browser, come prima.
+      try {
+        pezziAudioRef.current = []
+        inizioRegistrazioneRef.current = Date.now()
+        const rec = new MediaRecorder(stream)
+        rec.ondataavailable = (e) => { if (e.data.size > 0) pezziAudioRef.current.push(e.data) }
+        rec.onstop = () => {
+          const durata = (Date.now() - inizioRegistrazioneRef.current) / 1000
+          const blob = new Blob(pezziAudioRef.current, { type: rec.mimeType || 'audio/webm' })
+          pezziAudioRef.current = []
+          void trascriviDalServer(blob, durata)
+        }
+        recorderRef.current = rec
+        rec.start()
+      } catch {
+        recorderRef.current = null
+      }
       const audioCtx = new AudioContext()
       audioContextRef.current = audioCtx
       const source = audioCtx.createMediaStreamSource(stream)
@@ -1240,7 +1310,7 @@ export default function ChatPage() {
               value={input}
               onChange={(e) => { setInput(e.target.value); autoResize() }}
               onKeyDown={handleKeyDown}
-              placeholder={isRecording ? 'Sto ascoltando...' : 'Scrivi un messaggio...'}
+              placeholder={isRecording ? 'Sto ascoltando...' : trascrizioneInCorso ? 'Sto trascrivendo...' : 'Scrivi un messaggio...'}
               rows={1}
               className={`w-full resize-none text-gray-900 placeholder-gray-400 text-sm outline-none bg-transparent max-h-40 ${isRecording ? 'placeholder-red-400' : ''}`}
             />

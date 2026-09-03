@@ -190,9 +190,11 @@ async function chiediTrascrizione(
   audio: ArrayBuffer,
   modello: string,
   vocabolario: string,
+  mime = 'audio/ogg',
+  nomeFile = 'voice.ogg',
 ): Promise<{ testo?: string; status?: number; errore?: string }> {
   const formData = new FormData()
-  formData.append('file', new Blob([audio], { type: 'audio/ogg' }), 'voice.ogg')
+  formData.append('file', new Blob([audio], { type: mime }), nomeFile)
   formData.append('model', modello)
   formData.append('language', 'it')
   if (vocabolario) formData.append('prompt', vocabolario)
@@ -248,8 +250,29 @@ export async function transcribeAudio(fileId: string, durataSec?: number): Promi
     console.warn('[trascrizione] download fallito:', err instanceof Error ? err.message : err)
     return { testo: '', problema: messaggioPerStatus(undefined) }
   }
-  if (!audio) return { testo: "", problema: messaggioPerStatus(undefined) }
-  console.log(`[trascrizione] audio ricevuto: ${audio.byteLength} byte, durata ${durataSec ?? "?"}s`)
+  if (!audio) return { testo: '', problema: messaggioPerStatus(undefined) }
+  return trascriviBuffer(audio, { durataSec, mime: 'audio/ogg', nomeFile: 'voice.ogg', canale: 'telegram' })
+}
+
+/**
+ * Il cuore della trascrizione, indipendente da dove arriva l'audio.
+ *
+ * Esiste perche' i due canali devono avere lo STESSO orecchio: stesso modello,
+ * stesso vocabolario coi nomi veri, stesso filtro sulle allucinazioni. Fino al
+ * 3 set 2026 il web trascriveva nel browser con `SpeechRecognition` e Telegram
+ * sul server con Whisper — due motori diversi, quindi ogni correzione valeva
+ * per meta' prodotto. Vedi [[feedback_due_canali_equipollenti]].
+ */
+export async function trascriviBuffer(
+  audio: ArrayBuffer,
+  opts: { durataSec?: number; mime?: string; nomeFile?: string; canale?: string } = {},
+): Promise<EsitoTrascrizione> {
+  const { durataSec, mime = 'audio/ogg', nomeFile = 'voice.ogg', canale = '?' } = opts
+
+  console.log(`[trascrizione:${canale}] audio ricevuto: ${audio.byteLength} byte, durata ${durataSec ?? '?'}s`)
+  if (audio.byteLength === 0) {
+    return { testo: '', problema: 'Non è arrivato nessun audio. Riprovi a registrare.' }
+  }
   if (audio.byteLength > MAX_BYTES) {
     return { testo: '', problema: messaggioPerStatus(413) }
   }
@@ -258,26 +281,26 @@ export async function transcribeAudio(fileId: string, durataSec?: number): Promi
 
   let esito: { testo?: string; status?: number; errore?: string }
   try {
-    esito = await chiediTrascrizione(audio, MODELLO_PRINCIPALE, vocabolario)
+    esito = await chiediTrascrizione(audio, MODELLO_PRINCIPALE, vocabolario, mime, nomeFile)
     // Ripiego sul modello vecchio SOLO se il nuovo e' stato rifiutato per come
     // e' fatta la richiesta (modello sconosciuto o non abilitato): 4xx che non
     // siano quota/auth. Un 429 o un 401 si ripresenterebbero identici.
     if (esito.status && esito.status >= 400 && esito.status < 500 && esito.status !== 401 && esito.status !== 403 && esito.status !== 429) {
-      console.warn(`[trascrizione] ${MODELLO_PRINCIPALE} rifiutato (HTTP ${esito.status}), ripiego su ${MODELLO_RIPIEGO}: ${esito.errore}`)
-      esito = await chiediTrascrizione(audio, MODELLO_RIPIEGO, vocabolario)
+      console.warn(`[trascrizione:${canale}] ${MODELLO_PRINCIPALE} rifiutato (HTTP ${esito.status}), ripiego su ${MODELLO_RIPIEGO}: ${esito.errore}`)
+      esito = await chiediTrascrizione(audio, MODELLO_RIPIEGO, vocabolario, mime, nomeFile)
     }
   } catch (err) {
-    console.warn('[trascrizione] chiamata fallita:', err instanceof Error ? err.message : err)
+    console.warn(`[trascrizione:${canale}] chiamata fallita:`, err instanceof Error ? err.message : err)
     return { testo: '', problema: messaggioPerStatus(undefined) }
   }
 
   if (esito.testo === undefined) {
-    console.warn(`[trascrizione] HTTP ${esito.status}: ${esito.errore}`)
+    console.warn(`[trascrizione:${canale}] HTTP ${esito.status}: ${esito.errore}`)
     return { testo: '', problema: messaggioPerStatus(esito.status) }
   }
 
   if (trascrizioneDegenere(esito.testo)) {
-    console.warn(`[trascrizione] degenere, scartata: "${esito.testo.slice(0, 40)}"`)
+    console.warn(`[trascrizione:${canale}] degenere, scartata: "${esito.testo.slice(0, 40)}"`)
     return { testo: '', problema: 'Non ho sentito nulla di comprensibile nel vocale — forse è partito a vuoto. Lo ripeta pure.' }
   }
 
