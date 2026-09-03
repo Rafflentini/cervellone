@@ -45,7 +45,35 @@ async function notifyModelChange(noticeText: string): Promise<void> {
   }
 }
 
+/**
+ * La stringa che una giornata scrive quando non è successo NIENTE. Fino al 3 set
+ * 2026 veniva scritta anche quando l'estrazione non aveva prodotto nulla: le due
+ * cose erano indistinguibili nel database, ed è per questo che 927 messaggi sono
+ * rimasti archiviati come giornate vuote per mesi.
+ */
+const RIASSUNTO_VUOTO = 'Nessuna attività rilevante'
+
 export const SELF_TOOLS: ToolDefinition[] = [
+  {
+    name: 'memoria_giornate_da_rielaborare',
+    description: 'Elenca le giornate in cui ci sono stati messaggi ma la memoria non ha estratto nulla (riassunto "Nessuna attività rilevante" o marcato come non riuscito). Usa questo tool quando l\'Ingegnere chiede "cosa manca nella memoria", "quali giornate sono da rielaborare", o prima di rielaborare la memoria, per sapere da dove partire.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'memoria_rielabora',
+    description: 'Rilancia l\'estrazione della memoria per UNA giornata passata, sovrascrivendo il riassunto esistente. Usa questo tool quando l\'Ingegnere chiede di rielaborare/recuperare la memoria di un giorno. Costa una chiamata al modello (qualche centesimo) e richiede fino a un minuto: una giornata per volta. Riporta sempre cosa è uscito, cosi si vede se è servito.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        data: { type: 'string', description: 'Giornata da rielaborare, formato YYYY-MM-DD (es. 2026-08-05)' },
+      },
+      required: ['data'],
+    },
+  },
   {
     name: 'modifica_skill',
     description: 'Modifica le istruzioni di una skill/reparto. Salva la versione precedente per rollback.',
@@ -125,6 +153,78 @@ export const SELF_TOOLS: ToolDefinition[] = [
 
 export async function executeSelfTools(name: string, input: Record<string, unknown>, _conversationId?: string): Promise<string | null> {
   switch (name) {
+    case 'memoria_giornate_da_rielaborare': {
+      // Il filtro guarda il CONTENUTO, non il vuoto: quelle righe non sono
+      // vuote, contengono 26 caratteri che dicono una cosa falsa. Un controllo
+      // su `summary_text is null or = ''` non ne troverebbe nemmeno una.
+      const { data, error } = await supabase
+        .from('cervellone_summary_giornaliero')
+        .select('data, message_count, summary_text')
+        .gt('message_count', 0)
+        .order('data', { ascending: false })
+
+      if (error) return `Non riesco a leggere lo stato della memoria: ${error.message}`
+      const daFare = (data ?? []).filter((r: { summary_text?: string | null }) => {
+        const t = String(r.summary_text ?? '')
+        // Il riassunto è fatto solo di "Nessuna attività rilevante" ripetuto (le
+        // parti vengono unite con " | "), oppure è il marcatore di fallimento.
+        const resto = t.replace(new RegExp(`${RIASSUNTO_VUOTO}( \\| )?`, 'g'), '').trim()
+        return resto === '' || t.startsWith('⚠️ Estrazione non riuscita')
+      })
+
+      if (daFare.length === 0) return 'Nessuna giornata da rielaborare: tutte quelle con messaggi hanno un riassunto.'
+
+      const messaggiTotali = daFare.reduce((s: number, r: { message_count?: number }) => s + (r.message_count ?? 0), 0)
+      const righe = daFare
+        .map((r: { data: string; message_count?: number }) => `• ${r.data} — ${r.message_count ?? 0} messaggi`)
+        .join('\n')
+      return `${daFare.length} giornate da rielaborare, ${messaggiTotali} messaggi in tutto:\n${righe}\n\nPer recuperarne una: memoria_rielabora con quella data. Una per volta.`
+    }
+
+    case 'memoria_rielabora': {
+      const data = String(input.data ?? '').trim()
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+        return 'Mi serve la data nel formato YYYY-MM-DD (es. 2026-08-05).'
+      }
+      // Solo giornate CHIUSE: rielaborare oggi produrrebbe un riassunto parziale
+      // e sposterebbe il segnaposto su una giornata non finita.
+      const oggi = new Date().toISOString().slice(0, 10)
+      if (data >= oggi) {
+        return `${data} non è ancora una giornata chiusa: la memoria si estrae il giorno dopo. Riprova domani, o scegli una data passata.`
+      }
+
+      const { runMemoriaExtract } = await import('../memoria-extract')
+      // forced = true: salta l'idempotenza E non sposta il segnaposto del cron.
+      // Senza, una rielaborazione a mano farebbe credere al giro automatico della
+      // notte di aver già fatto il suo lavoro.
+      const esito = await runMemoriaExtract(data, true)
+
+      if (!esito.ok) return `Rielaborazione di ${data} fallita: ${esito.error ?? 'motivo non riportato'}`
+
+      const { data: riga } = await supabase
+        .from('cervellone_summary_giornaliero')
+        .select('summary_text, message_count')
+        .eq('data', data)
+        .maybeSingle()
+      const riassunto = String(riga?.summary_text ?? '')
+
+      // L'esito dice cosa e' USCITO, non solo che il comando e' andato: un
+      // "fatto" su un riassunto ancora vuoto e' la stessa bugia di prima.
+      const nonRiuscita = riassunto.startsWith('⚠️ Estrazione non riuscita') || riassunto === RIASSUNTO_VUOTO
+      const testa = nonRiuscita
+        ? `⚠️ ${data} rielaborata, ma NON è uscito niente di nuovo.`
+        : `✅ ${data} rielaborata.`
+      return [
+        testa,
+        `Messaggi letti: ${riga?.message_count ?? esito.conversations}`,
+        `Conversazioni: ${esito.conversations} · entità estratte: ${esito.entities}`,
+        esito.skipped_chunks ? `Parti scartate: ${esito.skipped_chunks}` : null,
+        `Costo: ${esito.cost_usd.toFixed(4)} $`,
+        '',
+        `Riassunto ora in memoria:\n${riassunto.slice(0, 1200)}`,
+      ].filter(Boolean).join('\n')
+    }
+
     case 'cervellone_info': {
       const { data: config } = await supabase
         .from('cervellone_config')
