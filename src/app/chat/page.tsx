@@ -116,6 +116,11 @@ export default function ChatPage() {
   // microfono. Serve a far trascrivere la dettatura dal server, con lo stesso
   // motore di Telegram — il riconoscimento del browser resta solo per mostrare
   // le parole mentre si parla. Vedi src/app/api/trascrivi/route.ts.
+  // Messaggi scritti mentre il bot stava ancora rispondendo. Il ref e' la fonte
+  // di verita' (le closure di sendMessage vedono lo stato vecchio); `coda` serve
+  // solo a mostrarli.
+  const codaRef = useRef<Array<{ text: string; files: FileAttachment[] }>>([])
+  const [coda, setCoda] = useState<string[]>([])
   const recorderRef = useRef<MediaRecorder | null>(null)
   const pezziAudioRef = useRef<Blob[]>([])
   const inizioRegistrazioneRef = useRef<number>(0)
@@ -611,18 +616,37 @@ export default function ChatPage() {
     setPendingFiles(prev => prev.filter((_, i) => i !== index))
   }
 
-  async function sendMessage() {
-    const text = input.trim()
-    if ((!text && pendingFiles.length === 0) || loading) return
+  async function sendMessage(daCoda?: { text: string; files: FileAttachment[] }) {
+    const text = (daCoda?.text ?? input).trim()
+    const files = daCoda?.files ?? pendingFiles
+    if (!text && files.length === 0) return
 
-    // Cancella richiesta precedente se ancora in corso
-    if (abortControllerRef.current) {
+    // Un messaggio scritto MENTRE il bot lavora non si perde: va in coda e parte
+    // appena il turno finisce.
+    //
+    // Prima qui c'era `|| loading` nella guardia sopra: premere Invio durante
+    // l'elaborazione non faceva assolutamente NIENTE, in silenzio. Su Telegram
+    // lo stesso messaggio finisce in `telegram_coda` (fix del 2 settembre) e
+    // viene ripreso dopo — un'altra funzione costruita per un canale solo.
+    // Vedi [[feedback_due_canali_equipollenti]].
+    if (loading && !daCoda) {
+      codaRef.current = [...codaRef.current, { text, files: [...files] }]
+      setCoda(codaRef.current.map((m) => m.text))
+      setInput('')
+      setPendingFiles([])
+      if (textareaRef.current) textareaRef.current.style.height = 'auto'
+      return
+    }
+
+    // L'abort vale solo per un turno che si sta SOSTITUENDO, non per i messaggi
+    // in coda: annullarlo qui ucciderebbe la risposta che il bot sta scrivendo.
+    if (abortControllerRef.current && !daCoda) {
       abortControllerRef.current.abort()
     }
     abortControllerRef.current = new AbortController()
 
     // Avviso se troppi file PDF/immagini — il context window ha un limite
-    const heavyFiles = pendingFiles.filter(f => f.isPdf || f.isImage)
+    const heavyFiles = files.filter(f => f.isPdf || f.isImage)
     if (heavyFiles.length > 3) {
       const proceed = confirm(
         `Stai allegando ${heavyFiles.length} file pesanti.\n` +
@@ -643,7 +667,7 @@ export default function ChatPage() {
       setCurrentConvId(convId)
     }
 
-    const userMsg: DisplayMessage = { role: 'user', text, files: pendingFiles.length > 0 ? [...pendingFiles] : undefined }
+    const userMsg: DisplayMessage = { role: 'user', text, files: files.length > 0 ? [...files] : undefined }
     const newMessages = [...messages, userMsg]
     setInput('')
     setPendingFiles([])
@@ -803,6 +827,21 @@ export default function ChatPage() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
   }
+
+  // Drena la coda quando il turno finisce. Sta in un effetto e non nel `finally`
+  // di sendMessage per un motivo preciso: dentro il finally `loading` e' ancora
+  // `true` nello stato React (setLoading e' asincrono), quindi la chiamata
+  // ricorsiva rimetterebbe il messaggio in coda invece di mandarlo — un ciclo
+  // infinito silenzioso.
+  useEffect(() => {
+    if (loading) return
+    if (codaRef.current.length === 0) return
+    const prossimo = codaRef.current[0]
+    codaRef.current = codaRef.current.slice(1)
+    setCoda(codaRef.current.map((m) => m.text))
+    void sendMessage(prossimo)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading])
 
   // Carica progetti esistenti
   async function refreshProjects() {
@@ -1303,6 +1342,20 @@ export default function ChatPage() {
             onChange={handleFileInput}
           />
 
+          {/* Messaggi in coda: scritti mentre il bot stava ancora rispondendo.
+              Mostrarli e' il punto — altrimenti sembrano spariti, che e'
+              esattamente com'era prima (l'Invio non faceva nulla, in silenzio). */}
+          {coda.length > 0 && (
+            <div className="max-w-3xl mx-auto mb-2 space-y-1">
+              {coda.map((testo, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs text-gray-500 bg-gray-100 rounded-xl px-3 py-2">
+                  <span className="shrink-0">⏳ In coda</span>
+                  <span className="truncate">{testo}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Box input floating */}
           <div className="max-w-3xl mx-auto border border-gray-300 rounded-2xl shadow-sm bg-white px-4 py-3 focus-within:border-blue-400 focus-within:shadow-md transition-all">
             <textarea
@@ -1349,8 +1402,8 @@ export default function ChatPage() {
                 )}
               </div>
               <button
-                onClick={sendMessage}
-                disabled={loading || (!input.trim() && pendingFiles.length === 0)}
+                onClick={() => sendMessage()}
+                disabled={!input.trim() && pendingFiles.length === 0}
                 className="bg-gray-800 hover:bg-gray-900 disabled:opacity-30 text-white rounded-full w-8 h-8 flex items-center justify-center transition-colors"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
