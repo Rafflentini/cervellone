@@ -76,14 +76,12 @@ describe('separazione fra scrittura del messaggio e generazione embedding', () =
   })
 })
 
-describe('il path web non scrive piu lato server', () => {
-  it('claude.ts chiama saveMessageWithEmbedding solo nei path Telegram e nel codice morto', async () => {
-    const { readFileSync } = await import('node:fs')
-    const src = readFileSync('src/lib/claude.ts', 'utf-8')
-    const chiamate = src.match(/saveMessageWithEmbedding\(/g) ?? []
-
-    // 2 nel path Telegram (user + assistant) + 2 in callClaude, che e codice morto.
-    // Se qualcuno reintroduce le scritture del path web questo numero torna a 6.
-    expect(chiamate).toHaveLength(4)
-  })
-})
+// L'invariante "il path web non scrive lato server" era controllata qui con un
+// grep sul sorgente di claude.ts, contando le occorrenze di
+// `saveMessageWithEmbedding(`. Dal 3 set 2026 i due canali condividono un solo
+// loop e la scrittura e' decisa dalla policy del canale: il conteggio resterebbe
+// giusto anche mettendo `persistUserMessage: true` sul web, cioe' resterebbe
+// VERDE proprio mentre il difetto torna.
+//
+// Il controllo vero ora sta in `claude.loop-parity.test.ts` → "Telegram scrive i
+// messaggi a DB, il web no": esegue davvero i due loop e guarda chi ha scritto.

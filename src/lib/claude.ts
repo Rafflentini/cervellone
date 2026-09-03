@@ -9,7 +9,6 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getToolDefinitions, executeTool } from './tools'
 import { searchMemory, saveMessageWithEmbedding } from './memory'
 import { logError } from './sanitize'
-import { withRetry } from './resilience'
 import { consumeStreamWithRetry } from './stream-retry'
 import { supabase } from './supabase'
 import { recordOutcome, getActiveModel, detectHallucination, isCompletedOrConditional, claimsArchiveCompletion, type ModelOutcome } from './circuit-breaker'
@@ -308,7 +307,7 @@ export interface ClaudeRequest {
    * Budget token per run (input non-cached + cache_creation + output).
    * Default: MAX_RUN_TOKENS (200K). Il path durable passa MAX_DURABLE_RUN_TOKENS (1M)
    * per consentire task legittime lunghe 30-60 min senza triggering prematuro del guard.
-   * Usato SOLO in callClaudeStreamTelegram; gli altri due loop usano il default fisso.
+   * Onorato da tutti i canali (fino al 3 set 2026 il loop web lo ignorava).
    */
   maxRunTokens?: number
 }
@@ -394,18 +393,85 @@ function archiveToolSucceededIn(toolBlocks: any[], toolResults: any[]): boolean 
   return false
 }
 
-export async function callClaudeStream(
+// ── Il loop agentico: uno solo, per tutti i canali ──
+//
+// Fino al 3 settembre 2026 questa parte era scritta DUE volte, una per la chat
+// web e una per Telegram, piu' una terza copia non-streaming che nessuno
+// chiamava. Le tre copie divergevano: il 2 settembre la chat web moriva a meta'
+// turno per un `break` che Telegram si era tolto il 24 maggio.
+//
+// Da qui in avanti il turno e' uno. Del canale restano due cose sole: dove esce
+// il testo (`ChannelSink`) e quattro scelte esplicite (`ChannelPolicy`).
+// La prova che non si ri-biforchino sta in `claude.loop-parity.test.ts`, che
+// esegue gli stessi casi su entrambi gli entry-point.
+
+/** Numero massimo di giri modello→tool→modello in un turno (PER-004). */
+const MAX_ITERATIONS = 10
+/**
+ * Giri consecutivi senza testo dopo i quali si forza la sintesi con
+ * tool_choice=none. Sotto questo valore i flussi legittimi a piu' tool si
+ * romperebbero (il self-heal ne usa fino a 5: read_file + propose_fix + status).
+ */
+const NO_TEXT_LIMIT = 5
+
+/**
+ * Dove esce quello che il modello produce. E' l'unica cosa che i due canali
+ * fanno davvero diversa: il web appende i delta allo stream HTTP, Telegram
+ * riscrive lo stesso messaggio ogni pochi secondi.
+ */
+export interface ChannelSink {
+  /**
+   * Testo prodotto dal modello (o dal loop stesso: errori, fallback, avvisi di
+   * budget). `delta` e' il solo incremento, `accumulated` tutto il turno finora.
+   * Il web usa `delta`, Telegram `accumulated`.
+   */
+  onText(delta: string, accumulated: string): void | Promise<void>
+  /** Progresso durante il reasoning. Chiamato SOLO finche' non c'e' ancora testo. */
+  onThinking?(chars: number): void | Promise<void>
+  /** Un tool eseguito da Anthropic (web_search, code_execution) e' partito. */
+  onServerTool?(name: string): void | Promise<void>
+  /** Un tentativo di stream riparte da capo: il parziale dell'iterazione e' stato buttato. */
+  onAttemptStart?(): void
+  /** Consegna finale, per i canali che riscrivono il messaggio invece di appendere. */
+  onFinal?(text: string): void | Promise<void>
+}
+
+/** Le uniche scelte per-canale che restano. Quattro, non trecento. */
+export interface ChannelPolicy {
+  /** Etichetta nei log: 'web' | 'tg'. */
+  tag: string
+  /** entry_point di default per il logging consumi API. */
+  entryPoint: string
+  /** Scrivere il messaggio UTENTE a DB. Il web no: lo fa gia' il browser (altrimenti due righe). */
+  persistUserMessage: boolean
+  /** Scrivere la risposta ASSISTANT a DB. Idem. */
+  persistAssistantMessage: boolean
+}
+
+/** Traduce un errore API in una frase che l'utente possa capire. */
+function messaggioErroreUtente(message: string, details: string): string {
+  if (/not_found_error|404/i.test(message)) {
+    return '⚠️ Modello AI temporaneamente non disponibile. Il sistema sta cercando di recuperare automaticamente, riprovi tra un momento.'
+  }
+  if (/overloaded|529/i.test(message)) return '⚠️ Servizio AI sovraccarico. Riprovi tra qualche secondo.'
+  if (isBillingError(details)) return '⚠️ Crediti API esauriti. L\'Ingegnere è stato avvisato.'
+  if (/rate.?limit|429/i.test(message)) return '⚠️ Troppe richieste al servizio AI. Attenda un momento.'
+  return '⚠️ Errore temporaneo del servizio AI. Riprovi tra qualche secondo.'
+}
+
+export async function runAgentTurn(
   request: ClaudeRequest,
-  callbacks: ClaudeStreamCallbacks,
+  sink: ChannelSink,
+  policy: ChannelPolicy,
 ): Promise<string> {
   const { systemPrompt, userQuery, conversationId } = request
 
   const memoryContext = await searchMemory(userQuery).catch(() => '')
   const systemBlocks = buildCachedSystem(systemPrompt, memoryContext, request.workingContext)
 
-  // NB: qui NON si scrive in `messages`. Sul path web la riga la scrive il browser
-  // (POST /api/conversations/[id]/messages), che sanitizza e genera l'embedding.
-  // Scriverla anche qui produceva due righe per ogni turno.
+  if (policy.persistUserMessage && conversationId && userQuery) {
+    saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: any[] = getToolDefinitions()
@@ -420,392 +486,24 @@ export async function callClaudeStream(
   // Serve a detectHallucination: senza, "ho cercato il file" verrebbe giudicato
   // una promessa a vuoto anche quando i tool sono stati eseguiti davvero.
   let totalToolCalls = 0
-  const MAX_ITERATIONS = 10 // PER-004 fix
-  const NO_TEXT_LIMIT = 5 // stesso valore del path Telegram: sotto, i flussi legittimi a piu' tool si romperebbero
-
-  const cfg = await getConfig()
-  const fileBlocks = extractLatestFileBlocks(request.messages)
-  const cheap = await shouldUseCheapModel(userQuery, fileBlocks)
-  // Parita' col path Telegram (che fa lo stesso, vedi callClaudeStreamTelegram):
-  // se il circuit breaker ha fatto rollback, `model_active` e' il modello buono
-  // e `model_default` puo' essere quello rotto. Leggendo solo cfg.model la chat
-  // web restava sul rotto mentre Telegram era gia' tornato a funzionare.
-  const activeModel = await getActiveModel().catch(() => cfg.model)
-  const effectiveModel = cheap ? CHEAP_MODEL : activeModel
-  const isOpus = effectiveModel.includes('opus')
-  const modelConfig: ModelConfig = {
-    model: effectiveModel,
-    thinkingBudget: resolveThinkingBudget(userQuery, isOpus),
-    maxTokens: isOpus ? 32_000 : 16_000,
-  }
-  console.log(`MODEL(web): ${effectiveModel} (cheap=${cheap}) for "${userQuery.slice(0, 50)}"`)
-  const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget, isDeepThink(userQuery))
-
-  // Senza questo try, un errore API risale alla route e `recordOutcome` in fondo
-  // non viene MAI eseguito — cioe' proprio il caso (modello rotto, 404) per cui
-  // il circuit breaker esiste. Telegram ce l'ha; portare il breaker sul web
-  // senza il try sarebbe stato teatro: il pezzo che fa scattare il rollback e'
-  // esattamente questo. L'eccezione viene RILANCIATA, perche' la route mostra
-  // gia' l'errore all'utente e quel comportamento non deve cambiare.
   let apiErrorOccurred = false
-  try {
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
-    iterations = i + 1
-    const iterStartLen = fullResponse.length // force-action: confine per scartare il testo-promessa se ri-promptiamo
-    // REL-003 + resilienza mid-stream: consumo con retry su errori transitori (overloaded/529/
-    // rete/timeout). onAttemptStart azzera il parziale dell'iterazione (fullResponse a iterStartLen
-    // così un re-tentativo non duplica nella persistenza; sul web il testo già
-    // streammato è cosmetico, fullResponse persistito resta corretto.
-    const final = await consumeStreamWithRetry({
-      createStream: () => client.messages.stream({
-        model: modelConfig.model,
-        max_tokens: modelConfig.maxTokens,
-        system: systemBlocks,
-        messages: currentMessages,
-        tools,
-        ...modelOpts,
-      }, {
-        headers: { 'anthropic-beta': 'files-api-2025-04-14' },
-      }),
-      onAttemptStart: () => { fullResponse = fullResponse.slice(0, iterStartLen) },
-      onRetry: (n, err) => console.warn(`STREAM(web) retry ${n}: ${err instanceof Error ? err.message : err}`),
-      onEvent: (event) => {
-        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-          fullResponse += event.delta.text
-          callbacks.onText(event.delta.text)
-        }
-        if (event.type === 'content_block_start' && (event as any).content_block?.type === 'server_tool_use') {
-          const serverToolName = (event as any).content_block?.name ?? 'server_tool'
-          // Contati anche questi: web_search e code_execution girano lato
-          // Anthropic e non passano da executeToolBlocks, quindi un turno
-          // risolto solo con una ricerca ("Verifico la normativa...") avrebbe
-          // totalToolCalls a zero e sarebbe giudicato una promessa a vuoto.
-          totalToolCalls += 1
-          callbacks.onToolStart?.(serverToolName)
-        }
-      },
-    })
-    accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
-    // Guard rail cost-control: stop se la run ha superato il budget token
-    if (isRunOverBudget(accUsage)) {
-      console.warn(`run_aborted_budget: ${runTokens(accUsage)} > ${MAX_RUN_TOKENS} tokens (iter=${iterations})`)
-      fullResponse += '\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._'
-      break
-    }
-    const toolBlocks = final.content.filter(b => b.type === 'tool_use')
-    totalToolCalls += toolBlocks.length
-    // Il contatore va aggiornato PRIMA del ramo di uscita, come su Telegram:
-    // le iterazioni che fanno `continue` (anti-bugia, force-action) hanno sempre
-    // testo, quindi devono azzerarlo. Aggiornandolo dopo, restavano fuori e il
-    // numero salvato in api_usage non era il vero conteggio consecutivo.
-    const textBlocks = final.content.filter(b => b.type === 'text')
-    if (textBlocks.length === 0) consecutiveNoText++
-    else consecutiveNoText = 0
-    console.log(`STREAM(web) iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} texts=${textBlocks.length} fullLen=${fullResponse.length} consNoText=${consecutiveNoText}`)
+  let apiErrorRecordDetails = ''
 
-    if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') {
-      // FORCE-ACTION (parità con callClaudeStreamTelegram): se il modello ha PROMESSO
-      // un'azione ma NON ha chiamato alcun tool, lo ri-promptiamo UNA volta perché esegua
-      // davvero. Guard forcedAction = una sola volta → niente loop. Risolve gli stalli
-      // "🔍 Cerco…"/promessa a vuoto sul path web.
-      const iterText = final.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map(b => b.text)
-        .join(' ')
-      // ANTI-BUGIA archiviazione: afferma di aver archiviato/spostato file ma in questo turno
-      // nessun archivia_foto/archivia_documento è andato a buon fine → ri-prompt UNA volta.
-      // Indipendente dal force-action (scatta anche dopo tool di sola lettura). Guard one-shot.
-      if (!forcedArchiveCorrection && claimsArchiveCompletion(iterText) && !archiveToolSucceeded) {
-        forcedArchiveCorrection = true
-        fullResponse = fullResponse.slice(0, iterStartLen)
-        console.log(`STREAM(web) anti-bugia: claim archiviazione senza esito reale ("${iterText.slice(0, 60)}")`)
-        currentMessages = [
-          ...currentMessages,
-          { role: 'assistant' as const, content: final.content },
-          { role: 'user' as const, content: [{ type: 'text' as const, text: 'Hai detto che le foto/i file sono stati archiviati/spostati, ma in questo turno NON è andata a buon fine alcuna chiamata ad archivia_foto/archivia_documento. NON dichiarare un archivio che non è avvenuto: O chiami ORA archivia_foto/archivia_documento e riporti l\'esito REALE, oppure dici onestamente che NON sono ancora archiviati e cosa manca.' }] },
-        ]
-        applyIncrementalCacheBreakpoint(currentMessages)
-        continue
-      }
-      if (toolBlocks.length === 0 && !forcedAction && detectHallucination(iterText, 0) && !isCompletedOrConditional(iterText)) {
-        forcedAction = true
-        fullResponse = fullResponse.slice(0, iterStartLen) // scarta il testo-promessa dalla persistenza/ritorno
-        console.log(`STREAM(web) force-action: promessa senza tool ("${iterText.slice(0, 60)}"), ri-prompt per eseguire`)
-        currentMessages = [
-          ...currentMessages,
-          { role: 'assistant' as const, content: final.content },
-          { role: 'user' as const, content: [{ type: 'text' as const, text: 'Hai detto che avresti svolto un\'azione (cercare/controllare/leggere/inviare/recuperare…) ma NON hai chiamato nessuno strumento, quindi NON è stata eseguita. ESEGUI ORA: chiama i tool necessari e rispondi col risultato REALE. Non descrivere l\'intenzione, agisci.' }] },
-        ]
-        applyIncrementalCacheBreakpoint(currentMessages)
-        continue
-      }
-      break
-    }
-
-    // FIX 2 set 2026: qui c'era `if (!iterationHasText && i > 0) break`, cioe' lo
-    // stesso break che il path Telegram si e' gia' tolto col Fix Bug 5 (vedi il
-    // commento a callClaudeStreamTelegram). Interrompeva PRIMA di eseguire i tool
-    // dell'iterazione corrente: incatenare due tool senza scrivere testo in mezzo
-    // — leggi intestazione del Registro, poi scrivi la riga — e' comportamento
-    // normale del modello, e faceva morire il turno in silenzio. Peggio: il
-    // re-prompt force-action qui sopra dice "non descrivere l'intenzione, agisci",
-    // cioe' spinge il modello proprio verso l'iterazione senza testo che poi
-    // veniva buttata via. La correzione non era mai stata portata sul web.
-    // Il loop resta limitato da MAX_ITERATIONS, dal budget token e dalla sintesi
-    // forzata a NO_TEXT_LIMIT qui sotto.
-    const toolResults = await executeToolBlocks(toolBlocks, conversationId)
-    if (toolResults.length === 0) break
-    if (archiveToolSucceededIn(toolBlocks, toolResults)) archiveToolSucceeded = true
-
-    currentMessages = [
-      ...currentMessages,
-      { role: 'assistant' as const, content: final.content },
-      { role: 'user' as const, content: toolResults },
-    ]
-    applyIncrementalCacheBreakpoint(currentMessages)
-
-    // FIX Bug 5, seconda meta' — quella che conta. Togliere il break senza questa
-    // lascia il web PEGGIO di prima su un rischio preciso: un modello che si
-    // impunta su una scrittura (scrivi_riga_registro, archivia_foto, invio mail)
-    // prima veniva fermato al primo giro dal break, ora arriverebbe a 10
-    // esecuzioni REALI. Righe duplicate sul Registro e foto doppie sono guasti
-    // gia' visti qui. Dopo NO_TEXT_LIMIT giri senza testo si forza una sintesi
-    // con tool_choice=none: il modello non puo' piu' chiamare tool e DEVE
-    // rispondere. Cosi' il web si ferma a 5 come Telegram, e l'utente riceve una
-    // risposta vera invece di una scusa.
-    if (consecutiveNoText >= NO_TEXT_LIMIT) {
-      console.log(`STREAM(web) force-text: ${consecutiveNoText} iter consecutive senza testo, forzo tool_choice=none`)
-      try {
-        const synthStartLen = fullResponse.length
-        const synthFinal = await consumeStreamWithRetry({
-          createStream: () => client.messages.stream({
-            model: modelConfig.model,
-            max_tokens: modelConfig.maxTokens,
-            system: systemBlocks,
-            messages: currentMessages,
-            tools,
-            tool_choice: { type: 'none' as const },
-            ...modelOpts,
-          }, {
-            headers: { 'anthropic-beta': 'files-api-2025-04-14' },
-          }),
-          onAttemptStart: () => { fullResponse = fullResponse.slice(0, synthStartLen) },
-          onRetry: (n, err) => console.warn(`STREAM(web) force-text retry ${n}: ${err instanceof Error ? err.message : err}`),
-          onEvent: (event) => {
-            if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-              fullResponse += event.delta.text
-              callbacks.onText(event.delta.text)
-            }
-          },
-        })
-        accUsage = addUsage(accUsage, synthFinal.usage as unknown as UsageTokens)
-        console.log(`STREAM(web) force-text done fullLen=${fullResponse.length}`)
-      } catch (err) {
-        console.warn(`STREAM(web) force-text FAIL:`, err instanceof Error ? err.message : err)
-      }
-      break
-    }
+  /**
+   * Testo che aggiunge il LOOP, non il modello: budget esaurito, errore API,
+   * fallback per turno muto. Va fatto uscire dal sink, o su un canale che
+   * appende (il web) l'utente non lo vedrebbe mai — restava nel valore di
+   * ritorno e basta.
+   */
+  const emit = async (testo: string) => {
+    fullResponse += testo
+    await sink.onText(testo, fullResponse)
   }
-  } catch (err) {
-    apiErrorOccurred = true
-    const apiError = errorDetails(err)
-    console.warn(`[STREAM(web) API ERROR] model=${modelConfig.model}: ${apiError.message.slice(0, 200)}`)
-    if (isBillingError(apiError.details)) {
-      await notifyAnthropicBillingIfNeeded(apiError.details).catch(() => {})
-    }
-    // L'esito va registrato PRIMA di rilanciare, o il breaker non vedrebbe mai
-    // gli errori della chat web.
-    recordOutcome(modelConfig.model, 'api_error', {
-      fullLen: fullResponse.length,
-      consecutiveNoText,
-      requestId: conversationId,
-      details: apiError.details.slice(0, 500),
-    }).catch(e => console.error('[CB] recordOutcome(web api_error) failed:', e))
-    await logApiUsage({
-      entryPoint: request.entryPoint ?? 'chat',
-      model: modelConfig.model,
-      usage: accUsage,
-      meta: { iterations, consecutiveNoText, outcome: 'api_error', totalToolCalls, apiError: true },
-    }).catch(() => {})
-    throw err
-  }
-
-  // Parità col path Telegram (FIX Bug 5): se per qualunque motivo il loop finisce
-  // senza che il modello abbia mai prodotto testo, l'utente riceveva una risposta
-  // a ZERO caratteri — indistinguibile da un bot che ignora. Meglio dirlo.
-  if (fullResponse.length === 0) {
-    fullResponse = '⚠️ Non sono riuscito a sintetizzare una risposta. Riformuli la richiesta o specifichi il file/contesto, per favore.'
-    console.warn(`STREAM(web) EMPTY: fullResponse vuoto dopo ${iterations} iter, applicato fallback`)
-    callbacks.onText(fullResponse)
-  }
-
-  // Parita' col path Telegram: il web non registrava NESSUN outcome, quindi i
-  // suoi fallimenti non contavano per il circuit breaker. Conseguenza concreta:
-  // con un model_default rotto Telegram si auto-riparava dopo ~5 messaggi
-  // (5 outcome 'api_error' fanno scattare il rollback) mentre la chat web
-  // restava ferma a tempo indeterminato — e per giunta senza contribuire a far
-  // scattare il rollback che l'avrebbe salvata.
-  const FALLBACK_PREFIX = '⚠️ Non sono riuscito a sintetizzare'
-  const outcome: ModelOutcome = apiErrorOccurred
-    ? 'api_error'
-    : fullResponse.startsWith(FALLBACK_PREFIX)
-      ? 'empty'
-      // Stesso ordine di Telegram: un turno che ha dovuto forzare la sintesi e'
-      // degradato, non riuscito. Classificarlo 'success' — come faceva la prima
-      // versione — avrebbe INIETTATO successi proprio nei turni andati male,
-      // rendendo il breaker piu' difficile da far scattare invece che piu' facile.
-      : consecutiveNoText >= NO_TEXT_LIMIT
-        ? 'force_text'
-        // `isCompletedOrConditional` e' il guard che il force-action applica
-        // gia' 100 righe sopra: senza, "Ho preparato il documento. Se vuole
-        // glielo mando" viene contato come promessa mancata. Misurato sui
-        // messaggi web veri: 6 falsi positivi su 8.
-        : detectHallucination(fullResponse, totalToolCalls) && !isCompletedOrConditional(fullResponse)
-          ? 'hallucination'
-          : 'success'
-  recordOutcome(modelConfig.model, outcome, {
-    fullLen: fullResponse.length,
-    consecutiveNoText,
-    requestId: conversationId,
-  }).catch(err => console.error('[CB] recordOutcome(web) failed:', err))
-
-  await logApiUsage({
-    entryPoint: request.entryPoint ?? 'chat',
-    model: modelConfig.model,
-    usage: accUsage,
-    meta: { iterations, consecutiveNoText, outcome, totalToolCalls, runAborted: isRunOverBudget(accUsage) },
-  })
-
-  // NB: nessuna scrittura in messages - vedi la nota a inizio funzione.
-
-  return fullResponse
-}
-
-// ── Telegram (streaming internamente per evitare timeout 10min SDK) ──
-
-export async function callClaude(request: ClaudeRequest): Promise<string> {
-  const { systemPrompt, userQuery, conversationId } = request
-
-  const memoryContext = await searchMemory(userQuery).catch(() => '')
-  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext, request.workingContext)
-
-  if (conversationId && userQuery) {
-    saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tools: any[] = getToolDefinitions()
-  let currentMessages = trimMessages([...request.messages])
-  let fullResponse = ''
-  let accUsage: UsageTokens = {}
-  let iterations = 0
-  const MAX_ITERATIONS = 10
 
   const cfg = await getConfig()
-  const fileBlocks = extractLatestFileBlocks(request.messages)
-  const cheap = await shouldUseCheapModel(userQuery, fileBlocks)
-  const effectiveModel = cheap ? CHEAP_MODEL : cfg.model
-  const isOpus = effectiveModel.includes('opus')
-  const modelConfig: ModelConfig = {
-    model: effectiveModel,
-    thinkingBudget: resolveThinkingBudget(userQuery, isOpus),
-    maxTokens: isOpus ? 32_000 : 16_000,
-  }
-  console.log(`MODEL TG: ${effectiveModel} (cheap=${cheap}) for "${userQuery.slice(0, 50)}"`)
-  const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget, isDeepThink(userQuery))
-
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
-    iterations = i + 1
-    // FIX V8: usa stream() invece di create() — evita "Streaming is required for >10min"
-    const stream = await withRetry(() =>
-      Promise.resolve(client.messages.stream({
-        model: modelConfig.model,
-        max_tokens: modelConfig.maxTokens,
-        system: systemBlocks,
-        messages: currentMessages,
-        tools,
-        ...modelOpts,
-      }, {
-        headers: { 'anthropic-beta': 'files-api-2025-04-14' },
-      }))
-    )
-
-    // Consuma lo stream senza callback (Telegram non ha streaming UI)
-    for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        fullResponse += event.delta.text
-      }
-    }
-
-    const final = await stream.finalMessage()
-    accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
-    // Guard rail cost-control: stop se la run ha superato il budget token
-    if (isRunOverBudget(accUsage)) {
-      console.warn(`run_aborted_budget: ${runTokens(accUsage)} > ${MAX_RUN_TOKENS} tokens (iter=${iterations})`)
-      fullResponse += '\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._'
-      break
-    }
-    const toolBlocks = final.content.filter(b => b.type === 'tool_use')
-
-    if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') break
-    if (i > 0 && !final.content.some(b => b.type === 'text')) break
-
-    const toolResults = await executeToolBlocks(toolBlocks, conversationId)
-    if (toolResults.length === 0) break
-
-    currentMessages = [
-      ...currentMessages,
-      { role: 'assistant' as const, content: final.content },
-      { role: 'user' as const, content: toolResults },
-    ]
-    applyIncrementalCacheBreakpoint(currentMessages)
-  }
-
-  await logApiUsage({
-    entryPoint: request.entryPoint ?? 'telegram',
-    model: modelConfig.model,
-    usage: accUsage,
-    meta: { iterations, runAborted: isRunOverBudget(accUsage) },
-  })
-
-  if (conversationId && fullResponse) {
-    saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
-  }
-
-  return fullResponse
-}
-
-// ── Streaming Telegram (edit messaggio ogni 3 sec) ──
-
-export async function callClaudeStreamTelegram(
-  request: ClaudeRequest,
-  onChunk: (accumulated: string) => void | Promise<void>,
-): Promise<string> {
-  const { systemPrompt, userQuery, conversationId } = request
-
-  const memoryContext = await searchMemory(userQuery).catch(() => '')
-  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext, request.workingContext)
-
-  if (conversationId && userQuery) {
-    saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
-  }
-
-  const tools: any[] = getToolDefinitions()
-  let currentMessages = trimMessages([...request.messages])
-  let fullResponse = ''
-  let accUsage: UsageTokens = {}
-  let iterations = 0
-  const MAX_ITERATIONS = 10
-  // FIX Bug 5: counter di iter consecutivi senza text_delta. Opus 4.7 chiama
-  // più tool_use legittimi in catena (es. fan-out drive_search dopo miss).
-  // Il vecchio break "i>0 && no text" era troppo aggressivo: interrompeva
-  // il modello PRIMA di eseguire i tool dell'iter corrente, sprecando lavoro.
-  // Nuovo approccio: lascia esplorare fino a 3 round, poi forza sintesi.
-  let consecutiveNoText = 0
-  const NO_TEXT_LIMIT = 5 // Fix H: self-heal flow usa fino a 5 iter consecutive (read_file + propose_fix + status)
-
-  const cfg = await getConfig()
-  // Bug 5/Circuit Breaker: getActiveModel può sovrascrivere cfg.model se rolled back
+  // Se il circuit breaker ha fatto rollback, `model_active` e' il modello buono
+  // e `model_default` puo' essere quello rotto: leggere solo cfg.model lascia il
+  // canale fermo sul rotto mentre l'altro e' gia' tornato a funzionare.
   const activeModel = await getActiveModel().catch(() => cfg.model)
   if (activeModel !== cfg.model) {
     console.log(`[CB] active=${activeModel} differs from default=${cfg.model}`)
@@ -816,276 +514,338 @@ export async function callClaudeStreamTelegram(
   const cheap = await shouldUseCheapModel(userQuery, fileBlocks)
   const effectiveModel = cheap ? CHEAP_MODEL : activeModel
   const isOpus = effectiveModel.includes('opus')
-  // FIX W1: budget thinking drasticamente ridotto. V10 lasciava 100_000 = il modello
-  // pensava per minuti, function killata da Vercel a 300s prima del primo text_delta.
+  // FIX W1: budget thinking ridotto. V10 lasciava 100_000 = il modello pensava
+  // per minuti e la function veniva killata da Vercel prima del primo text_delta.
   const modelConfig: ModelConfig = {
     model: effectiveModel,
     thinkingBudget: resolveThinkingBudget(userQuery, isOpus),
     maxTokens: isOpus ? 32_000 : 16_000,
   }
-  console.log(`MODEL TG: ${effectiveModel} (cheap=${cheap}) thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
+  console.log(`MODEL(${policy.tag}): ${effectiveModel} (cheap=${cheap}) thinking=${modelConfig.thinkingBudget} for "${userQuery.slice(0, 50)}"`)
   const modelOpts = await buildModelOptions(modelConfig.model, modelConfig.thinkingBudget, isDeepThink(userQuery))
-
+  // Il path durable alza il budget (MAX_DURABLE_RUN_TOKENS) per le task lunghe.
   const runBudget = request.maxRunTokens ?? MAX_RUN_TOKENS
-  let totalToolCalls = 0
-  let forcedAction = false // force-action: ri-prompt UNA volta se il modello promette un'azione senza chiamare tool
-  let forcedArchiveCorrection = false // anti-bugia: ri-prompt UNA volta se afferma archiviazione senza esito reale
-  let archiveToolSucceeded = false // true se archivia_foto/archivia_documento è andato a buon fine nel turno
-  let apiErrorOccurred = false
-  let apiErrorMsg = ''
-  let apiErrorRecordDetails = ''
+
+  // Senza questo try, un errore API risale alla route e `recordOutcome` in fondo
+  // non viene MAI eseguito — cioe' proprio il caso (modello rotto, 404) per cui
+  // il circuit breaker esiste.
   try {
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
-    iterations = i + 1
-    const iterStartLen = fullResponse.length // force-action: confine per scartare il testo-promessa se ri-promptiamo
-    let lastTextEdit = 0
-    let lastThinkingEdit = 0
-    let thinkingChars = 0
-
-    // REL-003 + resilienza mid-stream: consumo con retry su errori transitori (overloaded/529/rete/
-    // timeout) → un blip a metà non uccide più il turno. onAttemptStart azzera il parziale; su
-    // Telegram onChunk sovrascrive il messaggio, quindi il re-tentativo non lascia testo doppio.
-    const final = await consumeStreamWithRetry({
-      createStream: () => client.messages.stream({
-        model: modelConfig.model,
-        max_tokens: modelConfig.maxTokens,
-        system: systemBlocks,
-        messages: currentMessages,
-        tools,
-        ...modelOpts,
-      }, {
-        headers: { 'anthropic-beta': 'files-api-2025-04-14' },
-      }),
-      onAttemptStart: () => { fullResponse = fullResponse.slice(0, iterStartLen); lastTextEdit = 0; lastThinkingEdit = 0; thinkingChars = 0 },
-      onRetry: (n, err) => console.warn(`STREAM(tg) retry ${n}: ${err instanceof Error ? err.message : err}`),
-      onEvent: async (event) => {
-        if (event.type === 'content_block_delta') {
-          if (event.delta.type === 'text_delta') {
-            fullResponse += event.delta.text
-            const now = Date.now()
-            if (now - lastTextEdit > 3000) {
-              await onChunk(fullResponse)
-              lastTextEdit = now
-            }
-          }
-          // FIX W1: stream del thinking. Aggiorna placeholder Telegram con counter
-          // così l'utente vede progresso anche durante il reasoning.
-          // Solo finché non c'è ancora testo (poi il testo prevale).
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          else if ((event.delta as any).type === 'thinking_delta' && fullResponse === '') {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const td = (event.delta as any).thinking
-            thinkingChars += typeof td === 'string' ? td.length : 0
-            const now = Date.now()
-            if (now - lastThinkingEdit > 5000) {
-              await onChunk(`🧠 Sto pensando... (${thinkingChars} char di reasoning)`)
-              lastThinkingEdit = now
-            }
-          }
-        }
-      },
-    })
-    accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
-    // Guard rail cost-control: stop se la run ha superato il budget token
-    if (isRunOverBudget(accUsage, runBudget)) {
-      console.warn(`run_aborted_budget: ${runTokens(accUsage)} > ${runBudget} tokens (iter=${iterations})`)
-      fullResponse += '\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._'
-      break
-    }
-    const toolBlocks = final.content.filter(b => b.type === 'tool_use')
-    totalToolCalls += toolBlocks.length
-    const textBlocks = final.content.filter(b => b.type === 'text')
-    const toolNames = toolBlocks
-      .filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
-      .map(b => b.name)
-      .join(',')
-
-    if (textBlocks.length === 0) consecutiveNoText++
-    else consecutiveNoText = 0
-
-    console.log(`STREAM iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} toolNames=[${toolNames}] texts=${textBlocks.length} fullLen=${fullResponse.length} thinkingChars=${thinkingChars} consNoText=${consecutiveNoText}`)
-
-    // Break naturale: modello soddisfatto (no tool richiesti, conversazione finita)
-    if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') {
-      // FORCE-ACTION: il modello ha PROMESSO un'azione ("ora cerco", "glielo invio subito"…)
-      // ma NON ha chiamato alcun tool in questo turno → l'azione non è stata eseguita.
-      // Invece di consegnare la promessa a vuoto, lo ri-promptiamo UNA volta perché esegua
-      // davvero. detectHallucination riusa i pattern già tarati (076/077). Guard forcedAction
-      // = una sola volta → nessun loop. Risolve il "dice che fa ma non fa".
-      const iterText = textBlocks.map(b => (b as Anthropic.TextBlock).text).join(' ')
-      // ANTI-BUGIA archiviazione (parità web): afferma di aver archiviato/spostato file ma in
-      // questo turno nessun archivia_foto/archivia_documento è andato a buon fine → ri-prompt UNA
-      // volta. Indipendente dal force-action (scatta anche dopo tool di sola lettura). One-shot.
-      if (!forcedArchiveCorrection && claimsArchiveCompletion(iterText) && !archiveToolSucceeded) {
-        forcedArchiveCorrection = true
-        fullResponse = fullResponse.slice(0, iterStartLen)
-        console.log(`STREAM anti-bugia: claim archiviazione senza esito reale ("${iterText.slice(0, 60)}")`)
-        currentMessages = [
-          ...currentMessages,
-          { role: 'assistant' as const, content: final.content },
-          { role: 'user' as const, content: [{ type: 'text' as const, text: 'Hai detto che le foto/i file sono stati archiviati/spostati, ma in questo turno NON è andata a buon fine alcuna chiamata ad archivia_foto/archivia_documento. NON dichiarare un archivio che non è avvenuto: O chiami ORA archivia_foto/archivia_documento e riporti l\'esito REALE, oppure dici onestamente che NON sono ancora archiviati e cosa manca.' }] },
-        ]
-        applyIncrementalCacheBreakpoint(currentMessages)
-        continue
-      }
-      if (toolBlocks.length === 0 && !forcedAction && detectHallucination(iterText, 0) && !isCompletedOrConditional(iterText)) {
-        forcedAction = true
-        fullResponse = fullResponse.slice(0, iterStartLen) // scarta il testo-promessa dalla persistenza/ritorno
-        console.log(`STREAM force-action: promessa senza tool ("${iterText.slice(0, 60)}"), ri-prompt per eseguire`)
-        currentMessages = [
-          ...currentMessages,
-          { role: 'assistant' as const, content: final.content },
-          { role: 'user' as const, content: [{ type: 'text' as const, text: 'Hai detto che avresti svolto un\'azione (cercare/controllare/leggere/inviare/recuperare…) ma NON hai chiamato nessuno strumento, quindi NON è stata eseguita. ESEGUI ORA: chiama i tool necessari e rispondi col risultato REALE. Non descrivere l\'intenzione, agisci.' }] },
-        ]
-        applyIncrementalCacheBreakpoint(currentMessages)
-        continue
-      }
-      break
-    }
-
-    // FIX Bug 5: ESEGUI sempre i tool dell'iter corrente PRIMA di valutare se
-    // forzare sintesi. Il modello li ha richiesti, eseguirli arricchisce il
-    // contesto per l'iter successivo (anche se quella sarà la sintesi forzata).
-    const toolResults = await executeToolBlocks(toolBlocks, conversationId)
-    if (toolResults.length === 0) break
-    if (archiveToolSucceededIn(toolBlocks, toolResults)) archiveToolSucceeded = true
-
-    currentMessages = [
-      ...currentMessages,
-      { role: 'assistant' as const, content: final.content },
-      { role: 'user' as const, content: toolResults },
-    ]
-    applyIncrementalCacheBreakpoint(currentMessages)
-
-    // FIX Bug 5: dopo NO_TEXT_LIMIT iter consecutivi senza text, forza una
-    // sintesi finale con tool_choice=none. Il modello DEVE rispondere con
-    // text in quel turno, non può più chiamare tool. Garantisce che l'utente
-    // riceva sempre qualcosa di leggibile invece di "..." silenzioso.
-    if (consecutiveNoText >= NO_TEXT_LIMIT) {
-      console.log(`STREAM force-text: ${consecutiveNoText} consecutive no-text iters, forcing tool_choice=none`)
-      try {
-        const synthStartLen = fullResponse.length
-        let synthLastEdit = 0
-        const synthFinal = await consumeStreamWithRetry({
-          createStream: () => client.messages.stream({
-            model: modelConfig.model,
-            max_tokens: modelConfig.maxTokens,
-            system: systemBlocks,
-            messages: currentMessages,
-            tools,
-            tool_choice: { type: 'none' as const },
-            ...modelOpts,
-          }, {
-            headers: { 'anthropic-beta': 'files-api-2025-04-14' },
-          }),
-          onAttemptStart: () => { fullResponse = fullResponse.slice(0, synthStartLen); synthLastEdit = 0 },
-          onRetry: (n, err) => console.warn(`STREAM(tg) force-text retry ${n}: ${err instanceof Error ? err.message : err}`),
-          onEvent: async (event) => {
-            if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+    for (let i = 0; i < MAX_ITERATIONS; i++) {
+      iterations = i + 1
+      const iterStartLen = fullResponse.length // confine per scartare il testo-promessa se ri-promptiamo
+      let thinkingChars = 0
+      // REL-003 + resilienza mid-stream: consumo con retry su errori transitori
+      // (overloaded/529/rete/timeout) → un blip a meta' non uccide piu' il turno.
+      // onAttemptStart azzera il parziale dell'iterazione, cosi' un re-tentativo
+      // non duplica nella persistenza.
+      const final = await consumeStreamWithRetry({
+        createStream: () => client.messages.stream({
+          model: modelConfig.model,
+          max_tokens: modelConfig.maxTokens,
+          system: systemBlocks,
+          messages: currentMessages,
+          tools,
+          ...modelOpts,
+        }, {
+          headers: { 'anthropic-beta': 'files-api-2025-04-14' },
+        }),
+        onAttemptStart: () => {
+          fullResponse = fullResponse.slice(0, iterStartLen)
+          thinkingChars = 0
+          sink.onAttemptStart?.()
+        },
+        onRetry: (n, err) => console.warn(`STREAM(${policy.tag}) retry ${n}: ${err instanceof Error ? err.message : err}`),
+        onEvent: async (event) => {
+          if (event.type === 'content_block_delta') {
+            if (event.delta.type === 'text_delta') {
               fullResponse += event.delta.text
-              const now = Date.now()
-              if (now - synthLastEdit > 3000) {
-                await onChunk(fullResponse)
-                synthLastEdit = now
-              }
+              await sink.onText(event.delta.text, fullResponse)
             }
-          },
-        })
-        accUsage = addUsage(accUsage, synthFinal.usage as unknown as UsageTokens)
-        const synthTexts = synthFinal.content.filter(b => b.type === 'text').length
-        console.log(`STREAM force-text done texts=${synthTexts} fullLen=${fullResponse.length}`)
-      } catch (err) {
-        console.warn(`STREAM force-text FAIL:`, err instanceof Error ? err.message : err)
+            // Progresso durante il reasoning: solo finche' non c'e' testo (poi il
+            // testo prevale). Il canale decide se mostrarlo.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            else if ((event.delta as any).type === 'thinking_delta' && fullResponse === '') {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const td = (event.delta as any).thinking
+              thinkingChars += typeof td === 'string' ? td.length : 0
+              await sink.onThinking?.(thinkingChars)
+            }
+          }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if (event.type === 'content_block_start' && (event as any).content_block?.type === 'server_tool_use') {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const serverToolName = (event as any).content_block?.name ?? 'server_tool'
+            // Contati anche questi: web_search e code_execution girano lato
+            // Anthropic e non passano da executeToolBlocks, quindi un turno
+            // risolto solo con una ricerca ("Verifico la normativa...") avrebbe
+            // totalToolCalls a zero e sarebbe giudicato una promessa a vuoto.
+            totalToolCalls += 1
+            await sink.onServerTool?.(serverToolName)
+          }
+        },
+      })
+      accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
+      // Guard rail cost-control: stop se la run ha superato il budget token
+      if (isRunOverBudget(accUsage, runBudget)) {
+        console.warn(`run_aborted_budget: ${runTokens(accUsage)} > ${runBudget} tokens (iter=${iterations})`)
+        await emit('\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._')
+        break
       }
-      break
+      const toolBlocks = final.content.filter(b => b.type === 'tool_use')
+      totalToolCalls += toolBlocks.length
+      const textBlocks = final.content.filter(b => b.type === 'text')
+      // Il contatore va aggiornato PRIMA del ramo di uscita: le iterazioni che
+      // fanno `continue` (anti-bugia, force-action) hanno sempre testo, quindi
+      // devono azzerarlo. Aggiornandolo dopo, restavano fuori dal conteggio.
+      if (textBlocks.length === 0) consecutiveNoText++
+      else consecutiveNoText = 0
+      const toolNames = toolBlocks
+        .filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+        .map(b => b.name)
+        .join(',')
+      console.log(`STREAM(${policy.tag}) iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} toolNames=[${toolNames}] texts=${textBlocks.length} fullLen=${fullResponse.length} thinkingChars=${thinkingChars} consNoText=${consecutiveNoText}`)
+
+      // Break naturale: modello soddisfatto (nessun tool richiesto, turno finito)
+      if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') {
+        const iterText = textBlocks.map(b => (b as Anthropic.TextBlock).text).join(' ')
+        // ANTI-BUGIA archiviazione: afferma di aver archiviato/spostato file ma in questo turno
+        // nessun archivia_foto/archivia_documento è andato a buon fine → ri-prompt UNA volta.
+        // Indipendente dal force-action (scatta anche dopo tool di sola lettura). Guard one-shot.
+        if (!forcedArchiveCorrection && claimsArchiveCompletion(iterText) && !archiveToolSucceeded) {
+          forcedArchiveCorrection = true
+          fullResponse = fullResponse.slice(0, iterStartLen)
+          console.log(`STREAM(${policy.tag}) anti-bugia: claim archiviazione senza esito reale ("${iterText.slice(0, 60)}")`)
+          currentMessages = [
+            ...currentMessages,
+            { role: 'assistant' as const, content: final.content },
+            { role: 'user' as const, content: [{ type: 'text' as const, text: 'Hai detto che le foto/i file sono stati archiviati/spostati, ma in questo turno NON è andata a buon fine alcuna chiamata ad archivia_foto/archivia_documento. NON dichiarare un archivio che non è avvenuto: O chiami ORA archivia_foto/archivia_documento e riporti l\'esito REALE, oppure dici onestamente che NON sono ancora archiviati e cosa manca.' }] },
+          ]
+          applyIncrementalCacheBreakpoint(currentMessages)
+          continue
+        }
+        // FORCE-ACTION: il modello ha PROMESSO un'azione ("ora cerco", "glielo invio subito"…)
+        // ma NON ha chiamato alcun tool in questo turno → l'azione non è stata eseguita.
+        // Invece di consegnare la promessa a vuoto, lo ri-promptiamo UNA volta perché esegua
+        // davvero. Guard forcedAction = una sola volta → nessun loop.
+        if (toolBlocks.length === 0 && !forcedAction && detectHallucination(iterText, 0) && !isCompletedOrConditional(iterText)) {
+          forcedAction = true
+          fullResponse = fullResponse.slice(0, iterStartLen) // scarta il testo-promessa dalla persistenza/ritorno
+          console.log(`STREAM(${policy.tag}) force-action: promessa senza tool ("${iterText.slice(0, 60)}"), ri-prompt per eseguire`)
+          currentMessages = [
+            ...currentMessages,
+            { role: 'assistant' as const, content: final.content },
+            { role: 'user' as const, content: [{ type: 'text' as const, text: 'Hai detto che avresti svolto un\'azione (cercare/controllare/leggere/inviare/recuperare…) ma NON hai chiamato nessuno strumento, quindi NON è stata eseguita. ESEGUI ORA: chiama i tool necessari e rispondi col risultato REALE. Non descrivere l\'intenzione, agisci.' }] },
+          ]
+          applyIncrementalCacheBreakpoint(currentMessages)
+          continue
+        }
+        break
+      }
+
+      // I tool dell'iterazione corrente si ESEGUONO sempre, prima di valutare se
+      // forzare la sintesi. Qui c'era `if (!iterationHasText && i > 0) break`, che
+      // interrompeva PRIMA di eseguirli: incatenare due tool senza scrivere testo
+      // in mezzo — leggi intestazione del Registro, poi scrivi la riga — e'
+      // comportamento normale del modello, e faceva morire il turno in silenzio.
+      const toolResults = await executeToolBlocks(toolBlocks, conversationId)
+      if (toolResults.length === 0) break
+      if (archiveToolSucceededIn(toolBlocks, toolResults)) archiveToolSucceeded = true
+
+      currentMessages = [
+        ...currentMessages,
+        { role: 'assistant' as const, content: final.content },
+        { role: 'user' as const, content: toolResults },
+      ]
+      applyIncrementalCacheBreakpoint(currentMessages)
+
+      // La seconda meta' del fix, quella che conta. Togliere il break senza
+      // questa lascia un rischio preciso: un modello che si impunta su una
+      // scrittura (scrivi_riga_registro, archivia_foto, invio mail) arriverebbe a
+      // 10 esecuzioni REALI. Righe duplicate sul Registro e foto doppie sono
+      // guasti gia' visti in produzione. Dopo NO_TEXT_LIMIT giri muti si forza
+      // una sintesi con tool_choice=none: il modello non puo' piu' chiamare tool
+      // e DEVE rispondere.
+      if (consecutiveNoText >= NO_TEXT_LIMIT) {
+        console.log(`STREAM(${policy.tag}) force-text: ${consecutiveNoText} iter consecutive senza testo, forzo tool_choice=none`)
+        try {
+          const synthStartLen = fullResponse.length
+          const synthFinal = await consumeStreamWithRetry({
+            createStream: () => client.messages.stream({
+              model: modelConfig.model,
+              max_tokens: modelConfig.maxTokens,
+              system: systemBlocks,
+              messages: currentMessages,
+              tools,
+              tool_choice: { type: 'none' as const },
+              ...modelOpts,
+            }, {
+              headers: { 'anthropic-beta': 'files-api-2025-04-14' },
+            }),
+            onAttemptStart: () => {
+              fullResponse = fullResponse.slice(0, synthStartLen)
+              sink.onAttemptStart?.()
+            },
+            onRetry: (n, err) => console.warn(`STREAM(${policy.tag}) force-text retry ${n}: ${err instanceof Error ? err.message : err}`),
+            onEvent: async (event) => {
+              if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+                fullResponse += event.delta.text
+                await sink.onText(event.delta.text, fullResponse)
+              }
+            },
+          })
+          accUsage = addUsage(accUsage, synthFinal.usage as unknown as UsageTokens)
+          const synthTexts = synthFinal.content.filter(b => b.type === 'text').length
+          console.log(`STREAM(${policy.tag}) force-text done texts=${synthTexts} fullLen=${fullResponse.length}`)
+        } catch (err) {
+          console.warn(`STREAM(${policy.tag}) force-text FAIL:`, err instanceof Error ? err.message : err)
+        }
+        break
+      }
     }
-  }
   } catch (err) {
-    // FIX Bug 7: catch errori API Anthropic (404 model not found, 529 overloaded,
-    // timeout) per (a) tracciare outcome=api_error sul circuit breaker e (b)
-    // mostrare messaggio user-friendly invece dell'errore tecnico raw.
+    // Errori API (404 model not found, 529 overloaded, timeout): (a) l'outcome
+    // va tracciato sul circuit breaker e (b) l'utente deve leggere una frase
+    // comprensibile, non il messaggio tecnico grezzo.
     apiErrorOccurred = true
     const apiError = errorDetails(err)
-    apiErrorMsg = apiError.message
     apiErrorRecordDetails = apiError.details
-    console.warn(`[STREAM API ERROR] model=${modelConfig.model}: ${apiErrorMsg.slice(0, 200)}`)
-
+    console.warn(`[STREAM(${policy.tag}) API ERROR] model=${modelConfig.model}: ${apiError.message.slice(0, 200)}`)
     if (isBillingError(apiErrorRecordDetails)) {
-      await notifyAnthropicBillingIfNeeded(apiErrorRecordDetails)
+      // Il .catch() e' necessario: siamo gia' dentro un catch, un errore qui
+      // sfuggirebbe e ucciderebbe il turno al posto del messaggio d'errore.
+      await notifyAnthropicBillingIfNeeded(apiErrorRecordDetails).catch(() => {})
     }
-
-    // Mappa errori comuni a messaggi user-friendly
-    let errMsg: string
-    if (/not_found_error|404/i.test(apiErrorMsg)) {
-      errMsg = '⚠️ Modello AI temporaneamente non disponibile. Il sistema sta cercando di recuperare automaticamente, riprovi tra un momento.'
-    } else if (/overloaded|529/i.test(apiErrorMsg)) {
-      errMsg = '⚠️ Servizio AI sovraccarico. Riprovi tra qualche secondo.'
-    } else if (isBillingError(apiErrorRecordDetails)) {
-      errMsg = '⚠️ Crediti API esauriti. L\'Ingegnere è stato avvisato.'
-    } else if (/rate.?limit|429/i.test(apiErrorMsg)) {
-      errMsg = '⚠️ Troppe richieste al servizio AI. Attenda un momento.'
-    } else {
-      errMsg = `⚠️ Errore temporaneo del servizio AI. Riprovi tra qualche secondo.`
-    }
-    // FIX 24 mag: preserve partial response invece di sovrascriverla. Prima quando
-    // l'errore API arrivava a metà streaming (es. dopo aver già letto 5 mail via
-    // read_email e iniziato sintesi), editTelegramMessage finale cancellava tutto
-    // il testo già streamato sostituendolo con il msg di errore. Ora se c'è già
-    // contenuto parziale, lo manteniamo e appendiamo l'avviso in coda.
+    const errMsg = messaggioErroreUtente(apiError.message, apiErrorRecordDetails)
     if (fullResponse.length > 0) {
-      fullResponse = fullResponse.trim() + '\n\n' + errMsg + '\n_(quanto sopra è la risposta parziale prima dell\'errore; riprovi per completarla)_'
+      // Preserva il parziale invece di sovrascriverlo: se l'errore arriva a meta'
+      // streaming (es. dopo aver letto 5 mail), la consegna finale cancellerebbe
+      // tutto il testo gia' prodotto sostituendolo col messaggio d'errore.
+      fullResponse = fullResponse.trimEnd()
+      await emit('\n\n' + errMsg + '\n_(quanto sopra è la risposta parziale prima dell\'errore; riprovi per completarla)_')
     } else {
-      fullResponse = errMsg
+      await emit(errMsg)
     }
   }
 
-  // FIX W1: await esplicito sull'edit finale (era fire-and-forget — se la function
-  // moriva subito dopo il loop, l'edit non partiva).
-  // FIX Bug 5: fallback se per qualsiasi motivo (errore force-text, MAX_ITERATIONS,
-  // ecc.) il modello non ha mai prodotto text. Meglio onestà esplicita di "..." muto.
+  // Se per qualunque motivo il loop finisce senza che il modello abbia mai
+  // prodotto testo, l'utente riceverebbe ZERO caratteri — indistinguibile da un
+  // bot che ignora. Meglio dirlo.
   if (fullResponse.length === 0) {
-    fullResponse = '⚠️ Non sono riuscito a sintetizzare una risposta. Riformuli la richiesta o specifichi il file/contesto, per favore.'
-    console.warn(`STREAM EMPTY: fullResponse vuoto dopo loop, applicato fallback`)
+    console.warn(`STREAM(${policy.tag}) EMPTY: fullResponse vuoto dopo ${iterations} iter, applicato fallback`)
+    await emit('⚠️ Non sono riuscito a sintetizzare una risposta. Riformuli la richiesta o specifichi il file/contesto, per favore.')
   }
-  console.log(`STREAM done fullLen=${fullResponse.length} apiError=${apiErrorOccurred}`)
-  await onChunk(fullResponse)
+  console.log(`STREAM(${policy.tag}) done fullLen=${fullResponse.length} apiError=${apiErrorOccurred}`)
+  await sink.onFinal?.(fullResponse)
 
-  if (conversationId && fullResponse && !apiErrorOccurred) {
+  if (policy.persistAssistantMessage && conversationId && fullResponse && !apiErrorOccurred) {
     saveMessageWithEmbedding(conversationId, 'assistant', fullResponse).catch(() => {})
   }
 
-  // Determina outcome per circuit breaker
-  let outcome: ModelOutcome = 'success'
   const FALLBACK_PREFIX = '⚠️ Non sono riuscito a sintetizzare'
-  if (apiErrorOccurred) {
-    outcome = 'api_error'
-  } else if (fullResponse.startsWith(FALLBACK_PREFIX)) {
-    outcome = 'empty'
-  } else if (consecutiveNoText >= NO_TEXT_LIMIT) {
-    outcome = 'force_text'
-  } else if (detectHallucination(fullResponse, totalToolCalls)) {
-    outcome = 'hallucination'
-  }
+  const outcome: ModelOutcome = apiErrorOccurred
+    ? 'api_error'
+    : fullResponse.startsWith(FALLBACK_PREFIX)
+      ? 'empty'
+      // Un turno che ha dovuto forzare la sintesi e' degradato, non riuscito.
+      // Classificarlo 'success' INIETTA successi proprio nei turni andati male,
+      // rendendo il breaker piu' difficile da far scattare invece che piu' facile.
+      : consecutiveNoText >= NO_TEXT_LIMIT
+        ? 'force_text'
+        // `isCompletedOrConditional` e' lo stesso guard che il force-action applica
+        // sopra: senza, "Ho preparato il documento. Se vuole glielo mando" viene
+        // contato come promessa mancata. Misurato: 6 falsi positivi su 8.
+        : detectHallucination(fullResponse, totalToolCalls) && !isCompletedOrConditional(fullResponse)
+          ? 'hallucination'
+          : 'success'
 
-  if (outcome === 'success') {
-    resetAnthropicBillingAlertIfNeeded()
-  }
+  if (outcome === 'success') resetAnthropicBillingAlertIfNeeded()
 
   recordOutcome(modelConfig.model, outcome, {
     fullLen: fullResponse.length,
     consecutiveNoText,
     requestId: conversationId,
     details: apiErrorOccurred ? apiErrorRecordDetails.slice(0, 500) : undefined,
-  }).catch(err => console.error('[CB] recordOutcome failed:', err))
+  }).catch(err => console.error(`[CB] recordOutcome(${policy.tag}) failed:`, err))
 
   await logApiUsage({
-    entryPoint: request.entryPoint ?? 'telegram',
+    entryPoint: request.entryPoint ?? policy.entryPoint,
     model: modelConfig.model,
     usage: accUsage,
-    meta: { iterations, outcome, totalToolCalls, apiError: apiErrorOccurred, runAborted: isRunOverBudget(accUsage, runBudget) },
+    meta: {
+      iterations,
+      consecutiveNoText,
+      outcome,
+      totalToolCalls,
+      apiError: apiErrorOccurred,
+      runAborted: isRunOverBudget(accUsage, runBudget),
+    },
   })
 
   return fullResponse
+}
+
+// ── Gli adattatori: tutto quello che resta di specifico per canale ──
+
+/**
+ * Chat web. Appende ogni delta allo stream HTTP: l'utente vede il testo
+ * comparire mentre viene generato. Non scrive a DB — la riga la scrive il
+ * browser con una POST separata, e scriverla anche qui produceva due righe.
+ */
+export async function callClaudeStream(
+  request: ClaudeRequest,
+  callbacks: ClaudeStreamCallbacks,
+): Promise<string> {
+  return runAgentTurn(
+    request,
+    {
+      onText: (delta) => { callbacks.onText(delta) },
+      onServerTool: (nome) => { callbacks.onToolStart?.(nome) },
+    },
+    { tag: 'web', entryPoint: 'chat', persistUserMessage: false, persistAssistantMessage: false },
+  )
+}
+
+/** Ogni quanto riscrivere il messaggio Telegram: sotto, si sbatte contro i rate limit. */
+const TELEGRAM_TEXT_EDIT_MS = 3000
+const TELEGRAM_THINKING_EDIT_MS = 5000
+
+/**
+ * Telegram. Non ha streaming: riscrive lo STESSO messaggio a intervalli, quindi
+ * riceve il testo accumulato e non i delta. Finche' non c'e' testo mostra un
+ * segnale di vita col conteggio del reasoning, altrimenti l'utente resta davanti
+ * a un messaggio fermo per minuti.
+ */
+export async function callClaudeStreamTelegram(
+  request: ClaudeRequest,
+  onChunk: (accumulated: string) => void | Promise<void>,
+): Promise<string> {
+  let lastTextEdit = 0
+  let lastThinkingEdit = 0
+  return runAgentTurn(
+    request,
+    {
+      onAttemptStart: () => { lastTextEdit = 0; lastThinkingEdit = 0 },
+      onText: async (_delta, accumulated) => {
+        const now = Date.now()
+        if (now - lastTextEdit > TELEGRAM_TEXT_EDIT_MS) {
+          await onChunk(accumulated)
+          lastTextEdit = now
+        }
+      },
+      onThinking: async (chars) => {
+        const now = Date.now()
+        if (now - lastThinkingEdit > TELEGRAM_THINKING_EDIT_MS) {
+          await onChunk(`🧠 Sto pensando... (${chars} char di reasoning)`)
+          lastThinkingEdit = now
+        }
+      },
+      // L'edit finale e' atteso esplicitamente: se la function muore subito dopo
+      // il loop, un fire-and-forget non partirebbe e l'utente resterebbe col
+      // parziale.
+      onFinal: async (testo) => { await onChunk(testo) },
+    },
+    { tag: 'tg', entryPoint: 'telegram', persistUserMessage: true, persistAssistantMessage: true },
+  )
 }
 
 // ── Helpers ──
