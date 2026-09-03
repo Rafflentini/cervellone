@@ -197,29 +197,3 @@ export async function sendTelegramMessageWithId(chatId: number, text: string): P
   }
 }
 
-export async function transcribeAudio(fileId: string): Promise<string> {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) return ''
-  const fileRes = await fetch(`${TELEGRAM_API}${token}/getFile`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ file_id: fileId }),
-  })
-  const fileData = await fileRes.json()
-  const filePath = fileData.result?.file_path
-  if (!filePath) return ''
-  const audioRes = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
-  const audioBuffer = await audioRes.arrayBuffer()
-  const formData = new FormData()
-  formData.append('file', new Blob([audioBuffer], { type: 'audio/ogg' }), 'voice.ogg')
-  formData.append('model', 'whisper-1')
-  formData.append('language', 'it')
-  const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
-    body: formData,
-  })
-  if (!whisperRes.ok) return ''
-  const data = await whisperRes.json()
-  return data.text || ''
-}

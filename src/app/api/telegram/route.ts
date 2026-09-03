@@ -10,7 +10,8 @@ import type Anthropic from '@anthropic-ai/sdk'
 import crypto from 'crypto'
 import { supabase } from '@/lib/supabase'
 import { getSupabaseServer } from '@/lib/supabase-server'
-import { downloadTelegramFile, buildContentBlocks, transcribeAudio, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
+import { downloadTelegramFile, buildContentBlocks, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
+import { transcribeAudio } from '@/lib/trascrizione'
 import { runAgentJob, type AgentJobInput } from '@/lib/agent-job'
 import { shouldUseDurable } from '@/lib/workflow/should-use-durable'
 import { createRun, getActiveRunForChat } from '@/lib/workflow/runs'
@@ -101,9 +102,16 @@ export async function POST(request: NextRequest) {
       const fileId = message.voice?.file_id || message.audio?.file_id
       if (fileId) {
         await sendTyping(chatId)
-        userText = await transcribeAudio(fileId)
+        const durataVocale = message.voice?.duration ?? message.audio?.duration
+        const esito = await transcribeAudio(fileId, durataVocale)
+        userText = esito.testo
         if (!userText) {
-          await sendTelegramMessage(chatId, 'Non sono riuscito a trascrivere il vocale.')
+          // `problema` dice cosa e' andato storto e cosa fare. Prima qui c'era
+          // una frase sola per ogni causa — chiave scaduta, file troppo grande,
+          // vocale partito a vuoto — e soprattutto una trascrizione inventata
+          // dal silenzio ("Sottotitoli creati dalla comunità Amara.org") NON
+          // finiva qui: passava come se fosse una richiesta dell'Ingegnere.
+          await sendTelegramMessage(chatId, esito.problema ?? 'Non sono riuscito a trascrivere il vocale.')
           return NextResponse.json({ ok: true })
         }
         // Echo trascrizione all'utente PRIMA del processing LLM (pattern Claude AI app).
