@@ -655,3 +655,72 @@ describe('runMemoriaExtract — "non ho estratto niente" non puo somigliare a "n
     expect(esitoScritto()?.status).toBe('ok')
   })
 })
+
+/**
+ * La memoria ricostruita a mano non si cancella da sola.
+ *
+ * Quattro giornate di giugno hanno un riassunto ricostruito e ZERO messaggi
+ * ancora in tabella: rielaborandole, il ramo "giornata vuota" avrebbe riscritto
+ * "Nessuna attivita rilevante" e azzerato message_count — togliendo la riga
+ * anche dal raggio dell'audit, che guarda solo message_count > 0. Non ci sono
+ * backup. (audit avversariale 3 set 2026)
+ */
+describe('runMemoriaExtract — 0 messaggi non cancella un riassunto che ha contenuto', () => {
+  const mockMaybeSingleLocale = vi.fn()
+
+  function summaryScritto() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const call = mockUpsert.mock.calls.find((args: any[]) =>
+      args[0] && typeof args[0] === 'object' && 'summary_text' in args[0]
+    )
+    return call?.[0]
+  }
+
+  /** La riga gia' presente per quella data, come la vedrebbe il server. */
+  function riassuntoEsistente(riga: { summary_text: string; message_count: number } | null) {
+    mockMaybeSingleLocale.mockResolvedValue({ data: riga, error: null })
+    mockEq.mockReturnValue({
+      maybeSingle: mockMaybeSingleLocale,
+      order: mockOrder,
+      eq: mockEq,
+    })
+    // Nessun messaggio nella finestra del giorno.
+    mockLte.mockReturnValue({
+      order: vi.fn().mockReturnValue({ order: vi.fn().mockResolvedValue({ data: [], error: null }) }),
+    })
+  }
+
+  it('NON sovrascrive quando la riga esistente dichiara messaggi e ha un riassunto vero', async () => {
+    riassuntoEsistente({
+      summary_text: 'DISASTRO POS: il bot ha perso i documenti e li ha rigenerati a modo suo.',
+      message_count: 60,
+    })
+    const { runMemoriaExtract } = await import('./memoria-extract')
+
+    const esito = await runMemoriaExtract('2026-06-03')
+
+    expect(esito.ok).toBe(true)
+    expect(summaryScritto()).toBeUndefined() // nessun upsert di summary
+  })
+
+  it('sovrascrive una giornata mai vista — controllo positivo', async () => {
+    // Senza questo, una guardia che rifiuta SEMPRE passerebbe il test sopra e
+    // bloccherebbe l estrazione notturna di ogni giornata vuota.
+    riassuntoEsistente(null)
+    const { runMemoriaExtract } = await import('./memoria-extract')
+
+    await runMemoriaExtract('2026-05-06')
+
+    expect(summaryScritto()?.summary_text).toBe('Nessuna attività rilevante')
+  })
+
+  it('sovrascrive il segnaposto anche se il conteggio dice che i messaggi c erano', async () => {
+    // La riga che mentiva: 927 messaggi archiviati come "nessuna attivita".
+    riassuntoEsistente({ summary_text: 'Nessuna attività rilevante', message_count: 74 })
+    const { runMemoriaExtract } = await import('./memoria-extract')
+
+    await runMemoriaExtract('2026-08-17')
+
+    expect(summaryScritto()?.summary_text).toBe('Nessuna attività rilevante')
+  })
+})
