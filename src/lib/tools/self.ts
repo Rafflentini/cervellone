@@ -83,8 +83,34 @@ export const SELF_TOOLS: ToolDefinition[] = [
         skill_id: { type: 'string', description: 'ID skill: studio_tecnico, segreteria, cantieri, marketing, clienti, self' },
         nuove_istruzioni: { type: 'string', description: 'Le nuove istruzioni complete per la skill' },
         motivo: { type: 'string', description: 'Perche stai modificando la skill' },
+        conferma_riduzione: { type: 'boolean', description: 'Metti true SOLO se vuoi davvero accorciare drasticamente la skill e hai riportato il testo COMPLETO. Serve perche una riscrittura piu corta del 40% e quasi sempre un riassunto involontario che cancella istruzioni.' },
       },
       required: ['skill_id', 'nuove_istruzioni', 'motivo'],
+    },
+  },
+  {
+    name: 'storico_skill',
+    description: 'Mostra tutte le versioni passate delle istruzioni di una skill, con dimensione e data. Usa questo tool quando l\'Ingegnere chiede cosa c\'era scritto prima in una skill, o quando sospetta che delle istruzioni siano state perse.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        skill_id: { type: 'string', description: 'ID skill: studio_tecnico, segreteria, cantieri, marketing, clienti, self' },
+        versione: { type: 'number', description: 'Opzionale: se indicata, mostra il TESTO completo di quella versione invece dell\'elenco' },
+      },
+      required: ['skill_id'],
+    },
+  },
+  {
+    name: 'ripristina_skill',
+    description: 'Riporta una skill a una versione precedente delle sue istruzioni. Usa questo tool quando delle istruzioni sono state perse o una modifica ha peggiorato il comportamento. La versione attuale viene archiviata prima, quindi il ripristino e reversibile.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        skill_id: { type: 'string', description: 'ID skill' },
+        versione: { type: 'number', description: 'Numero di versione da ripristinare (vedi storico_skill)' },
+        motivo: { type: 'string', description: 'Perche si torna indietro' },
+      },
+      required: ['skill_id', 'versione', 'motivo'],
     },
   },
   {
@@ -566,12 +592,58 @@ La modifica è attiva dalla prossima richiesta.`
 
       if (!current) return `Skill "${skillId}" non trovata.`
 
+      const attuali = String(current.istruzioni ?? '')
+      const versioneAttuale = current.versione || 1
+
+      // GUARDIA ANTI-RIASSUNTO. E' accaduto davvero: il 1 agosto 2026 la skill
+      // `segreteria` e' passata da 3797 a 1364 caratteri (‑64%) e con quella
+      // riscrittura sono sparite le istruzioni sulle foto. Nessuno l'ha fermato,
+      // e con un solo slot di backup la versione buona era a una modifica dalla
+      // cancellazione definitiva.
+      //
+      // Il caso e' riconoscibile: chi AGGIUNGE una regola non dimezza il testo.
+      // Una riscrittura molto piu' corta e' quasi sempre un riassunto
+      // involontario, quindi si chiede conferma esplicita invece di obbedire.
+      const SOGLIA_RIDUZIONE = 0.6
+      const LUNGHEZZA_MINIMA_PER_GUARDIA = 500
+      const riduzioneSospetta =
+        attuali.length >= LUNGHEZZA_MINIMA_PER_GUARDIA &&
+        nuoveIstruzioni.length < attuali.length * SOGLIA_RIDUZIONE
+      if (riduzioneSospetta && input.conferma_riduzione !== true) {
+        const perc = Math.round((1 - nuoveIstruzioni.length / attuali.length) * 100)
+        return [
+          `⚠️ Modifica NON applicata: le nuove istruzioni sono piu' corte del ${perc}% (${attuali.length} → ${nuoveIstruzioni.length} caratteri).`,
+          `Una riscrittura cosi' piu' breve cancella istruzioni invece di aggiungerne: e' quello che il 1 agosto ha fatto sparire le regole sulle foto dalla skill "segreteria".`,
+          `Se volevi AGGIUNGERE qualcosa, rimanda il testo COMPLETO — le istruzioni attuali piu' la modifica.`,
+          `Se volevi davvero accorciarla, richiama il tool con conferma_riduzione = true.`,
+        ].join('\n')
+      }
+
+      // Lo storico si scrive PRIMA di sovrascrivere, e in una tabella dedicata:
+      // `istruzioni_precedenti` tiene un solo passo, quindi due modifiche di fila
+      // perdevano l'originale per sempre.
+      const { error: storicoErr } = await supabase
+        .from('cervellone_skills_versioni')
+        .upsert({
+          skill_id: skillId,
+          versione: versioneAttuale,
+          istruzioni: attuali,
+          updated_by: `sostituita da: ${motivo.slice(0, 100)}`,
+        }, { onConflict: 'skill_id,versione', ignoreDuplicates: true })
+
+      // Se lo storico non si scrive, NON si procede. Sovrascrivere senza una
+      // copia e' esattamente il guasto: meglio una modifica rifiutata che una
+      // versione perduta.
+      if (storicoErr) {
+        return `⚠️ Modifica NON applicata: non riesco ad archiviare la versione attuale (${storicoErr.message}). Senza copia di sicurezza non sovrascrivo.`
+      }
+
       const { error } = await supabase
         .from('cervellone_skills')
         .update({
           istruzioni: nuoveIstruzioni,
-          istruzioni_precedenti: current.istruzioni,
-          versione: (current.versione || 1) + 1,
+          istruzioni_precedenti: attuali,
+          versione: versioneAttuale + 1,
           updated_by: `cervellone: ${motivo.slice(0, 100)}`,
         })
         .eq('id', skillId)
@@ -581,7 +653,94 @@ La modifica è attiva dalla prossima richiesta.`
       const { invalidateSkillCache } = await import('../skills')
       invalidateSkillCache()
 
-      return `Skill "${skillId}" aggiornata (v${(current.versione || 1) + 1}). Motivo: ${motivo}`
+      const delta = nuoveIstruzioni.length - attuali.length
+      return `Skill "${skillId}" aggiornata (v${versioneAttuale + 1}, ${delta >= 0 ? '+' : ''}${delta} caratteri). Versione ${versioneAttuale} archiviata nello storico. Motivo: ${motivo}`
+    }
+
+    case 'storico_skill': {
+      const skillId = String(input.skill_id ?? '')
+      const versioneChiesta = typeof input.versione === 'number' ? input.versione : undefined
+
+      if (versioneChiesta !== undefined) {
+        const { data: v } = await supabase
+          .from('cervellone_skills_versioni')
+          .select('istruzioni, archiviata_il, updated_by')
+          .eq('skill_id', skillId)
+          .eq('versione', versioneChiesta)
+          .maybeSingle()
+        if (!v) return `Versione ${versioneChiesta} di "${skillId}" non trovata nello storico.`
+        return `Skill "${skillId}" v${versioneChiesta} (archiviata ${String(v.archiviata_il).slice(0, 10)}):\n\n${v.istruzioni}`
+      }
+
+      const { data: versioni, error } = await supabase
+        .from('cervellone_skills_versioni')
+        .select('versione, istruzioni, archiviata_il, updated_by')
+        .eq('skill_id', skillId)
+        .order('versione', { ascending: false })
+
+      if (error) return `Non riesco a leggere lo storico: ${error.message}`
+      if (!versioni?.length) return `Nessuna versione in storico per "${skillId}".`
+
+      const righe = versioni.map((v: { versione: number; istruzioni: string; archiviata_il: string; updated_by?: string }) =>
+        `• v${v.versione} — ${String(v.istruzioni ?? '').length} caratteri — ${String(v.archiviata_il).slice(0, 10)}${v.updated_by ? ` — ${String(v.updated_by).slice(0, 70)}` : ''}`
+      ).join('\n')
+      return `Storico di "${skillId}":\n${righe}\n\nPer leggerne una: storico_skill con quella versione. Per tornarci: ripristina_skill.`
+    }
+
+    case 'ripristina_skill': {
+      const skillId = String(input.skill_id ?? '')
+      const versione = Number(input.versione)
+      const motivo = String(input.motivo ?? 'ripristino')
+      if (!Number.isInteger(versione) || versione < 1) return 'Mi serve il numero di versione da ripristinare (vedi storico_skill).'
+
+      const { data: daRipristinare } = await supabase
+        .from('cervellone_skills_versioni')
+        .select('istruzioni')
+        .eq('skill_id', skillId)
+        .eq('versione', versione)
+        .maybeSingle()
+      if (!daRipristinare) return `Versione ${versione} di "${skillId}" non trovata nello storico.`
+
+      const { data: current } = await supabase
+        .from('cervellone_skills')
+        .select('istruzioni, versione')
+        .eq('id', skillId)
+        .single()
+      if (!current) return `Skill "${skillId}" non trovata.`
+
+      const versioneAttuale = current.versione || 1
+      // Anche il ripristino archivia prima: tornare indietro deve poter essere
+      // annullato, altrimenti si sposta soltanto il punto in cui si perde roba.
+      const { error: storicoErr } = await supabase
+        .from('cervellone_skills_versioni')
+        .upsert({
+          skill_id: skillId,
+          versione: versioneAttuale,
+          istruzioni: String(current.istruzioni ?? ''),
+          updated_by: `sostituita da ripristino a v${versione}: ${motivo.slice(0, 80)}`,
+        }, { onConflict: 'skill_id,versione', ignoreDuplicates: true })
+      if (storicoErr) {
+        return `⚠️ Ripristino NON eseguito: non riesco ad archiviare la versione attuale (${storicoErr.message}).`
+      }
+
+      const testo = String(daRipristinare.istruzioni ?? '')
+      // Il guard anti-riassunto NON si applica qui: il testo non arriva dal
+      // modello, arriva dallo storico, ed e' una richiesta esplicita.
+      const { error } = await supabase
+        .from('cervellone_skills')
+        .update({
+          istruzioni: testo,
+          istruzioni_precedenti: String(current.istruzioni ?? ''),
+          versione: versioneAttuale + 1,
+          updated_by: `ripristino a v${versione}: ${motivo.slice(0, 100)}`,
+        })
+        .eq('id', skillId)
+      if (error) return `Errore ripristino: ${error.message}`
+
+      const { invalidateSkillCache } = await import('../skills')
+      invalidateSkillCache()
+
+      return `✅ Skill "${skillId}" riportata al testo della v${versione} (${testo.length} caratteri), salvata come v${versioneAttuale + 1}. La versione ${versioneAttuale} resta nello storico, quindi il ripristino e' annullabile.`
     }
 
     case 'promuovi_modello': {
