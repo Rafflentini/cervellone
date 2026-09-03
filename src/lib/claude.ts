@@ -316,11 +316,12 @@ export interface ClaudeStreamCallbacks {
   onText: (text: string) => void
   onToolStart?: (toolName: string) => void
   /**
-   * Il turno e' fallito per un errore dell'API: il testo che arriva e' un
-   * messaggio d'errore, non una risposta. Il chiamante NON deve trattarlo come
-   * lavoro riuscito (archiviare bozze, salvare documenti).
+   * Il turno non e' lavoro compiuto: il testo che arriva e' un messaggio del
+   * loop (errore API, turno muto, budget esaurito), non una risposta. Il
+   * chiamante NON deve archiviarlo — bozze, documenti, memoria immagini,
+   * debrief.
    */
-  onApiError?: () => void
+  onTurnFailed?: (motivo: MotivoFallimento) => void
 }
 
 // ── Cost control (26 mag 2026) ──
@@ -421,6 +422,14 @@ const MAX_ITERATIONS = 10
 const NO_TEXT_LIMIT = 5
 
 /**
+ * Perche' il turno non e' arrivato a destinazione:
+ * - `api_error`: l'API ha smesso di rispondere (404, 529, timeout, credito)
+ * - `empty`: il modello non ha mai prodotto testo, l'utente riceve una scusa
+ * - `budget`: la run ha sfondato il tetto di token ed e' stata troncata
+ */
+export type MotivoFallimento = 'api_error' | 'empty' | 'budget'
+
+/**
  * Dove esce quello che il modello produce. E' l'unica cosa che i due canali
  * fanno davvero diversa: il web appende i delta allo stream HTTP, Telegram
  * riscrive lo stesso messaggio ogni pochi secondi.
@@ -448,13 +457,18 @@ export interface ChannelSink {
    */
   onAttemptStart?(): void
   /**
-   * Il turno e' fallito per un errore dell'API, e quello che segue e' un
-   * messaggio d'errore, non una risposta. Serve al chiamante per NON trattare
-   * il testo come lavoro riuscito: sul web la pipeline dopo lo stream salva
-   * bozze e documenti, e una risposta troncata a meta' verrebbe archiviata come
-   * se fosse finita.
+   * Il turno NON e' stato consegnato come lavoro compiuto: quello che l'utente
+   * legge e' un messaggio del loop, non una risposta finita.
+   *
+   * Serve al chiamante per non archiviarlo. Entrambe le pipeline post-turno
+   * (web e Telegram) salvano bozze, documenti, "conoscenza file", memoria
+   * immagini e debrief: senza questo segnale una risposta troncata a meta' — o
+   * un "non sono riuscito a sintetizzare" — finisce archiviata come se fosse il
+   * lavoro richiesto. Caso reale misurato: la memoria immagini legava i
+   * `drive_file_id` veri delle foto a un messaggio di scusa, e per 24 ore il
+   * bot "sapeva" di aver estratto quello.
    */
-  onApiError?(): void
+  onTurnFailed?(motivo: MotivoFallimento): void
   /** Consegna finale, per i canali che riscrivono il messaggio invece di appendere. */
   onFinal?(text: string): void | Promise<void>
 }
@@ -511,6 +525,17 @@ export async function runAgentTurn(
   let totalToolCalls = 0
   let apiErrorOccurred = false
   let apiErrorRecordDetails = ''
+  let runAbortedBudget = false
+
+  /**
+   * Avvisa il canale che il turno non e' lavoro compiuto. Va chiamato in TUTTI
+   * e tre i punti in cui il loop scrive al posto del modello (errore API, turno
+   * muto, budget esaurito): coprirne solo uno lascia le pipeline post-turno ad
+   * archiviare gli altri due.
+   */
+  const segnalaFallimento = (motivo: MotivoFallimento) => {
+    try { sink.onTurnFailed?.(motivo) } catch { /* la notifica non deve rompere il turno */ }
+  }
 
   /**
    * Testo che aggiunge il LOOP, non il modello: budget esaurito, errore API,
@@ -650,6 +675,8 @@ export async function runAgentTurn(
       if (isRunOverBudget(accUsage, runBudget)) {
         console.warn(`run_aborted_budget: ${runTokens(accUsage)} > ${runBudget} tokens (iter=${iterations})`)
         await emit('\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._')
+        segnalaFallimento('budget')
+        runAbortedBudget = true
         break
       }
       const toolBlocks = final.content.filter(b => b.type === 'tool_use')
@@ -776,7 +803,7 @@ export async function runAgentTurn(
     console.warn(`[STREAM(${policy.tag}) API ERROR] model=${modelConfig.model}: ${apiErrorRecordDetails.slice(0, 300)}`)
     // Il chiamante deve sapere che quello che segue e' un errore, non una
     // risposta: sul web la pipeline post-stream archivia bozze e documenti.
-    try { sink.onApiError?.() } catch { /* la notifica non deve rompere il turno */ }
+    segnalaFallimento('api_error')
     if (isBillingError(apiErrorRecordDetails)) {
       // Il .catch() e' necessario: siamo gia' dentro un catch, un errore qui
       // sfuggirebbe e ucciderebbe il turno al posto del messaggio d'errore.
@@ -799,6 +826,7 @@ export async function runAgentTurn(
   // bot che ignora. Meglio dirlo.
   if (fullResponse.length === 0) {
     console.warn(`STREAM(${policy.tag}) EMPTY: fullResponse vuoto dopo ${iterations} iter, applicato fallback`)
+    segnalaFallimento('empty')
     await emit('⚠️ Non sono riuscito a sintetizzare una risposta. Riformuli la richiesta o specifichi il file/contesto, per favore.')
   }
   console.log(`STREAM(${policy.tag}) done fullLen=${fullResponse.length} apiError=${apiErrorOccurred}`)
@@ -815,6 +843,15 @@ export async function runAgentTurn(
     ? 'api_error'
     : fullResponse.startsWith(FALLBACK_PREFIX)
       ? 'empty'
+      // Troncato dal guard rail di costo. NON e' 'success' — un runaway da 200K
+      // token non e' un turno riuscito e sparirebbe dalla telemetria — ma non e'
+      // nemmeno un guasto del MODELLO: e' la richiesta a essere grossa. Contarlo
+      // fra i fallimenti farebbe scattare il rollback su un modello sano dopo
+      // tre richieste pesanti di fila, che e' lo stesso difetto (falso segnale →
+      // rollback immotivato) chiuso oggi su web_search e sulle promesse
+      // mantenute. `run_aborted` e' escluso dal conteggio in circuit-breaker.
+      : runAbortedBudget
+        ? 'run_aborted'
       // Un turno che ha dovuto forzare la sintesi e' degradato, non riuscito.
       // Classificarlo 'success' INIETTA successi proprio nei turni andati male,
       // rendendo il breaker piu' difficile da far scattare invece che piu' facile.
@@ -873,7 +910,7 @@ export async function callClaudeStream(
     {
       onText: (delta) => { callbacks.onText(delta) },
       onServerTool: (nome) => { callbacks.onToolStart?.(nome) },
-      onApiError: () => { callbacks.onApiError?.() },
+      onTurnFailed: (motivo) => { callbacks.onTurnFailed?.(motivo) },
     },
     { tag: 'web', entryPoint: 'chat', persistUserMessage: false, persistAssistantMessage: false },
   )
@@ -892,12 +929,14 @@ const TELEGRAM_THINKING_EDIT_MS = 5000
 export async function callClaudeStreamTelegram(
   request: ClaudeRequest,
   onChunk: (accumulated: string) => void | Promise<void>,
+  callbacks?: Pick<ClaudeStreamCallbacks, 'onTurnFailed'>,
 ): Promise<string> {
   let lastTextEdit = 0
   let lastThinkingEdit = 0
   return runAgentTurn(
     request,
     {
+      onTurnFailed: (motivo) => { callbacks?.onTurnFailed?.(motivo) },
       onAttemptStart: () => { lastTextEdit = 0; lastThinkingEdit = 0 },
       onText: async (_delta, accumulated) => {
         const now = Date.now()

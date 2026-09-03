@@ -277,7 +277,7 @@ export async function POST(request: NextRequest) {
           {
             onText: (text) => invia(text),
             onToolStart: () => invia('\n\n🔍 *Cerco informazioni...*\n\n'),
-            onApiError: () => { turnoFallito = true },
+            onTurnFailed: () => { turnoFallito = true },
           },
         )
 

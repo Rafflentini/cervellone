@@ -20,6 +20,20 @@ export type ModelOutcome =
   | 'hallucination'
   | 'api_error'
   | 'timeout'
+  /**
+   * Run troncata dal guard rail di costo. NON e' un guasto del modello — e' la
+   * richiesta a essere grossa — quindi non conta per il rollback; ma non e'
+   * nemmeno un successo, e registrarla come tale farebbe sparire dalla
+   * telemetria un runaway da 200K token. Vedi ESITI_NON_IMPUTABILI.
+   */
+  | 'run_aborted'
+
+/**
+ * Esiti che NON depongono contro il modello: non contano fra i fallimenti che
+ * fanno scattare il rollback. Tenerli fuori evita di far cadere un modello sano
+ * per cause che non dipendono da lui.
+ */
+const ESITI_NON_IMPUTABILI: ReadonlySet<string> = new Set(['success', 'run_aborted'])
 
 export interface OutcomeDetails {
   fullLen?: number
@@ -263,7 +277,7 @@ export async function recordOutcome(
     })
 
   // Threshold check: solo se non canary e outcome è fail
-  if (details?.isCanary || outcome === 'success') return
+  if (details?.isCanary || ESITI_NON_IMPUTABILI.has(outcome)) return
 
   try {
     const { data } = await supabase
@@ -276,7 +290,7 @@ export async function recordOutcome(
 
     if (!data || data.length < SAMPLE_WINDOW) return
 
-    const failures = data.filter((r: { outcome: string }) => r.outcome !== 'success').length
+    const failures = data.filter((r: { outcome: string }) => !ESITI_NON_IMPUTABILI.has(r.outcome)).length
     if (failures >= FAILURE_THRESHOLD) {
       const reason = `${failures} fail su ${data.length} ultimi: ${data.map((r: { outcome: string }) => r.outcome).join(',')}`
       console.log(`[CB] threshold tripped for ${model}: ${reason}`)

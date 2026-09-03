@@ -196,6 +196,28 @@ cosa resta aperto.
 | A5 | `logApiUsage` finale non protetto: un blip di Supabase faceva fallire un turno già consegnato. |
 | A6 | Quattro guardie del loop (anti-bugia archiviazione, force-action, rollback del parziale, notifica di ri-tentativo) **non erano tenute ferme da nessun test**: disattivandole i 39 test restavano verdi. Coperte. Il ramo che preserva la risposta parziale dopo un errore a metà turno era scoperto **su entrambi i canali** ed è nuovo sul web. |
 
+**Secondo giro di audit — e la lezione peggiore.** La correzione di A1 era stata cablata **su un canale
+solo**, il web. Su Telegram la pipeline di fine turno continuava ad archiviare: documento, conoscenza
+file, auto-bozza, memoria immagini, e un debrief che distillava una "lezione" da un messaggio d'errore.
+Cioè: **dentro il lavoro che elimina le divergenze fra canali, ne è stata creata una nuova**, nello
+stesso modo di sempre.
+
+La causa è precisa e vale più del difetto: il segnale era testato su `runAgentTurn` con un sink finto —
+sul **motore**, che era giusto — e non sui **due adattatori pubblici**, che sono il punto in cui i
+canali possono ancora divergere. Il buco era esattamente dove non si guardava.
+
+Corretto: il segnale si chiama ora `onTurnFailed(motivo)`, copre tutti e tre i punti in cui il loop
+scrive al posto del modello (`api_error`, `empty`, `budget` — prima solo il primo), ed è cablato su
+entrambi gli adattatori, su `chat/route.ts`, su `agent-job.ts` e su `trigger/cervellone-long-task.ts`.
+Il caso peggiore che chiude è la **memoria immagini**, che lega i `drive_file_id` veri delle foto al
+testo estratto: con un turno muto il bot per 24 ore "sapeva" di aver estratto da quelle foto un
+messaggio di scusa, e il pointer gli diceva di fidarsene invece di rileggerle.
+
+Aggiunto anche l'esito `run_aborted` per le run troncate dal guard rail di costo. **Non** come suggeriva
+l'audit (contarle fra i fallimenti): tre richieste pesanti di fila avrebbero fatto rollbackare un
+modello sano, cioè lo stesso falso segnale chiuso in D1 e D2. `run_aborted` è visibile nella telemetria
+ma escluso dal conteggio del breaker (`ESITI_NON_IMPUTABILI`).
+
 **Aperto, non toccato qui — merita il suo lavoro:**
 
 > **Sul web il browser persiste il testo che il loop ha scartato.** `runAgentTurn` riavvolge

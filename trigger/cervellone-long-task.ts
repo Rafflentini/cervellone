@@ -26,6 +26,7 @@ export const cervelloneLongTask = task({
 
     metadata.set('status', 'avvio elaborazione')
     let lastEditText = ''
+    let turnoFallito = false
 
     const fullResponse = await callClaudeStreamTelegram(
       {
@@ -43,12 +44,14 @@ export const cervelloneLongTask = task({
         lastEditText = preview
         await editTelegramMessage(chatId, placeholderMsgId, preview)
       },
+      { onTurnFailed: (motivo) => { turnoFallito = true; metadata.set('status', `turno non consegnato (${motivo})`) } },
     )
 
     metadata.set('status', 'invio risposta finale')
 
-    // Parsing documenti generati e invio finale
-    const responseBlocks = parseDocumentBlocks(fullResponse)
+    // Parsing documenti generati e invio finale.
+    // Su turno fallito il testo e' troncato a meta': non si archivia nulla.
+    const responseBlocks = turnoFallito ? [] : parseDocumentBlocks(fullResponse)
     const textParts: string[] = []
 
     for (const block of responseBlocks) {

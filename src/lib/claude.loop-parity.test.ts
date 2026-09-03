@@ -150,7 +150,7 @@ vi.mock('./circuit-breaker', async (orig) => {
   }
 })
 
-import { callClaudeStream, callClaudeStreamTelegram, runAgentTurn, type ChannelSink } from './claude'
+import { callClaudeStream, callClaudeStreamTelegram, runAgentTurn, type ChannelSink, type MotivoFallimento } from './claude'
 
 beforeEach(() => {
   turnIndex = 0
@@ -589,7 +589,7 @@ describe('runAgentTurn — cosa il motore promette al canale', () => {
     const sink: ChannelSink = {
       onText: () => { eventi.push('text') },
       onAttemptStart: () => { eventi.push('attemptStart') },
-      onApiError: () => { eventi.push('apiError') },
+      onTurnFailed: (m) => { eventi.push(`turnFailed:${m}`) },
       onFinal: () => { eventi.push('final') },
       onServerTool: () => { eventi.push('serverTool') },
     }
@@ -608,7 +608,7 @@ describe('runAgentTurn — cosa il motore promette al canale', () => {
 
     await runAgentTurn(richiestaBase('chat'), sink, policyProva)
 
-    expect(eventi).toContain('apiError')
+    expect(eventi).toContain('turnFailed:api_error')
   })
 
   it('NON avvisa di errore un turno riuscito', async () => {
@@ -617,7 +617,7 @@ describe('runAgentTurn — cosa il motore promette al canale', () => {
 
     await runAgentTurn(richiestaBase('chat'), sink, policyProva)
 
-    expect(eventi).not.toContain('apiError')
+    expect(eventi).not.toContain('turnFailed:api_error')
     expect(eventi).toContain('final')
   })
 
@@ -649,5 +649,111 @@ describe('runAgentTurn — cosa il motore promette al canale', () => {
 
     expect(recordOutcomeCalls).toHaveLength(1)
     expect(recordOutcomeCalls[0].outcome).toBe('api_error')
+  })
+})
+
+// ── Il segnale "turno non consegnato", su ENTRAMBI gli adattatori pubblici ──
+//
+// Questo blocco esiste per un errore preciso, commesso il 3 set 2026 dentro il
+// lavoro che doveva eliminare le divergenze fra canali: il segnale che dice al
+// chiamante "non archiviare, e' un fallimento" era stato cablato SOLO sul web.
+// Su Telegram la pipeline post-turno continuava ad archiviare documenti,
+// conoscenza file, auto-bozze, memoria immagini e a distillare un debrief da un
+// messaggio d'errore.
+//
+// Non l'hanno visto i test perche' il segnale era verificato su `runAgentTurn`
+// con un sink finto — cioe' sul motore, che era giusto — e non sui due
+// adattatori, che sono il punto in cui i canali possono ancora divergere.
+// Da qui in poi si verificano gli adattatori.
+describe('gli adattatori pubblici avvisano il chiamante di un turno fallito', () => {
+  const MOTIVI: Array<[string, () => void, MotivoFallimento]> = [
+    [
+      'errore API',
+      () => { mockStream.mockImplementationOnce(() => { throw new Error('404 model not found') }) },
+      'api_error',
+    ],
+    [
+      'turno muto',
+      () => { scriptedTurns = [{ text: '', toolUses: [], stopReason: 'end_turn' }] },
+      'empty',
+    ],
+  ]
+
+  describe.each(MOTIVI)('quando il turno finisce per %s', (_nome, prepara, motivoAtteso) => {
+    it('il canale web lo sa', async () => {
+      prepara()
+      const motivi: MotivoFallimento[] = []
+
+      await callClaudeStream(richiestaBase('chat'), {
+        onText: () => {},
+        onTurnFailed: (m) => motivi.push(m),
+      })
+
+      expect(motivi).toEqual([motivoAtteso])
+    })
+
+    it('il canale Telegram lo sa', async () => {
+      prepara()
+      const motivi: MotivoFallimento[] = []
+
+      await callClaudeStreamTelegram(
+        richiestaBase('telegram'),
+        async () => {},
+        { onTurnFailed: (m) => motivi.push(m) },
+      )
+
+      expect(motivi).toEqual([motivoAtteso])
+    })
+  })
+
+  it('il budget esaurito e un fallimento su entrambi i canali', async () => {
+    const scenarioBudget = (): FakeTurn[] => [
+      { text: 'Comincio.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+    ]
+
+    scriptedTurns = scenarioBudget()
+    const motiviWeb: MotivoFallimento[] = []
+    await callClaudeStream(
+      { ...richiestaBase('chat'), maxRunTokens: 1 } as Richiesta,
+      { onText: () => {}, onTurnFailed: (m) => motiviWeb.push(m) },
+    )
+    expect(motiviWeb).toEqual(['budget'])
+
+    turnIndex = 0
+    scriptedTurns = scenarioBudget()
+    const motiviTg: MotivoFallimento[] = []
+    await callClaudeStreamTelegram(
+      { ...richiestaBase('telegram'), maxRunTokens: 1 } as Richiesta,
+      async () => {},
+      { onTurnFailed: (m) => motiviTg.push(m) },
+    )
+    expect(motiviTg).toEqual(['budget'])
+  })
+
+  it('un turno riuscito non avvisa nessuno', async () => {
+    scriptedTurns = [{ text: 'Fatto, ecco il risultato.', toolUses: [], stopReason: 'end_turn' }]
+    const motiviWeb: MotivoFallimento[] = []
+    await callClaudeStream(richiestaBase('chat'), { onText: () => {}, onTurnFailed: (m) => motiviWeb.push(m) })
+    expect(motiviWeb).toEqual([])
+
+    turnIndex = 0
+    scriptedTurns = [{ text: 'Fatto, ecco il risultato.', toolUses: [], stopReason: 'end_turn' }]
+    const motiviTg: MotivoFallimento[] = []
+    await callClaudeStreamTelegram(richiestaBase('telegram'), async () => {}, { onTurnFailed: (m) => motiviTg.push(m) })
+    expect(motiviTg).toEqual([])
+  })
+
+  it('una run troncata dal budget non viene contata come guasto del modello', async () => {
+    // Ne' come successo: un runaway da 200K token sparirebbe dalla telemetria.
+    // Ma nemmeno come fallimento, o tre richieste pesanti di fila farebbero
+    // rollbackare un modello sano — lo stesso falso segnale chiuso oggi su
+    // web_search e sulle promesse mantenute.
+    scriptedTurns = [
+      { text: 'Comincio.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+    ]
+
+    await callClaudeStream({ ...richiestaBase('chat'), maxRunTokens: 1 } as Richiesta, { onText: () => {} })
+
+    expect(recordOutcomeCalls[0].outcome).toBe('run_aborted')
   })
 })

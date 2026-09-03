@@ -208,6 +208,14 @@ export async function runAgentJob(
     .filter((b) => b && b.trim())
     .join('\n\n') || undefined
 
+  // Il turno e' arrivato in fondo, o quello che leggiamo e' un messaggio del
+  // loop (errore API, turno muto, budget esaurito)? Senza questa risposta, tutta
+  // la pipeline qui sotto archivia il fallimento come se fosse il lavoro
+  // richiesto: documenti, "conoscenza file", auto-bozza, memoria immagini,
+  // debrief. Il caso peggiore e' la memoria immagini, che lega i drive_file_id
+  // VERI delle foto al testo estratto: per 24 ore il bot "sa" di aver estratto
+  // da quelle foto un messaggio di scusa, e il pointer gli dice di fidarsene.
+  let turnoFallito = false
   const fullResponse = await callClaudeStreamTelegram(
     {
       messages: history,
@@ -224,7 +232,8 @@ export async function runAgentJob(
       if (preview === lastEditText) return
       lastEditText = preview
       await editTelegramMessage(chatId, currentMsgId, preview)
-    }
+    },
+    { onTurnFailed: (motivo) => { turnoFallito = true; console.warn(`[agent-job] turno non consegnato (${motivo}): niente archiviazione`) } },
   )
 
   if (attachedRecentUploadIds.length > 0) {
@@ -237,8 +246,9 @@ export async function runAgentJob(
   // Path durable: hook assente → no-op.
   hooks.onStreamSettled?.()
 
-  // Gestisci documenti e risposta finale
-  const responseBlocks = parseDocumentBlocks(fullResponse)
+  // Gestisci documenti e risposta finale.
+  // Su turno fallito non si salva niente: il testo e' troncato a meta'.
+  const responseBlocks = turnoFallito ? [] : parseDocumentBlocks(fullResponse)
   const textParts: string[] = []
 
   for (const block of responseBlocks) {
@@ -285,7 +295,7 @@ export async function runAgentJob(
   }
 
   // Salva conoscenza file
-  if (fileBlocks.length > 0 && fullResponse.length > 200) {
+  if (!turnoFallito && fileBlocks.length > 0 && fullResponse.length > 200) {
     const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
     saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
   }
@@ -295,7 +305,7 @@ export async function runAgentJob(
   // persistiamo in `documents` (auto-bozza) così non lo perde quando scorre fuori dalla
   // finestra di history e lo recupera con ritrova_bozza. Best-effort, gated dal flag.
   const hadDocumentBlock = responseBlocks.some((b) => b.type === 'document')
-  if (!hadDocumentBlock) {
+  if (!turnoFallito && !hadDocumentBlock) {
     captureArtifact(conversationId, finalText).catch(() => {})
   }
 
@@ -304,7 +314,9 @@ export async function runAgentJob(
   // GREZZO del modello, come fa il path web) e NON `finalText`: quest'ultimo, sui turni
   // con document block, è il link "📄 …👉 url" e non l'estrazione vera. Best-effort;
   // se uploadedImages è vuoto, captureImageExtraction non salva (reason: no-images).
-  captureImageExtraction(conversationId, fullResponse, input.uploadedImages ?? []).catch(() => {})
+  if (!turnoFallito) {
+    captureImageExtraction(conversationId, fullResponse, input.uploadedImages ?? []).catch(() => {})
+  }
 
   // Debrief di fine turno: distilla decisioni e lezioni in memoria durevole. È il
   // pezzo che conserva il PERCHÉ di un lavoro, non solo i nomi che vi compaiono —
@@ -312,8 +324,10 @@ export async function runAgentJob(
   // Resta flag-gated (fail-closed) dentro maybeRunDebrief: accenderlo è una
   // decisione separata. Il .catch è deliberato: la risposta è già stata
   // consegnata all'utente, e un debrief fallito non deve poterla rovinare.
+  // Su turno fallito il debrief distillerebbe una "lezione" da un messaggio
+  // d'errore, e la metterebbe in memoria durevole.
   const { maybeRunDebrief } = await import('./auto-debrief')
-  await maybeRunDebrief({
+  if (!turnoFallito) await maybeRunDebrief({
     conversationId,
     userText,
     transcript: [
