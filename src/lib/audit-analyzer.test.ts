@@ -415,3 +415,51 @@ describe('analyze — MEMORIA_VUOTA: il controllo che per tre mesi e mancato', (
     expect(result.anomalies.find(x => x.code === 'MEMORIA_VUOTA')).toBeDefined()
   })
 })
+
+describe('analyze — SCADENZE_SCADUTE_ATTIVE: quelle che il cron non guarda', () => {
+  // Il cron dei promemoria filtra `.gte('data_scadenza', today)`: una scadenza
+  // registrata con una data gia' passata non viene MAI letta. Caso reale del
+  // 3 set 2026: "Nomina Medico Competente", scadenza 17 maggio, registrata il
+  // 4 giugno, ancora attiva dopo 3 mesi e mezzo con reminders_sent VUOTO.
+  it('le segnala, dicendo da quanto sono passate', () => {
+    const input = cleanInput()
+    input.scadenzeScadute = {
+      ok: true,
+      data: {
+        righe: [
+          { id: 'a', soggetto: 'Dott. Carmelo Romano - Medico Competente', tipo_documento: 'Nomina Medico Competente', data_scadenza: '2026-05-17', giorni_fa: 109 },
+        ],
+      },
+    }
+
+    const result = analyze(input)
+    const a = result.anomalies.find(x => x.code === 'SCADENZE_SCADUTE_ATTIVE')
+
+    expect(a).toBeDefined()
+    expect(a!.severity).toBe('high')
+    // "da quanto" e' la parte interpretabile: ieri e tre mesi fa non sono uguali.
+    expect(a!.description).toContain('109')
+    expect(a!.description).toContain('Medico Competente')
+    // Deve dire anche PERCHE' nessuno se n'era accorto.
+    expect(a!.description).toContain('guarda solo in avanti')
+  })
+
+  it('senza scadenze passate non alza nulla', () => {
+    // Controllo positivo al contrario.
+    const input = cleanInput()
+    input.scadenzeScadute = { ok: true, data: { righe: [] } }
+
+    expect(analyze(input).anomalies.find(x => x.code === 'SCADENZE_SCADUTE_ATTIVE')).toBeUndefined()
+  })
+
+  it('se il collector non c e o fallisce, l audit non si rompe', () => {
+    // La dimensione e' opzionale: un audit che collassa perche' manca un campo
+    // e' la patologia che questo file esiste per curare.
+    const senza = cleanInput()
+    expect(() => analyze(senza)).not.toThrow()
+
+    const rotto = cleanInput()
+    rotto.scadenzeScadute = { ok: false, error: 'DB timeout' }
+    expect(() => analyze(rotto)).not.toThrow()
+  })
+})

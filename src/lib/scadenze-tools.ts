@@ -297,6 +297,8 @@ export interface RegistraScadenzaEsito {
   error?: string
   id?: string
   sostituite: string[]
+  /** Presente solo quando la scadenza registrata e' GIA' passata: il cron dei promemoria non la vedra' mai. */
+  giaScaduta?: string
   /** Presente solo quando la sostituzione delle precedenti e fallita. */
   avviso?: string
   /** false = l'evento in agenda NON esiste. Vedi `calendarNota` per il motivo. */
@@ -351,6 +353,22 @@ export async function registraScadenzaCore(
   const parsedDate = parseDate(input.data_scadenza, 'data_scadenza')
   if (parsedDate.error) return rejected(parsedDate.error)
   if (!parsedDate.value) return rejected('data_scadenza obbligatoria nel formato YYYY-MM-DD.')
+
+  // Una scadenza registrata con una data GIA' PASSATA e' invisibile a tutto: il
+  // cron dei promemoria filtra `.gte('data_scadenza', today)`, quindi non la
+  // legge mai. Nessun promemoria, nessun avviso — e la riga resta `attivo`,
+  // quindi sembra tutto a posto.
+  //
+  // E' successo davvero: "Nomina Medico Competente", scadenza 17 maggio 2026,
+  // registrata il 4 giugno — nata gia' scaduta — rimasta muta per tre mesi e
+  // mezzo con `reminders_sent` vuoto. Un adempimento di sicurezza.
+  //
+  // Non si RIFIUTA (registrare uno storico e' legittimo), ma va DETTO subito,
+  // qui e non fra una settimana nell'audit.
+  const oggiRoma = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' })
+  const giorniPassati = parsedDate.value < oggiRoma
+    ? Math.round((Date.parse(`${oggiRoma}T00:00:00Z`) - Date.parse(`${parsedDate.value}T00:00:00Z`)) / 86_400_000)
+    : 0
 
   const parsedFields = parseWriteFields(input, false)
   if (parsedFields.error) return rejected(parsedFields.error)
@@ -445,6 +463,11 @@ export async function registraScadenzaCore(
     id: created?.id,
     sostituite: replacedIds,
     ...(sostituzione.warning ? { avviso: sostituzione.warning } : {}),
+    // L'avviso della sostituzione fallita ha la precedenza: e' un problema di
+    // adesso. Quello sulla data passata lo segue, ma non deve sparire.
+    ...(giorniPassati > 0
+      ? { giaScaduta: `⚠️ Attenzione: questa scadenza è già passata da ${giorniPassati} giorni (${parsedDate.value}). Il promemoria automatico NON partirà: il controllo guarda solo in avanti. Se il documento è stato rinnovato, registri la scadenza nuova; se non lo è, è un adempimento scoperto.` }
+      : {}),
     calendarOk: calendar.ok,
     calendarNota,
   }
@@ -465,10 +488,13 @@ async function registraScadenza(input: Record<string, unknown>): Promise<string>
   // ignorabile dal modello ("registrata, te l'ho messa anche in agenda" anche
   // quando l'evento non esisteva). `calendar_ok` e un booleano: non si legge a
   // meta.
+  // `gia_scaduta` e' un booleano accanto al testo, per la stessa ragione di
+  // `calendar_ok`: una nota in prosa il modello puo' ignorarla, un booleano no.
   return ok({
     id: esito.id,
     sostituite: esito.sostituite,
     ...(esito.avviso ? { sostituzione: 'fallita', avviso: esito.avviso } : {}),
+    ...(esito.giaScaduta ? { gia_scaduta: true, avviso_scadenza_passata: esito.giaScaduta } : {}),
     calendar_ok: esito.calendarOk,
     calendar: esito.calendarNota,
   })
@@ -993,7 +1019,7 @@ export async function executeScadenzeTool(name: string, input: Record<string, un
 export const SCADENZE_TOOLS: ToolDefinition[] = [
   {
     name: 'registra_scadenza',
-    description: 'Registra una scadenza documentale/operativa in cervellone_scadenze. CHIAVE DI IDENTITA della scadenza = soggetto + tipo_documento + categoria (confronto senza distinzione di maiuscole ne di spazi): se esiste gia una scadenza attiva con la stessa chiave, viene marcata come sostituita DOPO aver creato la nuova. Quindi: al RINNOVO dello stesso documento ripeti la chiave IDENTICA (stessa categoria di prima), altrimenti restano due righe attive e arrivano due promemoria; per due documenti DIVERSI dello stesso tipo e dello stesso soggetto (es. tre attestati di formazione di Mario Rossi) usa categorie DIVERSE (es. antincendio / primo soccorso / ponteggi), altrimenti il piu recente cancella il precedente. Crea AUTOMATICAMENTE anche l\'evento sul Google Calendar di restruktura.drive: NON chiamare calendar_create_event per una scadenza, faresti un doppione. Il promemoria lo manda il cron (mail ai destinatari), l\'evento e solo la voce in agenda. ESITO — REGOLA FERREA: se la risposta contiene il campo "avviso" (e "sostituzione":"fallita") la registrazione NON e pulita, restano due righe attive: riporta l\'avviso TESTUALMENTE all\'Ingegnere e proponi di chiudere la vecchia con chiudi_scadenza. E se "calendar_ok" e false l\'evento in agenda NON esiste: dillo esplicitamente citando il campo "calendar" (che spiega il motivo) e NON dire che hai messo la scadenza in agenda. Non dire mai solo "scadenza registrata" quando c\'e un avviso o calendar_ok false.',
+    description: 'Registra una scadenza documentale/operativa in cervellone_scadenze. CHIAVE DI IDENTITA della scadenza = soggetto + tipo_documento + categoria (confronto senza distinzione di maiuscole ne di spazi): se esiste gia una scadenza attiva con la stessa chiave, viene marcata come sostituita DOPO aver creato la nuova. Quindi: al RINNOVO dello stesso documento ripeti la chiave IDENTICA (stessa categoria di prima), altrimenti restano due righe attive e arrivano due promemoria; per due documenti DIVERSI dello stesso tipo e dello stesso soggetto (es. tre attestati di formazione di Mario Rossi) usa categorie DIVERSE (es. antincendio / primo soccorso / ponteggi), altrimenti il piu recente cancella il precedente. Crea AUTOMATICAMENTE anche l\'evento sul Google Calendar di restruktura.drive: NON chiamare calendar_create_event per una scadenza, faresti un doppione. Il promemoria lo manda il cron (mail ai destinatari), l\'evento e solo la voce in agenda. ESITO — REGOLA FERREA: se la risposta contiene il campo "avviso" (e "sostituzione":"fallita") la registrazione NON e pulita, restano due righe attive: riporta l\'avviso TESTUALMENTE all\'Ingegnere e proponi di chiudere la vecchia con chiudi_scadenza. E se "calendar_ok" e false l\'evento in agenda NON esiste: dillo esplicitamente citando il campo "calendar" (che spiega il motivo) e NON dire che hai messo la scadenza in agenda. Non dire mai solo "scadenza registrata" quando c\'e un avviso o calendar_ok false. E se "gia_scaduta" e true la data e GIA passata: il cron dei promemoria NON la vedra mai, perche guarda solo in avanti. In quel caso riporta TESTUALMENTE "avviso_scadenza_passata" e chiedi se il documento e stato rinnovato — non limitarti a dire che l\'hai registrata.',
     input_schema: {
       type: 'object' as const,
       properties: {

@@ -54,6 +54,7 @@ const mockCollectBreakerEvents = vi.fn()
 const mockCollectGmailHealth = vi.fn()
 const mockCollectMemoriaRuns = vi.fn()
 const mockCollectCostEstimate = vi.fn()
+const mockCollectScadenzeScadute = vi.fn()
 
 vi.mock('./audit-collector', () => ({
   collectModelHealth: mockCollectModelHealth,
@@ -61,6 +62,7 @@ vi.mock('./audit-collector', () => ({
   collectGmailHealth: mockCollectGmailHealth,
   collectMemoriaRuns: mockCollectMemoriaRuns,
   collectCostEstimate: mockCollectCostEstimate,
+  collectScadenzeScadute: mockCollectScadenzeScadute,
 }))
 
 // ── Mock telegram-helpers ─────────────────────────────────────────────────────
@@ -111,6 +113,8 @@ function setCleanCollectors() {
     ok: true,
     data: { memoria_7d: 0.10, canary_fixed: 0.34, total_7d: 0.44, avg_per_day: 0.063 },
   })
+  // Caso sano: nessuna scadenza attiva gia' passata.
+  mockCollectScadenzeScadute.mockResolvedValue({ ok: true, data: { righe: [] } })
 }
 
 beforeEach(() => {

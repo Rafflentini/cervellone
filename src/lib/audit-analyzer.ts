@@ -2,7 +2,7 @@
 // Pure logic: nessuna dipendenza Supabase o Anthropic.
 // Spec: docs/superpowers/specs/2026-05-07-cervellone-self-audit-design.md §4-5
 
-import type { DimensionResult, ModelHealthData, BreakerEventsData, GmailHealthData, MemoriaRunsData, CostEstimateData } from './audit-collector'
+import type { DimensionResult, ModelHealthData, BreakerEventsData, GmailHealthData, MemoriaRunsData, CostEstimateData, ScadenzeScaduteData } from './audit-collector'
 
 // ── Types pubblici ─────────────────────────────────────────────────────────────
 
@@ -22,6 +22,8 @@ export interface AnalysisInput {
   gmailHealth: DimensionResult<GmailHealthData>
   memoriaRuns: DimensionResult<MemoriaRunsData>
   costEstimate: DimensionResult<CostEstimateData>
+  /** Scadenze ancora attive ma gia' passate: invisibili al cron dei promemoria. */
+  scadenzeScadute?: DimensionResult<ScadenzeScaduteData>
 }
 
 export interface AnalysisResult {
@@ -291,6 +293,34 @@ export function analyze(input: AnalysisInput): AnalysisResult {
         description: `Costo totale settimanale $${d.total_7d.toFixed(3)} supera budget $10/settimana.`,
         proposed_action: 'Azione immediata: rivedi automazioni attive. Disabilita temporaneamente cron non critici.',
         raw: { total_7d: d.total_7d },
+      })
+    }
+  }
+
+  // ── D6: scadenze attive ma gia' passate ─────────────────────────────────────
+  //
+  // Sono INVISIBILI al resto del sistema: il cron dei promemoria filtra
+  // `.gte('data_scadenza', today)`, quindi una scadenza registrata con una data
+  // gia' passata non viene mai letta. Nessun promemoria, nessun avviso, per
+  // sempre — e resta `attivo`, quindi sembra tutto a posto.
+  //
+  // Caso reale che ha fatto aggiungere questo controllo (3 set 2026): "Nomina
+  // Medico Competente", scadenza 17 maggio, registrata il 4 giugno — nata gia'
+  // scaduta — ancora attiva dopo tre mesi e mezzo, con `reminders_sent` VUOTO.
+  // Un adempimento di sicurezza rimasto muto perche' nessun controllo guardava
+  // indietro. [[feedback_misura_non_e_dato]]
+  if (input.scadenzeScadute?.ok && input.scadenzeScadute.data) {
+    const righe = input.scadenzeScadute.data.righe ?? []
+    if (righe.length > 0) {
+      const piuVecchia = righe[0]
+      anomalies.push({
+        code: 'SCADENZE_SCADUTE_ATTIVE',
+        severity: 'high',
+        // Il "da quanto" e' la parte che rende il dato interpretabile: una
+        // scadenza passata ieri e una passata da tre mesi non sono la stessa cosa.
+        description: `${righe.length} scadenz${righe.length === 1 ? 'a' : 'e'} risulta${righe.length === 1 ? '' : 'no'} ancora attiv${righe.length === 1 ? 'a' : 'e'} ma è già passata. La più vecchia: "${piuVecchia.soggetto.slice(0, 60)}" (${piuVecchia.tipo_documento ?? 'documento'}), scaduta il ${piuVecchia.data_scadenza}, ${piuVecchia.giorni_fa} giorni fa. Il cron dei promemoria non le vede: guarda solo in avanti.`,
+        proposed_action: 'Verificare se sono state rinnovate: in quel caso marcare la riga vecchia come "sostituito"/"archiviato". Se non lo sono, è un adempimento scoperto.',
+        raw: { righe: righe.slice(0, 10) },
       })
     }
   }

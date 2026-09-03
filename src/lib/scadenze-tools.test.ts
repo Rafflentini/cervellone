@@ -1998,3 +1998,56 @@ describe('aggiorna_scadenza — collisione di chiave segnalata, non risolta (BUG
     expect(tool.description).toMatch(/chiudi_scadenza/)
   })
 })
+
+describe('registra_scadenza — una scadenza gia passata non puo restare muta', () => {
+  // Il cron dei promemoria filtra `.gte('data_scadenza', today)`: una scadenza
+  // registrata con una data GIA passata non viene mai letta. Nessun promemoria,
+  // nessun avviso, per sempre — e la riga resta `attivo`, quindi sembra a posto.
+  //
+  // E' successo: "Nomina Medico Competente", scadenza 17 maggio 2026,
+  // registrata il 4 giugno, rimasta muta per tre mesi e mezzo con
+  // `reminders_sent` VUOTO. Un adempimento di sicurezza.
+  function ieri(): string {
+    const d = new Date()
+    d.setDate(d.getDate() - 1)
+    return d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' })
+  }
+  function fraUnAnno(): string {
+    const d = new Date()
+    d.setFullYear(d.getFullYear() + 1)
+    return d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' })
+  }
+
+  it('avvisa, e lo fa con un booleano che il modello non puo ignorare', async () => {
+    const res = await registra({
+      soggetto: 'Dott. Carmelo Romano', tipo_documento: 'Nomina Medico Competente',
+      categoria: 'sicurezza', data_scadenza: ieri(),
+    }) as unknown as Record<string, unknown>
+
+    expect(res.ok).toBe(true) // registrare uno storico e' legittimo: si avvisa, non si rifiuta
+    expect(res.gia_scaduta).toBe(true)
+    expect(String(res.avviso_scadenza_passata)).toContain('già passata')
+    // Deve dire la conseguenza, non solo il fatto: altrimenti sembra un dettaglio.
+    expect(String(res.avviso_scadenza_passata)).toContain('NON partirà')
+  })
+
+  it('dice da QUANTI giorni: ieri e tre mesi fa non sono la stessa cosa', async () => {
+    const res = await registra({
+      soggetto: 'Tizio', tipo_documento: 'DURC', categoria: 'azienda', data_scadenza: ieri(),
+    }) as unknown as Record<string, unknown>
+
+    expect(String(res.avviso_scadenza_passata)).toMatch(/1 giorni/)
+  })
+
+  it('una scadenza futura NON viene marcata', async () => {
+    // Controllo positivo: senza, il campo potrebbe comparire sempre e i test
+    // sopra sarebbero verdi per il motivo sbagliato.
+    const res = await registra({
+      soggetto: 'Tizio', tipo_documento: 'DURC', categoria: 'azienda', data_scadenza: fraUnAnno(),
+    }) as unknown as Record<string, unknown>
+
+    expect(res.ok).toBe(true)
+    expect(res.gia_scaduta).toBeUndefined()
+    expect(res.avviso_scadenza_passata).toBeUndefined()
+  })
+})

@@ -392,3 +392,60 @@ export async function collectCostEstimate(): Promise<DimensionResult<CostEstimat
     data: { memoria_7d, canary_fixed, total_7d, avg_per_day },
   }
 }
+
+// ── D6: Scadenze attive ma gia' passate ───────────────────────────────────────
+
+export interface ScadenzaScadutaRow {
+  id: string
+  soggetto: string
+  tipo_documento: string | null
+  data_scadenza: string
+  giorni_fa: number
+}
+
+export interface ScadenzeScaduteData {
+  righe: ScadenzaScadutaRow[]
+}
+
+/**
+ * Scadenze ancora `attivo` la cui data e' gia' passata.
+ *
+ * Sono INVISIBILI a tutto il resto del sistema. Il cron dei promemoria filtra
+ * `.gte('data_scadenza', today)`: una scadenza registrata con una data gia'
+ * passata non viene mai letta — nessun promemoria, nessun avviso, per sempre.
+ *
+ * Non e' un caso di scuola. Al 3 set 2026 c'era in tabella "Nomina Medico
+ * Competente" con scadenza **17 maggio**, registrata il **4 giugno** — cioe'
+ * nata gia' scaduta — ancora `attivo`, con `reminders_sent` VUOTO. Tre mesi e
+ * mezzo di silenzio su un adempimento di sicurezza, e nessuno poteva
+ * accorgersene perche' nessun controllo guardava indietro.
+ *
+ * Sta nell'audit settimanale e non nella mail giornaliera dei promemoria: e' una
+ * cosa da sistemare una volta (marcare `sostituito`/`archiviato`), non da
+ * ricordare ogni mattina.
+ */
+export async function collectScadenzeScadute(): Promise<DimensionResult<ScadenzeScaduteData>> {
+  const today = todayISO()
+
+  const { data, error } = await supabase
+    .from('cervellone_scadenze')
+    .select('id, soggetto, tipo_documento, data_scadenza')
+    .eq('stato', 'attivo')
+    .lt('data_scadenza', today)
+    .order('data_scadenza', { ascending: true })
+
+  if (error) return { ok: false, error: error.message }
+
+  const oggiMs = Date.parse(`${today}T00:00:00Z`)
+  const righe: ScadenzaScadutaRow[] = (data ?? []).map((r: {
+    id: string; soggetto: string; tipo_documento: string | null; data_scadenza: string
+  }) => ({
+    id: r.id,
+    soggetto: r.soggetto,
+    tipo_documento: r.tipo_documento,
+    data_scadenza: r.data_scadenza,
+    giorni_fa: Math.round((oggiMs - Date.parse(`${r.data_scadenza}T00:00:00Z`)) / (24 * 60 * 60 * 1000)),
+  }))
+
+  return { ok: true, data: { righe } }
+}

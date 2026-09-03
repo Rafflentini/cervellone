@@ -10,6 +10,7 @@ import {
   collectGmailHealth,
   collectMemoriaRuns,
   collectCostEstimate,
+  collectScadenzeScadute,
 } from './audit-collector'
 import { analyze, formatReport } from './audit-analyzer'
 import type { AnalysisInput } from './audit-analyzer'
@@ -98,12 +99,13 @@ export async function runAudit(): Promise<RunAuditResult> {
 
   try {
     // Step 3: Promise.allSettled 5 collector (paralleli)
-    const [mhResult, beResult, ghResult, mrResult, ceResult] = await Promise.allSettled([
+    const [mhResult, beResult, ghResult, mrResult, ceResult, ssResult] = await Promise.allSettled([
       collectModelHealth(),
       collectBreakerEvents(),
       collectGmailHealth(),
       collectMemoriaRuns(),
       collectCostEstimate(),
+      collectScadenzeScadute(),
     ])
 
     // Estrai valori, log warn per falliti
@@ -124,6 +126,8 @@ export async function runAudit(): Promise<RunAuditResult> {
       memoriaRuns: settle(mrResult, 'memoriaRuns') as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       costEstimate: settle(ceResult, 'costEstimate') as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      scadenzeScadute: settle(ssResult, 'scadenzeScadute') as any,
     }
 
     // Step 4: analyze
