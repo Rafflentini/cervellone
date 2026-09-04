@@ -51,3 +51,11 @@ bridge/.secret*
 next-env.d.ts
 
 .vercel
+
+# Documenti GENERATI con dati reali (POS, CIGO, ecc.).
+# Il repo e' PUBBLICO: gli output di cantiere non ci vanno mai, anche quando
+# lo script che li produce e' in git.
+/.cigo-work/
+/POS_*.docx
+/CIGO_*.docx
+/CIGO_*.zip
