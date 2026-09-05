@@ -60,7 +60,18 @@ export async function readEmail(input: ReadEmailInput): Promise<ReadEmailResult>
     if (input.from) criteria.from = input.from
     if (input.subject_contains) criteria.subject = input.subject_contains
     const uids = await client.search(criteria, { uid: true })
-    const allUids = Array.isArray(uids) ? uids : []
+    // Una ricerca che non torna un elenco NON e' una casella vuota: e' una
+    // ricerca fallita. Prima diventava `[]` in silenzio, e il chiamante leggeva
+    // "nessun messaggio". Misurato il 5 set 2026: con una data di fine nel
+    // FUTURO il server TopHost risponde `undefined`, e la routine delle fatture
+    // estere riportava tranquillamente "0 su 0 esaminati" su una casella che
+    // conteneva 45 messaggi. Un guasto travestito da niente da fare.
+    if (!Array.isArray(uids)) {
+      throw new Error(
+        `Ricerca IMAP non riuscita su ${folder} (${input.account}): il server non ha restituito un elenco. Criteri: ${JSON.stringify({ since: input.since, before: input.before, from: input.from })}`,
+      )
+    }
+    const allUids = uids
     const tail = allUids.slice(-limit)
     const messages: ReadEmailMessage[] = []
     if (tail.length > 0) {

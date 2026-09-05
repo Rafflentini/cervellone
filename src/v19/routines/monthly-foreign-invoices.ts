@@ -213,6 +213,11 @@ export function dataSicura(valore: string | null | undefined): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString()
 }
 
+/** Vero se la data (AAAA-MM-GG) e' successiva a oggi. */
+export function dataNelFuturo(giorno: string, adesso = new Date()): boolean {
+  return new Date(`${giorno}T00:00:00Z`).getTime() > adesso.getTime()
+}
+
 /**
  * Estrae l'indirizzo da un'intestazione tipo `"Anthropic, PBC" <invoice@x.com>`.
  * IMAP consegna gia' l'indirizzo nudo, Gmail consegna l'intestazione intera:
@@ -255,7 +260,19 @@ export function casellaImap(account: AccountKey): Casella {
     async leggi(since, before) {
       // `before` limita la ricerca IMAP al mese: senza, la ricerca prende tutto
       // da inizio mese a oggi e il taglio finisce per premiare i giorni recenti.
-      const lista = await readEmail({ account, folder: 'INBOX', since, before, limit: LIMITE_LETTURA })
+      //
+      // Ma una data di fine NEL FUTURO fa fallire la ricerca sul server TopHost
+      // (misurato il 5 set: risponde `undefined`). Succede ogni volta che si
+      // chiede il mese in corso — cioe' proprio quando l'Ingegnere lo chiede a
+      // voce. Per il mese in corso si lascia cadere `before`: il filtro sulle
+      // date, subito sotto, tiene comunque il mese.
+      const lista = await readEmail({
+        account,
+        folder: 'INBOX',
+        since,
+        before: dataNelFuturo(before) ? undefined : before,
+        limit: LIMITE_LETTURA,
+      })
       const messaggi = lista.messages
         .filter((m) => m.date && m.date >= since && m.date < before)
         .map((m) => ({

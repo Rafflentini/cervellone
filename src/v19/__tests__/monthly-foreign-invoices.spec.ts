@@ -627,3 +627,28 @@ describe('fatture estere — niente sparisce piu senza contatore', () => {
     expect(r.tempo_scaduto).toBe(false)
   })
 })
+
+describe('fatture estere — il mese in corso', () => {
+  it('per il mese IN CORSO non chiede una data di fine futura', async () => {
+    // Misurato in produzione il 5 settembre: con `before` nel futuro il server
+    // TopHost non restituisce un elenco, e la routine riportava "0 su 0
+    // esaminati" su una casella con 45 messaggi. Succede esattamente quando
+    // l'Ingegnere chiede "raccogli le fatture di questo mese".
+    leggiImap.mockResolvedValue({ folder: 'INBOX', messages: [], truncated: false, total_matched: 0 })
+    const domani = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+
+    await casellaImap('raffaele').leggi('2026-01-01', domani)
+
+    expect(leggiImap.mock.calls[0][0].before).toBeUndefined()
+  })
+
+  it('CONTROLLO POSITIVO: per un mese chiuso la data di fine viene passata', async () => {
+    // Senza questo, "togli sempre before" passerebbe il test qui sopra e
+    // riaprirebbe il troncamento che before serviva a chiudere.
+    leggiImap.mockResolvedValue({ folder: 'INBOX', messages: [], truncated: false, total_matched: 0 })
+
+    await casellaImap('raffaele').leggi('2026-08-01', '2026-09-01')
+
+    expect(leggiImap.mock.calls[0][0].before).toBe('2026-09-01')
+  })
+})
