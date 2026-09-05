@@ -1,6 +1,26 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { AUTOMAZIONI, AUTOMAZIONI_TOOLS } from './automazioni'
+
+type RigaLog = { month_ref: string; forwarded_at: string; forwarded_message_id: string | null }
+let righeLog: RigaLog[] = []
+
+vi.mock('../supabase', () => ({
+  supabase: {
+    from: () => {
+      const q = {
+        select: () => q,
+        eq: () => q,
+        order: () => q,
+        limit: () => q,
+        maybeSingle: async () => ({ data: null }),
+        then: (risolvi: (v: { data: RigaLog[] }) => unknown) => risolvi({ data: righeLog }),
+      }
+      return q
+    },
+  },
+}))
+
+import { AUTOMAZIONI, AUTOMAZIONI_TOOLS, statoAutomazione } from './automazioni'
 
 type CronVercel = { path: string; schedule: string }
 
@@ -66,5 +86,68 @@ describe('registro delle automazioni', () => {
     // chiamare il tool: se non dice il PERCHE', l'errore del 5 settembre si
     // ripete anche col tool disponibile.
     expect(elenca!.description).toContain('NON compaiono nell elenco dei tool')
+  })
+})
+
+// ── La prova che l'automazione lavora deve essere ONESTA ─────────────────────
+
+describe('prova di funzionamento delle fatture estere', () => {
+  const FATTURE = AUTOMAZIONI.find((a) => a.percorso === '/api/cron/monthly-foreign-invoices')!
+  const giorniFa = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString()
+
+  beforeEach(() => {
+    righeLog = []
+  })
+
+  it('un archivio fatto SOLO di recuperi manuali non e una prova che l automazione lavori', async () => {
+    // Successo davvero il 5 settembre 2026: la riga diceva "5 fatture raccolte
+    // in tutto" e il modello ne ha dedotto che l'automazione funzionava. Quattro
+    // di quelle cinque righe erano il recupero fatto A MANO, registrato a
+    // posteriori. Una guardia contro i silenzi che si racconta una mezza verita
+    // e essa stessa un silenzio.
+    righeLog = [
+      { month_ref: '2026-08', forwarded_at: giorniFa(1), forwarded_message_id: 'recupero-manuale-2026-09-04' },
+      { month_ref: '2026-08', forwarded_at: giorniFa(1), forwarded_message_id: 'recupero-manuale-2026-09-04' },
+    ]
+
+    const s = await statoAutomazione(FATTURE)
+
+    expect(s.ultima_prova).toContain('NESSUNA fattura raccolta dall automazione')
+    expect(s.ultima_prova).toContain('a mano')
+  })
+
+  it('CONTROLLO POSITIVO: con raccolte vere dice quante, quando e quali mesi', async () => {
+    righeLog = [
+      { month_ref: '2026-08', forwarded_at: giorniFa(2), forwarded_message_id: '<vero-1@restruktura.it>' },
+      { month_ref: '2026-07', forwarded_at: giorniFa(33), forwarded_message_id: '<vero-2@restruktura.it>' },
+      { month_ref: '2026-08', forwarded_at: giorniFa(2), forwarded_message_id: 'recupero-manuale-2026-09-04' },
+    ]
+
+    const s = await statoAutomazione(FATTURE)
+
+    expect(s.ultima_prova).toContain('2 fatture raccolte dall automazione')
+    // Il recupero manuale c'e, ma dichiarato a parte: non gonfia il conteggio.
+    expect(s.ultima_prova).toContain('1 recuperate a mano, non contate')
+    expect(s.ultima_prova).toContain('2 giorni fa')
+    expect(s.ultima_prova).toContain('2026-07, 2026-08')
+    expect(s.ultima_prova).not.toContain('ATTENZIONE')
+  })
+
+  it('se l ultima raccolta e vecchia lo dice: gira ogni mese, il silenzio va notato', async () => {
+    righeLog = [
+      { month_ref: '2026-05', forwarded_at: giorniFa(100), forwarded_message_id: '<vecchio@restruktura.it>' },
+    ]
+
+    const s = await statoAutomazione(FATTURE)
+
+    expect(s.ultima_prova).toContain('ATTENZIONE')
+    expect(s.ultima_prova).toContain('100 giorni fa')
+  })
+
+  it('un archivio del tutto vuoto e il caso peggiore, e va detto senza giri di parole', async () => {
+    const s = await statoAutomazione(FATTURE)
+
+    expect(s.ultima_prova).toContain('NESSUNA fattura raccolta')
+    expect(s.ultima_prova).toContain('NON sta lavorando')
   })
 })

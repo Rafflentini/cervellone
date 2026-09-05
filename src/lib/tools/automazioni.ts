@@ -155,15 +155,42 @@ export async function statoAutomazione(a: Automazione): Promise<StatoAutomazione
   try {
     switch (a.percorso) {
       case '/api/cron/monthly-foreign-invoices': {
-        const { count } = await supabase
+        // Un conteggio CUMULATIVO non e' una prova che l'automazione lavori
+        // adesso: dice solo che ha lavorato una volta, chissa' quando. Il
+        // 5 set 2026 questa riga diceva "5 fatture raccolte in tutto" e il
+        // modello ne ha dedotto che l'automazione funzionava — mentre 4 di
+        // quelle 5 righe erano il recupero fatto A MANO e registrato a
+        // posteriori. Una guardia contro i silenzi che si racconta una mezza
+        // verita' e' essa stessa un silenzio. [[feedback_misura_non_e_dato]]
+        const { data } = await supabase
           .from('cervellone_email_invoices_log')
-          .select('id', { count: 'exact', head: true })
+          .select('month_ref, forwarded_at, forwarded_message_id')
+          .order('forwarded_at', { ascending: false })
+        const righe = (data ?? []) as Array<{ month_ref: string; forwarded_at: string; forwarded_message_id: string | null }>
+        // Le righe scritte a mano per registrare un recupero manuale NON sono
+        // lavoro dell'automazione: contarle insieme alle altre e' proprio cio'
+        // che ha ingannato la lettura.
+        const automatiche = righe.filter((r) => !String(r.forwarded_message_id ?? '').startsWith('recupero-manuale'))
+        const manuali = righe.length - automatiche.length
+        if (automatiche.length === 0) {
+          return {
+            misurata: true,
+            ultima_prova: `NESSUNA fattura raccolta dall automazione${manuali > 0 ? ` (le ${manuali} in archivio sono recuperi fatti a mano)` : ''}. Se il mese scorso ce n erano, l automazione NON sta lavorando.`,
+          }
+        }
+        const ultima = automatiche[0]
+        const giorniFa = Math.floor((Date.now() - new Date(ultima.forwarded_at).getTime()) / 86_400_000)
+        const mesiCoperti = [...new Set(automatiche.map((r) => r.month_ref))].sort()
+        // Gira una volta al mese: oltre ~45 giorni di silenzio o ha smesso di
+        // funzionare, oppure sono davvero due mesi senza fatture estere.
+        const vecchia = giorniFa > 45
         return {
           misurata: true,
           ultima_prova:
-            (count ?? 0) > 0
-              ? `${count} fatture raccolte in tutto`
-              : 'NESSUNA fattura mai raccolta: se il mese scorso ce n erano, qualcosa non va',
+            `${automatiche.length} fatture raccolte dall automazione` +
+            (manuali > 0 ? ` (piu ${manuali} recuperate a mano, non contate)` : '') +
+            `; ultima ${giorniFa} giorni fa, mesi coperti: ${mesiCoperti.join(', ')}` +
+            (vecchia ? '. ATTENZIONE: gira ogni mese, ma l ultima raccolta e vecchia: da controllare.' : ''),
         }
       }
       case '/api/cron/memoria-extract': {
