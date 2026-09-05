@@ -555,3 +555,34 @@ export async function trash(messageId: string): Promise<void> {
   await recordBotAction(messageId, '', 'trashed')
   console.log(`[GMAIL] trash msg=${messageId}`)
 }
+
+/**
+ * Scarica il contenuto di un allegato Gmail e lo restituisce in base64
+ * STANDARD (non base64url).
+ *
+ * Serve alla routine delle fatture estere: la Gmail e' una delle tre caselle da
+ * scandagliare, ma i tool Gmail sanno solo cercare e leggere. Senza questa
+ * funzione una fattura trovata sulla Gmail poteva essere segnalata, non
+ * consegnata — e "segnalata" vuol dire che il lavoro resta all'Ingegnere.
+ *
+ * Gmail restituisce base64url (`-` e `_` al posto di `+` e `/`): passarlo cosi'
+ * com'e' a nodemailer produce un PDF corrotto che si apre solo a meta'.
+ */
+export async function scaricaAllegato(messageId: string, attachmentId: string): Promise<string> {
+  const gmail = await getGmailClient()
+  const res = await gmail.users.messages.attachments.get({
+    userId: 'me',
+    messageId,
+    id: attachmentId,
+  })
+  const dati = res.data.data
+  if (!dati) throw new Error(`Allegato ${attachmentId} del messaggio ${messageId}: contenuto vuoto`)
+  return base64UrlAStandard(dati)
+}
+
+/** base64url → base64 standard, con il riempimento '=' rimesso a posto. */
+export function base64UrlAStandard(valore: string): string {
+  const sostituito = valore.replace(/-/g, '+').replace(/_/g, '/')
+  const resto = sostituito.length % 4
+  return resto === 0 ? sostituito : sostituito + '='.repeat(4 - resto)
+}

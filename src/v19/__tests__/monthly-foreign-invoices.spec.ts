@@ -3,96 +3,490 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('../tools/email/read-email', () => ({ readEmail: vi.fn() }))
 vi.mock('../tools/email/forward-email', () => ({ forwardEmail: vi.fn() }))
 vi.mock('../tools/email/mark-email', () => ({ markEmail: vi.fn() }))
-vi.mock('@/lib/supabase', () => ({
-  supabase: {
-    from: vi.fn(() => ({
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({ data: null }),
-      insert: vi.fn().mockResolvedValue({ error: null }),
-    })),
-  },
+vi.mock('../tools/email/send-email', () => ({ sendEmailInternal: vi.fn() }))
+vi.mock('@/lib/gmail-tools', () => ({
+  searchGmail: vi.fn(),
+  readMessage: vi.fn(),
+  scaricaAllegato: vi.fn(),
 }))
 
-import { runMonthlyForeignInvoices } from '../routines/monthly-foreign-invoices'
+// ATTENZIONE — qui stava il difetto che ha tenuto verdi i test per quattro mesi:
+// il mock precedente era su '@/lib/supabase', ma la routine importa
+// getSupabaseServer da '@/lib/supabase-server'. Il mock era MORTO: i test
+// parlavano con un client vero verso localhost, l'errore di rete restituiva
+// data:null, e il controllo "gia inoltrata" rispondeva "no" per guasto, non per
+// logica. Un mock sul modulo sbagliato non fallisce: tace.
+const righeWhitelist: Array<{ email: string }> = []
+let insertFallisce = false
+const righeLog: unknown[] = []
+
+vi.mock('@/lib/supabase-server', () => ({
+  getSupabaseServer: () => ({
+    from: (tabella: string) => {
+      if (tabella === 'cervellone_email_senders') {
+        const q = {
+          select: () => q,
+          eq: () => q,
+          then: (risolvi: (v: { data: Array<{ email: string }> }) => unknown) => risolvi({ data: righeWhitelist }),
+        }
+        return q
+      }
+      const q2 = {
+        select: () => q2,
+        eq: () => q2,
+        maybeSingle: async () => ({ data: null }),
+        insert: async (riga: unknown) => {
+          if (insertFallisce) return { error: { message: 'RLS: permission denied' } }
+          righeLog.push(riga)
+          return { error: null }
+        },
+      }
+      return q2
+    },
+  }),
+}))
+
+import {
+  runMonthlyForeignInvoices,
+  caselleStandard,
+  casellaImap,
+  casellaGmail,
+  estraiIndirizzo,
+  type Casella,
+  type MessaggioCasella,
+} from '../routines/monthly-foreign-invoices'
 import { readEmail } from '../tools/email/read-email'
 import { forwardEmail } from '../tools/email/forward-email'
+import { sendEmailInternal } from '../tools/email/send-email'
+import { searchGmail, readMessage, scaricaAllegato } from '@/lib/gmail-tools'
 
-describe('routine monthly-foreign-invoices', () => {
-  beforeEach(() => vi.clearAllMocks())
+const leggiImap = readEmail as unknown as ReturnType<typeof vi.fn>
+const inoltraImap = forwardEmail as unknown as ReturnType<typeof vi.fn>
+const spedisci = sendEmailInternal as unknown as ReturnType<typeof vi.fn>
+const cercaGmail = searchGmail as unknown as ReturnType<typeof vi.fn>
+const leggiGmail = readMessage as unknown as ReturnType<typeof vi.fn>
+const allegatoGmail = scaricaAllegato as unknown as ReturnType<typeof vi.fn>
 
-  it('dry_run NON invia, ritorna lista candidati', async () => {
-    ;(readEmail as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      folder: 'INBOX',
-      messages: [
-        {
-          uid: 1,
-          from: 'billing@anthropic.com',
-          subject: 'Invoice',
-          date: '2026-04-15T10:00:00Z',
-          has_attachments: true,
-          message_id: '<m1>',
-          to: [],
-          seen: false,
-          flagged: false,
-          size: 1000,
-        },
-      ],
-    })
+// I mittenti VERI, letti dalle caselle il 5 settembre 2026.
+// Non inventati: se un giorno cambiano, questi test devono morire.
+const ANTHROPIC_US = 'invoice+statements@mail.anthropic.com'
+const VERCEL = 'invoice+statements@vercel.com'
+const ANTHROPIC_IE = 'invoice+statements+acct_1reyrsbnuncszfs9@stripe.com'
+
+function m(over: Partial<MessaggioCasella> = {}): MessaggioCasella {
+  return { chiave: '1', from: 'x@y.com', subject: '', date: '2026-08-15T10:00:00Z', has_attachments: true, ...over }
+}
+
+/** Casella finta: il motore non deve sapere da dove arrivano i messaggi. */
+function casellaFinta(nome: string, messaggi: MessaggioCasella[], extra: Partial<{ troncato: boolean; totale: number; esitoInoltro: { stato: string; message_id?: string }; esplode: string }> = {}): Casella {
+  return {
+    nome,
+    async leggi() {
+      if (extra.esplode) throw new Error(extra.esplode)
+      return { messaggi, totale: extra.totale ?? messaggi.length, troncato: !!extra.troncato }
+    },
+    async inoltra() {
+      return extra.esitoInoltro ?? { stato: 'sent', message_id: `<fwd-${nome}>` }
+    },
+  }
+}
+
+const treRicevuteVere = [
+  m({ chiave: '101', from: ANTHROPIC_US, subject: 'Your receipt from Anthropic, PBC #2725-1616-0828' }),
+  m({ chiave: '102', from: VERCEL, subject: 'Your receipt from Vercel Inc. #2536-3620' }),
+  m({ chiave: '103', from: ANTHROPIC_IE, subject: 'Your receipt from Anthropic Ireland, Limited #2709-7495' }),
+]
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  righeWhitelist.length = 0
+  righeLog.length = 0
+  insertFallisce = false
+})
+
+describe('fatture estere — controlli positivi sui mittenti VERI', () => {
+  it('CONTROLLO POSITIVO: le tre ricevute vere vengono inoltrate tutte e tre', async () => {
+    // Questo e il test che mancava. Con la whitelist vecchia
+    // (billing@anthropic.com, invoice@vercel.com) e il confronto esatto il
+    // risultato era ZERO — esattamente cio che e successo in produzione da
+    // giugno a settembre 2026.
+    righeWhitelist.push(
+      { email: 'invoice@mail.anthropic.com' },
+      { email: 'invoice@vercel.com' },
+      { email: 'invoice@stripe.com' },
+    )
+
     const r = await runMonthlyForeignInvoices({
-      month_ref: '2026-04',
-      dry_run: true,
-      senders: ['billing@anthropic.com'],
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', treRicevuteVere)],
     })
-    expect(r.candidates.length).toBe(1)
-    expect(forwardEmail).not.toHaveBeenCalled()
+
+    expect(r.forwarded.length).toBe(3)
+    expect(r.nessun_risultato).toBe(false)
   })
 
-  it('inoltra solo candidati con PDF + mittente in whitelist', async () => {
-    ;(readEmail as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      folder: 'INBOX',
-      messages: [
-        {
-          uid: 1,
-          from: 'billing@anthropic.com',
-          subject: 'Invoice',
-          date: '2026-04-15T10:00:00Z',
-          has_attachments: true,
-          message_id: '<m1>',
-          to: [],
-          seen: false,
-          flagged: false,
-          size: 100,
-        },
-        {
-          uid: 2,
-          from: 'rando@spam.com',
-          subject: 'Invoice spam',
-          date: '2026-04-16T10:00:00Z',
-          has_attachments: true,
-          message_id: '<m2>',
-          to: [],
-          seen: false,
-          flagged: false,
-          size: 100,
-        },
+  it('la whitelist arriva DAVVERO dalla banca dati, non solo dal parametro di test', async () => {
+    // I vecchi test passavano sempre `senders`, quindi la lettura della
+    // whitelist non era coperta da nulla.
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', treRicevuteVere)],
+    })
+
+    expect(r.forwarded.map((f) => f.chiave)).toEqual(['102'])
+  })
+
+  it('il tag +acct_... di Stripe non impedisce il riconoscimento', async () => {
+    // Anthropic fattura da DUE soggetti: PBC (USA) e Ireland Ltd, che passa da
+    // Stripe con un indirizzo diverso a ogni account. Il confronto per
+    // uguaglianza esatta non lo prendera mai.
+    righeWhitelist.push({ email: 'invoice@stripe.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', [m({ chiave: '103', from: ANTHROPIC_IE, subject: 'Your receipt' })])],
+    })
+
+    expect(r.forwarded.length).toBe(1)
+  })
+
+  it('una voce di whitelist per dominio prende qualsiasi mittente di quel dominio', async () => {
+    righeWhitelist.push({ email: '@mail.anthropic.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', [m({ chiave: '101', from: ANTHROPIC_US, subject: 'Your receipt' })])],
+    })
+
+    expect(r.forwarded.length).toBe(1)
+  })
+
+  it("riconosce il mittente anche quando arriva col nome davanti, come lo consegna Gmail", async () => {
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('gmail', [m({ chiave: 'abc', from: `"Vercel Inc." <${VERCEL}>`, subject: 'Your receipt' })])],
+    })
+
+    expect(r.forwarded.length).toBe(1)
+  })
+
+  it('CONTROLLO NEGATIVO: un mittente estraneo non passa solo perche ha un allegato', async () => {
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', [m({ chiave: '500', from: 'sconosciuto@spam.com', subject: 'Invoice per te' })])],
+    })
+
+    expect(r.forwarded.length).toBe(0)
+    expect(r.fallback_warnings.length).toBe(1)
+  })
+})
+
+describe('fatture estere — le tre caselle', () => {
+  it('LE CASELLE COLLEGATE SONO TRE: info, raffaele, gmail', async () => {
+    // La causa numero uno del guasto era che ne veniva letta UNA sola. Questo
+    // test guarda l'elenco vero, non il motore: un motore che sa gestire N
+    // caselle non serve a nulla se gliene passiamo una.
+    // [[feedback_testare_gli_adattatori_non_il_motore]]
+    expect(caselleStandard().map((c) => c.nome)).toEqual(['info', 'raffaele', 'gmail'])
+  })
+
+  it('le fatture vengono raccolte da tutte le caselle, non solo dalla prima', async () => {
+    righeWhitelist.push({ email: 'invoice@vercel.com' }, { email: 'invoice@mail.anthropic.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [
+        casellaFinta('info', [m({ chiave: '1', from: VERCEL, subject: 'receipt' })]),
+        casellaFinta('raffaele', [m({ chiave: '2', from: ANTHROPIC_US, subject: 'receipt' })]),
+        casellaFinta('gmail', [m({ chiave: 'g1', from: VERCEL, subject: 'receipt' })]),
       ],
     })
-    ;(forwardEmail as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      status: 'sent',
-      message_id: '<fwd1>',
-      sent_folder: 'Sent',
-      sent_uid: 99,
-    })
+
+    expect(r.forwarded.map((f) => f.casella).sort()).toEqual(['gmail', 'info', 'raffaele'])
+  })
+
+  it('il risultato dice DA QUALE casella arriva ogni fattura', async () => {
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
     const r = await runMonthlyForeignInvoices({
-      month_ref: '2026-04',
-      dry_run: false,
-      senders: ['billing@anthropic.com'],
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [
+        casellaFinta('info', []),
+        casellaFinta('raffaele', [m({ chiave: '2', from: VERCEL, subject: 'receipt' })]),
+      ],
     })
-    expect(forwardEmail).toHaveBeenCalledTimes(1)
+
+    expect(r.per_casella).toEqual([
+      { casella: 'info', esaminati: 0, riconosciute: 0, inoltrate: 0 },
+      { casella: 'raffaele', esaminati: 1, riconosciute: 1, inoltrate: 1 },
+    ])
+  })
+
+  it('una casella che non si apre non ferma le altre, e viene dichiarata', async () => {
+    // Un guasto su una casella NON e' "zero fatture": se restasse muto,
+    // tornerebbe la stessa forma di silenzio che ha nascosto il guasto per
+    // quattro mesi.
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [
+        casellaFinta('info', [], { esplode: 'IMAP timeout' }),
+        casellaFinta('raffaele', [m({ chiave: '2', from: VERCEL, subject: 'receipt' })]),
+      ],
+    })
+
+    expect(r.caselle_fallite).toEqual([{ casella: 'info', errore: 'IMAP timeout' }])
     expect(r.forwarded.length).toBe(1)
-    // mittente NOT whitelisted + PDF + keyword "invoice" → fallback_warnings
-    expect(r.fallback_warnings.length).toBe(1)
-    expect(r.skipped_not_whitelisted.length).toBe(1)
+  })
+})
+
+describe('fatture estere — lo zero deve fare rumore', () => {
+  it('zero inoltri su caselle NON vuote viene dichiarato, non taciuto', async () => {
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', [m({ chiave: '1', from: 'tizio@example.com', subject: 'ciao', has_attachments: false })])],
+    })
+
+    expect(r.esaminati).toBe(1)
+    expect(r.nessun_risultato).toBe(true)
+  })
+
+  it('caselle davvero vuote non sono un allarme', async () => {
+    // Controllo positivo del controllo: se alzassimo l'allarme anche a casella
+    // vuota, l'allarme diventerebbe rumore e verrebbe ignorato.
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({ month_ref: '2026-08', pausa_ms: 0, caselle: [casellaFinta('raffaele', [])] })
+
+    expect(r.esaminati).toBe(0)
+    expect(r.nessun_risultato).toBe(false)
+  })
+
+  it('il troncamento della lettura viene riportato invece di essere scartato', async () => {
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', treRicevuteVere, { troncato: true, totale: 400 })],
+    })
+
+    expect(r.troncato).toBe(true)
+    expect(r.totale_in_casella).toBe(400)
+  })
+
+  it('la whitelist vuota viene dichiarata: il filtro non poteva far passare nulla', async () => {
+    const r = await runMonthlyForeignInvoices({ month_ref: '2026-08', pausa_ms: 0, caselle: [casellaFinta('raffaele', treRicevuteVere)] })
+
+    expect(r.whitelist_vuota).toBe(true)
+  })
+
+  it('un inoltro non riuscito viene contato, non ingoiato', async () => {
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', [m({ chiave: '102', from: VERCEL, subject: 'receipt' })], { esitoInoltro: { stato: 'pending' } })],
+    })
+
+    expect(r.forwarded.length).toBe(0)
+    expect(r.non_inoltrate.length).toBe(1)
+  })
+
+  it("se la scrittura sul registro fallisce la routine lo dice, invece di dichiarare l'inoltro fatto", async () => {
+    // Senza questo controllo la mail parte, il registro resta vuoto, e il mese
+    // dopo la stessa fattura viene inoltrata di nuovo: doppione silenzioso.
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+    insertFallisce = true
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', [m({ chiave: '102', from: VERCEL, subject: 'receipt' })])],
+    })
+
+    expect(r.errori_registro.length).toBe(1)
+  })
+})
+
+describe('fatture estere — nessun anello di ritorno', () => {
+  it('gli inoltri mandati da Cervellone stesso non rientrano nel giro il mese dopo', async () => {
+    // La casella di arrivo e' fra quelle che leggiamo: senza questa esclusione,
+    // ogni mese gli inoltri del mese prima (PDF + "Fatture estere" nell'oggetto)
+    // verrebbero risegnalati come mittente sconosciuto, per sempre.
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', [
+        m({ chiave: '200', from: 'raffaele.lentini@restruktura.it', subject: 'Fatture estere Restruktura agosto 2026 — Your receipt' }),
+        m({ chiave: '201', from: 'info@restruktura.it', subject: 'Fatture estere Restruktura agosto 2026 — Your receipt' }),
+      ])],
+    })
+
+    expect(r.forwarded.length).toBe(0)
+    expect(r.fallback_warnings.length).toBe(0)
+  })
+})
+
+describe('fatture estere — oggetto e prova a vuoto', () => {
+  it('dry_run elenca i candidati senza inviare nulla', async () => {
+    righeWhitelist.push({ email: 'invoice@mail.anthropic.com' })
+    const casella = casellaFinta('raffaele', [m({ chiave: '101', from: ANTHROPIC_US, subject: 'Your receipt' })])
+    const spia = vi.spyOn(casella, 'inoltra')
+
+    const r = await runMonthlyForeignInvoices({ month_ref: '2026-08', dry_run: true, caselle: [casella] })
+
+    expect(r.candidates.length).toBe(1)
+    expect(spia).not.toHaveBeenCalled()
+  })
+
+  it("l'oggetto dice Fatture estere Restruktura, col mese in lettere e l'anno", async () => {
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+    const casella = casellaFinta('raffaele', [m({ chiave: '102', from: VERCEL, subject: 'receipt' })])
+    const spia = vi.spyOn(casella, 'inoltra')
+
+    await runMonthlyForeignInvoices({ month_ref: '2026-08', pausa_ms: 0, caselle: [casella] })
+
+    expect(spia.mock.calls[0][1]).toContain('Fatture estere Restruktura agosto 2026')
+  })
+
+  it('il mese nell oggetto e quello di riferimento, non quello di oggi', async () => {
+    // Il cron gira il 1° del mese DOPO: se prendesse la data corrente,
+    // le fatture di dicembre arriverebbero etichettate gennaio.
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+    const casella = casellaFinta('raffaele', [m({ chiave: '102', from: VERCEL, subject: 'receipt', date: '2026-12-10T10:00:00Z' })])
+    const spia = vi.spyOn(casella, 'inoltra')
+
+    await runMonthlyForeignInvoices({ month_ref: '2026-12', pausa_ms: 0, caselle: [casella] })
+
+    expect(spia.mock.calls[0][1]).toContain('dicembre 2026')
+  })
+})
+
+// ── Gli adattatori, uno per uno ──────────────────────────────────────────────
+// Un motore condiviso NON rende equipollenti le caselle: questi test guardano
+// il pezzo che parla davvero con ciascuna. [[feedback_testare_gli_adattatori_non_il_motore]]
+
+describe('adattatore IMAP', () => {
+  it('legge la casella giusta, limitata al mese, con un tetto capiente', async () => {
+    leggiImap.mockResolvedValue({ folder: 'INBOX', messages: [], truncated: false, total_matched: 0 })
+
+    await casellaImap('raffaele').leggi('2026-08-01', '2026-09-01')
+
+    const arg = leggiImap.mock.calls[0][0]
+    expect(arg.account).toBe('raffaele')
+    expect(arg.since).toBe('2026-08-01')
+    // Senza `before` la ricerca prende tutto fino a oggi e il taglio premia i
+    // giorni recenti, buttando via l'inizio del mese: le fatture.
+    expect(arg.before).toBe('2026-09-01')
+    // Le caselle ricevono 230-290 messaggi al mese: 100 non bastava.
+    expect(arg.limit).toBeGreaterThanOrEqual(300)
+  })
+
+  it('riporta il troncamento che read-email dichiara', async () => {
+    leggiImap.mockResolvedValue({ folder: 'INBOX', messages: [], truncated: true, total_matched: 900 })
+
+    const l = await casellaImap('info').leggi('2026-08-01', '2026-09-01')
+
+    expect(l.troncato).toBe(true)
+    expect(l.totale).toBe(900)
+  })
+
+  it('inoltra dalla stessa casella da cui ha letto', async () => {
+    inoltraImap.mockResolvedValue({ status: 'sent', message_id: '<x>' })
+
+    await casellaImap('info').inoltra(m({ chiave: '77' }), 'Oggetto — ', 'testo')
+
+    expect(inoltraImap.mock.calls[0][0].from_account).toBe('info')
+    expect(inoltraImap.mock.calls[0][0].source_uid).toBe(77)
+  })
+})
+
+describe('adattatore Gmail', () => {
+  it('chiede a Gmail solo il mese richiesto e solo i messaggi con allegato', async () => {
+    cercaGmail.mockResolvedValue([])
+
+    await casellaGmail().leggi('2026-08-01', '2026-09-01')
+
+    const q = cercaGmail.mock.calls[0][0] as string
+    expect(q).toContain('after:2026/08/01')
+    expect(q).toContain('before:2026/09/01')
+    expect(q).toContain('has:attachment')
+  })
+
+  it('traduce i messaggi Gmail nella forma comune, data compresa', async () => {
+    cercaGmail.mockResolvedValue([
+      { id: 'a1b2', from: `"Vercel Inc." <${VERCEL}>`, subject: 'Your receipt', date: 'Wed, 05 Aug 2026 10:00:00 +0000', hasAttachments: true },
+    ])
+
+    const l = await casellaGmail().leggi('2026-08-01', '2026-09-01')
+
+    expect(l.messaggi[0].chiave).toBe('a1b2')
+    expect(l.messaggi[0].date).toBe('2026-08-05T10:00:00.000Z')
+    expect(l.messaggi[0].has_attachments).toBe(true)
+  })
+
+  it('CONTROLLO POSITIVO: la fattura trovata su Gmail viene RISPEDITA con i PDF, non solo segnalata', async () => {
+    // Segnalare e' lasciare il lavoro all'Ingegnere. Un'automazione che lascia
+    // lavoro non e' un'automazione.
+    leggiGmail.mockResolvedValue({
+      attachments: [
+        { attachmentId: 'att1', filename: 'Invoice-0001.pdf', mimeType: 'application/pdf', sizeBytes: 100 },
+        { attachmentId: 'att2', filename: 'Receipt-0001.pdf', mimeType: 'application/pdf', sizeBytes: 100 },
+      ],
+    })
+    allegatoGmail.mockResolvedValue('QkFTRTY0')
+    spedisci.mockResolvedValue({ status: 'sent', message_id: '<g1>' })
+
+    const esito = await casellaGmail().inoltra(m({ chiave: 'a1b2', subject: 'Your receipt' }), 'Fatture estere Restruktura agosto 2026 — ', 'testo')
+
+    const inviata = spedisci.mock.calls[0][0]
+    expect(inviata.attachments).toHaveLength(2)
+    expect(inviata.attachments[0].filename).toBe('Invoice-0001.pdf')
+    expect(inviata.attachments[0].content_base64).toBe('QkFTRTY0')
+    expect(inviata.subject).toContain('Fatture estere Restruktura agosto 2026')
+    expect(esito.stato).toBe('sent')
+  })
+
+  it('una spedizione rimasta in sospeso non viene spacciata per inviata', async () => {
+    leggiGmail.mockResolvedValue({ attachments: [] })
+    spedisci.mockResolvedValue({ status: 'pending', uuid: 'u1' })
+
+    const esito = await casellaGmail().inoltra(m({ chiave: 'a1b2' }), 'Oggetto — ', 'testo')
+
+    expect(esito.stato).toBe('pending')
+    expect(esito.message_id).toBeUndefined()
+  })
+})
+
+describe('estrazione indirizzo', () => {
+  it('prende l indirizzo dentro le parentesi angolari', () => {
+    expect(estraiIndirizzo('"Anthropic, PBC" <invoice+statements@mail.anthropic.com>')).toBe('invoice+statements@mail.anthropic.com')
+  })
+
+  it('lascia intatto un indirizzo gia nudo, come lo consegna IMAP', () => {
+    expect(estraiIndirizzo('invoice+statements@vercel.com')).toBe('invoice+statements@vercel.com')
   })
 })
