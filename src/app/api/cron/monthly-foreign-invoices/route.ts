@@ -59,7 +59,9 @@ export async function GET(req: NextRequest) {
       result.troncato ||
       result.whitelist_vuota ||
       result.caselle_fallite.length > 0 ||
-      result.non_inoltrate.length > 0
+      result.non_inoltrate.length > 0 ||
+      result.errori_messaggio.length > 0 ||
+      result.tempo_scaduto
 
     // Il lock si scrive solo se il giro e' andato a buon fine. Prima veniva
     // scritto SEMPRE, anche con zero inoltri: cosi' ogni mese si chiudeva su se
@@ -89,6 +91,15 @@ export async function GET(req: NextRequest) {
           : '',
         result.caselle_fallite.length > 0
           ? `🚨 Casella non raggiungibile: ${result.caselle_fallite.map((c) => `${c.casella} (${c.errore})`).join(' · ')}. Le fatture che c'erano lì NON sono state raccolte.`
+          : '',
+        result.tempo_scaduto
+          ? '⚠️ Tempo esaurito: il giro si è chiuso prima di aver guardato tutto. Le fatture mancanti verranno riprese al prossimo tentativo (il mese resta aperto).'
+          : '',
+        result.scartate_senza_allegato.length > 0
+          ? `⚠️ ${result.scartate_senza_allegato.length} mail da fornitori NOTI ma senza allegato: ${[...new Set(result.scartate_senza_allegato.map((s) => s.from))].join(', ')}. Forse ora mandano un link invece del PDF: da guardare a mano.`
+          : '',
+        result.errori_messaggio.length > 0
+          ? `⚠️ ${result.errori_messaggio.length} messaggi finiti in errore: ${result.errori_messaggio.map((e) => `${e.casella}/${e.chiave} (${e.errore})`).join(' · ')}.`
           : '',
         result.non_inoltrate.length > 0
           ? `⚠️ ${result.non_inoltrate.length} fatture riconosciute ma NON inoltrate: ${result.non_inoltrate.map((f) => `${f.casella}/${f.chiave}`).join(', ')}.`

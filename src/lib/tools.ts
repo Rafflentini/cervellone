@@ -31,6 +31,7 @@ import { MAIL_TOOL_DEFINITIONS } from '@/v19/tools/email'
 import { DOCUMENT_TEMPLATE_TOOLS, executeDocumentTemplateTool } from './document-template-tools'
 import { GMAIL_TOOLS, executeGmailWrapper, executeMailWrapper } from './tools/mail'
 import { SELF_TOOLS, executeSelfTools } from './tools/self'
+import { AUTOMAZIONI_TOOLS, executeAutomazioniTools } from './tools/automazioni'
 import { CHECKIN_TOOLS, executeCheckinTool } from './checkin/tools'
 
 
@@ -662,6 +663,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...SAL_TOOLS, // 2026-08-13: SAL da computo (sal_estrai_computo, sal_calcola) con doppia conferma
   ...IMAGE_TOOLS, // 2026-06-12: rivedi_immagine — ri-aggancia i pixel di un'immagine già caricata
   ...SELF_TOOLS,
+  ...AUTOMAZIONI_TOOLS,
   ...DRIVE_TOOLS, // W1.3: 10 tool Drive/Sheets registrati + drive_upload_binary
   ...GITHUB_TOOLS, // Self-healing 2026-05-04 + 2026-05-08: read_file, propose_fix, deploy_status, merge_pr
   ...WEATHER_TOOLS, // 2026-05-05: weather_now via Open-Meteo
@@ -745,7 +747,7 @@ const executeRiconciliazioneWrapper = contabile(executeRiconciliazioneTool, nomi
 const executePrimaNotaWrapper = contabile(executePrimaNotaTool, nomiDi(PRIMA_NOTA_TOOLS))
 const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI_TOOLS))
 
-const EXECUTORS = [executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
+const EXECUTORS = [executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [

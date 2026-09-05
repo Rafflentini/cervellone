@@ -18,6 +18,7 @@ vi.mock('@/lib/gmail-tools', () => ({
 // logica. Un mock sul modulo sbagliato non fallisce: tace.
 const righeWhitelist: Array<{ email: string }> = []
 let insertFallisce = false
+let letturaRegistroFallisce = false
 const righeLog: unknown[] = []
 
 vi.mock('@/lib/supabase-server', () => ({
@@ -34,7 +35,10 @@ vi.mock('@/lib/supabase-server', () => ({
       const q2 = {
         select: () => q2,
         eq: () => q2,
-        maybeSingle: async () => ({ data: null }),
+        maybeSingle: async () =>
+          letturaRegistroFallisce
+            ? { data: null, error: { message: 'schema cache stantia' } }
+            : { data: null, error: null },
         insert: async (riga: unknown) => {
           if (insertFallisce) return { error: { message: 'RLS: permission denied' } }
           righeLog.push(riga)
@@ -102,6 +106,7 @@ beforeEach(() => {
   righeWhitelist.length = 0
   righeLog.length = 0
   insertFallisce = false
+  letturaRegistroFallisce = false
 })
 
 describe('fatture estere — controlli positivi sui mittenti VERI', () => {
@@ -436,16 +441,51 @@ describe('adattatore Gmail', () => {
     expect(q).toContain('has:attachment')
   })
 
+  it('non chiede la posta che il bot ha spedito lui stesso, ne il cestino', async () => {
+    cercaGmail.mockResolvedValue([])
+
+    await casellaGmail().leggi('2026-08-01', '2026-09-01')
+
+    const q = cercaGmail.mock.calls[0][0] as string
+    expect(q).toContain('-in:sent')
+    expect(q).toContain('-in:trash')
+  })
+
   it('traduce i messaggi Gmail nella forma comune, data compresa', async () => {
     cercaGmail.mockResolvedValue([
-      { id: 'a1b2', from: `"Vercel Inc." <${VERCEL}>`, subject: 'Your receipt', date: 'Wed, 05 Aug 2026 10:00:00 +0000', hasAttachments: true },
+      { id: 'a1b2', from: `"Vercel Inc." <${VERCEL}>`, subject: 'Your receipt', date: 'Wed, 05 Aug 2026 10:00:00 +0000', hasAttachments: false },
     ])
 
     const l = await casellaGmail().leggi('2026-08-01', '2026-09-01')
 
     expect(l.messaggi[0].chiave).toBe('a1b2')
     expect(l.messaggi[0].date).toBe('2026-08-05T10:00:00.000Z')
+  })
+
+  it("CONTROLLO POSITIVO: l'allegato Gmail vale true anche se la ricerca dice false", async () => {
+    // Questo test nasce da un audit che ha bocciato la mia prima versione.
+    // `searchGmail` chiede a Gmail il formato 'metadata', che NON restituisce le
+    // parti MIME: `hasAttachments` e' SEMPRE false, per costruzione. Copiandolo,
+    // ogni messaggio Gmail sarebbe morto al controllo allegati senza finire in
+    // nessun contatore — lo zero silenzioso rifatto sulla terza casella.
+    // La verita' sta nella query, che contiene `has:attachment`.
+    cercaGmail.mockResolvedValue([
+      { id: 'a1b2', from: VERCEL, subject: 'Your receipt', date: '2026-08-05T10:00:00Z', hasAttachments: false },
+    ])
+
+    const l = await casellaGmail().leggi('2026-08-01', '2026-09-01')
+
     expect(l.messaggi[0].has_attachments).toBe(true)
+  })
+
+  it('una data storta non fa risultare rotta tutta la casella', async () => {
+    cercaGmail.mockResolvedValue([
+      { id: 'a1b2', from: VERCEL, subject: 'Your receipt', date: 'non-e-una-data', hasAttachments: false },
+    ])
+
+    const l = await casellaGmail().leggi('2026-08-01', '2026-09-01')
+
+    expect(l.messaggi[0].date).toBeNull()
   })
 
   it('CONTROLLO POSITIVO: la fattura trovata su Gmail viene RISPEDITA con i PDF, non solo segnalata', async () => {
@@ -468,6 +508,9 @@ describe('adattatore Gmail', () => {
     expect(inviata.attachments[0].content_base64).toBe('QkFTRTY0')
     expect(inviata.subject).toContain('Fatture estere Restruktura agosto 2026')
     expect(esito.stato).toBe('sent')
+    // I nomi dei file finiscono nel registro: prima era sempre una lista vuota,
+    // e la colonna che doveva dire COSA e' stato inoltrato non diceva niente.
+    expect(esito.filenames).toEqual(['Invoice-0001.pdf', 'Receipt-0001.pdf'])
   })
 
   it('una spedizione rimasta in sospeso non viene spacciata per inviata', async () => {
@@ -488,5 +531,99 @@ describe('estrazione indirizzo', () => {
 
   it('lascia intatto un indirizzo gia nudo, come lo consegna IMAP', () => {
     expect(estraiIndirizzo('invoice+statements@vercel.com')).toBe('invoice+statements@vercel.com')
+  })
+})
+
+// ── Rilievi dell'audit del 5 settembre: ogni scarto deve avere un contatore ──
+
+describe('fatture estere — niente sparisce piu senza contatore', () => {
+  it('un mittente RICONOSCIUTO ma senza allegato viene contato, non fatto sparire', async () => {
+    // Se un fornitore passa dal PDF allegato al link nel corpo, la fattura
+    // smette di arrivare. Prima spariva a un `continue` senza contatore: la
+    // stessa forma di guasto che ha nascosto quattro mesi di zero.
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', [m({ chiave: '9', from: VERCEL, subject: 'Your receipt', has_attachments: false })])],
+    })
+
+    expect(r.scartate_senza_allegato).toHaveLength(1)
+    expect(r.forwarded).toHaveLength(0)
+  })
+
+  it('un messaggio che esplode non ferma gli altri e viene dichiarato', async () => {
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+    const casella: Casella = {
+      nome: 'raffaele',
+      async leggi() {
+        return {
+          messaggi: [
+            m({ chiave: '1', from: VERCEL, subject: 'receipt' }),
+            m({ chiave: '2', from: VERCEL, subject: 'receipt' }),
+          ],
+          totale: 2,
+          troncato: false,
+        }
+      },
+      async inoltra(msg) {
+        if (msg.chiave === '1') throw new Error('allegato non scaricabile')
+        return { stato: 'sent', message_id: '<ok>' }
+      },
+    }
+
+    const r = await runMonthlyForeignInvoices({ month_ref: '2026-08', pausa_ms: 0, caselle: [casella] })
+
+    expect(r.errori_messaggio).toHaveLength(1)
+    expect(r.errori_messaggio[0].chiave).toBe('1')
+    // Il secondo e' passato lo stesso: un messaggio storto non butta giu' il giro.
+    expect(r.forwarded.map((f) => f.chiave)).toEqual(['2'])
+  })
+
+  it('se il registro non risponde NON si reinvia: ci si ferma e lo si dice', async () => {
+    // Fail-open verso il doppione era la direzione sbagliata: una query fallita
+    // (schema stantia, RLS, timeout) faceva rispondere "non ancora inoltrata" e
+    // avrebbe rispedito tutto.
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+    letturaRegistroFallisce = true
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', [m({ chiave: '102', from: VERCEL, subject: 'receipt' })])],
+    })
+
+    expect(r.forwarded).toHaveLength(0)
+    expect(r.errori_messaggio).toHaveLength(1)
+    expect(r.errori_messaggio[0].errore).toContain('registro non interrogabile')
+  })
+
+  it('quando il tempo finisce si chiude dichiarandolo, invece di farsi troncare a meta', async () => {
+    // Sforare maxDuration non lascia NIENTE: nessun conteggio, nessun avviso,
+    // e un 504 assomiglia a "non e' partita". Un altro silenzio.
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      budget_ms: -1,
+      caselle: [casellaFinta('raffaele', treRicevuteVere)],
+    })
+
+    expect(r.tempo_scaduto).toBe(true)
+    expect(r.forwarded).toHaveLength(0)
+  })
+
+  it('CONTROLLO POSITIVO del tetto di tempo: con tempo a sufficienza non scatta', async () => {
+    righeWhitelist.push({ email: 'invoice@vercel.com' })
+
+    const r = await runMonthlyForeignInvoices({
+      month_ref: '2026-08',
+      pausa_ms: 0,
+      caselle: [casellaFinta('raffaele', treRicevuteVere)],
+    })
+
+    expect(r.tempo_scaduto).toBe(false)
   })
 })

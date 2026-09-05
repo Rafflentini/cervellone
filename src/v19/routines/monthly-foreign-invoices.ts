@@ -53,7 +53,13 @@ const TARGET = 'raffaele.lentini@restruktura.it'
  * nell'oggetto) e li segnaleremmo come mittente sconosciuto, ogni mese, per
  * sempre.
  */
-const INDIRIZZI_PROPRI = ['raffaele.lentini@restruktura.it', 'info@restruktura.it']
+const INDIRIZZI_PROPRI = [
+  'raffaele.lentini@restruktura.it',
+  'info@restruktura.it',
+  // La Gmail del bot: senza, ogni PDF che Cervellone stesso ha spedito da li'
+  // con "fattura" nell'oggetto tornerebbe come mittente sconosciuto, ogni mese.
+  'restruktura.drive@gmail.com',
+]
 /**
  * Le caselle ricevono 230-290 messaggi al mese. Con il vecchio limite di 100 la
  * lettura teneva solo gli ultimi 100 uid del mese e buttava via l'inizio del
@@ -64,6 +70,13 @@ const INDIRIZZI_PROPRI = ['raffaele.lentini@restruktura.it', 'info@restruktura.i
 const LIMITE_LETTURA = 500
 const LIMITE_GMAIL = 100
 const SLEEP_MS = 2000
+/**
+ * Tetto di tempo del giro. La rotta ha maxDuration 300s. Uno sforo non e' una
+ * riga rossa: e' un 504 che non lascia NIENTE — nessun conteggio, nessun
+ * avviso — e assomiglia a "non e' partita". A 240s si chiude in anticipo e lo
+ * si dichiara.
+ */
+const BUDGET_MS = 240_000
 
 const MESI = [
   'gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno',
@@ -90,7 +103,12 @@ export type LetturaCasella = {
   troncato: boolean
 }
 
-export type EsitoInoltro = { stato: string; message_id?: string }
+export type EsitoInoltro = {
+  stato: string
+  message_id?: string
+  /** I nomi dei file allegati, dove la casella li conosce. */
+  filenames?: string[]
+}
 
 export type Casella = {
   nome: string
@@ -110,6 +128,13 @@ export type RunOptions = {
   caselle?: Casella[]
   /** Pausa fra un inoltro e l'altro, per non martellare l'SMTP. 0 nei test. */
   pausa_ms?: number
+  /**
+   * Tempo massimo del giro. La rotta ha maxDuration 300s: se si sfora, Vercel
+   * tronca la funzione e non arriva NIENTE — ne' il conteggio ne' l'avviso, e
+   * un 504 e' indistinguibile da "non e' partita". Meglio chiudere prima
+   * dichiarando `tempo_scaduto`.
+   */
+  budget_ms?: number
 }
 
 export type RigaEsito = { casella: string; chiave: string; from: string }
@@ -135,6 +160,15 @@ export type RunResult = {
   errori_registro: Array<RigaEsito & { errore: string }>
   /** Caselle che non si sono aperte: un guasto non e' un "zero fatture". */
   caselle_fallite: Array<{ casella: string; errore: string }>
+  /**
+   * Mittente riconosciuto ma senza allegato: prima spariva senza contatore.
+   * Un PDF messo "inline" invece che come allegato finisce qui, e va visto.
+   */
+  scartate_senza_allegato: RigaEsito[]
+  /** Un singolo messaggio e' esploso: non deve fermare gli altri, ne' sparire. */
+  errori_messaggio: Array<RigaEsito & { errore: string }>
+  /** Il tempo a disposizione e' finito prima di aver guardato tutto. */
+  tempo_scaduto: boolean
   /** Nessun mittente configurato: il filtro non poteva far passare nulla. */
   whitelist_vuota: boolean
   /** Il dettaglio per casella: senza questo, "3 inoltrate" non dice DA DOVE. */
@@ -166,6 +200,17 @@ export function normalizzaIndirizzo(indirizzo: string): string {
   const [locale, dominio] = indirizzo.toLowerCase().split('@')
   if (!dominio) return indirizzo.toLowerCase()
   return `${locale.split('+')[0]}@${dominio}`
+}
+
+/**
+ * Converte una data in ISO senza mai lanciare: un'intestazione `Date` storta in
+ * un singolo messaggio non deve poter far risultare "non raggiungibile" tutta
+ * la casella.
+ */
+export function dataSicura(valore: string | null | undefined): string | null {
+  if (!valore) return null
+  const d = new Date(valore)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
 }
 
 /**
@@ -256,15 +301,26 @@ export function casellaGmail(): Casella {
     nome: 'gmail',
     async leggi(since, before) {
       // Gmail vuole le date come YYYY/MM/DD. `has:attachment` restringe subito
-      // al solo insieme che ci interessa.
-      const q = `after:${since.replace(/-/g, '/')} before:${before.replace(/-/g, '/')} has:attachment`
+      // al solo insieme che ci interessa. `-in:sent -in:trash` tiene fuori la
+      // posta che il bot ha spedito lui stesso e il cestino.
+      const q = `after:${since.replace(/-/g, '/')} before:${before.replace(/-/g, '/')} has:attachment -in:sent -in:trash`
       const trovati = await searchGmail(q, LIMITE_GMAIL)
       const messaggi = trovati.map((g) => ({
         chiave: g.id,
         from: g.from ?? '',
         subject: g.subject ?? '',
-        date: g.date ? new Date(g.date).toISOString() : null,
-        has_attachments: g.hasAttachments,
+        // Un'intestazione Date malformata farebbe lanciare toISOString() QUI
+        // dentro, e l'intera casella Gmail risulterebbe "non raggiungibile"
+        // per colpa di un solo messaggio storto.
+        date: dataSicura(g.date),
+        // NON si usa `g.hasAttachments`: e' SEMPRE false. searchGmail chiede a
+        // Gmail il formato 'metadata', che non restituisce le parti MIME, e
+        // hasAttachments si calcola proprio da quelle. Copiarlo avrebbe fatto
+        // morire ogni messaggio Gmail al controllo allegati, senza finire in
+        // nessun contatore: lo stesso zero silenzioso che questa riscrittura
+        // doveva chiudere, rifatto sulla terza casella.
+        // Qui vale true PER COSTRUZIONE: la query contiene `has:attachment`.
+        has_attachments: true,
       }))
       return { messaggi, totale: messaggi.length, troncato: trovati.length >= LIMITE_GMAIL }
     },
@@ -292,7 +348,7 @@ export function casellaGmail(): Casella {
         { bypassUserConfirmation: false },
       )
       return esito.status === 'sent'
-        ? { stato: 'sent', message_id: esito.message_id }
+        ? { stato: 'sent', message_id: esito.message_id, filenames: allegati.map((a) => a.filename) }
         : { stato: esito.status }
     },
   }
@@ -321,13 +377,18 @@ async function loadSenders(): Promise<string[]> {
 
 async function giaInoltrata(monthRef: string, casella: string, chiave: string): Promise<boolean> {
   const supabase = getSupabaseServer()
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('cervellone_email_invoices_log')
     .select('id')
     .eq('month_ref', monthRef)
     .eq('source_account', casella)
     .eq('source_key', chiave)
     .maybeSingle()
+  // Se la domanda "l'ho gia' mandata?" non riceve risposta, la risposta NON e'
+  // "no". Ignorando l'errore si andrebbe a sbattere dalla parte sbagliata:
+  // reinviare tutto. Meglio fermarsi su questo messaggio, dichiararlo, e
+  // ritentare dopo — il mese resta aperto proprio per questo.
+  if (error) throw new Error(`registro non interrogabile: ${error.message}`)
   return !!data
 }
 
@@ -340,6 +401,7 @@ async function registraInoltro(args: {
   subject: string
   receivedAt: string | null
   forwardedMessageId: string
+  filenames: string[]
 }): Promise<string | null> {
   const supabase = getSupabaseServer()
   const { error } = await supabase.from('cervellone_email_invoices_log').insert({
@@ -352,7 +414,7 @@ async function registraInoltro(args: {
     subject: args.subject,
     received_at: args.receivedAt,
     forwarded_message_id: args.forwardedMessageId,
-    attachments_filenames: [],
+    attachments_filenames: args.filenames,
   })
   // La mail e' gia' partita: se il registro non la accoglie NON possiamo
   // fingere che sia tutto a posto, perche' il mese prossimo la reinvieremmo.
@@ -377,15 +439,23 @@ export async function runMonthlyForeignInvoices(opts: RunOptions): Promise<RunRe
   const nonInoltrate: RunResult['non_inoltrate'] = []
   const erroriRegistro: RunResult['errori_registro'] = []
   const caselleFallite: RunResult['caselle_fallite'] = []
+  const scartateSenzaAllegato: RigaEsito[] = []
+  const erroriMessaggio: RunResult['errori_messaggio'] = []
   const perCasella: RunResult['per_casella'] = []
 
   const oggetto = `Fatture estere Restruktura ${meseInLettere(monthRef)} — `
+  const scadenza = Date.now() + (opts.budget_ms ?? BUDGET_MS)
   let esaminatiTotali = 0
   let totaleInCasella = 0
   let troncatoOvunque = false
-  let inviatiFinora = 0
+  let tempoScaduto = false
+  let tentativi = 0
 
   for (const casella of caselle) {
+    if (tempoScaduto) {
+      perCasella.push({ casella: casella.nome, esaminati: 0, riconosciute: 0, inoltrate: 0 })
+      continue
+    }
     let lettura: LetturaCasella
     try {
       lettura = await casella.leggi(since, before)
@@ -405,6 +475,10 @@ export async function runMonthlyForeignInvoices(opts: RunOptions): Promise<RunRe
     let inoltrate = 0
 
     for (const m of lettura.messaggi) {
+      if (Date.now() > scadenza) {
+        tempoScaduto = true
+        break
+      }
       const from = m.from.toLowerCase()
       const subj = m.subject.toLowerCase()
       const riga: RigaEsito = { casella: casella.nome, chiave: m.chiave, from: m.from }
@@ -415,7 +489,14 @@ export async function runMonthlyForeignInvoices(opts: RunOptions): Promise<RunRe
       const inWhitelist = mittenteRiconosciuto(from, whitelist)
       const isKeyword = m.has_attachments && KEYWORDS.some((k) => subj.includes(k))
       if (!inWhitelist && !isKeyword) continue
-      if (!m.has_attachments) continue
+      if (!m.has_attachments) {
+        // Un mittente RICONOSCIUTO che arriva senza allegato non puo' sparire in
+        // silenzio: o il fornitore ha cambiato modo di mandare la fattura (un
+        // link invece del PDF), o il rilevamento allegati non la vede. In
+        // entrambi i casi e' una fattura persa, e va detto.
+        if (inWhitelist) scartateSenzaAllegato.push(riga)
+        continue
+      }
       if (!inWhitelist && isKeyword) {
         fallbackWarnings.push({ ...riga, subject: m.subject })
         skippedNotWhitelisted.push(riga)
@@ -425,40 +506,51 @@ export async function runMonthlyForeignInvoices(opts: RunOptions): Promise<RunRe
       riconosciute++
       candidates.push({ ...riga, subject: m.subject, date: m.date })
       if (opts.dry_run) continue
-      if (await giaInoltrata(monthRef, casella.nome, m.chiave)) {
-        skippedAlreadyDone.push(riga)
-        continue
-      }
 
-      // La pausa sta PRIMA degli inoltri successivi al primo: cosi' separa gli
-      // invii senza aggiungere un'attesa inutile dopo l'ultimo.
-      if (inviatiFinora > 0) await sleep(opts.pausa_ms ?? SLEEP_MS)
-      const esito = await casella.inoltra(
-        m,
-        oggetto,
-        `Inoltro automatico Cervellone — fattura ricevuta il ${m.date ?? '?'} da ${m.from} sulla casella ${casella.nome}. Mese di riferimento: ${monthRef}.`,
-      )
-      if (esito.stato !== 'sent' || !esito.message_id) {
-        // Prima questo era `continue` secco: un inoltro non partito spariva
-        // senza traccia, e il conteggio finale diceva comunque "tutto a posto".
-        nonInoltrate.push({ ...riga, stato: esito.stato })
-        continue
-      }
-      inviatiFinora++
-      inoltrate++
+      // Ogni messaggio sta dentro la propria rete: un allegato che non si
+      // scarica, un SMTP che cade, una cartella in sola lettura non devono
+      // buttare a terra l'intero giro — che significherebbe nessun conteggio,
+      // nessun avviso, e un 500 indistinguibile da "non e' partita".
+      try {
+        if (await giaInoltrata(monthRef, casella.nome, m.chiave)) {
+          skippedAlreadyDone.push(riga)
+          continue
+        }
 
-      const erroreRegistro = await registraInoltro({
-        monthRef,
-        casella: casella.nome,
-        chiave: m.chiave,
-        from: m.from,
-        subject: m.subject,
-        receivedAt: m.date,
-        forwardedMessageId: esito.message_id,
-      })
-      if (erroreRegistro) erroriRegistro.push({ ...riga, errore: erroreRegistro })
-      if (casella.marca) await casella.marca(m)
-      forwarded.push({ ...riga, forwarded_message_id: esito.message_id })
+        // La pausa conta i TENTATIVI, non i successi: se gli invii falliscono
+        // per troppa fretta, contare i successi stringerebbe il ritmo proprio
+        // quando andrebbe allargato.
+        if (tentativi > 0) await sleep(opts.pausa_ms ?? SLEEP_MS)
+        tentativi++
+        const esito = await casella.inoltra(
+          m,
+          oggetto,
+          `Inoltro automatico Cervellone — fattura ricevuta il ${m.date ?? '?'} da ${m.from} sulla casella ${casella.nome}. Mese di riferimento: ${monthRef}.`,
+        )
+        if (esito.stato !== 'sent' || !esito.message_id) {
+          // Prima questo era `continue` secco: un inoltro non partito spariva
+          // senza traccia, e il conteggio finale diceva comunque "tutto a posto".
+          nonInoltrate.push({ ...riga, stato: esito.stato })
+          continue
+        }
+        inoltrate++
+
+        const erroreRegistro = await registraInoltro({
+          monthRef,
+          casella: casella.nome,
+          chiave: m.chiave,
+          from: m.from,
+          subject: m.subject,
+          receivedAt: m.date,
+          forwardedMessageId: esito.message_id,
+          filenames: esito.filenames ?? [],
+        })
+        if (erroreRegistro) erroriRegistro.push({ ...riga, errore: erroreRegistro })
+        if (casella.marca) await casella.marca(m)
+        forwarded.push({ ...riga, forwarded_message_id: esito.message_id })
+      } catch (err) {
+        erroriMessaggio.push({ ...riga, errore: err instanceof Error ? err.message : String(err) })
+      }
     }
 
     perCasella.push({ casella: casella.nome, esaminati: lettura.messaggi.length, riconosciute, inoltrate })
@@ -481,6 +573,9 @@ export async function runMonthlyForeignInvoices(opts: RunOptions): Promise<RunRe
     non_inoltrate: nonInoltrate,
     errori_registro: erroriRegistro,
     caselle_fallite: caselleFallite,
+    scartate_senza_allegato: scartateSenzaAllegato,
+    errori_messaggio: erroriMessaggio,
+    tempo_scaduto: tempoScaduto,
     whitelist_vuota: whitelist.size === 0,
     per_casella: perCasella,
   }

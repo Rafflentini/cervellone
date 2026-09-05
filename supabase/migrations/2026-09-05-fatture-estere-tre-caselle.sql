@@ -37,3 +37,14 @@ comment on column cervellone_email_invoices_log.source_account is
   'Casella di provenienza: info | raffaele | gmail';
 comment on column cervellone_email_invoices_log.source_key is
   'Identificativo del messaggio nella sua casella: uid IMAP (numerico) o id Gmail (esadecimale).';
+
+-- ── Seconda parte, dopo l'audit ──────────────────────────────────────────────
+-- Il vincolo VECCHIO era rimasto in piedi accanto a quello nuovo:
+--   UNIQUE (month_ref, source_uid, source_folder)   con source_folder = 'INBOX'
+-- Gli uid IMAP sono numerati PER CASELLA: info@ e raffaele@ possono avere lo
+-- stesso uid nello stesso mese (~250 messaggi al mese l'una: succede). La
+-- seconda fattura sarebbe stata spedita davvero e l'insert rifiutato, quindi
+-- nessuna traccia nel registro e reinvio il mese dopo. Un doppione nato da un
+-- vincolo che era giusto quando le caselle erano una.
+alter table cervellone_email_invoices_log
+  drop constraint if exists cervellone_email_invoices_log_month_ref_source_uid_source_f_key;
