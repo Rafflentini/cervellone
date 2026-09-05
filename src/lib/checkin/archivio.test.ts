@@ -335,3 +335,39 @@ describe('la selezione di cosa mostrare', () => {
     expect(r.map((x) => x.checkin)).toEqual(['2026-08-20', '2026-08-02'])
   })
 })
+
+describe('numeroIt e i valori come li restituisce Google', () => {
+  // Senza `valueRenderOption`, Sheets restituisce il valore FORMATTATO: una
+  // cella impostata come valuta torna col simbolo. Prima del 5 set 2026 questa
+  // funzione ci leggeva ZERO — e su "Imposta soggiorno €" avrebbe voluto dire
+  // dichiarare al Comune meno del dovuto, in silenzio.
+  it('CONTROLLO POSITIVO: legge un importo col simbolo di valuta', () => {
+    expect(numeroIt('25,00 €')).toBe(25)
+    expect(numeroIt('€ 25,00')).toBe(25)
+    expect(numeroIt('12,50€')).toBe(12.5)
+  })
+
+  it('regge lo spazio unificatore che Sheets infila fra numero e simbolo', () => {
+    expect(numeroIt('25,00\u00a0€')).toBe(25)
+    expect(numeroIt('1 234,56')).toBe(1234.56)
+  })
+
+  it('CONTROPROVA: i numeri semplici continuano a leggersi come prima', () => {
+    expect(numeroIt('25,00')).toBe(25)
+    expect(numeroIt('1.250,00')).toBe(1250)
+    expect(numeroIt('1.250')).toBe(1250)
+    expect(numeroIt('7')).toBe(7)
+  })
+
+  it('un punto con DUE decimali resta un decimale, non diventa migliaia', () => {
+    // Controllo positivo del controllo: se stripassimo sempre i punti, "1.25"
+    // diventerebbe 125 — lo stesso errore all'incontrario.
+    expect(numeroIt('1.25')).toBe(1.25)
+    expect(numeroIt('0.5')).toBe(0.5)
+  })
+
+  it('cio che non e un numero resta zero, non diventa NaN', () => {
+    expect(numeroIt('')).toBe(0)
+    expect(numeroIt('n/d')).toBe(0)
+  })
+})

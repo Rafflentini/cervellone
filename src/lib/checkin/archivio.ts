@@ -82,12 +82,34 @@ export function statoFatturaDi(riga: Record<string, string | undefined>): StatoF
  * colonna finisce in una dichiarazione al Comune.
  */
 export function numeroIt(valore: string): number {
-  const s = String(valore ?? '').trim()
+  // Via il simbolo di valuta e gli spazi, ovunque si trovino.
+  //
+  // Non e' pignoleria: Google Sheets, senza `valueRenderOption`, restituisce il
+  // valore FORMATTATO. Una cella impostata come valuta torna "25,00 €", e la
+  // versione precedente di questa funzione ci leggeva **zero**. Su
+  // `Imposta soggiorno €` avrebbe significato dichiarare al Comune meno del
+  // dovuto, senza che niente lo segnalasse. (Trovato da un audit il 5 set 2026,
+  // prima che il tool andasse in produzione.)
+  //   e' lo spazio unificatore che Sheets infila fra numero e simbolo.
+  const s = String(valore ?? '')
+    .replace(/[€$£\s ]/g, '')
+    .trim()
   if (!s) return 0
 
   // "1.250,00": il punto separa le migliaia e la virgola i decimali. Trattare
   // il punto come decimale darebbe 1,25 al posto di 1250.
-  const normale = s.includes(',') ? s.replace(/\./g, '').replace(',', '.') : s
+  //
+  // Anche SENZA virgola il punto puo' essere separatore di migliaia: "1.250" in
+  // un foglio italiano vale milleduecentocinquanta, e leggerlo 1,25 su
+  // `Importo lordo €` sarebbe un incasso sbagliato di tre ordini di grandezza.
+  // Il caso si riconosce dalla forma: gruppi di ESATTAMENTE tre cifre dopo ogni
+  // punto. Cosi' "1.25" (due decimali) resta 1,25 e non diventa 125.
+  const migliaiaSenzaVirgola = !s.includes(',') && /^-?\d{1,3}(\.\d{3})+$/.test(s)
+  const normale = s.includes(',')
+    ? s.replace(/\./g, '').replace(',', '.')
+    : migliaiaSenzaVirgola
+      ? s.replace(/\./g, '')
+      : s
   const n = Number(normale)
   return Number.isFinite(n) ? n : 0
 }
