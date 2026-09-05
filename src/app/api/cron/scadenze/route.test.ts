@@ -25,6 +25,12 @@ let pagine: unknown[][] = []
 let paginaInfinita: unknown[] | null = null
 // Indice (0-based) della pagina su cui il "server" restituisce un errore.
 let erroreAllaPagina: number | null = null
+// La chat Telegram dell'Ingegnere: 0 = non configurata.
+let chatConfigurata = 12345
+// Esito dichiarato da Telegram: false = accettato ma non consegnato.
+let telegramConsegna = true
+// Se vero, la scrittura del segno sulla riga fallisce.
+let updateFallisce = false
 
 function makeBuilder() {
   let ranged = false
@@ -52,7 +58,10 @@ function makeBuilder() {
   }
   builder.then = (resolve: (v: unknown) => void) => {
     // Un UPDATE non legge pagine: risponde solo "scritto".
-    if (update) return Promise.resolve({ data: null, error: null }).then(resolve)
+    if (update) {
+      const esito = updateFallisce ? { data: null, error: { message: 'RLS: permission denied' } } : { data: null, error: null }
+      return Promise.resolve(esito).then(resolve)
+    }
     // Senza .range() si simula il row-cap di PostgREST: solo la prima pagina.
     const idx = ranged ? rangeCalls.length - 1 : 0
     if (erroreAllaPagina !== null && idx === erroreAllaPagina) {
@@ -68,6 +77,14 @@ function makeBuilder() {
 
 vi.mock('@/lib/supabase', () => ({
   supabase: { from: () => makeBuilder() },
+}))
+
+vi.mock('@/lib/telegram-helpers', () => ({
+  // La route usa la variante VERIFICATA. `sendTelegramMessage` e "fire and
+  // forget": non rigetta mai, quindi un mock costruito su di essa non potrebbe
+  // far morire nessun test — sarebbe verde qualunque cosa succeda davvero.
+  sendTelegramMessageChecked: vi.fn(async () => telegramConsegna),
+  chatAdmin: () => chatConfigurata,
 }))
 
 vi.mock('@/v19/tools/email/send-email', () => ({
@@ -122,6 +139,11 @@ beforeEach(() => {
   pagine = []
   paginaInfinita = null
   erroreAllaPagina = null
+  // Stessa ragione: senza, il test che spegne Telegram lo lascerebbe spento
+  // per tutti quelli dopo, e i loro controlli positivi diventerebbero finti.
+  chatConfigurata = 12345
+  telegramConsegna = true
+  updateFallisce = false
   process.env.CRON_SECRET = 'test-secret'
 })
 
@@ -208,8 +230,11 @@ describe('cron scadenze', () => {
     const marcatura = updateCalls.find(u =>
       u.filters.some(([m, args]) => m === 'eq' && args[1] === 'oltre-il-cap'))
     expect(marcatura).toBeDefined()
+    // Il segno porta anche la SOGLIA, non solo la data: dal 5 set 2026 i
+    // promemoria sono tre e senza la soglia non si saprebbe quale e' partito.
+    // (reminder_days 5 → soglie [5, 0]; mancano 3 giorni → scatta quella da 5.)
     expect((marcatura!.payload as { reminders_sent: string[] }).reminders_sent)
-      .toEqual([todayRomeISO()])
+      .toEqual([`5:${todayRomeISO()}`])
   })
 
   it('non manda nulla a una scadenza fuori dalla finestra reminder (controprova)', async () => {
@@ -289,5 +314,185 @@ describe('cron scadenze', () => {
     expect(res.status).toBe(401)
     // e non ha nemmeno provato a leggere il DB
     expect(rangeCalls).toEqual([])
+  })
+})
+
+// ── Promemoria ripetuti + Telegram (5 settembre 2026) ────────────────────────
+// Prima ne partiva UNO SOLO, e solo per mail. Per una scadenza annuale voleva
+// dire una mail sola, dodici mesi dopo, in una casella da centinaia di messaggi
+// al mese: se quel giorno l'Ingegnere e in cantiere, la scadenza muore in
+// silenzio. E esattamente cio che era successo col token GitHub scaduto il
+// 5 giugno, di cui nessuno si e accorto per tre mesi.
+
+/** Scadenza con preavviso lungo: e il caso del token GitHub (30 giorni). */
+function rigaLunga(id: string, fraGiorni: number, giaMandati: string[] = []) {
+  return {
+    id, soggetto: `Soggetto ${id}`, categoria: 'sistema',
+    tipo_documento: 'Token di accesso', data_scadenza: traGiorni(fraGiorni),
+    reminder_days: 30, recipients: ['tizio@restruktura.it'], drive_url: null,
+    reminders_sent: giaMandati,
+  }
+}
+
+describe('cron scadenze — tre promemoria, non uno', () => {
+  it('CONTROLLO POSITIVO: a 30 giorni parte il primo avviso', async () => {
+    pagine = [[rigaLunga('token', 30)]]
+    const { GET } = await import('./route')
+    const body = await (await GET(cronRequest())).json()
+
+    expect(body.reminded).toBe(1)
+    expect(body.details[0].soglia).toBe(30)
+  })
+
+  it('il giorno dopo NON riparte: uno per soglia, non uno al mattino', async () => {
+    // Se diventasse quotidiano, verrebbe ignorato proprio quando conta.
+    pagine = [[rigaLunga('token', 29, [`30:${todayRomeISO()}`])]]
+    const { GET } = await import('./route')
+    const body = await (await GET(cronRequest())).json()
+
+    expect(body.reminded).toBe(0)
+  })
+
+  it('a una settimana parte il RICHIAMO, che prima non esisteva', async () => {
+    pagine = [[rigaLunga('token', 7, ['30:2026-08-06'])]]
+    const { GET } = await import('./route')
+    const body = await (await GET(cronRequest())).json()
+
+    expect(body.reminded).toBe(1)
+    expect(body.details[0].soglia).toBe(7)
+  })
+
+  it('il giorno della scadenza parte l ULTIMO avviso', async () => {
+    pagine = [[rigaLunga('token', 0, ['30:2026-08-06', '7:2026-08-29'])]]
+    const { GET } = await import('./route')
+    const body = await (await GET(cronRequest())).json()
+
+    expect(body.reminded).toBe(1)
+    expect(body.details[0].soglia).toBe(0)
+    expect(body.details[0].days_until).toBe(0)
+  })
+
+  it('una riga col formato VECCHIO non rimanda l avviso gia dato, ma i richiami restano vivi', async () => {
+    // Le righe scritte prima di oggi contengono solo la data secca.
+    pagine = [[rigaLunga('storica', 25, ['2026-06-04'])]]
+    const { GET } = await import('./route')
+    const body = await (await GET(cronRequest())).json()
+
+    // A 25 giorni la soglia da 30 e gia chiusa dalla riga vecchia: niente.
+    expect(body.reminded).toBe(0)
+  })
+})
+
+describe('cron scadenze — anche su Telegram', () => {
+  it('CONTROLLO POSITIVO: il promemoria arriva anche su Telegram, non solo per mail', async () => {
+    const { sendTelegramMessageChecked } = await import('@/lib/telegram-helpers')
+    pagine = [[rigaInScadenza('avviso', 3)]]
+    const { GET } = await import('./route')
+    const body = await (await GET(cronRequest())).json()
+
+    expect(sendTelegramMessageChecked).toHaveBeenCalledTimes(1)
+    const [chat, testo] = (sendTelegramMessageChecked as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(chat).toBe(12345)
+    expect(String(testo)).toContain('Scadenza fra 3 giorni')
+    expect(body.details[0].telegram.inviato).toBe(true)
+  })
+
+  it('se la chat Telegram non e configurata lo DICE, invece di tacere', async () => {
+    // Il cron delle fatture estere leggeva una variabile inesistente e per
+    // quattro mesi non ha mandato niente: l assenza di un messaggio non fa
+    // rumore da sola, quindi il rumore lo deve fare la risposta.
+    chatConfigurata = 0
+    pagine = [[rigaInScadenza('muto', 3)]]
+    const { GET } = await import('./route')
+    const body = await (await GET(cronRequest())).json()
+
+    expect(body.telegram_non_partito).toHaveLength(1)
+    expect(body.telegram_non_partito[0].motivo).toContain('non configurata')
+    // La mail e partita lo stesso: un canale giu non ferma l altro.
+    expect(body.details[0].consegnato).toBe(true)
+  })
+
+  it('con Telegram muto e mail muta la scadenza resta DA AVVISARE e non viene marcata', async () => {
+    const { sendEmailInternal } = await import('@/v19/tools/email/send-email')
+    ;(sendEmailInternal as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ status: 'pending', uuid: 'u1' })
+    chatConfigurata = 0
+    pagine = [[rigaInScadenza('scoperta', 3)]]
+    const { GET } = await import('./route')
+    const body = await (await GET(cronRequest())).json()
+
+    expect(body.details[0].consegnato).toBe(false)
+    expect(body.non_consegnati).toHaveLength(1)
+    // Non marcata: domani si riprova, invece di dare per avvisata una cosa che
+    // non e mai arrivata a nessuno.
+    expect(updateCalls).toHaveLength(0)
+  })
+})
+
+describe('cron scadenze — i buchi trovati dall audit', () => {
+  it('CONTROLLO POSITIVO: Telegram consegnato DA SOLO basta a marcare la riga', async () => {
+    // Mutazione sopravvissuta al primo giro: togliendo `|| telegram.inviato`
+    // da route.ts restavano tutti verdi. Senza questo test, il canale Telegram
+    // poteva smettere di contare e nessuno se ne sarebbe accorto.
+    const { sendEmailInternal } = await import('@/v19/tools/email/send-email')
+    ;(sendEmailInternal as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ status: 'pending', uuid: 'u1' })
+    pagine = [[rigaInScadenza('solo-telegram', 3)]]
+
+    const { GET } = await import('./route')
+    const body = await (await GET(cronRequest())).json()
+
+    expect(body.details[0].recipients[0].status).toBe('pending')
+    expect(body.details[0].telegram.inviato).toBe(true)
+    expect(body.details[0].consegnato).toBe(true)
+    // Marcata: altrimenti domani ripartirebbe un avviso gia ricevuto.
+    expect(updateCalls).toHaveLength(1)
+  })
+
+  it('un Telegram accettato ma NON consegnato non vale come avviso dato', async () => {
+    // `sendTelegramMessage` non rigetta mai: senza la variante verificata,
+    // "inviato" sarebbe true anche senza token, la riga verrebbe marcata e quel
+    // promemoria sarebbe perso per sempre.
+    const { sendEmailInternal } = await import('@/v19/tools/email/send-email')
+    ;(sendEmailInternal as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ status: 'pending', uuid: 'u1' })
+    telegramConsegna = false
+    pagine = [[rigaInScadenza('non-consegnato', 3)]]
+
+    const { GET } = await import('./route')
+    const body = await (await GET(cronRequest())).json()
+
+    expect(body.details[0].telegram.inviato).toBe(false)
+    expect(body.details[0].telegram.motivo).toContain('non ha confermato')
+    expect(body.details[0].consegnato).toBe(false)
+    expect(updateCalls).toHaveLength(0)
+  })
+
+  it('una scadenza che va in errore non lascia le ALTRE senza promemoria', async () => {
+    // Prima l errore risaliva in cima: le scadenze successive non ricevevano
+    // niente e il giro finiva in 500. Su dieci documenti in scadenza lo stesso
+    // giorno, nove restavano scoperti per colpa del primo.
+    updateFallisce = true
+    pagine = [[rigaInScadenza('prima', 3), rigaInScadenza('seconda', 3)]]
+
+    const { GET } = await import('./route')
+    const res = await GET(cronRequest())
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.falliti).toHaveLength(2)
+    expect(body.falliti.map((f: { id: string }) => f.id)).toEqual(['prima', 'seconda'])
+    // Entrambe hanno provato: la seconda non e stata saltata per colpa della prima.
+    expect(updateCalls).toHaveLength(2)
+  })
+
+  it('CONTROPROVA: senza errori non c e nessun fallito da dichiarare', async () => {
+    pagine = [[rigaInScadenza('serena', 3)]]
+
+    const { GET } = await import('./route')
+    const body = await (await GET(cronRequest())).json()
+
+    expect(body.falliti).toEqual([])
+    expect(body.reminded).toBe(1)
   })
 })

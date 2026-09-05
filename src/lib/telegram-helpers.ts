@@ -197,3 +197,24 @@ export async function sendTelegramMessageWithId(chatId: number, text: string): P
   }
 }
 
+
+/**
+ * La chat dell'Ingegnere: `ADMIN_CHAT_ID` se configurata, altrimenti il primo
+ * id di `TELEGRAM_ALLOWED_IDS` (setup a utente singolo). Restituisce 0 se non
+ * si riesce a determinarla — chi chiama DEVE dirlo, non tacere.
+ *
+ * Esiste come funzione unica perche' lo stesso ripiego era copiato in sei
+ * punti, e dove NON era copiato ha fatto danni: il cron delle fatture estere
+ * leggeva `TELEGRAM_RAFFAELE_CHAT_ID`, una variabile che su Vercel non esiste
+ * (verificato il 5 set 2026). Il suo resoconto mensile era protetto da un
+ * `if (RAFFAELE_CHAT_ID)`: per quattro mesi non e' partito NIENTE, e nessuno
+ * poteva accorgersene perche' l'assenza di un messaggio non fa rumore.
+ * Stessa trappola gia' vista nel circuit breaker il 5 maggio.
+ * [[feedback_misura_non_e_dato]]
+ */
+export function chatAdmin(): number {
+  const esplicita = parseInt(process.env.ADMIN_CHAT_ID || '0', 10)
+  if (esplicita) return esplicita
+  const primoAmmesso = (process.env.TELEGRAM_ALLOWED_IDS || '').split(',')[0]?.trim()
+  return parseInt(primoAmmesso || '0', 10) || 0
+}

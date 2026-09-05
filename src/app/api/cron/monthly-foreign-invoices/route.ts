@@ -12,11 +12,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { runMonthlyForeignInvoices } from '@/v19/routines/monthly-foreign-invoices'
-import { sendTelegramMessage } from '@/lib/telegram-helpers'
+import { sendTelegramMessage, chatAdmin } from '@/lib/telegram-helpers'
 
 export const maxDuration = 300
-
-const RAFFAELE_CHAT_ID = process.env.TELEGRAM_RAFFAELE_CHAT_ID
 
 function previousMonthRef(now = new Date()): string {
   const y = now.getUTCFullYear()
@@ -33,6 +31,12 @@ export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization')
   if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
+  }
+  // Risolta QUI e non a caricamento del modulo: le variabili d'ambiente di una
+  // funzione serverless vanno lette quando serve, non una volta per sempre.
+  const RAFFAELE_CHAT_ID = chatAdmin() || null
+  if (!RAFFAELE_CHAT_ID) {
+    console.error('[cron/fatture-estere] chat Telegram non configurata: il resoconto NON partira')
   }
   const monthRef = req.nextUrl.searchParams.get('month') ?? previousMonthRef()
   const dry = req.nextUrl.searchParams.get('dry') === '1'
@@ -122,7 +126,7 @@ export async function GET(req: NextRequest) {
         .join('\n')
       await sendTelegramMessage(Number(RAFFAELE_CHAT_ID), lines)
     }
-    return NextResponse.json({ ok: true, sospetto, ...result })
+    return NextResponse.json({ ok: true, sospetto, telegram_configurato: !!RAFFAELE_CHAT_ID, ...result })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     if (RAFFAELE_CHAT_ID) {
