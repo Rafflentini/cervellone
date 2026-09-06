@@ -110,7 +110,18 @@ export async function GET(req: NextRequest) {
     const pratiche = (scelte as (PraticaArchiviabile & { m: Record<string, string> })[])
       .map(({ m, ...p }) => {
         const attesi = Number(m['N. ospiti'] || 0)
-        const dichiarati = Number(m['Ospiti dichiarati'] || 0) || attesi
+        /*
+          I link degli ospiti seguono il numero PRENOTATO, non quello delle
+          schede gia' compilate.
+
+          Regressione introdotta il 6 set 2026 e trovata da un audit poche ore
+          dopo: rendendo `Ospiti dichiarati` un conteggio scritto dal server
+          (le schede davvero compilate), questa riga faceva scendere il numero
+          di link a uno appena il primo ospite salvava — e i collegamenti per
+          gli altri sparivano dalla pagina proprio nel momento in cui il
+          gestore doveva mandarli.
+        */
+        const dichiarati = Math.max(Number(m['Ospiti dichiarati'] || 0), attesi, 1)
         return {
           ...p,
           portale: m['Portale'] ?? '',

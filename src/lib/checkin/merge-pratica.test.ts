@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  fondiSoggiorno, fondiOspiti, aMappa, aRiga, oscuraRiservati, type Livello,
+  fondiSoggiorno, fondiOspiti, aMappa, aRiga, oscuraRiservati, CAMPI_OSPITE_DI_SISTEMA, type Livello,
 } from './merge-pratica'
 import { COL_SOGGIORNI, COL_OSPITI } from './foglio-schema'
 
@@ -271,5 +271,50 @@ describe('cosa vede chi, quando riceve il link', () => {
 
   it('il gestore vede tutto, importo compreso', () => {
     expect(oscuraRiservati(soggiorno, { tipo: 'gestore' })['Importo lordo €']).toBe('1400,00')
+  })
+})
+
+describe('le schede ospite hanno la stessa disciplina della prenotazione', () => {
+  const esistente = aRiga(COL_OSPITI, {
+    'ID Soggiorno': 'SOG-1', 'Progressivo': '1', 'Cognome': 'ROSSI', 'Nome': 'MARIO',
+    'Doc fronte': 'idDrive-fronte', 'Doc retro': 'idDrive-retro',
+  })
+
+  it('CONTROLLO POSITIVO: chi compila non puo svuotare la cella della propria foto', () => {
+    // Il form e PUBBLICO. Bastava una richiesta con "Doc fronte": "" per
+    // svuotare la cella lasciando il file su Drive — e il lavoro notturno
+    // cancella solo cio che trova nelle celle: quel documento d'identita
+    // sarebbe rimasto li per sempre, invisibile. (Due audit, 6 set 2026.)
+    const esito = fondiOspiti([esistente], [{ 'Progressivo': '1', 'Doc fronte': '', 'Doc retro': '' }],
+      { tipo: 'ospite', progressivo: 1 }, 'SOG-1')
+
+    const m = aMappa(COL_OSPITI, esito.righe[0])
+    expect(m['Doc fronte']).toBe('idDrive-fronte')
+    expect(m['Doc retro']).toBe('idDrive-retro')
+    expect(esito.rifiutati.join(' ')).toContain('Doc fronte')
+  })
+
+  it('non puo nemmeno spostare la propria scheda su un altra prenotazione', () => {
+    const esito = fondiOspiti([esistente], [{ 'Progressivo': '1', 'ID Soggiorno': 'SOG-ALTRO' }],
+      { tipo: 'ospite', progressivo: 1 }, 'SOG-1')
+
+    expect(aMappa(COL_OSPITI, esito.righe[0])['ID Soggiorno']).toBe('SOG-1')
+  })
+
+  it('CONTROPROVA: i campi che DEVE compilare passano come prima', () => {
+    // Senza questa prova, "blocca tutto" supererebbe i test qui sopra e il
+    // check-in non si potrebbe piu fare.
+    const esito = fondiOspiti([esistente], [{
+      'Progressivo': '1', 'Cognome': 'BIANCHI', 'Nome': 'LUCA',
+      'Data nascita': '1990-02-03', 'Numero documento': 'XY9999999',
+    }], { tipo: 'ospite', progressivo: 1 }, 'SOG-1')
+
+    const m = aMappa(COL_OSPITI, esito.righe[0])
+    expect(m['Cognome']).toBe('BIANCHI')
+    expect(m['Nome']).toBe('LUCA')
+    expect(m['Data nascita']).toBe('1990-02-03')
+    expect(m['Numero documento']).toBe('XY9999999')
+    // E le foto restano quelle di prima: non le ha toccate nessuno.
+    expect(m['Doc fronte']).toBe('idDrive-fronte')
   })
 })

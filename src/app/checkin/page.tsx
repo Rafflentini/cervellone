@@ -1044,8 +1044,11 @@ const STILE = `
   header .titolo h1{margin:0;font-size:16px;font-weight:600;color:var(--blu)}
   header .titolo p{margin:2px 0 0;font-size:11.5px;color:#6b7280;line-height:1.35}
   header .titolo p.en-header{color:#9aa3b2;font-style:italic}
-  header .titolo p.privacy-link{margin-top:6px;font-size:.85rem}
-  header .titolo p.privacy-link a{color:#cfe0f5;text-decoration:underline}
+  /* L'intestazione e' BIANCA, non blu: un azzurro chiaro qui e' illeggibile.
+     Visto a schermo il 6 set 2026 — il CSS da solo non lo mostrava. */
+  header .titolo p.privacy-link{margin-top:8px;font-size:.9rem}
+  header .titolo p.privacy-link a{color:#1f3864;text-decoration:underline;font-weight:600}
+  header .titolo p.privacy-link a:hover{color:#7b2233}
   .wrap{padding:14px}
   section{background:#fff;border:1px solid var(--bordo);border-radius:10px;padding:14px;margin-bottom:12px}
   h2{font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--blu);margin:0 0 12px}

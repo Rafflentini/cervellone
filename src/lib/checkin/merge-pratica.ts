@@ -81,6 +81,21 @@ export const CAMPI_DELL_INTESTATARIO: readonly string[] = [
   'Note',
 ]
 
+/**
+ * Colonne della scheda ospite che il modulo NON scrive: le scrive il server.
+ *
+ * `Doc fronte` e `Doc retro` sono gli identificativi Drive delle foto, e li
+ * mette la rotta di caricamento. Se li potesse scrivere chi compila, basterebbe
+ * mandarli vuoti per svuotare la cella lasciando il file su Drive: il lavoro
+ * notturno cancella solo cio' che trova NELLE CELLE, quindi quel documento
+ * d'identita' resterebbe li' per sempre, invisibile a tutti.
+ */
+export const CAMPI_OSPITE_DI_SISTEMA: readonly string[] = [
+  'ID Soggiorno',
+  'Doc fronte',
+  'Doc retro',
+]
+
 /** Toglie dalla mappa i campi che quel livello non deve vedere. */
 export function oscuraRiservati(
   m: Record<string, string>,
@@ -214,7 +229,30 @@ export function fondiOspiti(
 
     const attuale = perProgressivo.get(prog)
     const base = attuale ? aMappa(COL_OSPITI, attuale) : {}
-    const nuova: Record<string, string> = { ...base, ...scheda }
+    /*
+      La stessa disciplina che vale per la riga della prenotazione vale per le
+      schede: senza, `{ ...base, ...scheda }` accettava QUALUNQUE colonna
+      arrivasse dal modulo.
+
+      Trovato da due audit indipendenti il 6 settembre 2026. Il form e' pubblico:
+      bastava una richiesta con `"Doc fronte": ""` per svuotare la cella
+      lasciando il file su Drive — e il lavoro notturno cancella solo cio' che
+      trova NELLE CELLE, quindi quel documento d'identita' sarebbe rimasto li'
+      per sempre, invisibile a tutti.
+
+      Il blocco stava solo nell'interfaccia (la casella nascosta nella pagina),
+      ed e' esattamente la cosa che l'intestazione di questo file dichiara di
+      non voler fare: cio' che non si deve poter cambiare si ferma sul SERVER.
+    */
+    const scheda2: Record<string, string> = {}
+    for (const [campo, valore] of Object.entries(scheda)) {
+      if (CAMPI_OSPITE_DI_SISTEMA.includes(campo)) {
+        if (String(valore ?? '') !== String(base[campo] ?? '')) rifiutati.push(`${campo} (ospite ${prog})`)
+        continue
+      }
+      scheda2[campo] = valore
+    }
+    const nuova: Record<string, string> = { ...base, ...scheda2 }
     // L'appartenenza non si sposta: un ospite non si trasferisce a un'altra
     // prenotazione riscrivendo un campo.
     nuova['ID Soggiorno'] = idSoggiorno
