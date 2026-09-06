@@ -1,11 +1,21 @@
 import crypto from 'crypto'
-import { validateAuth } from './auth'
+import { validateAuth, segretoSessione } from './auth'
 
 const SESSION_PAYLOAD = 'cervellone_v2'
 
-/** Token di sessione (identico a api/auth). httpOnly cookie `cervellone_auth`. */
+/**
+ * Token di sessione (identico a api/auth). httpOnly cookie `cervellone_auth`.
+ *
+ * ALZA un errore se `AUTH_SECRET` manca, invece di emettere un cookie
+ * calcolabile da chiunque legga il repository (che e' pubblico). Il chiamante
+ * lo trasforma in un errore visibile: meglio non poter entrare che entrare
+ * tutti. Vedi `segretoSessione` in auth.ts.
+ */
 export function getAuthToken(): string {
-  const secret = process.env.AUTH_SECRET || 'cervellone'
+  const secret = segretoSessione()
+  if (!secret) {
+    throw new Error('AUTH_SECRET non configurato: non emetto un token di sessione indovinabile.')
+  }
   return crypto.createHmac('sha256', secret).update(SESSION_PAYLOAD).digest('hex')
 }
 

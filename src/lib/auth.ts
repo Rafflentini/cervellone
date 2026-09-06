@@ -14,14 +14,38 @@ import crypto from 'crypto'
  *   node -e "console.log(require('crypto').createHmac('sha256','YOUR_SECRET').update('cervellone_v2').digest('hex'))"
  * Poi impostalo come cookie nel browser.
  */
+/**
+ * Il segreto di sessione. NESSUN ripiego.
+ *
+ * Fino al 6 settembre 2026 qui c'era `process.env.AUTH_SECRET || 'cervellone'`,
+ * in due file di un repository PUBBLICO: bastava che la variabile mancasse su
+ * Vercel — un deploy nuovo, un ambiente di prova, una svista — perche' il
+ * cookie di sessione diventasse calcolabile da chiunque avesse letto il
+ * codice. Un ripiego comodo che degrada la sicurezza in silenzio: l'app
+ * continuava a funzionare, e nessuno poteva accorgersene.
+ *
+ * Ora, se manca, non si autentica NESSUNO. Chiudersi fuori e' un guasto che si
+ * vede; una porta aperta no.
+ *
+ * ATTENZIONE al motivo per cui il ripiego era stato messo (bug pre-24 mag):
+ * `validateAuth` rifiutava mentre il login accettava, e il cookie non
+ * combaciava mai — 401 perpetuo dopo un login riuscito. Per questo la regola
+ * dev'essere la STESSA sui due lati: qui si nega, e `getAuthToken` alza un
+ * errore invece di emettere un cookie indovinabile. Nessuno dei due finge.
+ */
+export function segretoSessione(): string | null {
+  const s = process.env.AUTH_SECRET
+  return s && s.trim() ? s : null
+}
+
 export function validateAuth(cookieValue: string | undefined): boolean {
   if (!cookieValue) return false
 
-  // Allinea fallback con /api/auth/route.ts:5 (entrambi usano 'cervellone' se env mancante).
-  // Bug pre-24mag: validateAuth early-returns false su AUTH_SECRET missing, mentre login
-  // accetta password e setta cookie con HMAC default → mismatch → 401 perpetuo su /api/chat
-  // anche dopo login OK su /api/auth. Vedi memoria feedback_auth_secret_fallback_mismatch.
-  const secret = process.env.AUTH_SECRET || 'cervellone'
+  const secret = segretoSessione()
+  if (!secret) {
+    console.error('[auth] AUTH_SECRET non configurato: nessun accesso viene autenticato.')
+    return false
+  }
 
   try {
     const expected = crypto
