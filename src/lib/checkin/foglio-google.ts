@@ -15,6 +15,82 @@ import { getSheets } from '../drive'
 import type { FoglioApi } from './foglio-init'
 
 /**
+ * Quante volte si riprova, e quanto si aspetta fra un tentativo e l'altro.
+ * Tre tentativi in tutto: nel caso peggiore si aggiunge un secondo e mezzo a
+ * un salvataggio. Di piu' vorrebbe dire far aspettare davanti a uno schermo
+ * qualcuno che non sa cosa stia succedendo.
+ */
+const ATTESE_MS = [400, 1200]
+
+/** Lo stato HTTP di un errore di Google, comunque sia confezionato. */
+function statoDi(err: unknown): number | undefined {
+  const e = err as { response?: { status?: number }; status?: number; code?: unknown }
+  const n = e?.response?.status ?? e?.status ?? (typeof e?.code === 'number' ? e.code : undefined)
+  return typeof n === 'number' ? n : undefined
+}
+
+/** Un guasto di rete: la richiesta puo' essere arrivata, o no. Non si sa. */
+function guastoDiRete(err: unknown): boolean {
+  const codice = String((err as { code?: unknown })?.code ?? '')
+  return ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN'].includes(codice)
+}
+
+/**
+ * Riprova un'operazione sul foglio.
+ *
+ * ── Perche' esiste (6 settembre 2026) ────────────────────────────────────────
+ * Un "withRetry" c'era gia' in lib/resilience.ts, e non era chiamato da
+ * nessuna parte. Anche chiamandolo non avrebbe ritentato niente: cerca lo
+ * stato in "err.error.status", che e' la forma di Anthropic e non quella di
+ * Google. Codice morto che somigliava a una difesa.
+ *
+ * Intanto la libreria di Google ritenta per conto suo le GET e le PUT, ma NON
+ * le POST: cioe' proprio "append" (la prima volta che si salva la scheda di un
+ * ospite) e "batchUpdate" (la cancellazione). Una 429 li' faceva fallire il
+ * salvataggio con "Non sono riuscito a salvare. Riprova." mentre tutto il
+ * resto si autoriparava — e da fuori sembra un programma che funziona a
+ * giorni alterni.
+ *
+ * ── La distinzione che conta ─────────────────────────────────────────────────
+ * `ripetibile` dice se l'operazione si puo' rifare a scatola chiusa.
+ *
+ *   'sempre'        lettura, o riscrittura di una riga precisa: rifarla due
+ *                   volte lascia lo stesso risultato. Si riprova anche se la
+ *                   connessione cade a meta', perche' nel dubbio ripetere non
+ *                   fa danno.
+ *
+ *   'solo-rifiuti'  aggiunta in fondo, o cancellazione: rifarle DUPLICA o
+ *                   cancella due volte. Qui si riprova SOLO quando Google ha
+ *                   detto esplicitamente "no, riprova" (429 troppe richieste,
+ *                   503 non disponibile): quel no significa che la richiesta
+ *                   e' stata respinta, non applicata. Se invece cade la rete
+ *                   non si sa se sia arrivata, e allora si preferisce un
+ *                   errore visibile a un ospite scritto due volte.
+ */
+export async function conRipetizione<T>(
+  ripetibile: 'sempre' | 'solo-rifiuti',
+  fn: () => Promise<T>,
+): Promise<T> {
+  for (let tentativo = 0; ; tentativo++) {
+    try {
+      return await fn()
+    } catch (err) {
+      const stato = statoDi(err)
+      const rifiutata = stato === 429 || stato === 503
+      const vaRipetuta = rifiutata || (ripetibile === 'sempre' && (guastoDiRete(err) || stato === 500))
+
+      if (!vaRipetuta || tentativo >= ATTESE_MS.length) throw err
+
+      // Un pizzico di casualita': se due telefoni prendono la stessa 429,
+      // riprovare entrambi nello stesso istante la rimedia uguale.
+      const attesa = ATTESE_MS[tentativo] + Math.floor(Math.random() * 250)
+      console.warn('[CHECKIN] foglio: ' + (stato ?? 'rete') + ', riprovo fra ' + attesa + 'ms')
+      await new Promise((r) => setTimeout(r, attesa))
+    }
+  }
+}
+
+/**
  * Indice di colonna (0-based) -> lettera in notazione A1.
  * Oltre la 26esima diventa AA, AB...: la scheda Soggiorni ne ha gia' 30, quindi
  * un calcolo che si fermasse alla Z scriverebbe nel posto sbagliato.
@@ -63,22 +139,24 @@ export async function aggiungiRighe(
 ): Promise<void> {
   if (righe.length === 0) return
   const sheets = await getSheets()
-  await sheets.spreadsheets.values.append({
+  // 'solo-rifiuti': ripetere un append che era gia' arrivato scriverebbe gli
+  // stessi ospiti una seconda volta, in fondo al foglio.
+  await conRipetizione('solo-rifiuti', () => sheets.spreadsheets.values.append({
     spreadsheetId,
     range: `'${nomeScheda}'!A:A`,
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: righe },
-  })
+  }))
 }
 
 /** Tutte le righe di una scheda, intestazione compresa. */
 export async function leggiTutto(spreadsheetId: string, nomeScheda: string): Promise<string[][]> {
   const sheets = await getSheets()
-  const res = await sheets.spreadsheets.values.get({
+  const res = await conRipetizione('sempre', () => sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${nomeScheda}'!A:AZ`,
-  })
+  }))
   return (res.data.values ?? []).map((r) => (r ?? []).map((c) => String(c ?? '')))
 }
 
@@ -97,12 +175,14 @@ export async function aggiornaRiga(
   valori: string[],
 ): Promise<void> {
   const sheets = await getSheets()
-  await sheets.spreadsheets.values.update({
+  // 'sempre': riscrivere la stessa riga con gli stessi valori due volte lascia
+  // il foglio identico.
+  await conRipetizione('sempre', () => sheets.spreadsheets.values.update({
     spreadsheetId,
     range: `'${nomeScheda}'!A${numeroRiga}`,
     valueInputOption: 'RAW',
     requestBody: { values: [valori] },
-  })
+  }))
 }
 
 /**
@@ -124,7 +204,10 @@ export async function eliminaRighe(
   if (sheetId == null) throw new Error(`Scheda "${nomeScheda}" non trovata.`)
 
   const ordinate = Array.from(new Set(numeriRiga)).sort((a, b) => b - a)
-  await sheets.spreadsheets.batchUpdate({
+  // 'solo-rifiuti': ripetere una cancellazione gia' avvenuta toglierebbe le
+  // righe che nel frattempo hanno preso quei numeri — cioe' gli ospiti di
+  // un'altra prenotazione.
+  await conRipetizione('solo-rifiuti', () => sheets.spreadsheets.batchUpdate({
     spreadsheetId,
     requestBody: {
       requests: ordinate.map((n) => ({
@@ -135,7 +218,7 @@ export async function eliminaRighe(
         },
       })),
     },
-  })
+  }))
   return ordinate.length
 }
 

@@ -210,6 +210,8 @@ export async function eliminaPratica(
 
 export interface EsitoSalvataggio {
   ok: boolean
+  /** Perche' non e' andata, quando non e' andata. */
+  errore?: string
   /** I numeri delle schede davvero cancellate. */
   tolti?: string[]
   stato: string
@@ -235,20 +237,135 @@ export async function salvaPratica(
   spreadsheetId: string = FOGLIO_CHECKIN_ID,
   opzioni: { tolti?: string[] } = {},
 ): Promise<EsitoSalvataggio | null> {
-  const pratica = await leggiPratica(id, spreadsheetId)
-  if (!pratica) return null
+  /*
+    La configurazione si legge INSIEME alla pratica, non dopo.
 
-  const rigaAttuale = aRiga(COL_SOGGIORNI, pratica.soggiorno)
-  const fusoSoggiorno = fondiSoggiorno(rigaAttuale, soggiornoInArrivo, livello)
+    Sembra un dettaglio e non lo e': ogni viaggio di rete fra la lettura del
+    foglio e la scrittura allarga la finestra in cui qualcun altro puo' aver
+    scritto sulla stessa riga. Leggendo in parallelo, fra la fotografia e la
+    prima scrittura non resta niente.
+  */
+  const [cfg, pratica] = await Promise.all([
+    leggiConfig(spreadsheetId),
+    leggiPratica(id, spreadsheetId),
+  ])
+  if (!pratica) return null
 
   const righeOspitiAttuali = pratica.ospiti.map((o) => aRiga(COL_OSPITI, o.dati))
   const fusiOspiti = fondiOspiti(righeOspitiAttuali, ospitiInArrivo, livello, id, opzioni)
 
-  const mappaSoggiorno = aMappa(COL_SOGGIORNI, fusoSoggiorno.riga)
-  const schede = fusiOspiti.righe.map((r) => aMappa(COL_OSPITI, r))
+  // Prima gli ospiti, poi il soggiorno: se la seconda scrittura non riesce,
+  // restano schede senza uno stato aggiornato — visibile e recuperabile.
+  // Nell'ordine opposto lo stato direbbe CHECKIN OK su schede non salvate.
+  const perProgressivo = new Map(pratica.ospiti.map((o) => [String(o.dati['Progressivo']).trim(), o.numeroRiga]))
+  const daAggiungere: string[][] = []
+  for (const riga of fusiOspiti.righe) {
+    // Con `trim`, come la mappa qui sopra. Senza, una cella `Progressivo`
+    // che contiene "2 " — ritoccata a mano sul foglio — non corrispondeva a
+    // nessuna riga esistente, e la scheda veniva AGGIUNTA invece che
+    // aggiornata: un ospite duplicato a ogni singolo salvataggio, che finisce
+    // due volte nel file per la Questura e due volte nell'imposta.
+    const prog = String(aMappa(COL_OSPITI, riga)['Progressivo']).trim()
+    const n = perProgressivo.get(prog)
+    if (n) await aggiornaRiga(spreadsheetId, SCHEDA_OSPITI, n, riga)
+    else daAggiungere.push(riga)
+  }
+  await aggiungiRighe(spreadsheetId, SCHEDA_OSPITI, daAggiungere)
 
-  // Imposta e stato: calcolati qui, mai accettati dal form.
-  const cfg = await leggiConfig(spreadsheetId)
+  /*
+    Le schede tolte vanno cancellate DAVVERO dal foglio.
+
+    Omettere una riga dal risultato della fusione non la fa sparire: resterebbe
+    dov'e', con i dati di una persona che non viene piu' — e finirebbe nel file
+    per la Questura e nel conteggio dell'imposta. Dati personali conservati
+    senza piu' uno scopo, e un ospite comunicato che non ha dormito li'.
+
+    Prima le foto del documento, poi la riga: cancellando prima la riga si
+    perderebbero gli identificativi dei file e quelle foto resterebbero su
+    Drive per sempre, senza che nessuno sappia piu' a chi appartengono.
+    Si cancella dal numero di riga piu' alto al piu' basso, altrimenti la prima
+    cancellazione sposta in su tutte le successive.
+  */
+  if (fusiOspiti.tolti.length > 0) {
+    const daTogliere = pratica.ospiti.filter((o) => fusiOspiti.tolti.includes(String(o.dati['Progressivo']).trim()))
+    for (const o of daTogliere) {
+      for (const fileId of [o.dati['Doc fronte'], o.dati['Doc retro']].map((x) => String(x ?? '').trim()).filter(Boolean)) {
+        try {
+          await eliminaDocumento(fileId)
+        } catch (err) {
+          console.error('[CHECKIN] foto di ospite tolto non cancellata:', err instanceof Error ? err.message : 'errore')
+        }
+      }
+    }
+    await eliminaRighe(
+      spreadsheetId,
+      SCHEDA_OSPITI,
+      daTogliere.map((o) => o.numeroRiga).sort((a, b) => b - a),
+    )
+  }
+
+  /*
+    ── LA RILETTURA ────────────────────────────────────────────────────────────
+
+    Da qui in poi si lavora su quello che c'e' DAVVERO sul foglio adesso, non
+    su quello che c'era quando questa richiesta e' cominciata.
+
+    Il motivo e' concreto, non teorico. Il foglio non ha transazioni e la riga
+    della prenotazione si riscrive intera: se due persone salvano nello stesso
+    minuto — l'ospite 1 dal suo telefono e chi gestisce dal computer — la
+    seconda calcolava `Ospiti dichiarati`, `Stato check-in` e soprattutto
+    `Imposta soggiorno €` SENZA la scheda che l'altra aveva appena scritto, e
+    li imprimeva sopra. Nessuna delle due si accorgeva di niente: entrambe
+    rispondevano "ok". E quella cifra si versa a un Comune.
+
+    Rileggendo qui, i numeri nascono dall'elenco completo — comprese le schede
+    arrivate da un altro telefono un istante fa — e le modifiche di chi sta
+    salvando si posano sulla riga piu' fresca invece che su una vecchia.
+
+    Resta una finestra, fra questa lettura e la scrittura qui sotto: e' di
+    millisecondi, e senza un lucchetto sul foglio non si puo' chiudere. Ma non
+    e' piu' l'intera durata del salvataggio.
+  */
+  const dopo = await leggiPratica(id, spreadsheetId)
+  if (!dopo) {
+    // La prenotazione e' stata cancellata mentre si salvava. Le schede sono
+    // gia' scritte: dirlo e' l'unica cosa onesta da fare, perche' scrivere una
+    // riga soggiorno che non esiste piu' significherebbe scrivere su quella di
+    // qualcun altro.
+    return {
+      ok: false,
+      errore: 'La prenotazione e stata cancellata mentre salvavi. Ricontrolla l elenco.',
+      stato: 'DA COMPILARE',
+      mancanze: [],
+      segnalazioni: [],
+      rifiutati: [],
+    }
+  }
+
+  const fusoSoggiorno = fondiSoggiorno(aRiga(COL_SOGGIORNI, dopo.soggiorno), soggiornoInArrivo, livello)
+  const mappaSoggiorno = aMappa(COL_SOGGIORNI, fusoSoggiorno.riga)
+  const schede = dopo.ospiti.map((o) => o.dati)
+
+  /*
+    E gia' che si rilegge, si CONTROLLA che sia andata come si voleva.
+
+    Non e' zelo: se qualcuno ha aperto il foglio e ha inserito o tolto una riga
+    mentre si salvava, i numeri di riga si sono spostati sotto i piedi e si e'
+    scritto sulla scheda sbagliata. E' l'unico modo che abbiamo di accorgercene
+    — e un avviso, per quanto brutto, e' molto meglio del silenzio.
+  */
+  const collisioni: string[] = []
+  const dopoPerProgressivo = new Map(
+    schede.map((s) => [String(s['Progressivo'] ?? '').trim(), s]),
+  )
+  for (const riga of fusiOspiti.righe) {
+    const atteso = aMappa(COL_OSPITI, riga)
+    const prog = String(atteso['Progressivo'] ?? '').trim()
+    const trovato = dopoPerProgressivo.get(prog)
+    if (!trovato || (trovato['Cognome'] ?? '') !== (atteso['Cognome'] ?? '')) {
+      collisioni.push(prog)
+    }
+  }
 
   /*
     L'imposta si calcola sulle persone PRENOTATE, non sulle schede compilate.
@@ -321,57 +438,10 @@ export async function salvaPratica(
   mappaSoggiorno['Stato check-in'] = stato.stato
   mappaSoggiorno['Da completare'] = [...stato.mancanze, ...stato.segnalazioni].join(' · ')
 
-  // Prima gli ospiti, poi il soggiorno: se la seconda scrittura non riesce,
-  // restano schede senza uno stato aggiornato — visibile e recuperabile.
-  // Nell'ordine opposto lo stato direbbe CHECKIN OK su schede non salvate.
-  const perProgressivo = new Map(pratica.ospiti.map((o) => [String(o.dati['Progressivo']).trim(), o.numeroRiga]))
-  const daAggiungere: string[][] = []
-  for (const riga of fusiOspiti.righe) {
-    // Con `trim`, come la mappa qui sopra. Senza, una cella `Progressivo`
-    // che contiene "2 " — ritoccata a mano sul foglio — non corrispondeva a
-    // nessuna riga esistente, e la scheda veniva AGGIUNTA invece che
-    // aggiornata: un ospite duplicato a ogni singolo salvataggio, che finisce
-    // due volte nel file per la Questura e due volte nell'imposta.
-    const prog = String(aMappa(COL_OSPITI, riga)['Progressivo']).trim()
-    const n = perProgressivo.get(prog)
-    if (n) await aggiornaRiga(spreadsheetId, SCHEDA_OSPITI, n, riga)
-    else daAggiungere.push(riga)
-  }
-  await aggiungiRighe(spreadsheetId, SCHEDA_OSPITI, daAggiungere)
-
-  /*
-    Le schede tolte vanno cancellate DAVVERO dal foglio.
-
-    Omettere una riga dal risultato della fusione non la fa sparire: resterebbe
-    dov'e', con i dati di una persona che non viene piu' — e finirebbe nel file
-    per la Questura e nel conteggio dell'imposta. Dati personali conservati
-    senza piu' uno scopo, e un ospite comunicato che non ha dormito li'.
-
-    Prima le foto del documento, poi la riga: cancellando prima la riga si
-    perderebbero gli identificativi dei file e quelle foto resterebbero su
-    Drive per sempre, senza che nessuno sappia piu' a chi appartengono.
-    Si cancella dal numero di riga piu' alto al piu' basso, altrimenti la prima
-    cancellazione sposta in su tutte le successive.
-  */
-  if (fusiOspiti.tolti.length > 0) {
-    const daTogliere = pratica.ospiti.filter((o) => fusiOspiti.tolti.includes(String(o.dati['Progressivo']).trim()))
-    for (const o of daTogliere) {
-      for (const fileId of [o.dati['Doc fronte'], o.dati['Doc retro']].map((x) => String(x ?? '').trim()).filter(Boolean)) {
-        try {
-          await eliminaDocumento(fileId)
-        } catch (err) {
-          console.error('[CHECKIN] foto di ospite tolto non cancellata:', err instanceof Error ? err.message : 'errore')
-        }
-      }
-    }
-    await eliminaRighe(
-      spreadsheetId,
-      SCHEDA_OSPITI,
-      daTogliere.map((o) => o.numeroRiga).sort((a, b) => b - a),
-    )
-  }
-
-  await aggiornaRiga(spreadsheetId, SCHEDA_SOGGIORNI, pratica.numeroRiga, aRiga(COL_SOGGIORNI, mappaSoggiorno))
+  // Sulla riga letta un istante fa, non su quella di quando la richiesta e'
+  // cominciata: se nel frattempo il foglio e' stato riordinato, il numero di
+  // riga di prima punterebbe a un'altra prenotazione.
+  await aggiornaRiga(spreadsheetId, SCHEDA_SOGGIORNI, dopo.numeroRiga, aRiga(COL_SOGGIORNI, mappaSoggiorno))
 
   return {
     ok: true,
@@ -389,7 +459,18 @@ export async function salvaPratica(
       e le anomalie sparivano: un'esenzione senza motivo dichiarato — che in
       sede di controllo e' un ammanco — non arrivava a nessuno.
     */
-    segnalazioni: [...stato.segnalazioni, ...imposta.anomalie],
+    segnalazioni: [
+      ...stato.segnalazioni,
+      ...imposta.anomalie,
+      /*
+        La collisione va detta a chi ha appena salvato, non solo scritta in un
+        log che nessuno legge: e' l'unico momento in cui qualcuno puo' ancora
+        rimediare, guardando la scheda con i propri occhi.
+      */
+      ...(collisioni.length > 0
+        ? [`Rilettura: ${collisioni.length === 1 ? 'la scheda' : 'le schede'} ${collisioni.join(', ')} non risulta come l'ho appena scritta. Qualcuno potrebbe aver modificato la prenotazione nello stesso momento: ricontrollala.`]
+        : []),
+    ],
     rifiutati: [...fusoSoggiorno.rifiutati, ...fusiOspiti.rifiutati],
   }
 }
