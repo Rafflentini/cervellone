@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>Manuale d'uso — Gestionale Check-in</title>
+<style>
+  @page { size: A4; margin: 9mm 10mm; }
+  * { box-sizing: border-box; }
+  html { color-scheme: light; }
+  body { background:#fff; margin:0; font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;
+    color:#1a1a1a; font-size:8.5pt; line-height:1.26; }
+  .testa { display:flex; align-items:center; gap:11px; border-bottom:2.5px solid #713d54; padding-bottom:6px; margin-bottom:7px; }
+  .testa img { height:27px; }
+  .testa h1 { margin:0; font-size:13.5pt; color:#1f3864; letter-spacing:-.2px; }
+  .testa .sotto { margin:1px 0 0; font-size:7.6pt; color:#6b7280; }
+  h2 { font-size:9.2pt; color:#fff; background:#1f3864; margin:6px 0 3.5px; padding:2.5px 7px; border-radius:4px; }
+  h2 .n { background:#fff; color:#1f3864; border-radius:50%; display:inline-block; width:14px; height:14px;
+    text-align:center; line-height:14px; font-size:8pt; margin-right:5px; }
+  ol { margin:0 0 0 15px; padding:0; } ol li { margin-bottom:2px; }
+  ul { margin:2px 0 0 14px; padding:0; } ul li { margin-bottom:1.5px; }
+  p { margin:0 0 4px; }
+  .tasto { display:inline-block; background:#1f3864; color:#fff; border-radius:3px; padding:0 4px;
+    font-size:7.9pt; font-weight:600; white-space:nowrap; }
+  .tasto.chiaro { background:#fff; color:#1f3864; border:1px solid #1f3864; }
+  .box { border:1px solid #d7dce5; border-radius:5px; padding:5px 7px; margin-bottom:4px; background:#fbfcfe; }
+  .box.giallo { background:#fff8e6; border-color:#e0a800; }
+  .box.rosso { background:#fdeceb; border-color:#d9534f; }
+  .box.verde { background:#eef7f1; border-color:#0f7b4f; }
+  .box h3 { margin:0 0 2px; font-size:8.8pt; color:#1f3864; }
+  .box.rosso h3 { color:#8c1d18; } .box.giallo h3 { color:#7a5c00; } .box.verde h3 { color:#0f7b4f; }
+  .due { display:flex; gap:8px; } .due > div { flex:1; }
+  .scadenza { font-size:8pt; color:#8c1d18; font-weight:600; margin:0 0 3px; }
+  .pie { margin-top:6px; border-top:1px solid #d7dce5; padding-top:4px; font-size:7pt; color:#6b7280; }
+  .pagina2 { page-break-before: always; }
+  b { color:#1f3864; }
+  .box.rosso b, .box.giallo b, .box.verde b { color:inherit; }
+  .vuoto { display:inline-block; min-width:120px; border-bottom:1px dotted #999; }
+</style>
+</head>
+<body>
+
+<div class="testa">
+  <img src="LOGO_QUI" alt="LA Real Estate srls">
+  <div>
+    <h1>Gestionale Check-in — manuale d'uso</h1>
+    <p class="sotto">LA REAL ESTATE S.R.L.S. · Maratea (PZ) · 6 settembre 2026</p>
+  </div>
+</div>
+
+<h2><span class="n">1</span> Come si apre, e come si torna indietro</h2>
+<div class="due">
+  <div class="box">
+    <h3>Metterla sul telefono</h3>
+    <ul>
+      <li>Apri il link arrivato su WhatsApp.</li>
+      <li><b>iPhone:</b> <span class="tasto chiaro">Condividi</span> in basso → <b>Aggiungi alla schermata Home</b>.</li>
+      <li><b>Android:</b> menu <b>⋮</b> in alto → <b>Installa app</b>.</li>
+      <li>Esce l'icona <b>LA</b> bordeaux, si chiama <b>Check-in</b>.</li>
+    </ul>
+  </div>
+  <div class="box">
+    <h3>Metterla sul computer</h3>
+    <ul>
+      <li>Drive → <b>LA REAL ESTATE SRLS → 06 Gestionale</b> → doppio clic su
+          <b>1. APRI IL GESTIONALE CHECK-IN</b>.</li>
+      <li>Oppure apri il link e clicca l'icona <b>Installa</b> a destra nella riga dell'indirizzo.</li>
+    </ul>
+  </div>
+</div>
+<div class="box giallo">
+  <b>Aperta dall'icona non c'è la freccia «indietro».</b> Per tornare all'elenco c'è sempre, in fondo alla
+  pagina, il pulsante <span class="tasto chiaro">← Torna all'elenco delle prenotazioni</span>.
+</div>
+<div class="box rosso">
+  <h3>⚠ Il tuo link è la chiave di casa</h3>
+  Chi ce l'ha entra e modifica tutto. <b>Non girarlo a nessuno</b>, né agli ospiti né nei gruppi.
+  Agli ospiti si manda un link diverso, che te lo dà il gestionale (punto 4).
+</div>
+
+<h2><span class="n">2</span> La schermata: due elenchi e sei numeri</h2>
+<ul>
+  <li><b>Adesso</b> = il lavoro aperto. <b>Archivio</b> = le prenotazioni finite del tutto (concluse,
+      schede complete <u>e</u> già spuntate in Questura). <b>Se una prenotazione «sparisce», è lì</b>: non è persa.</li>
+  <li>I <b>sei numeri</b> in cima (in arrivo, in casa, da completare, Questura, da fatturare, da inviare)
+      <b>sono pulsanti</b>: toccandoli l'elenco si accorcia. Per rivedere tutto tocca
+      <span class="tasto chiaro">Togli i filtri</span>.</li>
+</ul>
+
+<h2><span class="n">3</span> Inserire una prenotazione</h2>
+<ol>
+  <li><span class="tasto">+ Nuova prenotazione</span>.</li>
+  <li>Riempi i campi con l'asterisco: <b>Unità</b>, <b>Check-in</b>, <b>Check-out</b>, <b>Quanti ospiti</b>.</li>
+  <li><b>Unità</b>: scrivi il nome <u>esattamente</u> come nell'elenco: <span class="vuoto"></span>
+      <span class="vuoto"></span> <span class="vuoto"></span> (fattelo scrivere da Raffaele e tienilo qui).
+      Un nome diverso crea un appartamento nuovo che non esiste.</li>
+  <li><b>Quanti ospiti</b> = le persone <u>prenotate</u>. Con quel numero si decide se il check-in è
+      completo e si calcola l'imposta di soggiorno. Scrivi solo la cifra: <b>4</b>, non «4 adulti».</li>
+  <li><span class="tasto">Apri la prenotazione e dammi il link</span>, poi
+      <span class="tasto chiaro">← Torna all'elenco</span>.</li>
+</ol>
+<div class="box">
+  <b>Ingressi di agosto già passati:</b> stesse date vere. Il programma capisce che il soggiorno è finito,
+  <b>non manda nessuna email</b> a chi è già tornato a casa e te lo scrive. I link per gli ospiti su quelle
+  prenotazioni <b>sono scaduti</b>: le schede le compili tu (punto 5).
+</div>
+
+<h2><span class="n">4</span> Mandare il link all'ospite (solo per chi deve ancora arrivare)</h2>
+<p>Tocca la prenotazione nell'elenco: si apre.</p>
+<ul>
+  <li><span class="tasto">Copia il link per l'ospite</span> → incollalo in chat. È per <b>chi ha prenotato</b>.</li>
+  <li><span class="tasto chiaro">Manda su WhatsApp</span> → apre WhatsApp col messaggio già pronto.</li>
+  <li><span class="tasto chiaro">Copia ospite 1</span>, <b>2</b>, <b>3</b>… → uno per ciascuno: vede solo la propria scheda.</li>
+</ul>
+<div class="box giallo">
+  Se compare il riquadro giallo <b>«Non sono riuscito a copiarlo da solo»</b>, il link è lì dentro:
+  tienilo premuto, <b>Copia</b>, incolla. Non è un guasto.
+</div>
+
+<h2><span class="n">5</span> Compilare le schede al posto degli ospiti</h2>
+<p>Apri la prenotazione → <span class="tasto chiaro">Apri e completa tu</span>. Poi, dall'alto in basso:</p>
+<div class="due">
+  <div class="box">
+    <h3>Per ogni persona</h3>
+    <ul>
+      <li><b>Tipo</b> (parte da «Ospite singolo»): con una famiglia metti <b>Capofamiglia</b> al primo e
+          <b>Familiare</b> agli altri.</li>
+      <li><b>Cognome, Nome</b>.</li>
+      <li><b>Sesso</b> — <u>parte sempre da M</u>: cambialo per le donne.</li>
+      <li><b>Data</b> e <b>Comune di nascita</b> (scrivi e <b>scegli dalla tendina</b>).</li>
+      <li><b>Cittadinanza</b>, <b>Tipo</b> e <b>Numero del documento</b>, <b>Luogo di rilascio</b>.</li>
+      <li><b>Codice fiscale</b>: obbligatorio per gli italiani. Scrivendolo si compilano da soli sesso,
+          data e comune di nascita.</li>
+      <li>Le <b>foto del documento</b> non sono obbligatorie. Se le carichi si cancellano da sole dopo il soggiorno.</li>
+    </ul>
+    Manca una scheda? <span class="tasto chiaro">+ Aggiungi ospite</span> in fondo all'elenco.
+  </div>
+  <div class="box rosso">
+    <h3>⚠ Poi scendi fino a «FATTURA»</h3>
+    Quattro campi con l'asterisco che <b>quasi tutti dimenticano</b>, e senza i quali il check-in
+    <b>non si chiude mai</b>:
+    <ul>
+      <li><b>Indirizzo</b> di residenza</li>
+      <li><b>Comune</b> di residenza</li>
+      <li><b>CAP</b></li>
+      <li>e il <b>codice fiscale</b> di ogni italiano (sopra)</li>
+    </ul>
+    Sono i dati di <b>chi ha prenotato</b>, non di tutti gli ospiti.
+  </div>
+</div>
+<p>In fondo tocca <span class="tasto">Salva check-in / Save</span>. Se qualcosa manca te lo scrive
+<b>in alto</b>, in rosso, dicendo <u>quale scheda</u>: «Ospite 3: codice fiscale».
+<b>Il numero è quello scritto sulla scheda</b>, non la sua posizione.</p>
+
+<div class="pagina2"></div>
+
+<div class="testa">
+  <img src="LOGO_QUI" alt="LA Real Estate srls">
+  <div>
+    <h1>Le due scadenze</h1>
+    <p class="sotto">Sono le uniche due cose che hanno una data. Il resto può aspettare.</p>
+  </div>
+</div>
+
+<h2><span class="n">6</span> Questura — entro 24 ore dall'arrivo</h2>
+<p class="scadenza">«ALLOGGIATI WEB» è il riquadro dentro l'app. «Portale Alloggiati» è il sito della Polizia:
+sono due cose diverse.</p>
+<ol>
+  <li>Nel riquadro <b>ALLOGGIATI WEB</b>: <span class="tasto chiaro">Quali giorni restano da comunicare?</span></li>
+  <li>Tocca un giorno dell'elenco: la data va da sola nella casella sopra.</li>
+  <li><span class="tasto chiaro">Controlla chi c'è</span>.</li>
+  <li>Se è tutto a posto compare <span class="tasto">Scarica il file</span>. Il file finisce nei
+      <b>Download</b> del telefono o del computer, e si chiama <b>Alloggiati_</b>+ la data.</li>
+  <li>Vai sul <b>Portale Alloggiati</b> — <span class="vuoto"></span> <span class="vuoto"></span> —
+      entra con le credenziali della struttura e carica il file.</li>
+  <li>Torna qui, apri <b>ogni</b> prenotazione di quel giorno e tocca
+      <span class="tasto chiaro">Segna: caricata sul Portale</span>.</li>
+  <li>Il giorno sparisce dall'elenco solo quando <u>tutte</u> le sue prenotazioni sono spuntate.</li>
+</ol>
+<div class="box rosso">
+  <h3>Cosa vuol dire quello che leggi</h3>
+  <ul>
+    <li><b>«Nessun arrivo registrato il …»</b> → quel giorno non è arrivato nessuno. A posto.</li>
+    <li><b>«… risultano N prenotazioni, ma nessuna scheda ospite compilata»</b> → le persone ci sono, i dati no.
+        <b>Prima compila le schede</b> (punto 5).</li>
+    <li><b>«Attenzione: N prenotazioni non hanno ancora nessuna scheda…»</b> → il file si può scaricare, ma
+        <b>lascerebbe fuori quelle persone</b>. Compila prima.</li>
+    <li><b>«Non sono riuscito a contattare il server»</b> → è la linea. <u>Non</u> vuol dire che non c'è nessuno
+        da comunicare: <b>riprova</b>.</li>
+    <li>Un elenco di <b>righe gialle con nomi</b> → a quelle persone manca un dato, e c'è scritto quale.
+        Se dice <b>«scheda Tabelle»</b> non puoi risolverlo tu: <b>scrivi a Raffaele</b>.</li>
+  </ul>
+</div>
+
+<h2><span class="n">7</span> Imposta di soggiorno — entro il 16 del mese dopo</h2>
+<p class="scadenza">Agosto si dichiara e si versa entro il 16 settembre. Il riquadro è nella scheda «Adesso».</p>
+<ul>
+  <li>Nel riquadro <b>IMPOSTA DI SOGGIORNO</b> c'è un pulsante per mese, con
+      <b>prenotazioni · notti · imposta</b>. La cifra è <b>il totale di quel mese</b>.</li>
+  <li>Ci sono dentro <b>tutte</b> le prenotazioni, anche quelle senza schede. Ma solo quelle
+      <b>inserite</b>: se un ingresso di agosto non l'hai messo, nessuno se ne accorge.</li>
+  <li>Il mese è quello di <b>arrivo</b>: 30 agosto → 2 settembre conta tutto in agosto.</li>
+  <li>Toccando il mese l'elenco si restringe. Per rivedere tutto: <span class="tasto chiaro">Togli i filtri</span>.</li>
+  <li><b>Come si versa:</b> <span class="vuoto"></span> <span class="vuoto"></span> <span class="vuoto"></span></li>
+</ul>
+<div class="box">
+  <b>Il conto:</b> 2,50 € a persona per notte, <b>solo le prime 5 notti</b>. Non pagano i bambini fino a
+  12 anni compiuti. Si applica dal 1° maggio al 31 ottobre. Il denaro lo incassa dall'ospite chi consegna le chiavi.
+</div>
+
+<h2><span class="n">8</span> Le tre cose da non fare</h2>
+<div class="box rosso">
+  <ol>
+    <li><b>Non aprire il foglio Google</b> e non modificarlo a mano. Tutto si fa da qui: il foglio è il
+        magazzino, non il banco di lavoro. Una casella cambiata a mano può far sparire un ospite.</li>
+    <li><b>Non girare il tuo link</b> a nessuno (punto 1).</li>
+    <li><b>Non rifare da capo</b> una prenotazione sbagliata: <b>correggila</b> con
+        <span class="tasto chiaro">Apri e completa tu</span>, dove si cambiano anche date, unità e importo.
+        Il numero di ospiti si cambia dall'elenco, coi tasti <b>−</b> e <b>+</b>.</li>
+  </ol>
+</div>
+
+<h2><span class="n">9</span> Se qualcosa non torna</h2>
+<div class="due">
+  <div class="box verde">
+    <h3>Prima prova così</h3>
+    <ul>
+      <li>Chiudi e riapri l'app.</li>
+      <li>Controlla di avere linea.</li>
+      <li>Rileggi il messaggio rosso: dice quasi sempre cosa manca e dove.</li>
+    </ul>
+  </div>
+  <div class="box giallo">
+    <h3>Chiama subito se leggi</h3>
+    <b>«Non autorizzato»</b> oppure <b>«Collegamento incompleto»</b>: il tuo link non vale più e
+    <b>solo Raffaele</b> te ne può dare uno nuovo.<br>
+    Raffaele: <span class="vuoto"></span>
+  </div>
+</div>
+<div class="box">
+  <b>Quando scrivi, di' due cose:</b> cosa hai toccato e cosa è comparso a schermo — meglio con una foto
+  dello schermo. Serve molto più di «non funziona».
+</div>
+<div class="box giallo">
+  <b>Una regola che vale sempre:</b> se il programma dice che una cosa è fatta, è fatta. Se <b>non dice niente</b>,
+  non darla per fatta: guarda se è comparso un messaggio, e nel dubbio riapri la prenotazione e controlla.
+</div>
+
+<div class="pie">
+  LA REAL ESTATE S.R.L.S. — Via Civita 8, 85046 Maratea (PZ) — C.F. e P.IVA 02232730768.
+  Informativa privacy per gli ospiti: cervellone-five.vercel.app/checkin/privacy
+</div>
+
+</body>
+</html>
