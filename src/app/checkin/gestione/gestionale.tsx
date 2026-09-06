@@ -604,6 +604,26 @@ function Gestione() {
               </div>
             )}
 
+            {/*
+              Le prenotazioni scoperte si vedono anche quando il file si puo'
+              generare.
+
+              In un giorno MISTO — una prenotazione con le schede e una senza —
+              le righe non sono zero: compariva il pulsante verde "Scarica il
+              file" e la prenotazione senza schede spariva dagli occhi. Si
+              scaricava un file che sembrava completo, e una prenotazione
+              restava fuori da una comunicazione che scade in 24 ore. E' il
+              caso probabile degli arretrati di agosto, non un caso di scuola.
+            */}
+            {esitoQ && esitoQ.righe > 0 && (esitoQ.senzaSchede ?? []).length > 0 && (
+              <div className="esito ko">
+                Attenzione: {(esitoQ.senzaSchede ?? []).length} prenotazione/i di
+                questo giorno <b>non ha ancora nessuna scheda ospite</b> e resta fuori dal
+                file — {(esitoQ.senzaSchede ?? []).join(', ')}. Compila le schede prima di
+                considerare fatta la comunicazione.
+              </div>
+            )}
+
             {esitoQ && esitoQ.righe === 0 && (esitoQ.prenotazioni ?? 0) > 0 && (
               <div className="esito ko">
                 Il {gg(esitoQ.data)} risultano <b>{esitoQ.prenotazioni} prenotazioni</b>, ma

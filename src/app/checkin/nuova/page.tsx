@@ -262,6 +262,19 @@ function NuovaPrenotazione() {
           <button className="btn btn-sec" onClick={() => { setFatta(null); setCopiato(''); setLinkScoperto('') }}>
             Apri un&apos;altra prenotazione
           </button>
+
+          {/*
+            La via del ritorno.
+
+            Installata sul telefono, questa e' un'app a schermo intero: non c'e'
+            barra dell'indirizzo e non c'e' la freccia indietro. Senza questo
+            collegamento, dopo aver creato una prenotazione non c'era NESSUN
+            modo di tornare all'elenco — e all'elenco bisogna tornare, perche'
+            e' li' che sta "Apri e completa tu", cioe' il passo successivo.
+          */}
+          <a className="btn btn-pri" href={`/checkin/gestione?k=${encodeURIComponent(k)}`}>
+            ← Torna all&apos;elenco delle prenotazioni
+          </a>
         </div>
         <style jsx global>{STILE}</style>
       </>

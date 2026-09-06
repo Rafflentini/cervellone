@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rateLimit } from '@/lib/rate-limiter'
 import { risolviAccesso } from '@/lib/checkin/accesso'
 import { leggiPratica, salvaPratica, eliminaPratica } from '@/lib/checkin/pratica'
+import { numeroOspiti } from '@/lib/checkin/numero-ospiti'
 import { linkScaduto, linkOspite } from '@/lib/checkin/token-prenotazione'
 import { CAMPI_DELLA_PRENOTAZIONE, oscuraRiservati } from '@/lib/checkin/merge-pratica'
 
@@ -76,7 +77,9 @@ export async function GET(req: NextRequest) {
     .filter((n) => Number.isInteger(n) && n > 0)
 
   const numeri = new Set(esistenti)
-  const attesi = Math.max(Number(pratica.soggiorno['N. ospiti'] || 0), 1)
+  // La cella la scrive una persona: "2 adulti", "due", "3,5" capitano, e
+  // `Number()` ne fa NaN. Il perche' per esteso in `numero-ospiti.ts`.
+  const attesi = Math.max(numeroOspiti(pratica.soggiorno['N. ospiti'], 1), 1)
   // I numeri mancanti per arrivare agli attesi: i piu' bassi ancora liberi,
   // cosi' chi non ha ancora compilato riceve un collegamento comunque. Il
   // tetto e' una cintura: nessuna prenotazione ha duecento ospiti, e un ciclo

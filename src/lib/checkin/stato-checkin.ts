@@ -16,6 +16,19 @@ import { validaCodiceFiscale } from './valida-codice-fiscale'
 export type Stato = 'DA COMPILARE' | 'PARZIALE' | 'CHECKIN OK'
 
 export interface OspiteDaControllare {
+  /*
+    Il numero della scheda, quello vero.
+
+    Senza, gli avvisi numeravano gli ospiti per POSIZIONE nell'elenco: tolta la
+    scheda 2 di quattro, restavano la 1 e la 3, e il messaggio diceva
+    "Ospite 1, Ospite 2". Chi lo legge va a cercare la scheda 2 — che non
+    esiste piu' — mentre il dato manca alla 3. E' lo stesso equivoco per cui
+    un ospite riceveva il collegamento di un altro: la posizione non e'
+    l'identita'.
+
+    Facoltativo: se manca si ripiega sulla posizione, che e' meglio di niente.
+  */
+  progressivo?: string
   cognome: string
   nome: string
   dataNascita: string
@@ -126,7 +139,7 @@ export function calcolaStato(p: PraticaDaControllare): EsitoStato {
   }
 
   compilate.forEach((o, i) => {
-    const eti = `Ospite ${i + 1}`
+    const eti = `Ospite ${o.progressivo || i + 1}`
     if (vuoto(o.cognome)) mancanze.push(`${eti}: cognome.`)
     if (vuoto(o.nome)) mancanze.push(`${eti}: nome.`)
     if (vuoto(o.dataNascita)) mancanze.push(`${eti}: data di nascita.`)

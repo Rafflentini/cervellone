@@ -1175,6 +1175,28 @@ function CheckinForm() {
           <Eti it="Note" en="Notes" />
           <textarea rows={2} value={sog.note} onChange={(e) => setSog({ ...sog, note: e.target.value })} />
         </section>
+
+        {/*
+          La via del ritorno, solo per chi gestisce (ha il token generale).
+
+          Installata sul telefono, questa e' un'app a schermo intero: niente
+          barra dell'indirizzo, niente freccia indietro. Chi compilava le
+          schede al posto degli ospiti restava chiuso qui dentro. L'ospite
+          invece non ha nessun elenco a cui tornare, e non deve nemmeno sapere
+          che esiste.
+        */}
+        {k && !mioProgressivo && (
+          <a
+            href={`/checkin/gestione?k=${encodeURIComponent(k)}`}
+            style={{
+              display: 'block', textAlign: 'center', padding: 12, margin: '0 0 6px',
+              border: '1.5px dashed #1f3864', borderRadius: 8,
+              color: '#1f3864', textDecoration: 'none', fontWeight: 600, fontSize: 15,
+            }}
+          >
+            ← Torna all&apos;elenco delle prenotazioni
+          </a>
+        )}
       </div>
 
       <div className="barra">

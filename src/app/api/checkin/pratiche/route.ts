@@ -29,6 +29,7 @@ import {
 import { leggiTutto } from '@/lib/checkin/foglio-google'
 import { aMappa } from '@/lib/checkin/merge-pratica'
 import { linkPrenotazione, linkOspite } from '@/lib/checkin/token-prenotazione'
+import { numeroOspiti } from '@/lib/checkin/numero-ospiti'
 import {
   classifica, contaNumeri, indiceMesi, selezionaPratiche, statoFatturaDi,
   STATI_FATTURA, type StatoFattura, type Vista, type PraticaArchiviabile,
@@ -138,7 +139,9 @@ export async function GET(req: NextRequest) {
     // nascosto: un HMAC per ogni ospite di ogni prenotazione, a ogni apertura.
     const pratiche = (scelte as (PraticaArchiviabile & { m: Record<string, string> })[])
       .map(({ m, ...p }) => {
-        const attesi = Number(m['N. ospiti'] || 0)
+        // Non numerico ("2 adulti", "due") vale zero e non NaN: con NaN i
+        // confronti sono tutti falsi e i collegamenti degli ospiti sparivano.
+        const attesi = numeroOspiti(m['N. ospiti'])
         /*
           I link degli ospiti seguono il numero PRENOTATO, non quello delle
           schede gia' compilate.

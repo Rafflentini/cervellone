@@ -16,6 +16,7 @@ import { calcolaStato } from './stato-checkin'
 import { leggiConfig, regoleDaConfig } from './foglio-lettura'
 import { calcolaImpostaSoggiorno } from './imposta-soggiorno'
 import { eliminaDocumento } from './documenti'
+import { numeroOspiti } from './numero-ospiti'
 
 export interface Pratica {
   id: string
@@ -105,7 +106,7 @@ export async function creaPrenotazione(
     dormito qui deve l'imposta anche se non ha ancora consegnato i suoi dati.
     Al primo salvataggio il numero viene ricalcolato con le esenzioni vere.
   */
-  const attesi = Math.max(Number(pulito(d.ospitiAttesi) || 0), 0)
+  const attesi = numeroOspiti(pulito(d.ospitiAttesi))
   const imposta = calcolaImpostaSoggiorno({
     checkin: pulito(d.checkin),
     checkout: pulito(d.checkout),
@@ -209,6 +210,8 @@ export async function eliminaPratica(
 
 export interface EsitoSalvataggio {
   ok: boolean
+  /** I numeri delle schede davvero cancellate. */
+  tolti?: string[]
   stato: string
   mancanze: string[]
   segnalazioni: string[]
@@ -265,7 +268,7 @@ export async function salvaPratica(
     Al ribasso non si va mai: se le schede fossero PIU' degli attesi, valgono
     le schede.
   */
-  const attesiPerImposta = Number(mappaSoggiorno['N. ospiti'] || 0)
+  const attesiPerImposta = numeroOspiti(mappaSoggiorno['N. ospiti'])
   const ospitiPerImposta = [
     ...schede.map((s) => ({
       dataNascita: s['Data nascita'] ?? '',
@@ -290,6 +293,7 @@ export async function salvaPratica(
     ospitiAttesi: Number(mappaSoggiorno['N. ospiti'] || 0),
     ospitiDichiarati: Number(mappaSoggiorno['Ospiti dichiarati'] || 0),
     ospiti: schede.map((s) => ({
+      progressivo: String(s['Progressivo'] ?? '').trim(),
       cognome: s['Cognome'] ?? '', nome: s['Nome'] ?? '',
       dataNascita: s['Data nascita'] ?? '',
       comuneNascita: s['Comune nascita'] ?? '', statoNascita: s['Stato nascita'] ?? '',
@@ -323,7 +327,12 @@ export async function salvaPratica(
   const perProgressivo = new Map(pratica.ospiti.map((o) => [String(o.dati['Progressivo']).trim(), o.numeroRiga]))
   const daAggiungere: string[][] = []
   for (const riga of fusiOspiti.righe) {
-    const prog = String(aMappa(COL_OSPITI, riga)['Progressivo'])
+    // Con `trim`, come la mappa qui sopra. Senza, una cella `Progressivo`
+    // che contiene "2 " — ritoccata a mano sul foglio — non corrispondeva a
+    // nessuna riga esistente, e la scheda veniva AGGIUNTA invece che
+    // aggiornata: un ospite duplicato a ogni singolo salvataggio, che finisce
+    // due volte nel file per la Questura e due volte nell'imposta.
+    const prog = String(aMappa(COL_OSPITI, riga)['Progressivo']).trim()
     const n = perProgressivo.get(prog)
     if (n) await aggiornaRiga(spreadsheetId, SCHEDA_OSPITI, n, riga)
     else daAggiungere.push(riga)
@@ -366,6 +375,10 @@ export async function salvaPratica(
 
   return {
     ok: true,
+    // Le schede tolte tornano indietro: cancellare una riga e le foto di un
+    // documento e' irreversibile, e chi lo ha fatto deve VEDERE che e'
+    // successo, non dedurlo dall'elenco che si accorcia.
+    tolti: fusiOspiti.tolti,
     stato: stato.stato,
     mancanze: stato.mancanze,
     /*

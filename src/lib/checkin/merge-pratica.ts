@@ -257,10 +257,23 @@ export function fondiOspiti(
     puo' nemmeno leggerle.
   */
   const puoTogliere = livello.tipo === 'prenotazione' || livello.tipo === 'gestore'
+  /*
+    Una scheda che arriva NON si cancella, anche se qualcuno l'aveva chiesto.
+
+    Le due cose insieme arrivano davvero: si toglie l'ospite 2, il salvataggio
+    fallisce (una 429 di Google), la richiesta di rimozione resta in attesa, e
+    intanto quella stessa scheda viene ricompilata. Senza questa riga la
+    fusione restituiva il progressivo 2 sia fra le righe da scrivere sia fra
+    quelle da cancellare: `salvaPratica` scriveva la riga e subito dopo la
+    cancellava, con le foto del documento su Drive. E rispondeva `ok: true`.
+  */
+  const inArrivoOra = new Set(
+    inArrivo.map((s) => String(s['Progressivo'] ?? '').trim()).filter(Boolean),
+  )
   if (puoTogliere) {
     for (const chiesto of opzioni.tolti ?? []) {
       const prog = String(chiesto ?? '').trim()
-      if (!prog) continue
+      if (!prog || inArrivoOra.has(prog)) continue
       if (perProgressivo.delete(prog)) tolti.push(prog)
     }
   }

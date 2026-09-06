@@ -370,3 +370,59 @@ describe('creaPrenotazione — l imposta non nasce a zero', () => {
     expect(m['Imposta soggiorno €']).toBe('0')
   })
 })
+
+describe('salvaPratica — i tre difetti che 1813 test verdi non vedevano', () => {
+  it('uno spazio nella cella Progressivo non duplica l ospite a ogni salvataggio', async () => {
+    /*
+      Il foglio lo si apre e lo si ritocca: "2 " con lo spazio esiste davvero.
+      Senza `trim` la riga non corrispondeva a nessun progressivo noto e la
+      scheda veniva AGGIUNTA invece che aggiornata: un ospite in piu' a ogni
+      salvataggio, due volte nel file per la Questura e due volte nell'imposta.
+    */
+    OSPITI = [
+      [...COL_OSPITI],
+      rigaOspite('1', 'ROSSI', 'f1', 'r1'),
+      COL_OSPITI.map((c) => (c === 'Progressivo' ? '2 ' : rigaOspite('2', 'BIANCHI', 'f2', 'r2')[COL_OSPITI.indexOf(c)])),
+    ]
+
+    // Si salva SOLO la scheda 1: la riga con "2 " resta intoccata, e in
+    // quel caso il suo progressivo e' ancora quello sporco della cella.
+    await salvaPratica(ID, {}, [dalModulo('1', 'ROSSI')], GESTORE, 'foglio')
+
+    expect(scritture.aggiunte).toEqual([])
+    expect(scritture.aggiornate.filter((x) => x.scheda === 'Ospiti').map((x) => x.riga).sort())
+      .toEqual([2, 3])
+  })
+
+  it('una scheda che arriva NON viene cancellata, anche se era stata tolta', async () => {
+    /*
+      Si toglie l'ospite 2, il salvataggio fallisce, la richiesta resta in
+      attesa — e intanto quella scheda viene ricompilata. Senza guardia la
+      riga veniva scritta e subito dopo cancellata, con le foto del documento
+      su Drive, e la risposta era `ok: true`.
+    */
+    const esito = await salvaPratica(
+      ID, {}, [dalModulo('1', 'ROSSI'), dalModulo('2', 'BIANCHI'), dalModulo('3', 'VERDI')],
+      GESTORE, 'foglio', { tolti: ['2'] },
+    )
+
+    expect(esito?.tolti).toEqual([])
+    expect(scritture.cancellate).toEqual([])
+    expect(scritture.documenti).toEqual([])
+    expect(ospiteScritto(3)['Cognome']).toBe('BIANCHI')
+    expect(ospiteScritto(3)['Doc fronte']).toBe('foto-2-fronte')
+  })
+
+  it('CONTROLLO POSITIVO: se la scheda NON arriva, la rimozione avviene', async () => {
+    // Senza questo, il test qui sopra passerebbe anche con la cancellazione
+    // rotta del tutto.
+    const esito = await salvaPratica(
+      ID, {}, [dalModulo('1', 'ROSSI'), dalModulo('3', 'VERDI')],
+      GESTORE, 'foglio', { tolti: ['2'] },
+    )
+
+    expect(esito?.tolti).toEqual(['2'])
+    expect(scritture.cancellate).toEqual([{ scheda: 'Ospiti', righe: [3] }])
+    expect(scritture.documenti.sort()).toEqual(['foto-2-fronte', 'foto-2-retro'])
+  })
+})

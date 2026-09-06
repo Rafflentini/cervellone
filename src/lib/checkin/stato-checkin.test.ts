@@ -278,3 +278,40 @@ describe('il metro e il numero PRENOTATO, non quello dichiarato da chi compila',
     expect(e.stato).toBe('CHECKIN OK')
   })
 })
+
+describe('gli avvisi nominano il NUMERO della scheda, non la posizione', () => {
+  /*
+    Tolta la scheda 2 di quattro, sul foglio restano la 1 e la 3. Gli avvisi
+    dicevano "Ospite 1, Ospite 2": chi legge va a cercare la scheda 2 — che non
+    esiste piu' — mentre il dato manca alla 3.
+
+    Visto in produzione il 6 settembre 2026, provando la sequenza vera.
+  */
+  const scheda = (progressivo: string, cf: string) => ({
+    progressivo,
+    cognome: 'ROSSI', nome: 'MARIO', dataNascita: '1980-01-01',
+    comuneNascita: 'ROMA', statoNascita: 'ITALIA', cittadinanza: 'ITALIA',
+    tipoDocumento: 'IDENT', numeroDocumento: 'AB1', codiceFiscale: cf,
+  })
+
+  it('con le schede 1 e 3, l avviso dice Ospite 3 e non Ospite 2', () => {
+    const e = calcolaStato({
+      ospitiAttesi: 4,
+      ospiti: [scheda('1', 'RSSMRA80A01H501U'), scheda('3', '')],
+      indirizzo: 'Via Roma 1', cap: '85046', citta: 'MARATEA', nazione: 'IT',
+    })
+    const testo = e.mancanze.join(' · ')
+    expect(testo).toContain('Ospite 3: codice fiscale')
+    expect(testo).not.toContain('Ospite 2:')
+  })
+
+  it('CONTROLLO POSITIVO: senza numero si ripiega sulla posizione', () => {
+    const senza = { ...scheda('', ''), progressivo: undefined }
+    const e = calcolaStato({
+      ospitiAttesi: 1,
+      ospiti: [senza],
+      indirizzo: 'Via Roma 1', cap: '85046', citta: 'MARATEA', nazione: 'IT',
+    })
+    expect(e.mancanze.join(' · ')).toContain('Ospite 1: codice fiscale')
+  })
+})
