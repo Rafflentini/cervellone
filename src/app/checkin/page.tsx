@@ -19,6 +19,7 @@ import { useEffect, useMemo, useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { validaCodiceFiscale } from '@/lib/checkin/valida-codice-fiscale'
 import { decodificaCf } from '@/lib/checkin/decodifica-cf'
+import { applicaLettura } from '@/lib/checkin/proposta-documento'
 import { calcolaImpostaSoggiorno, REGOLE_MARATEA, type RegoleImposta } from '@/lib/checkin/imposta-soggiorno'
 import {
   soggiornoDaColonne, soggiornoAColonne, ospiteDaColonne, ospiteAColonne,
@@ -612,6 +613,19 @@ function CheckinForm() {
     I nomi dei campi come si leggono a schermo: servono per dire a chi compila
     che cosa e' stato riempito. "comuneNascita" non vuol dire niente a nessuno.
   */
+  /*
+    I campi che nascono gia' pieni, e con quale valore.
+
+    Serve alla lettura del documento per capire che quel valore non lo ha
+    scritto nessuno: e' cio' che l'elenco a tendina mostrava all'apertura.
+    Deve restare uguale a `OSPITE_VUOTO`.
+  */
+  const PREDEFINITI: Partial<Record<keyof Ospite, string>> = {
+    sesso: OSPITE_VUOTO.sesso,
+    cittadinanza: OSPITE_VUOTO.cittadinanza,
+    tipoDocumento: OSPITE_VUOTO.tipoDocumento,
+  }
+
   const NOMI_CAMPI: Partial<Record<keyof Ospite, string>> = {
     cognome: 'cognome', nome: 'nome', sesso: 'sesso', dataNascita: 'data di nascita',
     comuneNascita: 'comune di nascita', provNascita: 'provincia di nascita',
@@ -651,22 +665,14 @@ function CheckinForm() {
       const attuale = ospiti.find((o) => o.progressivo === prog)
       if (!attuale) return
 
-      const cambi: Partial<Ospite> = {}
-      const riempiti: string[] = []
-      const conflitti: string[] = []
-
-      for (const [campo, letto] of Object.entries(d.dati ?? {}) as Array<[keyof Ospite, string]>) {
-        if (!letto || !(campo in NOMI_CAMPI)) continue
-        const eti = NOMI_CAMPI[campo] ?? String(campo)
-        const gia = String(attuale[campo] ?? '').trim()
-        if (!gia) {
-          // @ts-expect-error assegnazione dinamica su chiavi note
-          cambi[campo] = letto
-          riempiti.push(eti)
-        } else if (gia.toUpperCase() !== String(letto).toUpperCase()) {
-          conflitti.push(`${eti}: sul documento leggo «${letto}», tu hai scritto «${gia}»`)
-        }
-      }
+      // La regola che decide cosa entra nel modulo sta in `proposta-documento`,
+      // dove si puo' provare: qui si applica soltanto.
+      const { cambi, riempiti, conflitti } = applicaLettura(
+        attuale as unknown as Record<string, string>,
+        (d.dati ?? {}) as Record<string, unknown>,
+        PREDEFINITI as Record<string, string>,
+        NOMI_CAMPI as Record<string, string>,
+      )
 
       if (Object.keys(cambi).length > 0) {
         setOspiti((prev) => prev.map((o) => (o.progressivo === prog ? { ...o, ...cambi } : o)))
