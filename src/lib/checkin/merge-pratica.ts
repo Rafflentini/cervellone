@@ -60,6 +60,27 @@ export const CAMPI_RISERVATI: readonly string[] = [
   'Importo lordo €',
 ]
 
+/**
+ * I dati di CHI HA PRENOTATO. Il singolo ospite non deve vederli.
+ *
+ * Un audit del 6 settembre 2026 ha misurato la falla: si toglieva soltanto
+ * l'importo, quindi il terzo ospite — spesso uno sconosciuto a cui il link
+ * arriva su WhatsApp — riceveva codice fiscale, partita IVA, indirizzo, email e
+ * telefono dell'intestatario. La pagina non li disegna, ma erano nella
+ * risposta: si leggono dagli strumenti del browser, ed e' proprio la ragione
+ * per cui questa mascheratura sta sul SERVER e non nell'interfaccia.
+ *
+ * Restano visibili a chi ha prenotato: quei campi li compila lui, e sono suoi.
+ * Restano visibili a tutti l'unita', le date, le notti e — voluto —
+ * l'IMPOSTA DI SOGGIORNO: e' quella che l'ospite paga in struttura, e sapere
+ * quanto sara' gli serve per arrivare preparato.
+ */
+export const CAMPI_DELL_INTESTATARIO: readonly string[] = [
+  'Intestatario fattura', 'Codice fiscale', 'P.IVA', 'Codice SDI / PEC',
+  'Indirizzo', 'CAP', 'Città', 'Provincia', 'Nazione', 'Email', 'Telefono',
+  'Note',
+]
+
 /** Toglie dalla mappa i campi che quel livello non deve vedere. */
 export function oscuraRiservati(
   m: Record<string, string>,
@@ -68,6 +89,11 @@ export function oscuraRiservati(
   if (livello.tipo === 'gestore') return m
   const out = { ...m }
   for (const c of CAMPI_RISERVATI) delete out[c]
+  // Il singolo ospite vede la propria scheda e i dati del soggiorno, non
+  // l'anagrafica fiscale di un'altra persona.
+  if (livello.tipo === 'ospite') {
+    for (const c of CAMPI_DELL_INTESTATARIO) delete out[c]
+  }
   return out
 }
 

@@ -217,3 +217,59 @@ describe('cosa l ospite non deve nemmeno vedere', () => {
     expect(m['Importo lordo €']).toBe('800')
   })
 })
+
+describe('cosa vede chi, quando riceve il link', () => {
+  const soggiorno = {
+    'Unità': 'Bloom Zone 1', 'Check-in': '2026-07-10', 'Check-out': '2026-07-17',
+    'Notti': '7', 'N. ospiti': '4',
+    'Importo lordo €': '1400,00',
+    'Imposta soggiorno €': '50,00',
+    'Intestatario fattura': 'Mario Rossi', 'Codice fiscale': 'RSSMRA80A01H501U',
+    'P.IVA': '01234567890', 'Codice SDI / PEC': 'ABC1234',
+    'Indirizzo': 'Via Roma 1', 'CAP': '00100', 'Città': 'ROMA', 'Provincia': 'RM',
+    'Nazione': 'IT', 'Email': 'mario@example.com', 'Telefono': '3331234567',
+    'Note': 'arriva tardi',
+  }
+
+  it('CONTROLLO POSITIVO: il singolo ospite NON riceve i dati di chi ha prenotato', () => {
+    // Il terzo ospite e spesso uno sconosciuto a cui il link arriva su WhatsApp.
+    // Prima riceveva codice fiscale, indirizzo, email e telefono
+    // dell'intestatario: la pagina non li disegnava, ma erano nella risposta.
+    const visto = oscuraRiservati(soggiorno, { tipo: 'ospite', progressivo: 3 })
+
+    for (const campo of ['Intestatario fattura', 'Codice fiscale', 'P.IVA', 'Codice SDI / PEC',
+      'Indirizzo', 'CAP', 'Città', 'Provincia', 'Nazione', 'Email', 'Telefono', 'Note']) {
+      expect(visto[campo], `l'ospite non deve vedere "${campo}"`).toBeUndefined()
+    }
+  })
+
+  it("CONTROLLO POSITIVO: ma l'IMPOSTA la vede, cosi arriva preparato a pagarla", () => {
+    // Richiesta esplicita di Raffaele: l'ospite paga l'imposta in struttura,
+    // quindi deve sapere quanto sara per preparare contanti o carta.
+    const visto = oscuraRiservati(soggiorno, { tipo: 'ospite', progressivo: 3 })
+
+    expect(visto['Imposta soggiorno €']).toBe('50,00')
+    expect(visto['Unità']).toBe('Bloom Zone 1')
+    expect(visto['Check-in']).toBe('2026-07-10')
+    expect(visto['Notti']).toBe('7')
+  })
+
+  it("il totale della prenotazione non lo vede NESSUN ospite", () => {
+    expect(oscuraRiservati(soggiorno, { tipo: 'ospite', progressivo: 1 })['Importo lordo €']).toBeUndefined()
+    expect(oscuraRiservati(soggiorno, { tipo: 'prenotazione' })['Importo lordo €']).toBeUndefined()
+  })
+
+  it('CONTROPROVA: chi ha prenotato vede i PROPRI dati di fatturazione, che e lui a compilare', () => {
+    // Senza questa prova, "nascondi tutto a chiunque non sia gestore"
+    // passerebbe i test qui sopra e romperebbe il modulo dell'intestatario.
+    const visto = oscuraRiservati(soggiorno, { tipo: 'prenotazione' })
+
+    expect(visto['Intestatario fattura']).toBe('Mario Rossi')
+    expect(visto['Codice fiscale']).toBe('RSSMRA80A01H501U')
+    expect(visto['Email']).toBe('mario@example.com')
+  })
+
+  it('il gestore vede tutto, importo compreso', () => {
+    expect(oscuraRiservati(soggiorno, { tipo: 'gestore' })['Importo lordo €']).toBe('1400,00')
+  })
+})

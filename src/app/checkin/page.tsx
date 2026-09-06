@@ -531,6 +531,17 @@ function CheckinForm() {
           <h1>Registrazione check-in</h1>
           <p>Dati per Questura, imposta di soggiorno e fattura</p>
           <p className="en-header">Guest registration — required by law for police records, tourist tax and invoicing</p>
+          {/*
+            Il collegamento all'informativa sta QUI, sopra il modulo, e non in
+            fondo: si legge prima di consegnare un documento d'identita', non
+            dopo. Fino al 6 settembre 2026 l'informativa non esisteva affatto, e
+            l'unica spiegazione che l'ospite riceveva era la riga qui sopra.
+          */}
+          <p className="privacy-link">
+            <a href="/checkin/privacy" target="_blank" rel="noreferrer noopener">
+              Come trattiamo i suoi dati · How we handle your data
+            </a>
+          </p>
         </div>
       </header>
 
@@ -1039,6 +1050,8 @@ const STILE = `
   header .titolo h1{margin:0;font-size:16px;font-weight:600;color:var(--blu)}
   header .titolo p{margin:2px 0 0;font-size:11.5px;color:#6b7280;line-height:1.35}
   header .titolo p.en-header{color:#9aa3b2;font-style:italic}
+  header .titolo p.privacy-link{margin-top:6px;font-size:.85rem}
+  header .titolo p.privacy-link a{color:#cfe0f5;text-decoration:underline}
   .wrap{padding:14px}
   section{background:#fff;border:1px solid var(--bordo);border-radius:10px;padding:14px;margin-bottom:12px}
   h2{font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--blu);margin:0 0 12px}
