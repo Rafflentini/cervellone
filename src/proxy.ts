@@ -34,6 +34,13 @@ export default async function proxy(request: NextRequest) {
     // aggiunge l'app alla schermata home: se rispondesse 307 verso /login,
     // l'icona nascerebbe senza nome e senza logo.
     || pathname.startsWith('/api/checkin/manifest')
+    // Le icone dell'app installata. Le chiede il browser da solo, senza
+    // cookie, mentre disegna l'icona sulla schermata home: rispondendo 307
+    // verso /login l'icona nascerebbe vuota. E' la stessa trappola
+    // dell'informativa privacy, ricascata dentro il 6 set 2026 dieci minuti
+    // dopo — e trovata di nuovo solo provando in produzione, non nel build.
+    || pathname.startsWith('/checkin/icona-')
+    || pathname === '/checkin/apple-touch-icon.png'
     || pathname === '/checkin/nuova'
     || pathname === '/checkin/gestione'
     || pathname.startsWith('/api/checkin/prenotazione')
