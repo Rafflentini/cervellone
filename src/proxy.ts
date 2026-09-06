@@ -15,6 +15,13 @@ export default async function proxy(request: NextRequest) {
     // login da chiedere a un turista. La difesa e il token nel collegamento,
     // verificato dalle route stesse (vedi api/checkin/registra).
     || pathname === '/checkin'
+    // L'informativa privacy e' pubblica per definizione: dev'essere leggibile
+    // PRIMA di consegnare un documento d'identita', e da chiunque — anche da
+    // chi non ha il collegamento della propria prenotazione. Un'informativa
+    // dietro un login non e' un'informativa. (Il 6 set 2026 la pagina e' andata
+    // in produzione e rispondeva 307 verso /login: la prova in produzione ha
+    // trovato in trenta secondi cio' che il build non poteva vedere.)
+    || pathname === '/checkin/privacy'
     || pathname.startsWith('/api/checkin/registra')
     || pathname.startsWith('/api/checkin/dati')
     || pathname.startsWith('/api/checkin/comuni')
