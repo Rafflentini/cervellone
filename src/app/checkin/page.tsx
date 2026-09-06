@@ -433,12 +433,6 @@ function CheckinForm() {
           ? {}
           : {
             ...soggiornoAColonne(sog),
-            // Quante persone si presentano DAVVERO. E' il numero di schede
-            // aperte: toglierne una o aggiungerne una e' il gesto esplicito.
-            // Lasciarne una in bianco invece non conta, e continua a bloccare —
-            // altrimenti un ospite sparirebbe per distrazione, e con lui la sua
-            // imposta e la sua riga per la Questura.
-            'Ospiti dichiarati': String(ospiti.length),
           },
         ospiti: ospiti.map((os, i) =>
           ospiteAColonne({

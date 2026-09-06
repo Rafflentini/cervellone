@@ -75,9 +75,29 @@ export function calcolaStato(p: PraticaDaControllare): EsitoStato {
 
   const compilate = (p.ospiti ?? []).filter((o) => !schedaVuota(o))
 
-  // Il metro e' quanti se ne presentano davvero, se qualcuno l'ha dichiarato;
-  // altrimenti quanti ne prevedeva la prenotazione.
-  const metro = p.ospitiDichiarati && p.ospitiDichiarati > 0 ? p.ospitiDichiarati : p.ospitiAttesi
+  /*
+    IL METRO E' IL NUMERO PRENOTATO, e lo imposta solo chi gestisce.
+
+    Fino al 6 settembre 2026 il metro era `Ospiti dichiarati`, che pero' lo
+    scrive il browser di chi compila (`page.tsx`: e' il numero di schede
+    aperte). Cioe': il metro lo forniva la stessa parte che veniva misurata.
+    Prenotazione per quattro, si apriva una scheda sola, e il controllo
+    "mancano tre schede" non poteva scattare: CHECKIN OK, imposta su una
+    persona, e alla Questura una riga invece di quattro. Un audit lo ha
+    misurato, non dedotto.
+
+    La regola decisa dall'Ingegnere, che e' anche la piu' semplice:
+      - IN PIU' si puo' sempre. Chi compila aggiunge una scheda, l'imposta
+        sale da sola e la pratica puo' chiudersi: nessuno bara al rialzo,
+        perche' un ospite in piu' e' imposta in piu' da pagare.
+      - IN MENO lo fa solo il gestore, dalla pagina di gestione, abbassando il
+        numero prenotato. Dichiarare meno persone di quelle prenotate vale
+        davanti alla Questura, e deve stare in capo a chi ne risponde.
+
+    Quindi il metro sale con le schede compilate e non scende mai per volonta'
+    di chi compila.
+  */
+  const metro = Math.max(p.ospitiAttesi ?? 0, compilate.length)
 
   // Il controllo che nessuno farebbe a mano: se se ne aspettano 4 e le schede
   // sono 2, due persone dormono in casa senza essere comunicate alla Questura,

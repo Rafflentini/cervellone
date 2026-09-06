@@ -114,6 +114,10 @@ export const CAMPI_DEL_SISTEMA: readonly string[] = [
   'Da completare',
   'Stato fattura',
   'File Alloggiati del',
+  // Lo scrive il server contando le schede compilate. Se lo mandasse il form,
+  // chi compila potrebbe riscrivere il proprio conteggio — ed e' esattamente
+  // il buco chiuso il 6 set 2026.
+  'Ospiti dichiarati',
 ]
 
 function indice(colonne: readonly string[], nome: string): number {

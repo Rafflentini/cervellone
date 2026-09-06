@@ -244,6 +244,15 @@ export async function salvaPratica(
     nazione: mappaSoggiorno['Nazione'] ?? 'IT',
   })
 
+  // Quante schede risultano DAVVERO compilate. Lo scrive il server contando,
+  // non il browser dichiarando: fino al 6 settembre 2026 era il form a mandare
+  // questo numero, ed era anche il metro con cui si stabiliva se il check-in
+  // fosse completo — cioe' chi veniva misurato forniva il metro.
+  // Ora e' un dato di cronaca, non un controllo: il metro e' `N. ospiti`, che
+  // imposta il gestore. Vedi `calcolaStato`.
+  mappaSoggiorno['Ospiti dichiarati'] = String(
+    schede.filter((s) => `${s['Cognome'] ?? ''}${s['Nome'] ?? ''}${s['Data nascita'] ?? ''}`.trim()).length,
+  )
   mappaSoggiorno['Notti'] = String(imposta.notti)
   mappaSoggiorno['Imposta soggiorno €'] = String(imposta.importo)
   mappaSoggiorno['Stato check-in'] = stato.stato

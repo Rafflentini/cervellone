@@ -227,6 +227,43 @@ function Gestione() {
     }
   }
 
+  /**
+   * Cambia quante persone sono attese, e RILEGGE.
+   *
+   * E' il gesto che l'Ingegnere ha chiesto il 6 settembre 2026: se di cinque
+   * ne arrivano quattro, l'ospite in meno lo toglie CHI GESTISCE, prima del
+   * check-in. Poi gli ospiti compilano quattro schede e la pratica si chiude.
+   *
+   * Non e' un vezzo di comodita': quel numero e' il METRO con cui si stabilisce
+   * se il check-in e' completo, e dichiarare meno persone di quelle prenotate
+   * vale davanti alla Questura. Deve stare in capo a chi ne risponde, non a chi
+   * compila il modulo. Aggiungerne uno invece resta libero per l'ospite: nessuno
+   * bara al rialzo, perche' un ospite in piu' e' imposta in piu' da pagare.
+   *
+   * Passa dalla rotta della pratica e non da `segna` perche' li' il salvataggio
+   * RICALCOLA stato e imposta: cambiare il numero senza ricalcolare lascerebbe
+   * la pratica "incompleta" fino al prossimo salvataggio dell'ospite — un
+   * pulsante che mente.
+   */
+  async function cambiaAttesi(id: string, quanti: number) {
+    if (!Number.isFinite(quanti) || quanti < 1) return
+    setSegnando(id)
+    try {
+      const r = await fetch(`/api/checkin/pratica?k=${encodeURIComponent(k)}&p=${encodeURIComponent(id)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ soggiorno: { 'N. ospiti': String(quanti) }, ospiti: [] }),
+      })
+      const d = await r.json()
+      if (!d.ok) { setErrore(d.errore || 'Non sono riuscito a cambiare il numero di ospiti.'); return }
+      await carica()
+    } catch {
+      setErrore('Non sono riuscito a cambiare il numero di ospiti.')
+    } finally {
+      setSegnando('')
+    }
+  }
+
   async function copia(testo: string, etichetta: string) {
     try {
       await navigator.clipboard.writeText(testo)
@@ -485,6 +522,33 @@ function Gestione() {
               <div className="manca">{p.daCompletare}</div>
             )}
 
+            {/*
+              Togliere un ospite e' un gesto del gestore, non dell'ospite: e' il
+              numero con cui si stabilisce se il check-in e' completo, e vale
+              davanti alla Questura. Sta qui, accanto a cio' che manca, perche'
+              e' li' che ci si accorge del problema — "mancano 1 schede su 5"
+              quando si sa gia' che saranno in quattro.
+            */}
+            <div className="attesi">
+              <span>Ospiti attesi:</span>
+              <button
+                type="button"
+                disabled={segnando === p.id || p.attesi <= 1}
+                onClick={(e) => { e.stopPropagation(); cambiaAttesi(p.id, p.attesi - 1) }}
+                aria-label="Un ospite in meno"
+              >−</button>
+              <strong>{p.attesi}</strong>
+              <button
+                type="button"
+                disabled={segnando === p.id}
+                onClick={(e) => { e.stopPropagation(); cambiaAttesi(p.id, p.attesi + 1) }}
+                aria-label="Un ospite in più"
+              >+</button>
+              {p.compilate > 0 && (
+                <span className="compilate">{p.compilate} {p.compilate === 1 ? 'scheda compilata' : 'schede compilate'}</span>
+              )}
+            </div>
+
             <div className="bollini">
               <span className={`bollino ${p.inviatoAlloggiati ? 'ok' : 'manca'}`}>
                 {p.inviatoAlloggiati
@@ -654,6 +718,11 @@ const STILE = `
   .stato.parziale{background:#fff4e0;color:var(--att)}
   .stato.ok{background:#e6f4ec;color:var(--ok)}
   .manca{margin-top:8px;font-size:11.5px;color:var(--att);line-height:1.4}
+  .attesi{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:#54617a}
+  .attesi button{width:26px;height:26px;border:1px solid #cfd7e6;background:#fff;border-radius:6px;font-size:15px;line-height:1;cursor:pointer;color:#1f3864}
+  .attesi button:disabled{opacity:.35;cursor:default}
+  .attesi strong{min-width:14px;text-align:center;color:#1f3864;font-size:14px}
+  .attesi .compilate{margin-left:4px;color:#8b95a8}
 
   .bollini{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
   .bollino{font-size:10.5px;padding:3px 8px;border-radius:20px;line-height:1.5}

@@ -161,13 +161,14 @@ describe('le mancanze si elencano tutte insieme', () => {
 })
 
 describe('quando si presentano in numero diverso dal prenotato', () => {
-  it('con "siamo di meno" il check-in si chiude, e lo dice', () => {
-    // Uno da forfait. Bloccare l'ospite costringerebbe la ragazza a
-    // intervenire per ogni disdetta; lasciarlo passare in silenzio farebbe
-    // sparire un pernottamento dal versamento al Comune.
+  it('DECISIONE 6 set: "siamo di meno" NON chiude piu il check-in da solo', () => {
+    // Regola dell'Ingegnere: se uno da forfait, l'ospite in meno lo toglie il
+    // GESTORE dalla pagina di gestione, abbassando il numero prenotato. Prima
+    // bastava che il browser dichiarasse un numero piu basso, e la pratica
+    // risultava a posto con tre persone non comunicate alla Questura.
     const r = calcolaStato(pratica({ ospitiAttesi: 4, ospitiDichiarati: 1 }))
-    expect(r.stato).toBe('CHECKIN OK')
-    expect(r.segnalazioni).toContain('Dichiarati 1 ospiti su 4 prenotati.')
+    expect(r.stato).toBe('PARZIALE')
+    expect(r.mancanze.join(' ')).toContain('su 4')
   })
 
   it('con un ospite in piu si chiude, e lo dice', () => {
@@ -191,12 +192,89 @@ describe('quando si presentano in numero diverso dal prenotato', () => {
     expect(r.segnalazioni).toEqual([])
   })
 
-  it('dichiarare di meno non esonera dal compilare le schede rimaste', () => {
+  it('dichiarare di meno non esonera dal compilare le schede prenotate', () => {
     const r = calcolaStato(pratica({
       ospitiAttesi: 4, ospitiDichiarati: 3,
       ospiti: [ospite(), ospite({ cognome: '', nome: '', dataNascita: '' })],
     }))
     expect(r.stato).toBe('PARZIALE')
-    expect(r.mancanze.join(' ')).toContain('su 3')
+    // Il metro resta 4: il numero lo abbassa il gestore, non chi compila.
+    expect(r.mancanze.join(' ')).toContain('su 4')
+  })
+})
+
+// ── Chi decide quante persone dormono in casa (6 settembre 2026) ─────────────
+
+/** Una scheda ospite completa: cambia solo cio' che serve al singolo test. */
+function schedaPienaN(n: number) {
+  return {
+    cognome: `Rossi${n}`, nome: `Mario${n}`, dataNascita: '1980-01-01',
+    comuneNascita: 'ROMA', statoNascita: '', cittadinanza: 'ITALIA',
+    tipoDocumento: 'IDENT', numeroDocumento: `AB${n}`, luogoRilascio: 'ROMA',
+    codiceFiscale: 'RSSMRA80A01H501U', esente: false, motivoEsenzione: '',
+  }
+}
+
+function praticaNumeri(ospitiAttesi: number, quanteSchede: number, ospitiDichiarati?: number) {
+  return {
+    ospitiAttesi,
+    ospitiDichiarati,
+    indirizzo: 'Via Roma 1', citta: 'ROMA', cap: '00100', nazione: 'IT',
+    ospiti: Array.from({ length: quanteSchede }, (_, i) => schedaPienaN(i + 1)),
+  }
+}
+
+describe('il metro e il numero PRENOTATO, non quello dichiarato da chi compila', () => {
+  it('CONTROLLO POSITIVO: prenotati 5, compilate 4 -> NON e completo', () => {
+    // La regola dell'Ingegnere: se non si presentano tutti, e il gestore a
+    // togliere l'ospite dalla pagina di gestione. Finche non lo fa, la pratica
+    // resta aperta.
+    const e = calcolaStato(praticaNumeri(5, 4))
+
+    expect(e.stato).toBe('PARZIALE')
+    expect(e.mancanze.join(' ')).toContain('scheda ospite su 5')
+  })
+
+  it("e NON basta che il browser dichiari 4 per farla risultare completa", () => {
+    // Questo e il buco vero: `Ospiti dichiarati` lo scrive il browser di chi
+    // compila. Prima abbassarlo chiudeva il controllo invece di aprirlo.
+    const e = calcolaStato(praticaNumeri(5, 4, 4))
+
+    expect(e.stato).toBe('PARZIALE')
+  })
+
+  it('CONTROLLO POSITIVO: il gestore abbassa il prenotato a 4 -> con 4 schede e completo', () => {
+    const e = calcolaStato(praticaNumeri(4, 4))
+
+    expect(e.stato).toBe('CHECKIN OK')
+    expect(e.mancanze).toEqual([])
+  })
+
+  it('IN PIU si puo sempre: prenotati 2, si presentano in 3 -> completo, ma segnalato', () => {
+    // Nessuno bara al rialzo: un ospite in piu e imposta in piu da pagare.
+    const e = calcolaStato(praticaNumeri(2, 3))
+
+    expect(e.stato).toBe('CHECKIN OK')
+    expect(e.segnalazioni.join(' ')).toContain('in piu')
+  })
+
+  it('e le schede in piu vanno compilate TUTTE, non solo quelle prenotate', () => {
+    // 2 prenotati, 3 schede aperte ma una vuota: la terza persona esiste e va
+    // comunicata. Il metro sale con le schede, non si ferma al prenotato.
+    const p = praticaNumeri(2, 3)
+    p.ospiti[2] = { ...p.ospiti[2], cognome: '', nome: '', dataNascita: '' }
+
+    const e = calcolaStato(p)
+
+    // La scheda vuota non conta come compilata: restano 2 su 2 prenotati.
+    expect(e.stato).toBe('CHECKIN OK')
+  })
+
+  it('CONTROPROVA: senza numero prenotato ci si regola sulle schede compilate', () => {
+    // Se il metro fosse sempre e solo `ospitiAttesi`, una prenotazione creata
+    // senza quel dato non sarebbe mai completabile.
+    const e = calcolaStato(praticaNumeri(0, 2))
+
+    expect(e.stato).toBe('CHECKIN OK')
   })
 })
