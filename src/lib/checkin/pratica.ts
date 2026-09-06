@@ -217,15 +217,44 @@ export async function salvaPratica(
 
   // Imposta e stato: calcolati qui, mai accettati dal form.
   const cfg = await leggiConfig(spreadsheetId)
-  const imposta = calcolaImpostaSoggiorno({
-    checkin: mappaSoggiorno['Check-in'],
-    checkout: mappaSoggiorno['Check-out'],
-    regole: regoleDaConfig(cfg),
-    ospiti: schede.map((s) => ({
+
+  /*
+    L'imposta si calcola sulle persone PRENOTATE, non sulle schede compilate.
+
+    Chi ha dormito qui deve l'imposta anche se non ha ancora consegnato i
+    propri dati: il Comune non chiede quante schede sono state compilate.
+    Quindi alle schede vere si aggiungono tanti "adulti senza dati" quanti
+    mancano per arrivare a `N. ospiti` — che e' il numero che imposta chi
+    gestisce, e l'unico metro di questo sistema.
+
+    Prima il conto tornava per caso: il modulo mandava anche le schede bianche,
+    e una data di nascita vuota veniva contata come pagante. Smettendo di
+    scrivere quelle righe — che sporcavano il file per la Questura — l'imposta
+    sarebbe silenziosamente calata. Qui la ragione e' scritta, invece che
+    affidata a un effetto collaterale.
+
+    Al ribasso non si va mai: se le schede fossero PIU' degli attesi, valgono
+    le schede.
+  */
+  const attesiPerImposta = Number(mappaSoggiorno['N. ospiti'] || 0)
+  const ospitiPerImposta = [
+    ...schede.map((s) => ({
       dataNascita: s['Data nascita'] ?? '',
       esente: String(s['Esente imposta'] ?? '').toUpperCase() === 'SI',
       motivoEsenzione: s['Motivo esenzione'] ?? '',
     })),
+    ...Array.from({ length: Math.max(0, attesiPerImposta - schede.length) }, () => ({
+      dataNascita: '',
+      esente: false,
+      motivoEsenzione: '',
+    })),
+  ]
+
+  const imposta = calcolaImpostaSoggiorno({
+    checkin: mappaSoggiorno['Check-in'],
+    checkout: mappaSoggiorno['Check-out'],
+    regole: regoleDaConfig(cfg),
+    ospiti: ospitiPerImposta,
   })
 
   const stato = calcolaStato({
@@ -310,7 +339,15 @@ export async function salvaPratica(
     ok: true,
     stato: stato.stato,
     mancanze: stato.mancanze,
-    segnalazioni: stato.segnalazioni,
+    /*
+      Le anomalie del calcolo dell'imposta risalgono fino a chi compila.
+
+      `imposta-soggiorno.ts` dichiara che "in questo sottosistema niente puo'
+      fallire in silenzio", ma qui il risultato veniva letto solo per l'importo
+      e le anomalie sparivano: un'esenzione senza motivo dichiarato — che in
+      sede di controllo e' un ammanco — non arrivava a nessuno.
+    */
+    segnalazioni: [...stato.segnalazioni, ...imposta.anomalie],
     rifiutati: [...fusoSoggiorno.rifiutati, ...fusiOspiti.rifiutati],
   }
 }

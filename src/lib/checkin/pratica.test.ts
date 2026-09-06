@@ -238,3 +238,91 @@ describe('salvaPratica — cio che non deve cambiare', () => {
     expect(m['Stato check-in']).not.toBe('CHECKIN OK')
   })
 })
+
+describe('salvaPratica — l imposta si calcola sugli ospiti PRENOTATI', () => {
+  /*
+    Il Comune non chiede quante schede sono state compilate: chiede quante
+    persone hanno dormito qui. Con 3 prenotati e 1 sola scheda compilata
+    l'imposta deve restare quella di 3 persone.
+
+    Prima il conto tornava per caso, perche' il modulo mandava anche le schede
+    bianche e una data di nascita vuota veniva contata come pagante. Smettendo
+    di scrivere quelle righe — che sporcavano il file per la Questura —
+    l'imposta sarebbe calata in silenzio del 66%.
+  */
+  function impostaScritta(): number {
+    const w = scritture.aggiornate.find((x) => x.scheda === 'Soggiorni')
+    const m = Object.fromEntries(COL_SOGGIORNI.map((c, i) => [c, w!.valori[i] ?? '']))
+    return Number(m['Imposta soggiorno €'])
+  }
+
+  it('una sola scheda su tre prenotati: l imposta e per tre', async () => {
+    await salvaPratica(ID, {}, [dalModulo('1', 'ROSSI')], GESTORE, 'foglio', { tolti: ['2', '3'] })
+    // 3 persone x 5 pernottamenti tassati (il soggiorno e di 7 notti,
+    // il tetto e 5) x 2,50 euro.
+    expect(impostaScritta()).toBe(37.5)
+  })
+
+  it('CONTROLLO POSITIVO: con tutte e tre le schede l imposta e la stessa', async () => {
+    await salvaPratica(
+      ID, {},
+      [dalModulo('1', 'ROSSI'), dalModulo('2', 'BIANCHI'), dalModulo('3', 'VERDI')],
+      GESTORE, 'foglio',
+    )
+    expect(impostaScritta()).toBe(37.5)
+  })
+
+  it('se le schede sono PIU degli attesi valgono le schede, mai al ribasso', async () => {
+    await salvaPratica(
+      ID, { 'N. ospiti': '1' },
+      [dalModulo('1', 'ROSSI'), dalModulo('2', 'BIANCHI'), dalModulo('3', 'VERDI')],
+      GESTORE, 'foglio',
+    )
+    expect(impostaScritta()).toBe(37.5)
+  })
+})
+
+describe('salvaPratica — le anomalie dell imposta non spariscono', () => {
+  /*
+    `imposta-soggiorno.ts` dichiara che "in questo sottosistema niente puo'
+    fallire in silenzio". Ma il risultato veniva letto solo per l'importo, e le
+    anomalie non arrivavano a nessuno: un'esenzione senza motivo dichiarato —
+    che in sede di controllo e' un ammanco, perche' la dichiarazione scritta va
+    conservata — non veniva detta ne' a chi compila ne' a chi gestisce.
+  */
+  it('un esente senza motivo dichiarato viene segnalato a chi salva', async () => {
+    OSPITI = [
+      [...COL_OSPITI],
+      COL_OSPITI.map((c) => ({
+        'ID Soggiorno': ID, 'Progressivo': '1', 'Cognome': 'ROSSI', 'Nome': 'MARIO',
+        'Data nascita': '1980-01-01', 'Esente imposta': 'SI', 'Motivo esenzione': '',
+      } as Record<string, string>)[c] ?? ''),
+    ]
+
+    const esito = await salvaPratica(
+      ID, {},
+      [{ ...dalModulo('1', 'ROSSI'), 'Esente imposta': 'SI', 'Motivo esenzione': '' }],
+      GESTORE, 'foglio',
+    )
+
+    expect(esito?.segnalazioni.join(' · ')).toMatch(/esenzione senza motivo/i)
+  })
+
+  it('CONTROLLO POSITIVO: col motivo dichiarato non si segnala niente sull esenzione', async () => {
+    OSPITI = [
+      [...COL_OSPITI],
+      COL_OSPITI.map((c) => ({
+        'ID Soggiorno': ID, 'Progressivo': '1', 'Cognome': 'ROSSI', 'Nome': 'MARIO',
+        'Data nascita': '1980-01-01', 'Esente imposta': 'SI', 'Motivo esenzione': 'disabile',
+      } as Record<string, string>)[c] ?? ''),
+    ]
+
+    const esito = await salvaPratica(
+      ID, {},
+      [{ ...dalModulo('1', 'ROSSI'), 'Esente imposta': 'SI', 'Motivo esenzione': 'disabile' }],
+      GESTORE, 'foglio',
+    )
+
+    expect(esito?.segnalazioni.join(' · ')).not.toMatch(/esenzione senza motivo/i)
+  })
+})

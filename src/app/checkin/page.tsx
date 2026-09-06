@@ -358,6 +358,25 @@ function CheckinForm() {
         if (s.intestatario && s.piva) setFatturaAltri(true)
 
         const schede = (pr.ospiti ?? []).map((x: Record<string, string>) => ospiteDaColonne(x))
+
+        /*
+          Le foto gia' caricate risultano caricate anche riaprendo il modulo.
+
+          `docCaricati` viveva solo nella pagina: riaprendo il collegamento il
+          giorno dopo, un documento gia' consegnato tornava a dire "Carica
+          fronte". Chi lo rifaceva creava un SECONDO file su Drive, e la cella
+          teneva solo l'ultimo: il primo restava li' per sempre, invisibile a
+          tutti, e la pulizia notturna cancella solo cio' che trova nelle
+          celle. Un documento d'identita' orfano e' il peggiore dei casi.
+        */
+        const gia: Record<string, boolean> = {}
+        for (const x of (pr.ospiti ?? []) as Array<Record<string, string>>) {
+          const prog = String(x['Progressivo'] ?? '').trim()
+          if (!prog) continue
+          if (String(x['Doc fronte'] ?? '').trim()) gia[`${prog}-fronte`] = true
+          if (String(x['Doc retro'] ?? '').trim()) gia[`${prog}-retro`] = true
+        }
+        setDocCaricati(gia)
         const attesi = Number(s.ospitiAttesi || 0)
 
         if (pr.mioProgressivo) {
@@ -442,6 +461,12 @@ function CheckinForm() {
       setDocCaricati((prec) => ({ ...prec, [`${progressivo}-${lato}`]: true }))
     } catch {
       setEsito({ tipo: 'ko', testo: ['Non sono riuscito a mandare la foto. Riprova.'] })
+      // Il messaggio si disegna in cima a un modulo lungo, e chi carica la foto
+      // sta in fondo: senza questa riga il riquadro rosso restava fuori dallo
+      // schermo, e l'unico segnale era il pulsante che tornava com'era. Chi
+      // caricava con una tacca di segnale credeva di aver consegnato il
+      // documento — e alla Questura sarebbe mancato.
+      window.scrollTo(0, 0)
     } finally {
       setDocInvio('')
     }
@@ -521,12 +546,28 @@ function CheckinForm() {
           : {
             ...soggiornoAColonne(sog),
           },
-        ospiti: ospiti.map((os) =>
-          ospiteAColonne({
-            ...os,
-            progressivo: String(mioProgressivo ?? os.progressivo),
-          }),
-        ),
+        /*
+          Le schede ancora BIANCHE non si mandano.
+
+          Il modulo apre tante schede quanti sono gli ospiti prenotati, perche'
+          chi compila veda subito quante ne mancano. Ma mandarle tutte
+          significava scrivere sul foglio righe senza nome, che poi:
+            - facevano dire "4/4 ospiti" con due schede vere;
+            - entravano nel file per la Questura come "ospite senza nome",
+              tre avvisi ciascuna, seppellendo quelli veri;
+            - restavano li' anche dopo che la pratica era chiusa.
+
+          L'imposta di soggiorno NON cala per questo: si calcola sul numero di
+          ospiti prenotati, non sulle schede compilate. Vedi `salvaPratica`.
+        */
+        ospiti: ospiti
+          .filter((os) => `${os.cognome}${os.nome}${os.dataNascita}${os.numeroDocumento}`.trim())
+          .map((os) =>
+            ospiteAColonne({
+              ...os,
+              progressivo: String(mioProgressivo ?? os.progressivo),
+            }),
+          ),
         /*
           Le schede tolte, una per una. Non "tutte quelle che non ti mando":
           questa pagina sa solo chi c'era quando e' stata aperta.
@@ -542,11 +583,23 @@ function CheckinForm() {
 
     setStatoPratica(d.stato)
     setMancanze(d.mancanze ?? [])
+    /*
+      `segnalazioni` e `rifiutati` li calcolava il server e li buttava via il
+      browser. `rifiutati` sono i campi che quel livello non poteva cambiare:
+      la modifica veniva scartata e la pagina diceva "Salvato" lo stesso, cosi'
+      chi aveva corretto una data non sapeva che la correzione non era passata.
+    */
+    const extra = [
+      ...(d.segnalazioni ?? []),
+      ...((d.rifiutati ?? []).length > 0
+        ? [`Non modificabili da qui, lasciati come stavano: ${(d.rifiutati ?? []).join(', ')}.`]
+        : []),
+    ]
     setEsito({
-      tipo: d.stato === 'CHECKIN OK' ? 'ok' : 'ko',
+      tipo: d.stato === 'CHECKIN OK' && extra.length === 0 ? 'ok' : 'ko',
       testo: d.stato === 'CHECKIN OK'
-        ? ['Check-in completo. / Check-in complete.', 'Non serve altro: ci vediamo all’arrivo.']
-        : ['Salvato. Manca ancora: / Saved. Still missing:', ...(d.mancanze ?? [])],
+        ? ['Check-in completo. / Check-in complete.', 'Non serve altro: ci vediamo all’arrivo.', ...extra]
+        : ['Salvato. Manca ancora: / Saved. Still missing:', ...(d.mancanze ?? []), ...extra],
     })
     window.scrollTo(0, 0)
   }
