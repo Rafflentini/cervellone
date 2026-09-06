@@ -326,3 +326,47 @@ describe('salvaPratica — le anomalie dell imposta non spariscono', () => {
     expect(esito?.segnalazioni.join(' · ')).not.toMatch(/esenzione senza motivo/i)
   })
 })
+
+describe('creaPrenotazione — l imposta non nasce a zero', () => {
+  /*
+    Registrando gli arretrati di agosto — venti prenotazioni, nessuna scheda
+    ancora compilata — il riquadro "Imposta di soggiorno" diceva
+    "0 notti · € 0,00": notti e importo restavano vuoti fino al primo
+    salvataggio delle schede. Il totale da versare al Comune entro il 16 era
+    quindi zero, e nessuna riga a schermo lo diceva.
+
+    Trovato provando in produzione la sequenza vera, non leggendo il codice.
+  */
+  it('una prenotazione appena creata porta gia notti e imposta', async () => {
+    const { creaPrenotazione } = await import('./pratica')
+    scritture.aggiunte = []
+
+    await creaPrenotazione({
+      unita: 'Bloom Zone 1', portale: 'Diretto', codPrenotazione: 'X',
+      checkin: '2026-08-05', checkout: '2026-08-12', ospitiAttesi: '4',
+      importoLordo: '', intestatario: 'ROSSI', note: '',
+    }, new Date('2026-09-06T10:00:00Z'), 'foglio')
+
+    const riga = scritture.aggiunte.find((x) => x.scheda === 'Soggiorni')?.righe[0] ?? []
+    const m = Object.fromEntries(COL_SOGGIORNI.map((c, i) => [c, riga[i] ?? '']))
+    expect(m['Notti']).toBe('7')
+    // 4 persone x 5 pernottamenti tassati (tetto) x 2,50 euro.
+    expect(m['Imposta soggiorno €']).toBe('50')
+  })
+
+  it('CONTROLLO POSITIVO: senza ospiti l imposta e zero, e non per un errore', async () => {
+    const { creaPrenotazione } = await import('./pratica')
+    scritture.aggiunte = []
+
+    await creaPrenotazione({
+      unita: 'Bloom Zone 1', portale: 'Diretto', codPrenotazione: 'X',
+      checkin: '2026-08-05', checkout: '2026-08-12', ospitiAttesi: '0',
+      importoLordo: '', intestatario: 'ROSSI', note: '',
+    }, new Date('2026-09-06T10:00:00Z'), 'foglio')
+
+    const riga = scritture.aggiunte.find((x) => x.scheda === 'Soggiorni')?.righe[0] ?? []
+    const m = Object.fromEntries(COL_SOGGIORNI.map((c, i) => [c, riga[i] ?? '']))
+    expect(m['Notti']).toBe('7')
+    expect(m['Imposta soggiorno €']).toBe('0')
+  })
+})

@@ -88,6 +88,33 @@ export async function creaPrenotazione(
   const id = nuovoIdSoggiorno(ora)
   const pulito = (v: string) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').trim()
 
+  /*
+    Notti e imposta si calcolano SUBITO, alla creazione.
+
+    Prima restavano vuote fino al primo salvataggio delle schede ospite. Il
+    riquadro "Imposta di soggiorno" leggeva quelle celle, e una prenotazione
+    appena inserita valeva zero: registrando gli arretrati di agosto — venti
+    prenotazioni, nessuna scheda ancora compilata — il totale da versare al
+    Comune entro il 16 diceva "0 notti · € 0,00". Un numero fiscale
+    sistematicamente a zero, e nessuna riga a schermo che lo dicesse.
+
+    Trovato provando in produzione la stessa sequenza che fara' domani chi
+    inserisce gli arretrati, non leggendo il codice.
+
+    Il conto e' quello di `salvaPratica`: le persone PRENOTATE, perche' chi ha
+    dormito qui deve l'imposta anche se non ha ancora consegnato i suoi dati.
+    Al primo salvataggio il numero viene ricalcolato con le esenzioni vere.
+  */
+  const attesi = Math.max(Number(pulito(d.ospitiAttesi) || 0), 0)
+  const imposta = calcolaImpostaSoggiorno({
+    checkin: pulito(d.checkin),
+    checkout: pulito(d.checkout),
+    regole: regoleDaConfig(await leggiConfig(spreadsheetId)),
+    ospiti: Array.from({ length: attesi }, () => ({
+      dataNascita: '', esente: false, motivoEsenzione: '',
+    })),
+  })
+
   const riga = aRiga(COL_SOGGIORNI, {
     'ID Soggiorno': id,
     'Data registrazione': ora.toISOString(),
@@ -107,6 +134,8 @@ export async function creaPrenotazione(
     'Email': pulito(d.email ?? ''),
     'Note': pulito(d.note),
     'Stato check-in': 'DA COMPILARE',
+    'Notti': String(imposta.notti),
+    'Imposta soggiorno €': String(imposta.importo),
     'Ospiti dichiarati': pulito(d.ospitiAttesi),
     'Da completare': 'Nessuno ha ancora compilato.',
   })
