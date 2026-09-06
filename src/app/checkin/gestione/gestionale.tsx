@@ -667,8 +667,8 @@ function Gestione() {
           <section className="mesi">
             <h2>Imposta di soggiorno</h2>
             <p className="spiega">
-              Si versa al Comune <b>entro il 16 del mese successivo</b>. Qui ci sono
-              <b> tutte</b> le prenotazioni, anche quelle non ancora complete. Il mese
+              Si versa al Comune <b>entro il 16 del mese successivo</b>. Qui ci sono{' '}
+              <b>tutte</b>{' '}le prenotazioni, anche quelle non ancora complete. Il mese
               e&apos; quello di <b>arrivo</b>: un soggiorno a cavallo conta tutto nel mese
               in cui e&apos; cominciato. Tocca un mese per vedere solo quelle prenotazioni.
             </p>

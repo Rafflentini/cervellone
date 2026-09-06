@@ -120,7 +120,7 @@ export default function InformativaPrivacy() {
         <li><strong>Comune di Maratea</strong>, per la dichiarazione dell&apos;imposta di soggiorno (dati aggregati, non nominativi, salvo controlli).</li>
         <li><strong>Il nostro consulente fiscale</strong>, per gli adempimenti contabili.</li>
         <li>
-          <strong>Fornitori tecnologici</strong> che ospitano il servizio, nominati responsabili del
+          <strong>Fornitori tecnologici</strong>{' '}che ospitano il servizio, nominati responsabili del
           trattamento: Google Ireland Ltd (archiviazione dei dati e delle immagini), Vercel Inc.
           (hosting dell&apos;applicazione), Anthropic (assistente digitale che ci aiuta nella gestione
           amministrativa). Alcuni di questi fornitori possono trattare dati al di fuori dell&apos;Unione
@@ -179,7 +179,7 @@ export default function InformativaPrivacy() {
 
       <h2>8. Come proteggiamo la fotografia del documento</h2>
       <p>
-        L&apos;immagine viene <strong>ridotta sul suo telefono</strong> prima di partire, quindi non
+        L&apos;immagine viene <strong>ridotta sul suo telefono</strong>{' '}prima di partire, quindi non
         trasmettiamo l&apos;originale né i dati di posizione che spesso contiene. È conservata in una
         cartella privata, non è mai pubblicata né condivisa con un collegamento, e viene cancellata
         automaticamente dopo la partenza.
