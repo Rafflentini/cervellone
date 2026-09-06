@@ -59,3 +59,6 @@ next-env.d.ts
 /POS_*.docx
 /CIGO_*.docx
 /CIGO_*.zip
+
+# File di sonda degli audit: vivono il tempo di una verifica, non del repo.
+src/**/__sonda*.test.ts
