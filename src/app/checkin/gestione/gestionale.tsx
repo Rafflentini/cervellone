@@ -156,6 +156,17 @@ function Gestione() {
   const [caricato, setCaricato] = useState(false)
   const [aperta, setAperta] = useState('')
   const [copiato, setCopiato] = useState('')
+  /*
+    Il link mostrato a schermo quando la copia non e' riuscita.
+
+    Serve perche' il tasto "Copia" puo' fallire per motivi che non dipendono da
+    chi lo preme: il browser non da' il permesso agli appunti, la pagina non e'
+    su https, il telefono e' vecchio. Prima il fallimento era muto — si premeva
+    e non succedeva NIENTE, e il link non era scritto da nessuna parte: non
+    c'era modo di mandarlo all'ospite. Ora, se non si riesce a copiarlo, si
+    fa almeno vedere.
+  */
+  const [linkScoperto, setLinkScoperto] = useState('')
   const [segnando, setSegnando] = useState('')
 
   /** Sezione Questura: la data proposta e ieri, la domanda della mattina. */
@@ -264,12 +275,46 @@ function Gestione() {
     }
   }
 
+  function riuscita(etichetta: string) {
+    setCopiato(etichetta)
+    setLinkScoperto('')
+    setTimeout(() => setCopiato(''), 2000)
+  }
+
+  /**
+   * Copia un link, e se non ci riesce lo fa vedere.
+   *
+   * Tre tentativi, dal piu' pulito al piu' testardo. L'ultimo non e' una
+   * copia: e' il link a schermo, da tenere premuto e copiare a mano. Non e'
+   * elegante, ma e' la differenza fra "non funziona" e "ci vuole un tocco in
+   * piu'" — e chi sta mandando il check-in a un ospite in arrivo non ha modo
+   * di aggirare un tasto che non fa niente.
+   */
   async function copia(testo: string, etichetta: string) {
     try {
       await navigator.clipboard.writeText(testo)
-      setCopiato(etichetta)
-      setTimeout(() => setCopiato(''), 2000)
-    } catch { /* su alcuni browser serve il tocco: il link resta comunque visibile */ }
+      riuscita(etichetta)
+      return
+    } catch { /* si prova la via vecchia */ }
+
+    try {
+      const casella = document.createElement('textarea')
+      casella.value = testo
+      casella.setAttribute('readonly', '')
+      casella.style.position = 'fixed'
+      casella.style.top = '0'
+      casella.style.opacity = '0'
+      document.body.appendChild(casella)
+      casella.select()
+      const fatto = document.execCommand('copy')
+      document.body.removeChild(casella)
+      if (fatto) {
+        riuscita(etichetta)
+        return
+      }
+    } catch { /* niente: si mostra */ }
+
+    setLinkScoperto(testo)
   }
 
   /** Torna alla vista pulita: nessun filtro appeso che spieghi un elenco corto. */
@@ -641,6 +686,29 @@ function Gestione() {
                 <a className="btn-mini" href={`/checkin?k=${encodeURIComponent(k)}&p=${encodeURIComponent(p.id)}`}>
                   Apri e completa tu
                 </a>
+
+                {linkScoperto && (
+                  <div
+                    style={{
+                      marginTop: 10, padding: '10px 12px', borderRadius: 8,
+                      background: '#fff8e6', border: '1px solid #e0a800',
+                    }}
+                  >
+                    <div style={{ fontSize: 13, marginBottom: 6 }}>
+                      Non sono riuscito a copiarlo da solo. <b>Tieni premuto sul link</b>,
+                      scegli <b>Copia</b> e incollalo in chat.
+                    </div>
+                    <input
+                      readOnly
+                      value={linkScoperto}
+                      onFocus={(e) => e.currentTarget.select()}
+                      style={{
+                        width: '100%', padding: '8px 10px', fontSize: 13,
+                        border: '1px solid #d8d8d8', borderRadius: 6, background: '#fff',
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             )}
           </section>
