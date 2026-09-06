@@ -584,6 +584,16 @@ function CheckinForm() {
     setStatoPratica(d.stato)
     setMancanze(d.mancanze ?? [])
     /*
+      Le rimozioni sono state eseguite: la lista si svuota.
+
+      Tenendola, il salvataggio successivo le rimanderebbe. E non e' innocuo:
+      il collegamento della scheda 2 esiste ancora in qualche chat, quell'ospite
+      puo' aprirlo e ricompilare la propria scheda — e il salvataggio dopo la
+      cancellerebbe di nuovo, con le foto del suo documento, senza che nessuno
+      lo abbia chiesto.
+    */
+    setTolti([])
+    /*
       `segnalazioni` e `rifiutati` li calcolava il server e li buttava via il
       browser. `rifiutati` sono i campi che quel livello non poteva cambiare:
       la modifica veniva scartata e la pagina diceva "Salvato" lo stesso, cosi'

@@ -78,8 +78,10 @@ export async function GET(req: NextRequest) {
   const numeri = new Set(esistenti)
   const attesi = Math.max(Number(pratica.soggiorno['N. ospiti'] || 0), 1)
   // I numeri mancanti per arrivare agli attesi: i piu' bassi ancora liberi,
-  // cosi' chi non ha ancora compilato riceve un collegamento comunque.
-  for (let n = 1; numeri.size < attesi && n < attesi + esistenti.length + 1; n++) numeri.add(n)
+  // cosi' chi non ha ancora compilato riceve un collegamento comunque. Il
+  // tetto e' una cintura: nessuna prenotazione ha duecento ospiti, e un ciclo
+  // che dipende da un dato del foglio non deve poter girare a vuoto.
+  for (let n = 1; numeri.size < attesi && n <= 200; n++) numeri.add(n)
 
   const linkOspiti = miaScheda
     ? []

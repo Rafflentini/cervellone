@@ -154,7 +154,10 @@ export async function GET(req: NextRequest) {
 
         const numeri = new Set(progressiviPerId.get(p.id) ?? [])
         const quanti = Math.max(attesi, 1)
-        for (let n = 1; numeri.size < quanti && n < quanti + numeri.size + 1; n++) numeri.add(n)
+        // Il tetto e' una cintura: nessuna prenotazione ha duecento ospiti, e
+        // un ciclo che dipende da un dato del foglio non deve poter girare a
+        // vuoto se quel dato e' assurdo.
+        for (let n = 1; numeri.size < quanti && n <= 200; n++) numeri.add(n)
 
         return {
           ...p,
