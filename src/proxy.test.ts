@@ -40,6 +40,7 @@ const PUBBLICI = [
   '/api/checkin/pratica',
   '/api/checkin/logo',
   '/api/checkin/documento',
+  '/api/checkin/leggi-documento',
   '/api/checkin/alloggiati',
   '/api/checkin/pratiche',
   '/api/checkin/manifest',

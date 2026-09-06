@@ -28,6 +28,7 @@ export default async function proxy(request: NextRequest) {
     || pathname.startsWith('/api/checkin/pratica')
     || pathname.startsWith('/api/checkin/logo')
     || pathname.startsWith('/api/checkin/documento')
+    || pathname.startsWith('/api/checkin/leggi-documento')
     || pathname.startsWith('/api/checkin/alloggiati')
     || pathname.startsWith('/api/checkin/pratiche')
     // Il manifesto lo chiede il browser da solo, senza cookie, quando si

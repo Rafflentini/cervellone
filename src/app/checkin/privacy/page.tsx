@@ -122,8 +122,9 @@ export default function InformativaPrivacy() {
         <li>
           <strong>Fornitori tecnologici</strong>{' '}che ospitano il servizio, nominati responsabili del
           trattamento: Google Ireland Ltd (archiviazione dei dati e delle immagini), Vercel Inc.
-          (hosting dell&apos;applicazione), Anthropic (assistente digitale che ci aiuta nella gestione
-          amministrativa). Alcuni di questi fornitori possono trattare dati al di fuori dell&apos;Unione
+          (hosting dell&apos;applicazione), Anthropic PBC (assistente digitale per la gestione
+          amministrativa e, <strong>se lei lo richiede</strong>, lettura automatica della fotografia
+          del documento — vedi il punto 8). Alcuni di questi fornitori possono trattare dati al di fuori dell&apos;Unione
           Europea, sulla base delle clausole contrattuali standard approvate dalla Commissione.
         </li>
       </ul>
@@ -177,7 +178,32 @@ export default function InformativaPrivacy() {
         law requires (police reporting, tax obligations).
       </p>
 
-      <h2>8. Come proteggiamo la fotografia del documento</h2>
+      <h2>8. Lettura automatica del documento</h2>
+      <p>
+        Per evitarle di ricopiare a mano una dozzina di dati, la fotografia del documento può essere
+        letta da un sistema automatico che <strong>propone</strong> i campi già compilati. È una
+        facoltà: si attiva solo se lei — o chi la aiuta — tocca il pulsante{' '}
+        <strong>«Compila dai dati della foto»</strong>.
+      </p>
+      <p>
+        Il risultato è <strong>sempre modificabile a mano</strong> e non sostituisce mai un dato già
+        scritto: dove lei ha scritto qualcosa di diverso, glielo segnaliamo e resta il suo.
+        <strong> Nessuna decisione viene presa in modo automatizzato</strong> sulla base di questa
+        lettura: serve solo a precompilare un modulo che una persona controlla e conferma.
+      </p>
+      <p>
+        La lettura è effettuata da <strong>Anthropic PBC</strong>, nominata responsabile del
+        trattamento, alla quale l&apos;immagine viene trasmessa per il tempo necessario
+        all&apos;operazione e non è utilizzata per addestrare modelli. Se preferisce non usarla, non
+        tocchi quel pulsante: può compilare tutti i campi a mano, senza alcuna conseguenza.
+      </p>
+      <p className="en">
+        The document photo can optionally be read automatically to pre-fill the form. It only runs if
+        you tap the button, the result is always editable, it never overwrites what you typed, and no
+        automated decision is made about you.
+      </p>
+
+      <h2>9. Come proteggiamo la fotografia del documento</h2>
       <p>
         L&apos;immagine viene <strong>ridotta sul suo telefono</strong>{' '}prima di partire, quindi non
         trasmettiamo l&apos;originale né i dati di posizione che spesso contiene. È conservata in una

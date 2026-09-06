@@ -389,6 +389,15 @@ function CheckinForm() {
     al nuovo arrivato le foto del documento di chi se n'e' andato.
   */
   const [tolti, setTolti] = useState<string[]>([])
+  /** La scheda di cui si sta leggendo la foto, se ce n'e' una. */
+  const [letturaInCorso, setLetturaInCorso] = useState('')
+  const [esitoLettura, setEsitoLettura] = useState<{
+    prog: string
+    riempiti: string[]
+    conflitti: string[]
+    avvisi: string[]
+    errore?: string
+  } | null>(null)
 
   /** Il collegamento della scheda numero N, se il server ne ha uno. */
   const linkDi = (prog: string) =>
@@ -599,6 +608,81 @@ function CheckinForm() {
    *
    * Restano modificabili: se l'ospite corregge, la sua correzione vince.
    */
+  /*
+    I nomi dei campi come si leggono a schermo: servono per dire a chi compila
+    che cosa e' stato riempito. "comuneNascita" non vuol dire niente a nessuno.
+  */
+  const NOMI_CAMPI: Partial<Record<keyof Ospite, string>> = {
+    cognome: 'cognome', nome: 'nome', sesso: 'sesso', dataNascita: 'data di nascita',
+    comuneNascita: 'comune di nascita', provNascita: 'provincia di nascita',
+    statoNascita: 'stato di nascita', cittadinanza: 'cittadinanza',
+    tipoDocumento: 'tipo di documento', numeroDocumento: 'numero del documento',
+    luogoRilascio: 'luogo di rilascio', codiceFiscale: 'codice fiscale',
+  }
+
+  /**
+   * Chiede al server di leggere la foto del documento e propone i dati.
+   *
+   * ── La regola ────────────────────────────────────────────────────────────
+   * Riempie SOLO i campi vuoti. Quello che una persona ha scritto non si tocca
+   * mai: se la foto dice un'altra cosa, la si mette per iscritto nel riquadro
+   * e decide lei. Questi campi vanno alla Questura, e un dato sostituito in
+   * silenzio da una lettura automatica e' un errore che nessuno ricontrolla
+   * piu', perche' il campo risulta gia' compilato.
+   */
+  async function leggiDalDocumento(prog: string) {
+    setLetturaInCorso(prog)
+    setEsitoLettura(null)
+    try {
+      const res = await fetch(
+        `/api/checkin/leggi-documento?${q}&prog=${encodeURIComponent(prog)}&lato=fronte`,
+        { method: 'POST' },
+      )
+      const d = await res.json()
+      if (!d?.ok) {
+        setEsitoLettura({
+          prog,
+          errore: d?.errore ?? 'Non sono riuscito a leggere la foto.',
+          riempiti: [], conflitti: [], avvisi: d?.avvisi ?? [],
+        })
+        return
+      }
+
+      const attuale = ospiti.find((o) => o.progressivo === prog)
+      if (!attuale) return
+
+      const cambi: Partial<Ospite> = {}
+      const riempiti: string[] = []
+      const conflitti: string[] = []
+
+      for (const [campo, letto] of Object.entries(d.dati ?? {}) as Array<[keyof Ospite, string]>) {
+        if (!letto || !(campo in NOMI_CAMPI)) continue
+        const eti = NOMI_CAMPI[campo] ?? String(campo)
+        const gia = String(attuale[campo] ?? '').trim()
+        if (!gia) {
+          // @ts-expect-error assegnazione dinamica su chiavi note
+          cambi[campo] = letto
+          riempiti.push(eti)
+        } else if (gia.toUpperCase() !== String(letto).toUpperCase()) {
+          conflitti.push(`${eti}: sul documento leggo «${letto}», tu hai scritto «${gia}»`)
+        }
+      }
+
+      if (Object.keys(cambi).length > 0) {
+        setOspiti((prev) => prev.map((o) => (o.progressivo === prog ? { ...o, ...cambi } : o)))
+      }
+      setEsitoLettura({ prog, riempiti, conflitti, avvisi: d.avvisi ?? [] })
+    } catch {
+      setEsitoLettura({
+        prog,
+        errore: 'Non sono riuscito a contattare il server. Compila a mano.',
+        riempiti: [], conflitti: [], avvisi: [],
+      })
+    } finally {
+      setLetturaInCorso('')
+    }
+  }
+
   async function riempiDalCf(i: number, cf: string) {
     const d = decodificaCf(cf, new Date().getFullYear())
     if (!d) return
@@ -1101,11 +1185,60 @@ function CheckinForm() {
                     </div>
 
                     {/*
-                      Gli estremi del documento stanno DOPO le foto, non prima.
-                      Quando la lettura automatica sara' attiva, chi carica una
-                      foto leggibile trovera' questi campi gia' pieni e non
-                      dovra' toccarli: chiederli prima vorrebbe dire far
-                      scrivere a mano qualcosa che stava per arrivare da solo.
+                      La lettura automatica.
+
+                      Si chiede, non parte da sola: e' una scelta, non un
+                      automatismo. E riempie SOLO i campi ancora vuoti — quello
+                      che una persona ha scritto vince sempre su quello che ho
+                      letto io da una fotografia.
+                    */}
+                    {docCaricati[`${o.progressivo}-fronte`] && (
+                      <button
+                        type="button"
+                        className="btn btn-sec"
+                        disabled={letturaInCorso === o.progressivo}
+                        onClick={() => void leggiDalDocumento(o.progressivo)}
+                      >
+                        {letturaInCorso === o.progressivo
+                          ? 'Leggo la foto…'
+                          : 'Compila dai dati della foto'}
+                        <span className="en">Fill in from the photo</span>
+                      </button>
+                    )}
+
+                    {esitoLettura && esitoLettura.prog === o.progressivo && (
+                      <div className={`esito ${esitoLettura.errore ? 'ko' : 'ok'}`} style={{ marginTop: 10 }}>
+                        {esitoLettura.errore && <div>{esitoLettura.errore}</div>}
+                        {esitoLettura.riempiti.length > 0 && (
+                          <div>
+                            <b>Compilati dalla foto:</b> {esitoLettura.riempiti.join(', ')}.{' '}
+                            Controllali e correggili dove serve.
+                          </div>
+                        )}
+                        {esitoLettura.riempiti.length === 0 && !esitoLettura.errore && (
+                          <div>Avevi gia&apos; compilato tutto: non ho toccato niente.</div>
+                        )}
+                        {esitoLettura.conflitti.length > 0 && (
+                          <div style={{ marginTop: 6 }}>
+                            <b>Non torna:</b>
+                            <ul style={{ margin: '4px 0 0 16px' }}>
+                              {esitoLettura.conflitti.map((c, n) => <li key={n}>{c}</li>)}
+                            </ul>
+                            Ho lasciato quello che avevi scritto tu.
+                          </div>
+                        )}
+                        {esitoLettura.avvisi.map((a, n) => (
+                          <div key={n} style={{ marginTop: 6 }}>{a}</div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/*
+                      Gli estremi del documento stanno DOPO le foto, non prima:
+                      chi ha caricato una foto leggibile e ha premuto "Compila
+                      dai dati della foto" li trova gia' pieni e non deve
+                      toccarli. Chiederli prima vorrebbe dire far scrivere a
+                      mano qualcosa che stava per arrivare da solo.
                     */}
                     <Eti it="Tipo documento" en="Document type" />
                     <select value={o.tipoDocumento} onChange={(e) => cambiaOspite(i, 'tipoDocumento', e.target.value)}>
