@@ -15,7 +15,7 @@
  * STESSA schermata, senza passarsi il telefono.
  */
 
-import { useEffect, useMemo, useState, Suspense } from 'react'
+import { useEffect, useMemo, useState, Suspense, useRef } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { validaCodiceFiscale } from '@/lib/checkin/valida-codice-fiscale'
 import { decodificaCf } from '@/lib/checkin/decodifica-cf'
@@ -392,6 +392,23 @@ function CheckinForm() {
   const [tolti, setTolti] = useState<string[]>([])
   /** La scheda di cui si sta leggendo la foto, se ce n'e' una. */
   const [letturaInCorso, setLetturaInCorso] = useState('')
+  /*
+    Le letture si mettono IN FILA, una dopo l'altra.
+
+    Fronte e retro partono da soli appena la foto e' arrivata, e chi carica il
+    retro mentre il fronte si sta ancora leggendo farebbe partire due letture
+    insieme: la seconda lavorerebbe sui campi com'erano PRIMA che la prima li
+    riempisse, e il retro sovrascriverebbe il fronte invece di completarlo.
+  */
+  const codaLetture = useRef<Promise<void>>(Promise.resolve())
+  /*
+    Lo specchio dei dati, aggiornato a ogni disegno della pagina.
+
+    Serve alla lettura che parte dopo un'attesa: la funzione si porta dietro i
+    valori di quando e' stata creata, e dopo dieci secondi di lettura quelli
+    non sono piu' quelli veri.
+  */
+  const ospitiOra = useRef<Ospite[]>([])
   const [esitoLettura, setEsitoLettura] = useState<{
     prog: string
     riempiti: string[]
@@ -418,6 +435,9 @@ function CheckinForm() {
     email: '', telefono: '', note: '',
   })
   const [ospiti, setOspiti] = useState<Ospite[]>([{ ...OSPITE_VUOTO }])
+  // Lo specchio si aggiorna durante il disegno, non in un effetto: un effetto
+  // arriva dopo, e una lettura gia' partita leggerebbe ancora i valori vecchi.
+  ospitiOra.current = ospiti
   /** Chiusa per un privato: i suoi dati sono gia' fra gli ospiti. */
   const [fatturaAltri, setFatturaAltri] = useState(false)
   const [invio, setInvio] = useState(false)
@@ -574,6 +594,22 @@ function CheckinForm() {
         return
       }
       setDocCaricati((prec) => ({ ...prec, [`${progressivo}-${lato}`]: true }))
+
+      /*
+        E subito si legge, senza chiedere niente.
+
+        Su entrambi i lati: su una carta d'identita' i dati stanno di qua e di
+        la', e leggendo solo il fronte meta' dei campi resterebbero da
+        ricopiare a mano — cioe' proprio la fatica che questa funzione
+        toglie. Ogni lettura riempie solo cio' che e' ancora vuoto, quindi il
+        retro completa il fronte invece di rifarlo.
+
+        Non blocca il caricamento: la foto e' gia' salvata, e se la lettura non
+        riesce si compila a mano come si e' sempre fatto.
+      */
+      codaLetture.current = codaLetture.current
+        .then(() => leggiDalDocumento(String(progressivo), lato))
+        .catch(() => { /* una lettura che non riesce non deve fermare la successiva */ })
     } catch (err) {
       // Ogni guasto ha la sua frase: "riprova" non aiuta chi ha un problema
       // che riprovando si ripresenta uguale.
@@ -644,12 +680,12 @@ function CheckinForm() {
    * silenzio da una lettura automatica e' un errore che nessuno ricontrolla
    * piu', perche' il campo risulta gia' compilato.
    */
-  async function leggiDalDocumento(prog: string) {
+  async function leggiDalDocumento(prog: string, lato: 'fronte' | 'retro') {
     setLetturaInCorso(prog)
     setEsitoLettura(null)
     try {
       const res = await fetch(
-        `/api/checkin/leggi-documento?${q}&prog=${encodeURIComponent(prog)}&lato=fronte`,
+        `/api/checkin/leggi-documento?${q}&prog=${encodeURIComponent(prog)}&lato=${lato}`,
         { method: 'POST' },
       )
       const d = await res.json()
@@ -662,7 +698,7 @@ function CheckinForm() {
         return
       }
 
-      const attuale = ospiti.find((o) => o.progressivo === prog)
+      const attuale = ospitiOra.current.find((o) => o.progressivo === prog)
       if (!attuale) return
 
       // La regola che decide cosa entra nel modulo sta in `proposta-documento`,
@@ -1191,60 +1227,72 @@ function CheckinForm() {
                     </div>
 
                     {/*
-                      La lettura automatica.
+                      La lettura parte DA SOLA, appena la foto e' arrivata.
 
-                      Si chiede, non parte da sola: e' una scelta, non un
-                      automatismo. E riempie SOLO i campi ancora vuoti — quello
-                      che una persona ha scritto vince sempre su quello che ho
-                      letto io da una fotografia.
+                      Non c'e' un pulsante da premere: chiedere "vuoi che
+                      compili?" a chi ha appena fotografato il proprio
+                      documento e' un passaggio in piu' che non decide niente —
+                      la risposta e' sempre si'. Chi carica una foto vuole non
+                      ricopiare dodici campi a mano.
+
+                      Quello che non si legge resta vuoto e si scrive a mano,
+                      come prima. Quello che si legge si puo' correggere, come
+                      qualunque altro campo: non viene chiesto niente a nessuno.
                     */}
-                    {docCaricati[`${o.progressivo}-fronte`] && (
-                      <button
-                        type="button"
-                        className="btn btn-sec"
-                        disabled={letturaInCorso === o.progressivo}
-                        onClick={() => void leggiDalDocumento(o.progressivo)}
-                      >
-                        {letturaInCorso === o.progressivo
-                          ? 'Leggo la foto…'
-                          : 'Compila dai dati della foto'}
-                        <span className="en">Fill in from the photo</span>
-                      </button>
+                    {letturaInCorso === o.progressivo && (
+                      <div className="hint" style={{ marginTop: 8 }}>
+                        Sto leggendo la foto e compilo i campi qui sotto…
+                        <span className="en">Reading the photo and filling in the fields below…</span>
+                      </div>
                     )}
 
-                    {esitoLettura && esitoLettura.prog === o.progressivo && (
-                      <div className={`esito ${esitoLettura.errore ? 'ko' : 'ok'}`} style={{ marginTop: 10 }}>
-                        {esitoLettura.errore && <div>{esitoLettura.errore}</div>}
+                    {/*
+                      Il riepilogo NON e' una domanda.
+
+                      Dice cosa e' stato compilato e cosa no, e finisce li'. Non
+                      c'e' niente da confermare: i campi sono li' sotto, si
+                      leggono e se serve si cambiano, come qualunque altro campo
+                      del modulo. Quando non c'e' niente da dire — la seconda
+                      foto che non aggiunge nulla al fronte — non compare
+                      proprio, invece di annunciare che non e' successo niente.
+                    */}
+                    {esitoLettura && esitoLettura.prog === o.progressivo
+                      && (esitoLettura.errore
+                        || esitoLettura.riempiti.length > 0
+                        || esitoLettura.conflitti.length > 0
+                        || esitoLettura.avvisi.length > 0) && (
+                      <div className="hint" style={{ marginTop: 10, lineHeight: 1.5 }}>
                         {esitoLettura.riempiti.length > 0 && (
                           <div>
                             <b>Compilati dalla foto:</b> {esitoLettura.riempiti.join(', ')}.{' '}
-                            Controllali e correggili dove serve.
+                            Dai un&apos;occhiata qui sotto.
+                            <span className="en">Filled in from the photo — please check below.</span>
                           </div>
                         )}
-                        {esitoLettura.riempiti.length === 0 && !esitoLettura.errore && (
-                          <div>Avevi gia&apos; compilato tutto: non ho toccato niente.</div>
-                        )}
-                        {esitoLettura.conflitti.length > 0 && (
-                          <div style={{ marginTop: 6 }}>
-                            <b>Non torna:</b>
-                            <ul style={{ margin: '4px 0 0 16px' }}>
-                              {esitoLettura.conflitti.map((c, n) => <li key={n}>{c}</li>)}
-                            </ul>
-                            Ho lasciato quello che avevi scritto tu.
-                          </div>
-                        )}
-                        {esitoLettura.avvisi.map((a, n) => (
-                          <div key={n} style={{ marginTop: 6 }}>{a}</div>
+                        {esitoLettura.conflitti.map((c, n) => (
+                          <div key={n} style={{ marginTop: 4 }}>{c}. Ho lasciato il tuo.</div>
                         ))}
+                        {esitoLettura.avvisi.map((a, n) => (
+                          <div key={n} style={{ marginTop: 4 }}>{a}</div>
+                        ))}
+                        {/*
+                          La foto e' salvata comunque: una lettura che non
+                          riesce non e' un caricamento fallito, e non deve
+                          sembrarlo.
+                        */}
+                        {esitoLettura.errore && (
+                          <div style={{ marginTop: 4 }}>
+                            Foto salvata. {esitoLettura.errore}
+                          </div>
+                        )}
                       </div>
                     )}
 
                     {/*
                       Gli estremi del documento stanno DOPO le foto, non prima:
-                      chi ha caricato una foto leggibile e ha premuto "Compila
-                      dai dati della foto" li trova gia' pieni e non deve
-                      toccarli. Chiederli prima vorrebbe dire far scrivere a
-                      mano qualcosa che stava per arrivare da solo.
+                      chi ha caricato una foto leggibile li trova gia' pieni e
+                      non deve toccarli. Chiederli prima vorrebbe dire far
+                      scrivere a mano qualcosa che stava per arrivare da solo.
                     */}
                     <Eti it="Tipo documento" en="Document type" />
                     <select value={o.tipoDocumento} onChange={(e) => cambiaOspite(i, 'tipoDocumento', e.target.value)}>

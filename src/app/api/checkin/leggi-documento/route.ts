@@ -50,9 +50,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, errore: 'Non autorizzato.' }, { status: 403 })
   }
 
-  // Sei letture al minuto per chi chiede: piu' che sufficienti per una
-  // famiglia, e abbastanza poche perche' un difetto non svuoti un budget.
-  if (!rateLimit(`leggi_doc_${ip(req)}`, 60_000, 6)) {
+  /*
+    Dodici al minuto: lo stesso tetto del caricamento delle foto.
+
+    Da quando la lettura parte da sola, ogni foto ne fa una — fronte e retro
+    per ciascun ospite. Una famiglia di quattro che carica in fretta ne fa
+    otto: un limite piu' stretto di quello delle foto respingerebbe letture di
+    caricamenti che sono stati accettati, e chi guarda lo schermo vedrebbe la
+    foto salvarsi e i campi restare vuoti senza capire perche'.
+  */
+  if (!rateLimit(`leggi_doc_${ip(req)}`, 60_000, 12)) {
     return NextResponse.json(
       { ok: false, errore: 'Troppe letture ravvicinate. Aspetta un momento.' },
       { status: 429 },
