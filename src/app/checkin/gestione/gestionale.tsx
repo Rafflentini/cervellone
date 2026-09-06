@@ -68,7 +68,24 @@ interface GruppoQuestura {
   avvisi: string[]
   pronto: boolean
 }
-interface EsitoQuestura { data: string; righe: number; gruppi?: GruppoQuestura[] }
+interface EsitoQuestura {
+  data: string
+  righe: number
+  gruppi?: GruppoQuestura[]
+  /** Quante prenotazioni risultano arrivate quel giorno. */
+  prenotazioni?: number
+  /** Di quelle, chi non ha nemmeno una scheda ospite compilata. */
+  senzaSchede?: string[]
+}
+
+/** Un giorno d'arrivo che risulta ancora non comunicato. */
+interface GiornoDaFare {
+  giorno: string
+  schede: number
+  senzaSchede: number
+  inviate: number
+  totali: number
+}
 
 const ieri = () => new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
 const gg = (s: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? s.split('-').reverse().join('/') : '—')
@@ -173,6 +190,16 @@ function Gestione() {
   const [dataQ, setDataQ] = useState(ieri())
   const [esitoQ, setEsitoQ] = useState<EsitoQuestura | null>(null)
   const [qInCorso, setQInCorso] = useState(false)
+  /*
+    L'errore del controllo Questura, mostrato DENTRO il riquadro.
+
+    Prima un guasto di rete veniva tradotto in `righe: 0`, che a schermo
+    diventava "Niente da comunicare": una richiesta mai arrivata al server,
+    dichiarata come adempimento assolto, su un obbligo che scade in 24 ore.
+  */
+  const [erroreQ, setErroreQ] = useState('')
+  const [giorniDaFare, setGiorniDaFare] = useState<GiornoDaFare[] | null>(null)
+  const [giorniInCorso, setGiorniInCorso] = useState(false)
 
   const carica = useCallback(async () => {
     if (!k) { setErrore('Collegamento incompleto: manca il codice di accesso.'); return }
@@ -209,13 +236,44 @@ function Gestione() {
   async function controllaQuestura() {
     setQInCorso(true)
     setEsitoQ(null)
+    setErroreQ('')
     try {
       const r = await fetch(`/api/checkin/alloggiati?k=${encodeURIComponent(k)}&data=${dataQ}`)
-      setEsitoQ(await r.json())
+      const d = await r.json()
+      /*
+        Il controllo su `r.ok` non c'era: con un 401 (collegamento vecchio) o
+        un 500 la risposta e' { ok: false, errore }, `righe` risulta undefined,
+        e la schermata tornava esattamente come prima. Si premeva e non
+        succedeva niente, senza una parola che dicesse perche'.
+      */
+      if (!r.ok || (d?.ok === false && d?.errore)) {
+        setErroreQ(d?.errore || `Il controllo non e' riuscito (errore ${r.status}).`)
+        return
+      }
+      setEsitoQ(d)
     } catch {
-      setEsitoQ({ data: dataQ, righe: 0, gruppi: [] })
+      setErroreQ('Non sono riuscito a contattare il server. Controlla la connessione e riprova. NON vuol dire che non ci sia nessuno da comunicare.')
     } finally {
       setQInCorso(false)
+    }
+  }
+
+  /** I giorni d'arrivo che risultano ancora non comunicati. */
+  async function caricaGiorniDaFare() {
+    setGiorniInCorso(true)
+    setErroreQ('')
+    try {
+      const r = await fetch(`/api/checkin/alloggiati?k=${encodeURIComponent(k)}&date=1`)
+      const d = await r.json()
+      if (!r.ok || !d?.ok) {
+        setErroreQ(d?.errore || `Non sono riuscito a leggere i giorni (errore ${r.status}).`)
+        return
+      }
+      setGiorniDaFare(d.giorni ?? [])
+    } catch {
+      setErroreQ('Non sono riuscito a contattare il server.')
+    } finally {
+      setGiorniInCorso(false)
     }
   }
 
@@ -320,6 +378,21 @@ function Gestione() {
   /** Torna alla vista pulita: nessun filtro appeso che spieghi un elenco corto. */
   function azzeraFiltri() {
     setMese(''); setUnita(''); setFattura(''); setManca(''); setQ('')
+  }
+
+  /*
+    Aprire un'altra prenotazione azzera il link mostrato a schermo.
+
+    `linkScoperto` e' uno stato solo per tutta la pagina: su un telefono dove
+    gli appunti non sono concessi — cioe' proprio dove il ripiego serve
+    sempre — il riquadro con il link della prenotazione A restava aperto e
+    ricompariva dentro il pannello della prenotazione B. Si sarebbe mandato
+    all'ospite di B il collegamento della pratica di A, cioe' i nomi e i
+    codici fiscali di estranei.
+  */
+  function apri(id: string) {
+    setLinkScoperto('')
+    setAperta((prec) => (prec === id ? '' : id))
   }
 
   function cambiaVista(v: Vista) {
@@ -453,7 +526,7 @@ function Gestione() {
           compilato — che e' esattamente il motivo per cui un file esce
           incompleto. Nell'archivio non serve: li' non c'e' niente da inviare.
         */}
-        {vista === 'adesso' && !filtrato && (
+        {vista === 'adesso' && (
           <section className="questura">
             <h2>Alloggiati Web</h2>
             <p className="spiega">
@@ -468,9 +541,77 @@ function Gestione() {
               </button>
             </div>
 
-            {esitoQ && esitoQ.righe === 0 && (
+            {/*
+              I giorni ancora da comunicare, da toccare uno per uno.
+
+              La rotta accetta una data sola: per gli arretrati di un mese
+              intero vorrebbe dire indovinare venti date alla cieca, senza
+              sapere quali sono andate a vuoto. Qui l'elenco e' scritto.
+            */}
+            <button
+              className="btn-mini" disabled={giorniInCorso}
+              onClick={caricaGiorniDaFare}
+              style={{ marginTop: 8 }}
+            >
+              {giorniInCorso ? 'Cerco…' : 'Quali giorni restano da comunicare?'}
+            </button>
+
+            {giorniDaFare && giorniDaFare.length === 0 && (
+              <div className="esito neutro" style={{ marginTop: 8 }}>
+                Nessun giorno in sospeso: tutte le prenotazioni risultano già comunicate.
+              </div>
+            )}
+
+            {giorniDaFare && giorniDaFare.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
+                  <b>{giorniDaFare.length}</b> {giorniDaFare.length === 1 ? 'giorno' : 'giorni'} da
+                  comunicare. Tocca un giorno per portarlo qui sopra.
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {giorniDaFare.map((g) => (
+                    <button
+                      key={g.giorno}
+                      className="btn-mini"
+                      onClick={() => { setDataQ(g.giorno); setEsitoQ(null); setErroreQ('') }}
+                    >
+                      {gg(g.giorno)}
+                      {g.senzaSchede > 0 && (
+                        <span style={{ color: '#b3261e' }}> · {g.senzaSchede} senza schede</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {erroreQ && (
+              <div className="esito ko" style={{ marginTop: 8 }}>{erroreQ}</div>
+            )}
+
+            {/*
+              Zero righe non vuol dire "non e' arrivato nessuno".
+
+              Vuol dire che non ci sono SCHEDE OSPITE. Per una prenotazione
+              appena inserita — cioe' tutti gli arretrati — e' la normalita':
+              le persone hanno dormito li', ma nessuno ha ancora compilato.
+              Dire "Niente da comunicare" in quel caso e' l'esatto contrario
+              del vero, su un obbligo con dentro una scadenza di 24 ore.
+            */}
+            {esitoQ && esitoQ.righe === 0 && (esitoQ.prenotazioni ?? 0) === 0 && (
               <div className="esito neutro">
-                Nessun ospite arrivato il {gg(esitoQ.data)}. Niente da comunicare.
+                Nessun arrivo registrato il {gg(esitoQ.data)}. Niente da comunicare.
+              </div>
+            )}
+
+            {esitoQ && esitoQ.righe === 0 && (esitoQ.prenotazioni ?? 0) > 0 && (
+              <div className="esito ko">
+                Il {gg(esitoQ.data)} risultano <b>{esitoQ.prenotazioni} prenotazioni</b>, ma
+                <b> nessuna scheda ospite compilata</b>: non c&apos;è ancora niente da mandare
+                alla Questura. Apri le prenotazioni qui sotto e compila le schede
+                {(esitoQ.senzaSchede ?? []).length > 0 && (
+                  <> — {(esitoQ.senzaSchede ?? []).join(', ')}</>
+                )}.
               </div>
             )}
 
@@ -508,6 +649,48 @@ function Gestione() {
           modulo: il raggruppamento e' per mese di ARRIVO, e un soggiorno a
           cavallo fra due mesi finisce tutto in quello in cui e' cominciato.
         */}
+        {/*
+          L'IMPOSTA DI SOGGIORNO, MESE PER MESE, anche nella vista di lavoro.
+
+          Fino al 6 settembre 2026 questa cifra si vedeva solo in "Archivio", e
+          solo sulle prenotazioni gia' chiuse: gia' `CHECKIN OK` e gia' spuntate
+          come caricate in Questura. Era quindi sistematicamente piu' bassa del
+          vero, e nulla lo diceva. Il numero che serve e' quello di TUTTE le
+          persone che hanno dormito qui, e si versa entro il 16 del mese dopo.
+
+          Il raggruppamento e' per mese d'ARRIVO: un soggiorno 30/08 - 02/09
+          finisce tutto in agosto. Sta scritto a schermo, non solo qui, perche'
+          chi legge una cifra in euro accanto alla parola "imposta" la prende
+          per quella da versare.
+        */}
+        {vista === 'adesso' && mesi.length > 0 && (
+          <section className="mesi">
+            <h2>Imposta di soggiorno</h2>
+            <p className="spiega">
+              Si versa al Comune <b>entro il 16 del mese successivo</b>. Qui ci sono
+              <b> tutte</b> le prenotazioni, anche quelle non ancora complete. Il mese
+              e&apos; quello di <b>arrivo</b>: un soggiorno a cavallo conta tutto nel mese
+              in cui e&apos; cominciato. Tocca un mese per vedere solo quelle prenotazioni.
+            </p>
+            <div className="elenco-mesi">
+              {mesi.map((m) => (
+                <button
+                  type="button"
+                  key={m.mese || 'senza'}
+                  className={mese === m.mese ? 'sel' : ''}
+                  onClick={() => setMese(mese === m.mese ? '' : m.mese)}
+                >
+                  <b>{nomeMese(m.mese)}</b>
+                  <span>
+                    {m.prenotazioni} {m.prenotazioni === 1 ? 'prenotazione' : 'prenotazioni'}
+                    {' · '}{m.notti} notti{' · '}{euro(m.imposta)} imposta
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
         {vista === 'archivio' && !q.trim() && mesi.length > 0 && (
           <section className="mesi">
             <h2>Archivio</h2>
@@ -549,7 +732,7 @@ function Gestione() {
 
         {pratiche.map((p) => (
           <section key={p.id} className={`pratica ${p.stato === 'CHECKIN OK' ? 'ok' : ''}`}>
-            <div className="riga1" onClick={() => setAperta(aperta === p.id ? '' : p.id)}>
+            <div className="riga1" onClick={() => apri(p.id)}>
               <div>
                 <div className="quando">{gg(p.checkin)} → {gg(p.checkout)}</div>
                 <div className="chi">{p.intestatario || 'senza nome'}</div>
@@ -672,7 +855,7 @@ function Gestione() {
                 )}
 
                 <div className="spiega-link">
-                  Link della singola scheda: chi lo riceve compila <b>solo la propria</b>
+                  Link della singola scheda: chi lo riceve compila <b>solo la propria</b>{' '}
                   e non vede gli altri ospiti.
                 </div>
                 <div className="ospiti-link">

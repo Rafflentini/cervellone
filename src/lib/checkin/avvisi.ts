@@ -111,7 +111,12 @@ export function chiConsegnaLeChiavi(nomi: string, telefoni: string): ConsegnaChi
 }
 
 export interface EsitoAvvisi {
-  ospite: 'inviata' | 'senza indirizzo' | 'non riuscita'
+  /*
+    'soggiorno gia iniziato': non si e' nemmeno provato, ed e' voluto. A chi e'
+    gia' tornato a casa non si manda "per il vostro soggiorno le chiediamo di
+    completare il check-in".
+  */
+  ospite: 'inviata' | 'senza indirizzo' | 'non riuscita' | 'soggiorno gia iniziato'
 }
 
 /**

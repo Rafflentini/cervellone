@@ -340,7 +340,7 @@ describe('togliere un ospite: si dichiara, non si deduce', () => {
     const esito = fondiOspiti([A, B, C], [
       { 'Progressivo': '1', 'Cognome': 'ALFA' },
       { 'Progressivo': '3', 'Cognome': 'GAMMA' },
-    ], { tipo: 'prenotazione' }, 'S1', { elencoCompleto: true })
+    ], { tipo: 'prenotazione' }, 'S1', { tolti: ['2'] })
 
     expect(cognomi(esito.righe)).toEqual(['ALFA', 'GAMMA'])
     expect(esito.tolti).toEqual(['2'])
@@ -350,13 +350,56 @@ describe('togliere un ospite: si dichiara, non si deduce', () => {
     const esito = fondiOspiti([A, B, C], [
       { 'Progressivo': '1', 'Cognome': 'ALFA' },
       { 'Progressivo': '3', 'Cognome': 'GAMMA' },
-    ], { tipo: 'prenotazione' }, 'S1', { elencoCompleto: true })
+    ], { tipo: 'prenotazione' }, 'S1', { tolti: ['2'] })
 
     const foto = esito.righe.map((r) => aMappa(COL_OSPITI, r)['Doc fronte'])
     expect(foto).toEqual(['foto-A', 'foto-C'])
   })
 
-  it('SENZA la dichiarazione esplicita non si cancella niente', () => {
+  it('IL SOSTITUTO non eredita le foto di chi se n e andato', () => {
+    /*
+      Il caso che ha fatto cadere la prima versione di questo lavoro.
+
+      Si toglie l'ospite 2 e si aggiunge un sostituto. Se il sostituto
+      riprendesse il numero 2 — che intanto e' tornato libero — prenderebbe la
+      riga del disdetto, e con essa le sue foto del documento: nome di uno,
+      documenti di un altro, e cosi' alla Questura.
+
+      La riga tolta se ne va, e il sostituto arriva col numero 4: nuovo.
+    */
+    const esito = fondiOspiti([A, B, C], [
+      { 'Progressivo': '1', 'Cognome': 'ALFA' },
+      { 'Progressivo': '3', 'Cognome': 'GAMMA' },
+      { 'Progressivo': '4', 'Cognome': 'SOSTITUTO' },
+    ], { tipo: 'prenotazione' }, 'S1', { tolti: ['2'] })
+
+    const per = new Map(esito.righe.map((r) => {
+      const m = aMappa(COL_OSPITI, r)
+      return [m['Cognome'], m['Doc fronte']]
+    }))
+    expect(per.get('SOSTITUTO')).toBe('')
+    expect(per.get('ALFA')).toBe('foto-A')
+    expect(per.get('GAMMA')).toBe('foto-C')
+    expect([...per.keys()]).not.toContain('BETA')
+  })
+
+  it('una pagina VECCHIA non cancella la scheda che non ha mai visto', () => {
+    /*
+      L'intestatario ha aperto il modulo quando c'erano due schede. Nel
+      frattempo un terzo ospite ha compilato la sua dal proprio telefono.
+      Salvando, l'intestatario manda solo le due che conosce: la terza NON
+      deve sparire, perche' lui non ha mai chiesto di toglierla.
+    */
+    const esito = fondiOspiti([A, B, C], [
+      { 'Progressivo': '1', 'Cognome': 'ALFA' },
+      { 'Progressivo': '2', 'Cognome': 'BETA' },
+    ], { tipo: 'prenotazione' }, 'S1')
+
+    expect(cognomi(esito.righe)).toEqual(['ALFA', 'BETA', 'GAMMA'])
+    expect(esito.tolti).toEqual([])
+  })
+
+  it('SENZA una richiesta esplicita non si cancella niente', () => {
     // Il gestore che cambia solo il numero di ospiti attesi manda `ospiti: []`.
     // Interpretarlo come "cancella tutti" sarebbe un disastro peggiore del
     // difetto che stiamo curando.
@@ -366,19 +409,29 @@ describe('togliere un ospite: si dichiara, non si deduce', () => {
     expect(esito.tolti).toEqual([])
   })
 
-  it('un elenco VUOTO non cancella nemmeno quando e dichiarato completo', () => {
-    // Cancellare tutte le schede non e un gesto che si compie per sbaglio, e
-    // quindi non deve poter accadere per sbaglio.
-    const esito = fondiOspiti([A, B, C], [], { tipo: 'gestore' }, 'S1', { elencoCompleto: true })
+  it('uno spazio nella cella Progressivo non fa sparire un ospite', () => {
+    // Il foglio lo si apre e lo si ritocca a mano: "2 " con lo spazio esiste
+    // davvero. Senza `trim` da entrambe le parti, quella riga non
+    // corrisponderebbe a nessun numero e verrebbe cancellata con le sue foto.
+    const Bspazio = aRiga(COL_OSPITI, {
+      'ID Soggiorno': 'S1', 'Progressivo': '2 ', 'Cognome': 'BETA', 'Doc fronte': 'foto-B',
+    })
+    const esito = fondiOspiti([A, Bspazio, C], [
+      { 'Progressivo': '1', 'Cognome': 'ALFA' },
+      { 'Progressivo': '2', 'Cognome': 'BETA' },
+      { 'Progressivo': '3', 'Cognome': 'GAMMA' },
+    ], { tipo: 'prenotazione' }, 'S1', { tolti: [] })
 
     expect(cognomi(esito.righe)).toEqual(['ALFA', 'BETA', 'GAMMA'])
+    expect(esito.tolti).toEqual([])
+    expect(esito.righe.map((r) => aMappa(COL_OSPITI, r)['Doc fronte'])).toContain('foto-B')
   })
 
   it('CONTROLLO POSITIVO: un singolo OSPITE non puo cancellare le schede degli altri', () => {
     // Stessa regola per cui non puo nemmeno leggerle.
     const esito = fondiOspiti([A, B, C], [
       { 'Progressivo': '2', 'Cognome': 'BETA' },
-    ], { tipo: 'ospite', progressivo: 2 }, 'S1', { elencoCompleto: true })
+    ], { tipo: 'ospite', progressivo: 2 }, 'S1', { tolti: ['1', '3'] })
 
     expect(cognomi(esito.righe)).toEqual(['ALFA', 'BETA', 'GAMMA'])
     expect(esito.tolti).toEqual([])
@@ -389,7 +442,7 @@ describe('togliere un ospite: si dichiara, non si deduce', () => {
       { 'Progressivo': '1', 'Cognome': 'ALFA' },
       { 'Progressivo': '2', 'Cognome': 'BETA' },
       { 'Progressivo': '3', 'Cognome': 'DELTA' },
-    ], { tipo: 'prenotazione' }, 'S1', { elencoCompleto: true })
+    ], { tipo: 'prenotazione' }, 'S1')
 
     expect(cognomi(esito.righe)).toEqual(['ALFA', 'BETA', 'DELTA'])
     expect(esito.tolti).toEqual([])

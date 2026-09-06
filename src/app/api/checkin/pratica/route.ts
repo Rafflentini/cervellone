@@ -61,17 +61,31 @@ export async function GET(req: NextRequest) {
     Non concede niente di nuovo: l'intestatario puo' gia' scrivere in tutte le
     schede. A un singolo ospite invece non si danno: lui vede solo la propria.
   */
-  const quanti = Math.max(
-    Number(pratica.soggiorno['Ospiti dichiarati'] || 0),
-    Number(pratica.soggiorno['N. ospiti'] || 0),
-    pratica.ospiti.length,
-    1,
-  )
+  /*
+    Un collegamento per ogni scheda che ESISTE, piu' quelli che servono ad
+    arrivare al numero di ospiti prenotati.
+
+    Non "uno per ogni numero da 1 a N": i progressivi non sono contigui. Basta
+    aver tolto un ospite perche' restino, per esempio, l'1 e il 3 — e generando
+    1, 2, 3 per posizione all'ospite numero 3 si mandava il collegamento della
+    scheda 2. Quell'ospite avrebbe compilato, e caricato il proprio documento
+    d'identita', sulla scheda di un altro.
+  */
+  const esistenti = pratica.ospiti
+    .map((o) => Number(String(o.dati['Progressivo'] ?? '').trim()))
+    .filter((n) => Number.isInteger(n) && n > 0)
+
+  const numeri = new Set(esistenti)
+  const attesi = Math.max(Number(pratica.soggiorno['N. ospiti'] || 0), 1)
+  // I numeri mancanti per arrivare agli attesi: i piu' bassi ancora liberi,
+  // cosi' chi non ha ancora compilato riceve un collegamento comunque.
+  for (let n = 1; numeri.size < attesi && n < attesi + esistenti.length + 1; n++) numeri.add(n)
+
   const linkOspiti = miaScheda
     ? []
-    : Array.from({ length: quanti }, (_, i) => ({
-      progressivo: i + 1,
-      link: linkOspite(req.nextUrl.origin, pratica.id, i + 1),
+    : [...numeri].sort((a, b) => a - b).map((n) => ({
+      progressivo: n,
+      link: linkOspite(req.nextUrl.origin, pratica.id, n),
     }))
 
   return NextResponse.json({
@@ -105,12 +119,14 @@ export async function POST(req: NextRequest) {
     soggiorno?: Record<string, string>
     ospiti?: Array<Record<string, string>>
     /**
-     * Vero solo quando chi salva ha davanti TUTTE le schede della
-     * prenotazione: allora un ospite assente dall'elenco e' un ospite tolto
-     * apposta. Senza questa dichiarazione esplicita nessuno viene mai
-     * cancellato — un salvataggio parziale non deve poter svuotare la pratica.
+     * I numeri delle schede che chi salva ha esplicitamente TOLTO.
+     *
+     * Uno per uno, e non "tutte quelle che non ti sto mandando": una pagina
+     * aperta da mezz'ora non sa chi ha compilato nel frattempo, e dedurre le
+     * cancellazioni dall'assenza le farebbe sparire. Chi non nomina un ospite
+     * non lo tocca.
      */
-    elenco_completo?: boolean
+    tolti?: string[]
   }
   try {
     corpo = await req.json()
@@ -125,7 +141,7 @@ export async function POST(req: NextRequest) {
       Array.isArray(corpo.ospiti) ? corpo.ospiti : [],
       accesso.livello,
       undefined,
-      { elencoCompleto: corpo.elenco_completo === true },
+      { tolti: Array.isArray(corpo.tolti) ? corpo.tolti.map(String) : [] },
     )
     if (!esito) return NextResponse.json({ ok: false, errore: 'Prenotazione non trovata.' }, { status: 404 })
     return NextResponse.json(esito)

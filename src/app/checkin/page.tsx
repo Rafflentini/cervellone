@@ -66,22 +66,30 @@ const OSPITE_VUOTO: Ospite = {
 }
 
 /**
- * Da' un numero alle schede che non ce l'hanno, prendendo il piu' piccolo
- * libero.
+ * Da' un numero alle schede che non ce l'hanno.
  *
- * Il piu' piccolo libero e non il successivo al massimo: i collegamenti che il
- * gestore manda agli ospiti sono numerati 1, 2, 3... e se dopo aver tolto il
- * secondo la nuova scheda diventasse la quarta, il collegamento "ospite 2" che
- * qualcuno ha gia' in chat aprirebbe una scheda vuota accanto a una compilata.
+ * ⚠️ Il numero e' NUOVO, mai usato prima in questa pratica — nemmeno uno
+ * rimasto libero perche' quella scheda e' stata tolta.
+ *
+ * La prima versione prendeva il piu' piccolo libero, per non invalidare i
+ * collegamenti gia' mandati in chat. Un audit ha mostrato che cosi' si
+ * riapriva il difetto che il lavoro doveva chiudere: tolto l'ospite 2 e
+ * aggiunto un sostituto, il sostituto riprendeva il numero 2 — cioe' la riga
+ * del disdetto, con le SUE foto del documento. Nome di uno, documenti di un
+ * altro, e cosi' alla Questura.
+ *
+ * Un collegamento che non apre piu' niente e' un fastidio; un documento
+ * d'identita' attribuito alla persona sbagliata e' un'altra cosa.
  */
-function numeraSchede(schede: Ospite[]): Ospite[] {
-  const presi = new Set(schede.map((o) => o.progressivo).filter(Boolean))
+function numeraSchede(schede: Ospite[], gia: Iterable<string> = []): Ospite[] {
+  const presi = new Set<string>([...gia, ...schede.map((o) => o.progressivo)].filter(Boolean))
+  let prossimo = 0
+  for (const p of presi) prossimo = Math.max(prossimo, Number(p) || 0)
   return schede.map((o) => {
     if (o.progressivo) return o
-    let n = 1
-    while (presi.has(String(n))) n++
-    presi.add(String(n))
-    return { ...o, progressivo: String(n) }
+    prossimo += 1
+    presi.add(String(prossimo))
+    return { ...o, progressivo: String(prossimo) }
   })
 }
 
@@ -178,11 +186,23 @@ interface ComuneTrovato { e: string; n: string; p: string; cap: string }
  * (BG/LE), LIVO (CO/TN), PEGLIO (CO/PU), SAMONE (TO/TN), SAN TEODORO (ME/SS).
  */
 function CercaComune({
-  accesso, valore, onScegli, placeholder,
+  accesso, valore, onScegli, onTesto, placeholder,
 }: {
   accesso: string
   valore: string
   onScegli: (c: ComuneTrovato) => void
+  /*
+    Quello che viene scritto a mano, riga per riga.
+
+    Serve perche' fino al 6 settembre 2026 il testo digitato restava PRIGIONIERO
+    di questo componente: risaliva al modulo solo toccando una voce della
+    tendina. Chi scriveva "MARATEA" per intero e poi passava al campo dopo
+    vedeva il comune scritto nero su bianco davanti a se', e nei dati c'era una
+    stringa vuota. Al salvataggio si sentiva rispondere "Indica il comune di
+    residenza" guardando il comune di residenza, senza alcun modo di capire
+    cosa volesse il programma.
+  */
+  onTesto: (v: string) => void
   placeholder?: string
 }) {
   const [testo, setTesto] = useState(valore)
@@ -210,7 +230,7 @@ function CercaComune({
         className="maiusc"
         value={testo}
         placeholder={placeholder}
-        onChange={(e) => { setTesto(e.target.value); setAperto(true) }}
+        onChange={(e) => { setTesto(e.target.value); onTesto(e.target.value); setAperto(true) }}
         onFocus={() => setAperto(true)}
         // Il ritardo serve: senza, il click su una voce arriva dopo la chiusura.
         onBlur={() => setTimeout(() => setAperto(false), 200)}
@@ -263,6 +283,22 @@ function CheckinForm() {
   const [mancanze, setMancanze] = useState<string[]>([])
   /** I link delle singole schede: servono all'intestatario per girarli. */
   const [linkOspiti, setLinkOspiti] = useState<Array<{ progressivo: number; link: string | null }>>([])
+  /*
+    I numeri delle schede tolte con "rimuovi", in attesa del salvataggio.
+
+    Si mandano al server uno per uno: e' l'unico modo perche' una pagina aperta
+    da mezz'ora non cancelli, per assenza, la scheda che un altro ospite ha
+    compilato nel frattempo dal suo telefono.
+
+    Servono anche a non riassegnare quei numeri a una scheda nuova: il numero
+    e' l'identita' della riga sul foglio, e riusarlo vorrebbe dire consegnare
+    al nuovo arrivato le foto del documento di chi se n'e' andato.
+  */
+  const [tolti, setTolti] = useState<string[]>([])
+
+  /** Il collegamento della scheda numero N, se il server ne ha uno. */
+  const linkDi = (prog: string) =>
+    linkOspiti.find((l) => String(l.progressivo) === String(prog))?.link ?? null
 
   /**
    * Chi apre con un link di prenotazione non modifica il soggiorno: lo
@@ -437,8 +473,19 @@ function CheckinForm() {
       const j = await res.json()
       const c = j.comuni?.[0]
       if (!c) return
+      /*
+        Per numero, non per posizione.
+
+        Fra la digitazione del codice fiscale e la risposta del server passano
+        centinaia di millisecondi: se in mezzo si preme "rimuovi" su una scheda
+        precedente, l'indice `i` punta ormai a un'altra persona, e il comune di
+        nascita di uno finirebbe sulla scheda di un altro.
+      */
+      const suo = ospiti[i]?.progressivo
       setOspiti((prev) => prev.map((os, idx) => (
-        idx === i ? { ...os, comuneNascita: c.n, provNascita: c.p } : os
+        (suo ? os.progressivo === suo : idx === i)
+          ? { ...os, comuneNascita: c.n, provNascita: c.p }
+          : os
       )))
     } catch {
       // Se la ricerca non riesce, i campi restano da compilare a mano: nessun
@@ -481,12 +528,10 @@ function CheckinForm() {
           }),
         ),
         /*
-          "Queste sono TUTTE le schede della prenotazione": lo puo' dire solo
-          chi le ha davanti tutte, cioe' l'intestatario o il gestore. Il
-          singolo ospite vede e manda soltanto la propria, e non deve poter
-          cancellare quelle degli altri nemmeno per errore.
+          Le schede tolte, una per una. Non "tutte quelle che non ti mando":
+          questa pagina sa solo chi c'era quando e' stata aperta.
         */
-        elenco_completo: !mioProgressivo,
+        tolti: mioProgressivo ? [] : tolti,
       }),
     })
     const d = await res.json()
@@ -682,7 +727,7 @@ function CheckinForm() {
               {anteprima.notti} notti · {ospiti.length} ospiti · imposta di soggiorno stimata € {anteprima.importo.toFixed(2)}
               {anteprima.esenti.length > 0 && (
                 <div className="esenti">
-                  {anteprima.esenti.length} esente/i: {anteprima.esenti.map((e) => `ospite ${e.indice + 1} (${e.motivo})`).join(', ')}
+                  {anteprima.esenti.length} esente/i: {anteprima.esenti.map((e) => `ospite ${ospiti[e.indice]?.progressivo || e.indice + 1} (${e.motivo})`).join(', ')}
                 </div>
               )}
             </div>
@@ -695,11 +740,37 @@ function CheckinForm() {
           {ospiti.map((o, i) => {
             const cf = statoCf(o)
             return (
-              <div className="ospite" key={i}>
+              <div className="ospite" key={o.progressivo || i}>
                 <h3>
-                  Ospite {i + 1} / Guest {i + 1}
+                  {/*
+                    Il numero della scheda, non la sua posizione nell'elenco:
+                    e' quello che sta sul foglio, quello che il collegamento
+                    dell'ospite apre, e quello che compare nel file per la
+                    Questura. Mostrarne un altro vorrebbe dire far parlare due
+                    persone di due cose diverse chiamandole con lo stesso nome.
+                  */}
+                  Ospite {o.progressivo || i + 1} / Guest {o.progressivo || i + 1}
                   {ospiti.length > 1 && (
-                    <button className="rimuovi" onClick={() => setOspiti(ospiti.filter((_, j) => j !== i))}>
+                    <button
+                      className="rimuovi"
+                      onClick={() => {
+                        // Il numero si mette fra i tolti PRIMA di togliere la
+                        // scheda: al salvataggio il server cancella quella riga
+                        // e le sue foto, invece di dedurre la cancellazione da
+                        // un'assenza che potrebbe non voler dire niente.
+                        if (o.progressivo) setTolti((prec) => [...new Set([...prec, o.progressivo])])
+                        // E le spunte "✓ caricato" di quella scheda se ne vanno
+                        // con lei: altrimenti la scheda che prende il suo posto
+                        // mostrerebbe un documento che non e' il suo.
+                        setDocCaricati((prec) => {
+                          const p = { ...prec }
+                          delete p[`${o.progressivo}-fronte`]
+                          delete p[`${o.progressivo}-retro`]
+                          return p
+                        })
+                        setOspiti(ospiti.filter((_, j) => j !== i))
+                      }}
+                    >
                       rimuovi / remove
                     </button>
                   )}
@@ -711,11 +782,19 @@ function CheckinForm() {
                   la loro parte: il flusso restava a meta', e l'intestatario si
                   ritrovava a dover chiedere i dati a voce e scriverli lui.
                 */}
-                {!mioProgressivo && linkOspiti[i]?.link && (
+                {/*
+                  Il collegamento si cerca PER NUMERO.
+
+                  Prendendolo per posizione (`linkOspiti[i]`), bastava un buco
+                  nella numerazione perche' all'ospite 3 si mandasse il link
+                  della scheda 2: quell'ospite avrebbe compilato — e caricato il
+                  proprio documento — sulla scheda di un altro.
+                */}
+                {!mioProgressivo && linkDi(o.progressivo) && (
                   <a
                     className="manda"
                     href={`https://wa.me/?text=${encodeURIComponent(
-                      `Ciao, completa qui la tua parte del check-in: ${linkOspiti[i].link}`,
+                      `Ciao, completa qui la tua parte del check-in: ${linkDi(o.progressivo)}`,
                     )}`}
                     target="_blank" rel="noreferrer"
                   >
@@ -762,6 +841,7 @@ function CheckinForm() {
                         cambiaOspite(i, 'comuneNascita', c.n)
                         cambiaOspite(i, 'provNascita', c.p)
                       }}
+                      onTesto={(v) => cambiaOspite(i, 'comuneNascita', v.toUpperCase())}
                     />
                   </div>
                   <div style={{ maxWidth: 90 }}>
@@ -916,7 +996,7 @@ function CheckinForm() {
             )
           })}
           {!mioProgressivo && (
-          <button className="btn btn-sec" onClick={() => setOspiti(numeraSchede([...ospiti, { ...OSPITE_VUOTO }]))}>
+          <button className="btn btn-sec" onClick={() => setOspiti(numeraSchede([...ospiti, { ...OSPITE_VUOTO }], tolti))}>
             + Aggiungi ospite / Add guest
           </button>
           )}
@@ -1007,6 +1087,7 @@ function CheckinForm() {
               // sbagliato dall'aria giusta.
               cap: c.cap || s.cap,
             }))}
+            onTesto={(v) => setSog((s) => ({ ...s, citta: v.toUpperCase() }))}
           />
 
           <div className="row">
@@ -1084,7 +1165,7 @@ const STILE = `
   :root{--blu:#1f3864;--bordo:#d7dce5;--bg:#f4f6fa;--ok:#0f7b4f;--err:#b3261e;--att:#8a6100;}
   *{box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-    margin:0;padding:0 0 110px;background:var(--bg);color:#1a1a1a;font-size:16px}
+    margin:0;padding:0 0 calc(150px + env(safe-area-inset-bottom));background:var(--bg);color:#1a1a1a;font-size:16px}
   header{background:#fff;border-bottom:3px solid var(--blu);padding:14px 18px 12px;
     position:sticky;top:0;z-index:10;box-shadow:0 1px 6px rgba(31,56,100,.08)}
   header .logo{display:block;height:38px;width:auto;max-width:100%;margin:0 0 10px}
@@ -1113,7 +1194,8 @@ const STILE = `
   .btn-sec{background:#fff;border:1.5px dashed var(--blu);color:var(--blu)}
   .btn-pri{background:var(--blu);color:#fff}
   .btn-pri:disabled{opacity:.5}
-  .barra{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--bordo);padding:12px 14px}
+  .barra{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--bordo);
+    padding:12px 14px calc(12px + env(safe-area-inset-bottom))}
   .hint{font-size:11px;color:#6b7280;margin-top:4px;line-height:1.4}
   .hint .en{display:block;font-style:italic;color:#8a94a6}
   .esito{padding:14px;border-radius:8px;margin-bottom:12px;font-size:14px;line-height:1.6}

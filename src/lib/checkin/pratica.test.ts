@@ -117,7 +117,7 @@ describe('salvaPratica — togliere un ospite', () => {
     // Il gestore toglie il secondo di tre e salva l'elenco completo.
     const esito = await salvaPratica(
       ID, {}, [dalModulo('1', 'ROSSI'), dalModulo('3', 'VERDI')],
-      GESTORE, 'foglio', { elencoCompleto: true },
+      GESTORE, 'foglio', { tolti: ['2'] },
     )
 
     expect(esito?.ok).toBe(true)
@@ -128,7 +128,7 @@ describe('salvaPratica — togliere un ospite', () => {
   it('ogni scheda resta con le PROPRIE foto: nessun nome coi documenti di un altro', async () => {
     await salvaPratica(
       ID, {}, [dalModulo('1', 'ROSSI'), dalModulo('3', 'VERDI')],
-      GESTORE, 'foglio', { elencoCompleto: true },
+      GESTORE, 'foglio', { tolti: ['2'] },
     )
 
     expect(ospiteScritto(2)['Cognome']).toBe('ROSSI')
@@ -143,16 +143,18 @@ describe('salvaPratica — togliere un ospite', () => {
   it('toglie da Drive le foto di chi non c e piu', async () => {
     await salvaPratica(
       ID, {}, [dalModulo('1', 'ROSSI'), dalModulo('3', 'VERDI')],
-      GESTORE, 'foglio', { elencoCompleto: true },
+      GESTORE, 'foglio', { tolti: ['2'] },
     )
     expect(scritture.documenti.sort()).toEqual(['foto-2-fronte', 'foto-2-retro'])
     expect(scritture.documenti).not.toContain('foto-1-fronte')
     expect(scritture.documenti).not.toContain('foto-3-fronte')
   })
 
-  it('senza la dichiarazione esplicita non cancella NIENTE', async () => {
-    // Controllo positivo: stessa chiamata, stessi dati, solo senza il flag.
-    // Se questo test passasse anche cancellando, il primo non proverebbe nulla.
+  it('senza una richiesta esplicita non cancella NIENTE', async () => {
+    // Controllo positivo: stessa chiamata, stessi dati, solo senza nominare
+    // l'ospite 2. Se questo test passasse anche cancellando, il primo non
+    // proverebbe nulla. E' anche il caso della pagina aperta da mezz'ora, che
+    // non sa chi ha compilato nel frattempo.
     await salvaPratica(
       ID, {}, [dalModulo('1', 'ROSSI'), dalModulo('3', 'VERDI')],
       GESTORE, 'foglio',
@@ -161,17 +163,40 @@ describe('salvaPratica — togliere un ospite', () => {
     expect(scritture.documenti).toEqual([])
   })
 
-  it('un elenco vuoto non cancella nessuno, nemmeno col flag', async () => {
+  it('un elenco vuoto non cancella nessuno', async () => {
     // E' cio' che manda il gestore quando cambia solo il numero di ospiti attesi.
-    await salvaPratica(ID, { 'N. ospiti': '2' }, [], GESTORE, 'foglio', { elencoCompleto: true })
+    await salvaPratica(ID, { 'N. ospiti': '2' }, [], GESTORE, 'foglio')
     expect(scritture.cancellate).toEqual([])
     expect(scritture.documenti).toEqual([])
+  })
+
+  it('il sostituto NON eredita le foto di chi se n e andato', async () => {
+    /*
+      Si toglie il secondo e si aggiunge un sostituto nello stesso salvataggio.
+      Il sostituto arriva col numero 4 — nuovo, mai usato — e la riga del
+      disdetto se ne va con le sue foto. Riusando il 2 il sostituto avrebbe
+      preso quella riga, cioe' i documenti d'identita' di un'altra persona.
+    */
+    await salvaPratica(
+      ID, {},
+      [dalModulo('1', 'ROSSI'), dalModulo('3', 'VERDI'), dalModulo('4', 'SOSTITUTO')],
+      GESTORE, 'foglio', { tolti: ['2'] },
+    )
+
+    expect(scritture.cancellate).toEqual([{ scheda: 'Ospiti', righe: [3] }])
+    expect(scritture.documenti.sort()).toEqual(['foto-2-fronte', 'foto-2-retro'])
+
+    const aggiunta = scritture.aggiunte.find((x) => x.scheda === 'Ospiti')
+    const nuova = aggiunta?.righe[0] ?? []
+    expect(nuova[COL_OSPITI.indexOf('Cognome')]).toBe('SOSTITUTO')
+    expect(nuova[COL_OSPITI.indexOf('Doc fronte')]).toBe('')
+    expect(nuova[COL_OSPITI.indexOf('Doc retro')]).toBe('')
   })
 
   it('un singolo ospite non puo cancellare le schede degli altri', async () => {
     await salvaPratica(
       ID, {}, [dalModulo('2', 'BIANCHI')],
-      { tipo: 'ospite', progressivo: 2 }, 'foglio', { elencoCompleto: true },
+      { tipo: 'ospite', progressivo: 2 }, 'foglio', { tolti: ['1', '3'] },
     )
     expect(scritture.cancellate).toEqual([])
     expect(scritture.documenti).toEqual([])
@@ -182,7 +207,7 @@ describe('salvaPratica — togliere un ospite', () => {
     // seconda cancella quella sbagliata.
     await salvaPratica(
       ID, {}, [dalModulo('1', 'ROSSI')],
-      GESTORE, 'foglio', { elencoCompleto: true },
+      GESTORE, 'foglio', { tolti: ['2', '3'] },
     )
     expect(scritture.cancellate).toEqual([{ scheda: 'Ospiti', righe: [4, 3] }])
   })
@@ -193,7 +218,7 @@ describe('salvaPratica — cio che non deve cambiare', () => {
     await salvaPratica(
       ID, {},
       [dalModulo('1', 'ROSSI'), dalModulo('2', 'BIANCHI'), dalModulo('3', 'VERDI'), dalModulo('4', 'NERI')],
-      GESTORE, 'foglio', { elencoCompleto: true },
+      GESTORE, 'foglio',
     )
     expect(scritture.cancellate).toEqual([])
     const aggiunta = scritture.aggiunte.find((x) => x.scheda === 'Ospiti')
@@ -204,7 +229,7 @@ describe('salvaPratica — cio che non deve cambiare', () => {
   it('il conteggio delle schede compilate segue le schede rimaste', async () => {
     await salvaPratica(
       ID, {}, [dalModulo('1', 'ROSSI'), dalModulo('3', 'VERDI')],
-      GESTORE, 'foglio', { elencoCompleto: true },
+      GESTORE, 'foglio', { tolti: ['2'] },
     )
     const w = scritture.aggiornate.find((x) => x.scheda === 'Soggiorni')
     const m = Object.fromEntries(COL_SOGGIORNI.map((c, i) => [c, w!.valori[i] ?? '']))

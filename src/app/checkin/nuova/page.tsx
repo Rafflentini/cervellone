@@ -29,6 +29,8 @@ interface Creata {
    */
   consegnaChiavi?: { nome: string; telefono: string; whatsapp: string }[]
   avvisi?: { ospite: string }
+  /** Il check-in e gia passato: niente email, e i link ospite sono scaduti. */
+  soggiornoPassato?: boolean
 }
 
 /**
@@ -65,6 +67,12 @@ function NuovaPrenotazione() {
   const [errori, setErrori] = useState<string[]>([])
   const [fatta, setFatta] = useState<Creata | null>(null)
   const [copiato, setCopiato] = useState('')
+  /*
+    Il collegamento mostrato a schermo quando la copia non e' riuscita.
+    In questa pagina i link delle singole schede esistono SOLO dentro i
+    pulsanti: senza il ripiego, una copia fallita li rende irrecuperabili.
+  */
+  const [linkScoperto, setLinkScoperto] = useState('')
 
   async function crea() {
     setInvio(true); setErrori([])
@@ -84,14 +92,44 @@ function NuovaPrenotazione() {
     }
   }
 
+  /**
+   * Copia un collegamento, e se non ci riesce lo fa vedere.
+   *
+   * Il ripiego non e' un vezzo: i link delle singole schede non sono scritti
+   * da nessuna parte in questa pagina, ci sono solo i pulsanti. Quando la
+   * copia falliva — appunti non concessi, browser dentro un'app, pagina
+   * aperta da una chat — non succedeva niente e quei collegamenti erano
+   * irrecuperabili: due ospiti su tre non compilavano.
+   */
   async function copia(testo: string, etichetta: string) {
     try {
       await navigator.clipboard.writeText(testo)
       setCopiato(etichetta)
+      setLinkScoperto('')
       setTimeout(() => setCopiato(''), 2000)
-    } catch {
-      setCopiato('')
-    }
+      return
+    } catch { /* si prova la via vecchia */ }
+
+    try {
+      const casella = document.createElement('textarea')
+      casella.value = testo
+      casella.setAttribute('readonly', '')
+      casella.style.position = 'fixed'
+      casella.style.top = '0'
+      casella.style.opacity = '0'
+      document.body.appendChild(casella)
+      casella.select()
+      const fatto = document.execCommand('copy')
+      document.body.removeChild(casella)
+      if (fatto) {
+        setCopiato(etichetta)
+        setLinkScoperto('')
+        setTimeout(() => setCopiato(''), 2000)
+        return
+      }
+    } catch { /* niente: si mostra */ }
+
+    setLinkScoperto(testo)
   }
 
   if (!k) {
@@ -124,6 +162,25 @@ function NuovaPrenotazione() {
             </button>
             {fatta.avvisi?.ospite === 'inviata' && (
               <div className="hint">Mandato anche per email.</div>
+            )}
+            {/*
+              Gli altri tre esiti non erano disegnati da nessuna parte: si
+              vedeva solo l'assenza della riga verde, che non nota nessuno.
+              Ma la pagina promette l'email come "rete di sicurezza": se non
+              e' partita, chi legge deve saperlo, non dedurlo.
+            */}
+            {fatta.avvisi?.ospite === 'non riuscita' && (
+              <div className="esito ko" style={{ marginTop: 8 }}>
+                L&apos;email <b>non e&apos; partita</b>. Manda il collegamento su WhatsApp:
+                per adesso quella e&apos; l&apos;unica strada.
+              </div>
+            )}
+            {fatta.soggiornoPassato && (
+              <div className="hint">
+                Soggiorno gia&apos; iniziato: <b>nessuna email mandata all&apos;ospite</b>, e i
+                collegamenti qui sotto potrebbero risultare scaduti per lui.
+                Le schede le compili tu con <b>Apri e completa tu</b> dalla pagina di gestione.
+              </div>
             )}
           </section>
 
@@ -177,9 +234,32 @@ function NuovaPrenotazione() {
                 </button>
               </div>
             ))}
+
+            {linkScoperto && (
+              <div
+                style={{
+                  marginTop: 10, padding: '10px 12px', borderRadius: 8,
+                  background: '#fff8e6', border: '1px solid #e0a800',
+                }}
+              >
+                <div style={{ fontSize: 13, marginBottom: 6 }}>
+                  Non sono riuscito a copiarlo da solo. <b>Tieni premuto sul link</b>,
+                  scegli <b>Copia</b> e incollalo in chat.
+                </div>
+                <input
+                  readOnly
+                  value={linkScoperto}
+                  onFocus={(e) => e.currentTarget.select()}
+                  style={{
+                    width: '100%', padding: '8px 10px', fontSize: 13,
+                    border: '1px solid #d8d8d8', borderRadius: 6, background: '#fff',
+                  }}
+                />
+              </div>
+            )}
           </section>
 
-          <button className="btn btn-sec" onClick={() => { setFatta(null); setCopiato('') }}>
+          <button className="btn btn-sec" onClick={() => { setFatta(null); setCopiato(''); setLinkScoperto('') }}>
             Apri un&apos;altra prenotazione
           </button>
         </div>
@@ -298,7 +378,7 @@ const STILE = `
   :root{--blu:#1f3864;--bordo:#d7dce5;--bg:#f4f6fa;--ok:#0f7b4f;--err:#b3261e;}
   *{box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-    margin:0;padding:0 0 90px;background:var(--bg);color:#1a1a1a;font-size:16px}
+    margin:0;padding:0 0 calc(140px + env(safe-area-inset-bottom));background:var(--bg);color:#1a1a1a;font-size:16px}
   header{background:#fff;border-bottom:3px solid var(--blu);padding:14px 18px 12px;
     box-shadow:0 1px 6px rgba(31,56,100,.08)}
   header .logo{display:block;height:34px;width:auto;max-width:100%;margin:0 0 9px}
@@ -317,7 +397,8 @@ const STILE = `
   .btn-pri{background:var(--blu);color:#fff}
   .btn-pri:disabled{opacity:.5}
   .btn-sec{background:#fff;border:1.5px dashed var(--blu);color:var(--blu)}
-  .barra{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--bordo);padding:12px 14px}
+  .barra{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--bordo);
+    padding:12px 14px calc(12px + env(safe-area-inset-bottom))}
   .hint{font-size:11px;color:#6b7280;margin-top:6px;line-height:1.45}
   .spiega{font-size:12px;color:#6b7280;margin:0 0 10px;line-height:1.45}
   .esito{padding:14px;border-radius:8px;margin-bottom:12px;font-size:14px;line-height:1.5}

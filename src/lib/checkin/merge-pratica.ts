@@ -210,19 +210,24 @@ export function fondiOspiti(
   inArrivo: Array<Record<string, string>>,
   livello: Livello,
   idSoggiorno: string,
-  opzioni: { elencoCompleto?: boolean } = {},
+  opzioni: { tolti?: string[] } = {},
 ): { righe: string[][]; rifiutati: string[]; tolti: string[] } {
   const rifiutati: string[] = []
   const tolti: string[] = []
   const perProgressivo = new Map<string, string[]>()
   for (const r of esistenti) {
     const m = aMappa(COL_OSPITI, r)
-    perProgressivo.set(String(m['Progressivo'] ?? ''), r)
+    // Con `trim`, e non senza: una cella `Progressivo` ritoccata a mano sul
+    // foglio puo' contenere "2 ", e allora la chiave non corrisponderebbe a
+    // quella che arriva dal modulo. Il risultato sarebbe una scheda cancellata
+    // — con le sue foto — per colpa di uno spazio.
+    perProgressivo.set(String(m['Progressivo'] ?? '').trim(), r)
   }
 
   /*
-    TOGLIERE UN OSPITE: si dichiara, non si deduce.
+    TOGLIERE UN OSPITE: si dichiara UNO PER UNO, non si deduce dall'assenza.
 
+    ── Storia, perche' e' costata due giri ─────────────────────────────────────
     Fino al 6 settembre 2026 il modulo, quando si premeva "rimuovi", non
     cancellava niente: RINUMERAVA. Con tre schede A, B, C, tolta la B, il
     browser rimandava "1=A, 2=C" e la riga 3 restava dov'era. Sul foglio
@@ -230,31 +235,33 @@ export function fondiOspiti(
     documento non viaggiano col modulo, la riga fusa teneva IL NOME DI UNO E I
     DOCUMENTI DI UN ALTRO, e andava cosi' alla Questura.
 
-    La cura non e' dedurre le cancellazioni dall'elenco che arriva: un elenco
-    vuoto arriva anche quando si sta salvando altro (il gestore che cambia il
-    numero di ospiti attesi manda `ospiti: []`), e interpretarlo come "cancella
-    tutti" sarebbe un disastro peggiore del difetto.
-    Quindi serve un'affermazione esplicita: `elencoCompleto` vuol dire "questi
-    sono TUTTI gli ospiti, gli altri non ci sono piu'".
+    La prima cura fu dedurre le cancellazioni dall'elenco: "queste sono tutte
+    le schede, le altre non ci sono piu'". Un audit avversariale l'ha rotta in
+    due modi, tutti e due reali:
 
-    E lo puo' dire solo chi ha titolo: l'intestatario o il gestore. Un singolo
+      1. Riusando un numero libero, il sostituto di un ospite disdetto prendeva
+         la riga del disdetto — e con essa le SUE foto del documento. Lo stesso
+         difetto di prima, entrato dalla porta di servizio.
+      2. Una pagina aperta da mezz'ora "sa" solo gli ospiti che c'erano quando
+         e' stata caricata. Se nel frattempo un altro ospite ha compilato la
+         sua scheda, il salvataggio dell'intestatario la dichiarava assente e
+         il server la cancellava, con le foto, senza chiedere niente.
+
+    Cosi' la regola e' diventata: si cancella SOLO cio' che qualcuno ha
+    esplicitamente tolto, e si cancella per numero. Chi non nomina un ospite
+    non lo tocca — che e' anche l'unica regola compatibile con due persone che
+    compilano la stessa pratica da due telefoni.
+
+    Lo puo' fare solo chi ha titolo: l'intestatario o il gestore. Un singolo
     ospite non cancella le schede degli altri — e' la stessa regola per cui non
     puo' nemmeno leggerle.
   */
-  const puoDichiarareElenco = livello.tipo === 'prenotazione' || livello.tipo === 'gestore'
-  const restano = new Set(
-    inArrivo.map((s) => String(s['Progressivo'] ?? '').trim()).filter(Boolean),
-  )
-  // Un elenco VUOTO non vuol dire "cancellali tutti": vuol dire che si sta
-  // salvando altro. Cancellare tutte le schede di una prenotazione non e' un
-  // gesto che qualcuno compie per sbaglio, e quindi non deve poter accadere
-  // per sbaglio.
-  if (opzioni.elencoCompleto && puoDichiarareElenco && restano.size > 0) {
-    for (const prog of [...perProgressivo.keys()]) {
-      if (prog && !restano.has(prog)) {
-        perProgressivo.delete(prog)
-        tolti.push(prog)
-      }
+  const puoTogliere = livello.tipo === 'prenotazione' || livello.tipo === 'gestore'
+  if (puoTogliere) {
+    for (const chiesto of opzioni.tolti ?? []) {
+      const prog = String(chiesto ?? '').trim()
+      if (!prog) continue
+      if (perProgressivo.delete(prog)) tolti.push(prog)
     }
   }
 

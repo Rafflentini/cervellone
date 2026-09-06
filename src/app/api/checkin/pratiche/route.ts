@@ -67,10 +67,26 @@ export async function GET(req: NextRequest) {
     ])
 
     const schedePerId = new Map<string, number>()
+    /*
+      I progressivi che esistono davvero, prenotazione per prenotazione.
+
+      Servono a generare i collegamenti giusti: i numeri non sono contigui —
+      tolto un ospite restano l'1 e il 3 — e costruire i link contando 1, 2, 3
+      significherebbe consegnare all'ospite 3 il collegamento della scheda 2.
+    */
+    const progressiviPerId = new Map<string, Set<number>>()
     for (const [i, r] of ospiti.entries()) {
       if (i === 0) continue
-      const id = String(aMappa(COL_OSPITI, r)['ID Soggiorno'] ?? '').trim()
-      if (id) schedePerId.set(id, (schedePerId.get(id) ?? 0) + 1)
+      const m = aMappa(COL_OSPITI, r)
+      const id = String(m['ID Soggiorno'] ?? '').trim()
+      if (!id) continue
+      schedePerId.set(id, (schedePerId.get(id) ?? 0) + 1)
+      const n = Number(String(m['Progressivo'] ?? '').trim())
+      if (Number.isInteger(n) && n > 0) {
+        const s = progressiviPerId.get(id) ?? new Set<number>()
+        s.add(n)
+        progressiviPerId.set(id, s)
+      }
     }
 
     const base = req.nextUrl.origin
@@ -100,7 +116,20 @@ export async function GET(req: NextRequest) {
 
     // I numeri in cima valgono su TUTTO: cambiare vista non deve cambiarli.
     const numeri = contaNumeri(tutte, oggi)
-    const mesi = indiceMesi(tutte.filter((p) => classifica(p, oggi) === 'archivio'))
+    /*
+      L'indice dei mesi si calcola su TUTTE le prenotazioni.
+
+      Prima si calcolava solo su quelle archiviate — cioe' gia' `CHECKIN OK`
+      **e** gia' spuntate come caricate in Questura. Il totale dell'imposta di
+      soggiorno che compariva accanto al mese era quindi una somma parziale, e
+      niente a schermo lo diceva: il 7 settembre, con gli arretrati di agosto
+      appena inseriti, avrebbe detto "agosto 2026 · 0 prenotazioni" mentre
+      quelle persone hanno dormito qui e l'imposta si versa entro il 16.
+
+      Un numero fiscale non puo' dipendere dalla spunta di un adempimento
+      diverso.
+    */
+    const mesi = indiceMesi(tutte)
     const appartamenti = [...new Set(tutte.map((p) => p.unita).filter(Boolean))].sort()
 
     const scelte = selezionaPratiche(tutte, { vista, oggi, mese, unita, q, fattura, manca })
@@ -122,6 +151,11 @@ export async function GET(req: NextRequest) {
           gestore doveva mandarli.
         */
         const dichiarati = Math.max(Number(m['Ospiti dichiarati'] || 0), attesi, 1)
+
+        const numeri = new Set(progressiviPerId.get(p.id) ?? [])
+        const quanti = Math.max(attesi, 1)
+        for (let n = 1; numeri.size < quanti && n < quanti + numeri.size + 1; n++) numeri.add(n)
+
         return {
           ...p,
           portale: m['Portale'] ?? '',
@@ -134,9 +168,9 @@ export async function GET(req: NextRequest) {
           nFattura: m['N. fattura'] ?? '',
           dataFattura: m['Data fattura'] ?? '',
           link: linkPrenotazione(base, p.id),
-          linkOspiti: Array.from({ length: Math.max(dichiarati, 1) }, (_, i) => ({
-            progressivo: i + 1,
-            link: linkOspite(base, p.id, i + 1),
+          linkOspiti: [...numeri].sort((a, b) => a - b).map((n) => ({
+            progressivo: n,
+            link: linkOspite(base, p.id, n),
           })),
         }
       })

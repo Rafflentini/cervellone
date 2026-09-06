@@ -201,7 +201,7 @@ export async function salvaPratica(
   ospitiInArrivo: Array<Record<string, string>>,
   livello: Livello,
   spreadsheetId: string = FOGLIO_CHECKIN_ID,
-  opzioni: { elencoCompleto?: boolean } = {},
+  opzioni: { tolti?: string[] } = {},
 ): Promise<EsitoSalvataggio | null> {
   const pratica = await leggiPratica(id, spreadsheetId)
   if (!pratica) return null
@@ -262,7 +262,7 @@ export async function salvaPratica(
   // Prima gli ospiti, poi il soggiorno: se la seconda scrittura non riesce,
   // restano schede senza uno stato aggiornato — visibile e recuperabile.
   // Nell'ordine opposto lo stato direbbe CHECKIN OK su schede non salvate.
-  const perProgressivo = new Map(pratica.ospiti.map((o) => [String(o.dati['Progressivo']), o.numeroRiga]))
+  const perProgressivo = new Map(pratica.ospiti.map((o) => [String(o.dati['Progressivo']).trim(), o.numeroRiga]))
   const daAggiungere: string[][] = []
   for (const riga of fusiOspiti.righe) {
     const prog = String(aMappa(COL_OSPITI, riga)['Progressivo'])
@@ -287,7 +287,7 @@ export async function salvaPratica(
     cancellazione sposta in su tutte le successive.
   */
   if (fusiOspiti.tolti.length > 0) {
-    const daTogliere = pratica.ospiti.filter((o) => fusiOspiti.tolti.includes(String(o.dati['Progressivo'])))
+    const daTogliere = pratica.ospiti.filter((o) => fusiOspiti.tolti.includes(String(o.dati['Progressivo']).trim()))
     for (const o of daTogliere) {
       for (const fileId of [o.dati['Doc fronte'], o.dati['Doc retro']].map((x) => String(x ?? '').trim()).filter(Boolean)) {
         try {

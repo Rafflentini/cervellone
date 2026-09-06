@@ -43,6 +43,17 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, errore: 'Data non valida (aaaa-mm-gg).' }, { status: 400 })
   }
 
+  /*
+    Modo "quali giorni restano da comunicare".
+
+    Senza, per gli arretrati bisogna indovinare le date una per una: la rotta
+    accetta un giorno solo, e per un mese di agosto sono venti tentativi alla
+    cieca, senza sapere quali siano andati a vuoto. Con questo si ottiene
+    l'elenco dei giorni che hanno ospiti da comunicare e nessun file ancora
+    generato — cioe' la lista di lavoro, invece di una caccia.
+  */
+  const soloDate = s.get('date') === '1'
+
   try {
     const [soggiorni, ospiti, tabelle, strutture] = await Promise.all([
       leggiTutto(FOGLIO_CHECKIN_ID, SCHEDA_SOGGIORNI),
@@ -72,6 +83,42 @@ export async function GET(req: NextRequest) {
 
     const codice = (denominazione: string) =>
       daFoglio.get(chiaveLuogo(denominazione)) ?? daCodice.get(chiaveLuogo(denominazione)) ?? ''
+
+    if (soloDate) {
+      /** Quante schede ospite ha ciascuna prenotazione. */
+      const schedePer = new Map<string, number>()
+      for (const [i, r] of ospiti.entries()) {
+        if (i === 0) continue
+        const id = String(aMappa(COL_OSPITI, r)['ID Soggiorno'] ?? '').trim()
+        if (id) schedePer.set(id, (schedePer.get(id) ?? 0) + 1)
+      }
+
+      const perGiorno = new Map<string, { schede: number; senzaSchede: number; inviate: number; totali: number }>()
+      for (const [i, r] of soggiorni.entries()) {
+        if (i === 0) continue
+        const m = aMappa(COL_SOGGIORNI, r)
+        const id = String(m['ID Soggiorno'] ?? '').trim()
+        const giorno = String(m['Check-in'] ?? '').trim()
+        if (!id || !/^d{4}-d{2}-d{2}$/.test(giorno)) continue
+        const v = perGiorno.get(giorno) ?? { schede: 0, senzaSchede: 0, inviate: 0, totali: 0 }
+        const n = schedePer.get(id) ?? 0
+        v.schede += n
+        v.totali += 1
+        if (n === 0) v.senzaSchede += 1
+        if (String(m['Inviato Alloggiati'] ?? '').toUpperCase() === 'SI') v.inviate += 1
+        perGiorno.set(giorno, v)
+      }
+
+      const giorni = [...perGiorno.entries()]
+        // Un giorno e' "da fare" se ha prenotazioni che non risultano ancora
+        // comunicate. Anche senza schede: e' proprio il caso che oggi spariva
+        // in silenzio, e che per gli arretrati e' la regola, non l'eccezione.
+        .filter(([, v]) => v.inviate < v.totali)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([giorno, v]) => ({ giorno, ...v }))
+
+      return NextResponse.json({ ok: true, giorni })
+    }
 
     const perId = new Map<string, Record<string, string>>()
     for (const [i, r] of soggiorni.entries()) {
@@ -174,10 +221,26 @@ export async function GET(req: NextRequest) {
 
       const tuttiGliAvvisi = gruppi.flatMap((g) => g.avvisi)
 
+      /*
+        Quante prenotazioni risultano arrivate quel giorno, e quante di quelle
+        non hanno nemmeno una scheda ospite.
+
+        Senza questi due numeri l'interfaccia non poteva distinguere "quel
+        giorno non e' arrivato nessuno" da "sono arrivate quattro persone e
+        nessuno ha ancora compilato" — e diceva "Niente da comunicare" in
+        entrambi i casi. Su un obbligo che scade in 24 ore.
+      */
+      const conSchede = new Set(idPerOspite)
+      const senzaSchede = [...perId.entries()]
+        .filter(([id]) => !conSchede.has(id))
+        .map(([, m]) => String(m['Intestatario fattura'] ?? '').trim() || String(m['Unità'] ?? '').trim())
+
       return NextResponse.json({
         ok: tuttiGliAvvisi.length === 0,
         data,
         righe: daInviare.length,
+        prenotazioni: perId.size,
+        senzaSchede,
         // Un file per struttura: il totale unico farebbe credere che basti un
         // caricamento solo, e quel malinteso si scopre col cronometro che gira.
         gruppi,

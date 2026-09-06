@@ -80,15 +80,31 @@ export async function POST(req: NextRequest) {
       intestatario: d.intestatario ?? '',
     })
 
-    // L'email all'ospite parte SOLO se l'indirizzo c'e': lasciarlo vuoto
-    // spegne l'invio senza toccare il codice. Un avviso che non parte non deve
-    // mai far fallire la creazione — la prenotazione e' il dato, l'avviso una
-    // cortesia.
-    const avvisi = await inviaAvvisi({
-      emailOspite: d.email ?? '',
-      oggettoOspite: 'Check-in — LA REAL ESTATE',
-      testoOspite,
-    })
+    /*
+      L'email all'ospite parte SOLO se l'indirizzo c'e': lasciarlo vuoto
+      spegne l'invio senza toccare il codice. Un avviso che non parte non deve
+      mai far fallire la creazione — la prenotazione e' il dato, l'avviso una
+      cortesia.
+
+      E non parte se il soggiorno e' gia' cominciato.
+
+      A settembre 2026 si registrano a mano tutti gli ingressi di agosto mai
+      inseriti: senza questa riga, venti persone gia' tornate a casa
+      riceverebbero "per il vostro soggiorno dal 5 agosto le chiediamo di
+      completare il check-in", con dentro un collegamento che nel frattempo e'
+      scaduto. Una figuraccia con l'ospite e un invito a scrivere per chiedere
+      spiegazioni.
+    */
+    const oggiIso = new Date().toISOString().slice(0, 10)
+    const soggiornoPassato = /^\d{4}-\d{2}-\d{2}$/.test(d.checkin) && d.checkin < oggiIso
+
+    const avvisi = soggiornoPassato
+      ? { ospite: 'soggiorno gia iniziato' as const }
+      : await inviaAvvisi({
+        emailOspite: d.email ?? '',
+        oggettoOspite: 'Check-in — LA REAL ESTATE',
+        testoOspite,
+      })
 
     return NextResponse.json({
       ok: true,
@@ -105,6 +121,9 @@ export async function POST(req: NextRequest) {
         whatsapp: linkWhatsApp(c.telefono, testoConsegnaChiavi),
       })),
       avvisi,
+      // Perche' la pagina possa dire le cose come stanno invece di proporre
+      // "mandalo su WhatsApp all'ospite" su un soggiorno concluso.
+      soggiornoPassato,
       linkOspiti: Array.from({ length: ospiti }, (_, i) => ({
         progressivo: i + 1,
         link: linkOspite(base, id, i + 1),
