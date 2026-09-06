@@ -25,6 +25,7 @@ import { generaAlloggiati, type OspiteAlloggiati } from '@/lib/checkin/alloggiat
 import { tuttiIComuni } from '@/lib/checkin/comuni'
 import { idNelFile } from '@/lib/checkin/segnature'
 import { segnaSoggiorno } from '@/lib/checkin/pratica'
+import { giorniDaComunicare } from '@/lib/checkin/giorni-da-comunicare'
 
 export async function GET(req: NextRequest) {
   const s = req.nextUrl.searchParams
@@ -93,31 +94,24 @@ export async function GET(req: NextRequest) {
         if (id) schedePer.set(id, (schedePer.get(id) ?? 0) + 1)
       }
 
-      const perGiorno = new Map<string, { schede: number; senzaSchede: number; inviate: number; totali: number }>()
-      for (const [i, r] of soggiorni.entries()) {
-        if (i === 0) continue
+      /*
+        La regola sta in `lib/checkin/giorni-da-comunicare`, dove si puo'
+        provare. La prima versione viveva qui dentro, aveva una regex
+        sbagliata e rispondeva sempre "nessun giorno in sospeso": nessun test
+        poteva vederlo, perche' non c'era niente da chiamare.
+      */
+      const esito = giorniDaComunicare(soggiorni.slice(1).map((r) => {
         const m = aMappa(COL_SOGGIORNI, r)
         const id = String(m['ID Soggiorno'] ?? '').trim()
-        const giorno = String(m['Check-in'] ?? '').trim()
-        if (!id || !/^d{4}-d{2}-d{2}$/.test(giorno)) continue
-        const v = perGiorno.get(giorno) ?? { schede: 0, senzaSchede: 0, inviate: 0, totali: 0 }
-        const n = schedePer.get(id) ?? 0
-        v.schede += n
-        v.totali += 1
-        if (n === 0) v.senzaSchede += 1
-        if (String(m['Inviato Alloggiati'] ?? '').toUpperCase() === 'SI') v.inviate += 1
-        perGiorno.set(giorno, v)
-      }
+        return {
+          id,
+          checkin: String(m['Check-in'] ?? '').trim(),
+          schede: schedePer.get(id) ?? 0,
+          inviato: String(m['Inviato Alloggiati'] ?? '').toUpperCase() === 'SI',
+        }
+      }))
 
-      const giorni = [...perGiorno.entries()]
-        // Un giorno e' "da fare" se ha prenotazioni che non risultano ancora
-        // comunicate. Anche senza schede: e' proprio il caso che oggi spariva
-        // in silenzio, e che per gli arretrati e' la regola, non l'eccezione.
-        .filter(([, v]) => v.inviate < v.totali)
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([giorno, v]) => ({ giorno, ...v }))
-
-      return NextResponse.json({ ok: true, giorni })
+      return NextResponse.json({ ok: true, ...esito })
     }
 
     const perId = new Map<string, Record<string, string>>()
