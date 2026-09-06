@@ -142,24 +142,118 @@ function daForm(f: FormOspite): Ospite {
  * poi conserviamo. Meno risoluzione del necessario e' meno dato personale
  * custodito, e questa e' l'unica quantita' che conviene sempre minimizzare.
  */
+/** Quello che il server accetta. Deve restare uguale a `lib/checkin/documenti`. */
+const TIPI_AMMESSI = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
+const MAX_BYTE = 3_000_000
+
+/** Il file cosi' com'e' passerebbe il controllo del server? */
+function giaAccettabile(file: File): boolean {
+  return TIPI_AMMESSI.includes(String(file.type).toLowerCase()) && file.size <= MAX_BYTE
+}
+
+/**
+ * Decodifica la foto, provando due strade.
+ *
+ * ── Perche' due (6 settembre 2026) ───────────────────────────────────────────
+ * `createImageBitmap` non funziona dappertutto e non con tutto:
+ *
+ *   - gli iPhone salvano in HEIC. Scegliendo dalla fotocamera o dal rullino,
+ *     iOS converte in JPEG per conto suo; ma prendendo la stessa foto da
+ *     "File" arriva il .heic vero, e createImageBitmap lo rifiuta. Prima
+ *     succedeva questo: la riduzione falliva, si mandava l'ORIGINALE, e il
+ *     server rispondeva "Tipo di file non ammesso: image/heic" — una frase
+ *     che non dice a nessuno cosa fare;
+ *   - su Safari piu' vecchi di iOS 15 la funzione non esiste proprio.
+ *
+ * Un `<img>` con un object URL invece usa il decodificatore del sistema
+ * operativo, che l'HEIC lo conosce.
+ *
+ * `imageOrientation: 'from-image'` non e' un dettaglio: senza, una foto
+ * scattata tenendo il telefono in mano arriva coricata, e un documento
+ * coricato in Questura si legge male.
+ */
+async function decodificaImmagine(file: File): Promise<CanvasImageSource | null> {
+  try {
+    return await createImageBitmap(file, { imageOrientation: 'from-image' })
+  } catch { /* si prova col decodificatore del sistema */ }
+
+  const url = URL.createObjectURL(file)
+  try {
+    const img = new Image()
+    await new Promise<void>((ok, ko) => {
+      img.onload = () => ok()
+      img.onerror = () => ko(new Error('non decodificabile'))
+      img.src = url
+    })
+    return img
+  } catch {
+    return null
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+/** Larghezza e altezza di quello che siamo riusciti a decodificare. */
+function misura(s: CanvasImageSource): { l: number; a: number } {
+  const q = s as { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number }
+  return { l: q.naturalWidth || q.width || 0, a: q.naturalHeight || q.height || 0 }
+}
+
+export class FotoNonLeggibile extends Error {}
+
+/**
+ * Riduce la foto PRIMA di mandarla.
+ *
+ * Un telefono recente scatta a 12 megapixel: sono 4-6 MB, che non passano il
+ * limite della piattaforma e che su una tacca di segnale non partono proprio.
+ * A 1600 pixel di lato lungo un documento resta perfettamente leggibile e pesa
+ * qualche centinaio di kilobyte.
+ *
+ * C'e' anche un motivo che non riguarda i byte: la foto ridotta e' quella che
+ * poi conserviamo. Meno risoluzione del necessario e' meno dato personale
+ * custodito, e questa e' l'unica quantita' che conviene sempre minimizzare.
+ */
 async function riduciImmagine(file: File, latoMax = 1600): Promise<Blob> {
   if (file.type === 'application/pdf') return file
 
-  const bitmap = await createImageBitmap(file)
-  const scala = Math.min(1, latoMax / Math.max(bitmap.width, bitmap.height))
-  const l = Math.round(bitmap.width * scala)
-  const a = Math.round(bitmap.height * scala)
+  const sorgente = await decodificaImmagine(file)
+  if (!sorgente) {
+    // Ultima possibilita': mandarla com'e'. Solo se il server la accetterebbe
+    // — altrimenti si sbatte contro un rifiuto incomprensibile in fondo al
+    // viaggio, invece di dirlo qui dove si puo' ancora rimediare.
+    if (giaAccettabile(file)) return file
+    throw new FotoNonLeggibile()
+  }
 
-  const tela = document.createElement('canvas')
-  tela.width = l
-  tela.height = a
-  const ctx = tela.getContext('2d')
-  if (!ctx) return file
-  ctx.drawImage(bitmap, 0, 0, l, a)
+  const { l: lo, a: ao } = misura(sorgente)
+  if (!lo || !ao) {
+    if (giaAccettabile(file)) return file
+    throw new FotoNonLeggibile()
+  }
 
-  return new Promise<Blob>((risolvi) => {
-    tela.toBlob((b) => risolvi(b ?? file), 'image/jpeg', 0.82)
-  })
+  /*
+    Se il primo tentativo non produce niente si riprova piu' piccolo.
+
+    `toBlob` restituisce null quando la tela e' troppo grande per la memoria
+    del telefono: capita sui modelli economici con le foto da 48 megapixel.
+    Prima, in quel caso, si mandava l'originale — cioe' proprio il file che
+    non passava il limite. Meglio una foto un po' piu' piccola che nessuna.
+  */
+  for (const lato of [latoMax, 1000, 700]) {
+    const scala = Math.min(1, lato / Math.max(lo, ao))
+    const tela = document.createElement('canvas')
+    tela.width = Math.round(lo * scala)
+    tela.height = Math.round(ao * scala)
+    const ctx = tela.getContext('2d')
+    if (!ctx) break
+    ctx.drawImage(sorgente, 0, 0, tela.width, tela.height)
+
+    const b = await new Promise<Blob | null>((r) => tela.toBlob(r, 'image/jpeg', 0.82))
+    if (b && b.size <= MAX_BYTE) return b
+  }
+
+  if (giaAccettabile(file)) return file
+  throw new FotoNonLeggibile()
 }
 
 /** Etichetta bilingue: italiano sopra, inglese sotto in corpo minore. */
@@ -442,6 +536,16 @@ function CheckinForm() {
    */
   async function caricaDocumento(progressivo: number, lato: 'fronte' | 'retro', file: File) {
     setDocInvio(`${progressivo}-${lato}`)
+    /*
+      Un tetto al tempo di attesa.
+
+      Senza, una connessione che si impalla senza mai cadere — la tacca di
+      segnale che non muore e non risponde — lasciava la scheda su "Invio…"
+      fino al timeout del browser, che puo' essere di minuti. Chi guarda lo
+      schermo non ha modo di sapere se sta succedendo qualcosa.
+    */
+    const stop = new AbortController()
+    const orologio = setTimeout(() => stop.abort(), 45_000)
     try {
       const ridotta = await riduciImmagine(file)
       const res = await fetch(
@@ -450,6 +554,7 @@ function CheckinForm() {
           method: 'POST',
           headers: { 'Content-Type': ridotta.type || 'image/jpeg' },
           body: ridotta,
+          signal: stop.signal,
         },
       )
       const d = await res.json()
@@ -459,8 +564,18 @@ function CheckinForm() {
         return
       }
       setDocCaricati((prec) => ({ ...prec, [`${progressivo}-${lato}`]: true }))
-    } catch {
-      setEsito({ tipo: 'ko', testo: ['Non sono riuscito a mandare la foto. Riprova.'] })
+    } catch (err) {
+      // Ogni guasto ha la sua frase: "riprova" non aiuta chi ha un problema
+      // che riprovando si ripresenta uguale.
+      const testo = err instanceof FotoNonLeggibile
+        ? [
+          'Questa foto e in un formato che il telefono non riesce a preparare.',
+          'Riprova scattandola con la fotocamera invece di prenderla da "File", oppure mandala in JPG.',
+        ]
+        : stop.signal.aborted
+          ? ['Il caricamento ci sta mettendo troppo. Controlla il segnale e riprova.']
+          : ['Non sono riuscito a mandare la foto. Riprova.']
+      setEsito({ tipo: 'ko', testo })
       // Il messaggio si disegna in cima a un modulo lungo, e chi carica la foto
       // sta in fondo: senza questa riga il riquadro rosso restava fuori dallo
       // schermo, e l'unico segnale era il pulsante che tornava com'era. Chi
@@ -468,6 +583,7 @@ function CheckinForm() {
       // documento — e alla Questura sarebbe mancato.
       window.scrollTo(0, 0)
     } finally {
+      clearTimeout(orologio)
       setDocInvio('')
     }
   }
