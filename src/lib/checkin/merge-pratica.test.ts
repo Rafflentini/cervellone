@@ -318,3 +318,80 @@ describe('le schede ospite hanno la stessa disciplina della prenotazione', () =>
     expect(m['Doc fronte']).toBe('idDrive-fronte')
   })
 })
+
+describe('togliere un ospite: si dichiara, non si deduce', () => {
+  /**
+   * Il difetto piu' grave trovato negli audit del 6 settembre 2026.
+   * "rimuovi" non cancellava: RINUMERAVA. Tre schede A, B, C; tolta la B, il
+   * browser rimandava "1=A, 2=C" e la riga 3 restava dov'era. Sul foglio
+   * finivano A, C, C — un ospite duplicato e uno sparito — e siccome le foto
+   * del documento non viaggiano col modulo, la riga fusa teneva IL NOME DI UNO
+   * E I DOCUMENTI DI UN ALTRO. E andava cosi alla Questura.
+   */
+  const A = aRiga(COL_OSPITI, { 'ID Soggiorno': 'S1', 'Progressivo': '1', 'Cognome': 'ALFA', 'Doc fronte': 'foto-A' })
+  const B = aRiga(COL_OSPITI, { 'ID Soggiorno': 'S1', 'Progressivo': '2', 'Cognome': 'BETA', 'Doc fronte': 'foto-B' })
+  const C = aRiga(COL_OSPITI, { 'ID Soggiorno': 'S1', 'Progressivo': '3', 'Cognome': 'GAMMA', 'Doc fronte': 'foto-C' })
+
+  function cognomi(righe: string[][]) {
+    return righe.map((r) => aMappa(COL_OSPITI, r)['Cognome'])
+  }
+
+  it('CONTROLLO POSITIVO: tolto l ospite 2, restano DUE schede e sono quelle giuste', () => {
+    const esito = fondiOspiti([A, B, C], [
+      { 'Progressivo': '1', 'Cognome': 'ALFA' },
+      { 'Progressivo': '3', 'Cognome': 'GAMMA' },
+    ], { tipo: 'prenotazione' }, 'S1', { elencoCompleto: true })
+
+    expect(cognomi(esito.righe)).toEqual(['ALFA', 'GAMMA'])
+    expect(esito.tolti).toEqual(['2'])
+  })
+
+  it('e ogni scheda tiene le PROPRIE foto: nessuno eredita i documenti di un altro', () => {
+    const esito = fondiOspiti([A, B, C], [
+      { 'Progressivo': '1', 'Cognome': 'ALFA' },
+      { 'Progressivo': '3', 'Cognome': 'GAMMA' },
+    ], { tipo: 'prenotazione' }, 'S1', { elencoCompleto: true })
+
+    const foto = esito.righe.map((r) => aMappa(COL_OSPITI, r)['Doc fronte'])
+    expect(foto).toEqual(['foto-A', 'foto-C'])
+  })
+
+  it('SENZA la dichiarazione esplicita non si cancella niente', () => {
+    // Il gestore che cambia solo il numero di ospiti attesi manda `ospiti: []`.
+    // Interpretarlo come "cancella tutti" sarebbe un disastro peggiore del
+    // difetto che stiamo curando.
+    const esito = fondiOspiti([A, B, C], [], { tipo: 'gestore' }, 'S1')
+
+    expect(cognomi(esito.righe)).toEqual(['ALFA', 'BETA', 'GAMMA'])
+    expect(esito.tolti).toEqual([])
+  })
+
+  it('un elenco VUOTO non cancella nemmeno quando e dichiarato completo', () => {
+    // Cancellare tutte le schede non e un gesto che si compie per sbaglio, e
+    // quindi non deve poter accadere per sbaglio.
+    const esito = fondiOspiti([A, B, C], [], { tipo: 'gestore' }, 'S1', { elencoCompleto: true })
+
+    expect(cognomi(esito.righe)).toEqual(['ALFA', 'BETA', 'GAMMA'])
+  })
+
+  it('CONTROLLO POSITIVO: un singolo OSPITE non puo cancellare le schede degli altri', () => {
+    // Stessa regola per cui non puo nemmeno leggerle.
+    const esito = fondiOspiti([A, B, C], [
+      { 'Progressivo': '2', 'Cognome': 'BETA' },
+    ], { tipo: 'ospite', progressivo: 2 }, 'S1', { elencoCompleto: true })
+
+    expect(cognomi(esito.righe)).toEqual(['ALFA', 'BETA', 'GAMMA'])
+    expect(esito.tolti).toEqual([])
+  })
+
+  it('aggiungere un ospite continua a funzionare come prima', () => {
+    const esito = fondiOspiti([A, B], [
+      { 'Progressivo': '1', 'Cognome': 'ALFA' },
+      { 'Progressivo': '2', 'Cognome': 'BETA' },
+      { 'Progressivo': '3', 'Cognome': 'DELTA' },
+    ], { tipo: 'prenotazione' }, 'S1', { elencoCompleto: true })
+
+    expect(cognomi(esito.righe)).toEqual(['ALFA', 'BETA', 'DELTA'])
+    expect(esito.tolti).toEqual([])
+  })
+})

@@ -210,12 +210,52 @@ export function fondiOspiti(
   inArrivo: Array<Record<string, string>>,
   livello: Livello,
   idSoggiorno: string,
-): { righe: string[][]; rifiutati: string[] } {
+  opzioni: { elencoCompleto?: boolean } = {},
+): { righe: string[][]; rifiutati: string[]; tolti: string[] } {
   const rifiutati: string[] = []
+  const tolti: string[] = []
   const perProgressivo = new Map<string, string[]>()
   for (const r of esistenti) {
     const m = aMappa(COL_OSPITI, r)
     perProgressivo.set(String(m['Progressivo'] ?? ''), r)
+  }
+
+  /*
+    TOGLIERE UN OSPITE: si dichiara, non si deduce.
+
+    Fino al 6 settembre 2026 il modulo, quando si premeva "rimuovi", non
+    cancellava niente: RINUMERAVA. Con tre schede A, B, C, tolta la B, il
+    browser rimandava "1=A, 2=C" e la riga 3 restava dov'era. Sul foglio
+    finivano A, C, C — un ospite duplicato e uno sparito. E siccome le foto del
+    documento non viaggiano col modulo, la riga fusa teneva IL NOME DI UNO E I
+    DOCUMENTI DI UN ALTRO, e andava cosi' alla Questura.
+
+    La cura non e' dedurre le cancellazioni dall'elenco che arriva: un elenco
+    vuoto arriva anche quando si sta salvando altro (il gestore che cambia il
+    numero di ospiti attesi manda `ospiti: []`), e interpretarlo come "cancella
+    tutti" sarebbe un disastro peggiore del difetto.
+    Quindi serve un'affermazione esplicita: `elencoCompleto` vuol dire "questi
+    sono TUTTI gli ospiti, gli altri non ci sono piu'".
+
+    E lo puo' dire solo chi ha titolo: l'intestatario o il gestore. Un singolo
+    ospite non cancella le schede degli altri — e' la stessa regola per cui non
+    puo' nemmeno leggerle.
+  */
+  const puoDichiarareElenco = livello.tipo === 'prenotazione' || livello.tipo === 'gestore'
+  const restano = new Set(
+    inArrivo.map((s) => String(s['Progressivo'] ?? '').trim()).filter(Boolean),
+  )
+  // Un elenco VUOTO non vuol dire "cancellali tutti": vuol dire che si sta
+  // salvando altro. Cancellare tutte le schede di una prenotazione non e' un
+  // gesto che qualcuno compie per sbaglio, e quindi non deve poter accadere
+  // per sbaglio.
+  if (opzioni.elencoCompleto && puoDichiarareElenco && restano.size > 0) {
+    for (const prog of [...perProgressivo.keys()]) {
+      if (prog && !restano.has(prog)) {
+        perProgressivo.delete(prog)
+        tolti.push(prog)
+      }
+    }
   }
 
   for (const scheda of inArrivo) {
@@ -264,5 +304,5 @@ export function fondiOspiti(
     .sort((a, b) => Number(a[0]) - Number(b[0]))
     .map(([, r]) => r)
 
-  return { righe, rifiutati }
+  return { righe, rifiutati, tolti }
 }

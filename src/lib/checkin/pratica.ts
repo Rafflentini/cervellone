@@ -201,6 +201,7 @@ export async function salvaPratica(
   ospitiInArrivo: Array<Record<string, string>>,
   livello: Livello,
   spreadsheetId: string = FOGLIO_CHECKIN_ID,
+  opzioni: { elencoCompleto?: boolean } = {},
 ): Promise<EsitoSalvataggio | null> {
   const pratica = await leggiPratica(id, spreadsheetId)
   if (!pratica) return null
@@ -209,7 +210,7 @@ export async function salvaPratica(
   const fusoSoggiorno = fondiSoggiorno(rigaAttuale, soggiornoInArrivo, livello)
 
   const righeOspitiAttuali = pratica.ospiti.map((o) => aRiga(COL_OSPITI, o.dati))
-  const fusiOspiti = fondiOspiti(righeOspitiAttuali, ospitiInArrivo, livello, id)
+  const fusiOspiti = fondiOspiti(righeOspitiAttuali, ospitiInArrivo, livello, id, opzioni)
 
   const mappaSoggiorno = aMappa(COL_SOGGIORNI, fusoSoggiorno.riga)
   const schede = fusiOspiti.righe.map((r) => aMappa(COL_OSPITI, r))
@@ -270,6 +271,38 @@ export async function salvaPratica(
     else daAggiungere.push(riga)
   }
   await aggiungiRighe(spreadsheetId, SCHEDA_OSPITI, daAggiungere)
+
+  /*
+    Le schede tolte vanno cancellate DAVVERO dal foglio.
+
+    Omettere una riga dal risultato della fusione non la fa sparire: resterebbe
+    dov'e', con i dati di una persona che non viene piu' — e finirebbe nel file
+    per la Questura e nel conteggio dell'imposta. Dati personali conservati
+    senza piu' uno scopo, e un ospite comunicato che non ha dormito li'.
+
+    Prima le foto del documento, poi la riga: cancellando prima la riga si
+    perderebbero gli identificativi dei file e quelle foto resterebbero su
+    Drive per sempre, senza che nessuno sappia piu' a chi appartengono.
+    Si cancella dal numero di riga piu' alto al piu' basso, altrimenti la prima
+    cancellazione sposta in su tutte le successive.
+  */
+  if (fusiOspiti.tolti.length > 0) {
+    const daTogliere = pratica.ospiti.filter((o) => fusiOspiti.tolti.includes(String(o.dati['Progressivo'])))
+    for (const o of daTogliere) {
+      for (const fileId of [o.dati['Doc fronte'], o.dati['Doc retro']].map((x) => String(x ?? '').trim()).filter(Boolean)) {
+        try {
+          await eliminaDocumento(fileId)
+        } catch (err) {
+          console.error('[CHECKIN] foto di ospite tolto non cancellata:', err instanceof Error ? err.message : 'errore')
+        }
+      }
+    }
+    await eliminaRighe(
+      spreadsheetId,
+      SCHEDA_OSPITI,
+      daTogliere.map((o) => o.numeroRiga).sort((a, b) => b - a),
+    )
+  }
 
   await aggiornaRiga(spreadsheetId, SCHEDA_SOGGIORNI, pratica.numeroRiga, aRiga(COL_SOGGIORNI, mappaSoggiorno))
 

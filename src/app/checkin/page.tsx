@@ -26,6 +26,21 @@ import {
 } from '@/lib/checkin/mappa-form'
 
 interface Ospite {
+  /*
+    Il NUMERO della scheda, che la lega alla sua riga sul foglio e alle sue
+    foto del documento.
+
+    Prima del 6 settembre 2026 non esisteva: al salvataggio si mandava la
+    POSIZIONE nell'elenco (`i + 1`). Bastava premere "rimuovi" sulla seconda di
+    tre schede perche' la terza prendesse il posto della seconda: il foglio
+    riceveva il nome della terza sulla riga della seconda, e le foto del
+    documento — che sul modulo non viaggiano — restavano quelle di prima.
+    Un nome con i documenti di un altro, e cosi' alla Questura.
+
+    Vuoto solo per una scheda appena aggiunta a cui non e' ancora stato dato un
+    numero: `numeraSchede` glielo assegna prima che finisca a schermo.
+  */
+  progressivo: string
   tipoAlloggiato: string
   cognome: string
   nome: string
@@ -44,10 +59,30 @@ interface Ospite {
 }
 
 const OSPITE_VUOTO: Ospite = {
-  tipoAlloggiato: '16', cognome: '', nome: '', sesso: 'M', dataNascita: '',
+  progressivo: '', tipoAlloggiato: '16', cognome: '', nome: '', sesso: 'M', dataNascita: '',
   comuneNascita: '', provNascita: '', statoNascita: '', cittadinanza: 'ITALIA',
   tipoDocumento: 'IDENT', numeroDocumento: '', luogoRilascio: '',
   codiceFiscale: '', esente: false, motivoEsenzione: '',
+}
+
+/**
+ * Da' un numero alle schede che non ce l'hanno, prendendo il piu' piccolo
+ * libero.
+ *
+ * Il piu' piccolo libero e non il successivo al massimo: i collegamenti che il
+ * gestore manda agli ospiti sono numerati 1, 2, 3... e se dopo aver tolto il
+ * secondo la nuova scheda diventasse la quarta, il collegamento "ospite 2" che
+ * qualcuno ha gia' in chat aprirebbe una scheda vuota accanto a una compilata.
+ */
+function numeraSchede(schede: Ospite[]): Ospite[] {
+  const presi = new Set(schede.map((o) => o.progressivo).filter(Boolean))
+  return schede.map((o) => {
+    if (o.progressivo) return o
+    let n = 1
+    while (presi.has(String(n))) n++
+    presi.add(String(n))
+    return { ...o, progressivo: String(n) }
+  })
 }
 
 const TIPI_ALLOGGIATO: Array<[string, string, string]> = [
@@ -74,6 +109,7 @@ function dataIT(s: string): string {
 /** Dalla forma condivisa col server a quella dello stato del form. */
 function daForm(f: FormOspite): Ospite {
   return {
+    progressivo: String(f.progressivo ?? '').trim(),
     tipoAlloggiato: f.tipoAlloggiato || '16',
     cognome: f.cognome, nome: f.nome, sesso: f.sesso || 'M',
     dataNascita: f.dataNascita, comuneNascita: f.comuneNascita,
@@ -291,13 +327,17 @@ function CheckinForm() {
         if (pr.mioProgressivo) {
           // Il link di un singolo ospite: una scheda sola, la sua.
           const mia = schede.find((sc: FormOspite) => Number(sc.progressivo) === pr.mioProgressivo)
-          setOspiti([mia ? daForm(mia) : { ...OSPITE_VUOTO }])
+          setOspiti([
+            mia
+              ? daForm(mia)
+              : { ...OSPITE_VUOTO, progressivo: String(pr.mioProgressivo) },
+          ])
         } else {
           // Tante schede quanti gli ospiti prenotati: chi compila vede subito
           // quante ne mancano, invece di doverle aggiungere una a una.
           const complete = [...schede.map(daForm)]
           while (complete.length < Math.max(attesi, 1)) complete.push({ ...OSPITE_VUOTO })
-          setOspiti(complete)
+          setOspiti(numeraSchede(complete))
         }
 
         setCaricato(true)
@@ -434,12 +474,19 @@ function CheckinForm() {
           : {
             ...soggiornoAColonne(sog),
           },
-        ospiti: ospiti.map((os, i) =>
+        ospiti: ospiti.map((os) =>
           ospiteAColonne({
             ...os,
-            progressivo: String(mioProgressivo ?? i + 1),
+            progressivo: String(mioProgressivo ?? os.progressivo),
           }),
         ),
+        /*
+          "Queste sono TUTTE le schede della prenotazione": lo puo' dire solo
+          chi le ha davanti tutte, cioe' l'intestatario o il gestore. Il
+          singolo ospite vede e manda soltanto la propria, e non deve poter
+          cancellare quelle degli altri nemmeno per errore.
+        */
+        elenco_completo: !mioProgressivo,
       }),
     })
     const d = await res.json()
@@ -762,7 +809,7 @@ function CheckinForm() {
                       <span className="en">Fronte e retro — foto o PDF · front and back, photo or PDF</span>
                     </div>
                     {(['fronte', 'retro'] as const).map((lato) => {
-                      const prog = mioProgressivo ?? i + 1
+                      const prog = mioProgressivo ?? Number(o.progressivo)
                       const chiave = `${prog}-${lato}`
                       const fatto = docCaricati[chiave]
                       const inCorso = docInvio === chiave
@@ -869,7 +916,7 @@ function CheckinForm() {
             )
           })}
           {!mioProgressivo && (
-          <button className="btn btn-sec" onClick={() => setOspiti([...ospiti, { ...OSPITE_VUOTO }])}>
+          <button className="btn btn-sec" onClick={() => setOspiti(numeraSchede([...ospiti, { ...OSPITE_VUOTO }]))}>
             + Aggiungi ospite / Add guest
           </button>
           )}

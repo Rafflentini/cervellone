@@ -101,7 +101,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, errore: 'Troppi salvataggi in poco tempo.' }, { status: 429 })
   }
 
-  let corpo: { soggiorno?: Record<string, string>; ospiti?: Array<Record<string, string>> }
+  let corpo: {
+    soggiorno?: Record<string, string>
+    ospiti?: Array<Record<string, string>>
+    /**
+     * Vero solo quando chi salva ha davanti TUTTE le schede della
+     * prenotazione: allora un ospite assente dall'elenco e' un ospite tolto
+     * apposta. Senza questa dichiarazione esplicita nessuno viene mai
+     * cancellato — un salvataggio parziale non deve poter svuotare la pratica.
+     */
+    elenco_completo?: boolean
+  }
   try {
     corpo = await req.json()
   } catch {
@@ -114,6 +124,8 @@ export async function POST(req: NextRequest) {
       corpo.soggiorno ?? {},
       Array.isArray(corpo.ospiti) ? corpo.ospiti : [],
       accesso.livello,
+      undefined,
+      { elencoCompleto: corpo.elenco_completo === true },
     )
     if (!esito) return NextResponse.json({ ok: false, errore: 'Prenotazione non trovata.' }, { status: 404 })
     return NextResponse.json(esito)
