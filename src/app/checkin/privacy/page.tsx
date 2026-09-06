@@ -32,6 +32,7 @@ export default function InformativaPrivacy() {
       <style>{`
         .pagina { max-width: 760px; margin: 0 auto; padding: 24px 18px 64px;
           font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; }
+        .logo { height: 46px; width: auto; display: block; margin: 0 0 18px; }
         h1 { font-size: 1.5rem; margin: 0 0 4px; }
         h2 { font-size: 1.1rem; margin: 28px 0 8px; color: #123a6b; }
         .data { color: #666; font-size: .9rem; margin-bottom: 24px; }
@@ -45,6 +46,15 @@ export default function InformativaPrivacy() {
           th { display: none; } td { border: none; border-bottom: 1px solid #eee; }
           td::before { content: attr(data-l); display: block; font-weight: 600; color: #123a6b; font-size: .85rem; } }
       `}</style>
+
+      {/*
+        Il marchio anche qui. Vista a schermo il 6 set 2026, la pagina sembrava
+        staccata dal resto: un'informativa senza intestazione somiglia a un
+        documento capitato per caso, e chi sta per consegnare la carta
+        d'identita' deve riconoscere subito CHI gliela sta chiedendo.
+      */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/api/checkin/logo" alt="LA Real Estate srls" className="logo" />
 
       <h1>Informativa sul trattamento dei dati personali</h1>
       <p className="en">Privacy notice — how we handle your personal data</p>

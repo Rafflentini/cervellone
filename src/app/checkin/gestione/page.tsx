@@ -719,7 +719,9 @@ const STILE = `
   .stato.ok{background:#e6f4ec;color:var(--ok)}
   .manca{margin-top:8px;font-size:11.5px;color:var(--att);line-height:1.4}
   .attesi{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:#54617a}
-  .attesi button{width:26px;height:26px;border:1px solid #cfd7e6;background:#fff;border-radius:6px;font-size:15px;line-height:1;cursor:pointer;color:#1f3864}
+  /* 40px: sotto i 40 un dito sbaglia, e qui si sbaglia con l ospite davanti
+     che aspetta. Misurato a schermo su un telefono da 390px il 6 set 2026. */
+  .attesi button{width:40px;height:40px;border:1px solid #cfd7e6;background:#fff;border-radius:8px;font-size:20px;line-height:1;cursor:pointer;color:#1f3864}
   .attesi button:disabled{opacity:.35;cursor:default}
   .attesi strong{min-width:14px;text-align:center;color:#1f3864;font-size:14px}
   .attesi .compilate{margin-left:4px;color:#8b95a8}
