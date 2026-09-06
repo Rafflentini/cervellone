@@ -30,6 +30,10 @@ export default async function proxy(request: NextRequest) {
     || pathname.startsWith('/api/checkin/documento')
     || pathname.startsWith('/api/checkin/alloggiati')
     || pathname.startsWith('/api/checkin/pratiche')
+    // Il manifesto lo chiede il browser da solo, senza cookie, quando si
+    // aggiunge l'app alla schermata home: se rispondesse 307 verso /login,
+    // l'icona nascerebbe senza nome e senza logo.
+    || pathname.startsWith('/api/checkin/manifest')
     || pathname === '/checkin/nuova'
     || pathname === '/checkin/gestione'
     || pathname.startsWith('/api/checkin/prenotazione')
