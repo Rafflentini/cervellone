@@ -182,3 +182,26 @@ describe('wrapPlainTextAsHtml / looksLikeHtml', () => {
     expect(looksLikeHtml('Oggetto: x\n\nGentile cliente')).toBe(false)
   })
 })
+
+describe('looksLikeHtml — i documenti fatti di sole immagini', () => {
+  // IL DIFETTO, trovato dall'inventario dell'8 set 2026 e sfuggito al primo
+  // giro di correzioni: `img` non era fra i tag elencati. Un allegato
+  // fotografico — che di tag "a blocco" puo' non averne nemmeno uno — veniva
+  // classificato "non HTML", finiva in `wrapPlainTextAsHtml` che ESCAPA tutto,
+  // e nel PDF si leggeva `<img src="https://drive.google.com/...">` in chiaro
+  // al posto della foto.
+  it('un contenuto fatto di sole foto E html, non testo da escapare', () => {
+    const soloFoto = '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">'
+    expect(looksLikeHtml(soloFoto)).toBe(true)
+  })
+
+  it('anche con una didascalia accanto', () => {
+    expect(looksLikeHtml('Facciata Est<img src="https://drive.google.com/thumbnail?id=BBBBBBBBBBBB">')).toBe(true)
+  })
+
+  // CONTROLLO POSITIVO: il testo piatto deve continuare a essere riconosciuto
+  // come tale, o le auto-bozze di Telegram tornerebbero a uscire illeggibili.
+  it('il testo piatto resta testo piatto', () => {
+    expect(looksLikeHtml('Ricordati di chiamare Blasi per il SAL. Costo < 500 euro.')).toBe(false)
+  })
+})

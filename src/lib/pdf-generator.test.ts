@@ -23,7 +23,9 @@ vi.mock('@sparticuz/chromium', () => ({
 }))
 
 import puppeteer from 'puppeteer-core'
-import { generatePdfFromHtml, generateDocxFromHtml, generateXlsxFromData } from './pdf-generator'
+import {
+  generatePdfFromHtml, generateDocxFromHtml, generateXlsxFromData, MAX_IMMAGINI_PER_DOCUMENTO,
+} from './pdf-generator'
 
 function makeMockBrowser(opts: {
   setContent?: ReturnType<typeof vi.fn>
@@ -404,5 +406,42 @@ describe('immagini negli Excel', () => {
     const buf = await generateXlsxFromData([{ name: 'Dati', rows: [['a', 1]] }], 'X')
     expect(buf.subarray(0, 2).toString()).toBe('PK')
     expect(downloadFileBase64).not.toHaveBeenCalled()
+  })
+})
+
+describe('coerenza fra PDF e Word, e tetto alle foto', () => {
+  beforeEach(() => {
+    vi.mocked(downloadFileBase64).mockReset()
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: 'AAAA', mimeType: 'image/jpeg', name: 'f.jpg',
+    })
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser() as never)
+  })
+
+  // Il PDF metteva in cache per URL, il Word deduplicava per ID: la STESSA foto
+  // richiamata con due URL diversi veniva scaricata due volte nel PDF e una
+  // sola nel Word. Due formati che dallo stesso HTML producono insiemi diversi.
+  it('la stessa foto richiamata due volte si scarica UNA volta sola', async () => {
+    const html =
+      '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA&sz=w600">' +
+      '<img src="https://drive.google.com/file/d/AAAAAAAAAAAA/view">'
+
+    await generatePdfFromHtml(html, 'Doc')
+
+    expect(downloadFileBase64).toHaveBeenCalledTimes(1)
+  })
+
+  // Ogni foto incorporata ricopia l'intera stringa dell'HTML: con decine di
+  // data URI da megabyte la function esaurisce la memoria. Prima non si vedeva
+  // perche' i download fallivano tutti; da quando funzionano, il tetto serve.
+  it('oltre il tetto le foto in eccesso vengono DETTE, non incorporate in silenzio', async () => {
+    const html = Array.from({ length: MAX_IMMAGINI_PER_DOCUMENTO + 3 }, (_, i) =>
+      `<img src="https://drive.google.com/thumbnail?id=IMG${String(i).padStart(9, '0')}">`).join('')
+    const mancanti: string[] = []
+
+    await generatePdfFromHtml(html, 'Doc', { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } })
+
+    expect(downloadFileBase64).toHaveBeenCalledTimes(MAX_IMMAGINI_PER_DOCUMENTO)
+    expect(mancanti).toHaveLength(3)
   })
 })

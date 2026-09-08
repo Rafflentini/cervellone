@@ -58,6 +58,20 @@ function piedePagina(societa: { denominazione: string; piva: string }): string {
 
 const SOCIETA_PREDEFINITA = { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' }
 
+/**
+ * Quante foto al massimo si incorporano in un documento.
+ *
+ * Non e' un capriccio: ogni immagine incorporata ricopia l'intera stringa
+ * dell'HTML, e i data URI pesano quanto il file. Con decine di foto da qualche
+ * megabyte la function esaurisce la memoria e il documento non esce affatto.
+ * Meglio un documento con le prime venti e l'elenco esplicito di quelle rimaste
+ * fuori, che nessun documento.
+ *
+ * Prima dell'8 set 2026 il limite non serviva perche' i download fallivano
+ * tutti: il difetto era coperto da un altro difetto.
+ */
+export const MAX_IMMAGINI_PER_DOCUMENTO = 20
+
 const HEADER_TEMPLATE = '<div></div>'
 
 function escapeHtml(s: string): string {
@@ -149,13 +163,33 @@ async function embedDriveImages(html: string): Promise<EsitoImmagini> {
   const { downloadFileBase64 } = await import('./drive')
   let out = html
   const cache = new Map<string, string>()
+  /** Per ID, non per URL: la stessa foto si scrive in piu' modi. */
+  const perId = new Map<string, string>()
   const mancanti: string[] = []
+  let incorporate = 0
 
   for (const m of driveMatches) {
     const originalSrc = sorgenteDi(m)
     if (cache.has(originalSrc)) continue // già sostituito (URL duplicata, replace precedente copre tutte le occorrenze)
 
     const fileId = extractDriveFileId(originalSrc)
+    if (fileId && perId.has(fileId)) {
+      // Stessa foto, URL diverso (`?id=` e `/d/` portano allo stesso file):
+      // si riusa il data URI gia' scaricato invece di ripagare il download.
+      // Il Word deduplicava per id e il PDF no: dallo stesso HTML i due
+      // formati scaricavano insiemi diversi.
+      out = out.split(originalSrc).join(perId.get(fileId)!)
+      cache.set(originalSrc, perId.get(fileId)!)
+      continue
+    }
+    if (incorporate >= MAX_IMMAGINI_PER_DOCUMENTO) {
+      // Ogni foto incorporata ricopia l'INTERA stringa dell'HTML: con decine di
+      // data URI da megabyte la function esaurisce la memoria e il documento
+      // non esce affatto. Meglio un documento con le prime N foto e l'elenco
+      // esplicito di quelle rimaste fuori.
+      if (!mancanti.includes(fileId ?? originalSrc)) mancanti.push(fileId ?? originalSrc)
+      continue
+    }
     if (!fileId) {
       // Un URL Drive da cui non si cava l'id va DICHIARATO, non saltato: prima
       // spariva in silenzio, che e' lo stesso difetto che questo lavoro chiude.
@@ -168,6 +202,8 @@ async function embedDriveImages(html: string): Promise<EsitoImmagini> {
       const { base64, mimeType } = await downloadFileBase64(fileId)
       const dataUri = `data:${mimeType};base64,${base64}`
       cache.set(originalSrc, dataUri)
+      perId.set(fileId, dataUri)
+      incorporate++
       out = out.split(originalSrc).join(dataUri)
     } catch (err) {
       // NON basta un console.error. L'8 set 2026 il Preventivo Extra B e' uscito
@@ -364,7 +400,11 @@ export async function generateDocxFromHtml(
 
   // Le foto si scaricano PRIMA di comporre il documento: `docx` vuole i byte,
   // non un URL.
-  const idImmagini = immaginiDriveNellHtml(html)
+  // Stesso tetto del PDF: due formati che dallo stesso HTML producono documenti
+  // diversi sono un difetto per conto loro.
+  const tutti = immaginiDriveNellHtml(html)
+  const idImmagini = tutti.slice(0, MAX_IMMAGINI_PER_DOCUMENTO)
+  const oltreIlTetto = tutti.slice(MAX_IMMAGINI_PER_DOCUMENTO)
   /**
    * Una voce per OGNI immagine richiamata, nell'ordine del documento. Chi non
    * ce l'ha fatta resta come `null` e occupa comunque il suo posto.

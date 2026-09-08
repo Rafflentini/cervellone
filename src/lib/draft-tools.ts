@@ -31,7 +31,12 @@ const AUTO_DRAFT_TYPE = 'auto-bozza'
  */
 export function looksLikeHtml(content: string): boolean {
   if (!content) return false
-  return /<(?:h[1-6]|p|div|table|tr|td|th|ul|ol|li|br|section|article|html|body)\b[^>]*>/i.test(
+  // `img` sta in questo elenco dall'8 set 2026. Senza, un allegato fotografico
+  // — che di tag "a blocco" puo' non averne nemmeno uno — veniva preso per
+  // testo piatto, finiva in `wrapPlainTextAsHtml` che escapa tutto, e nel PDF
+  // si leggeva `<img src="https://drive.google.com/...">` in chiaro al posto
+  // della foto.
+  return /<(?:h[1-6]|p|div|table|tr|td|th|ul|ol|li|br|section|article|html|body|img)\b[^>]*>/i.test(
     content,
   )
 }

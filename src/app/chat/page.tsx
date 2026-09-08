@@ -1151,28 +1151,6 @@ export default function ChatPage() {
     return context
   }
 
-  async function downloadAsDoc(text: string, format: 'docx' | 'xlsx' | 'pdf', msgIndex?: number) {
-    const context = getContextName(msgIndex)
-    const dateStr = new Date().toISOString().slice(0, 10)
-    const fileName = `${context}_${dateStr}`
-    try {
-      const res = await fetch('/api/generate-doc', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: format, content: text, fileName }),
-      })
-      if (!res.ok) throw new Error()
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${fileName}.${format}`
-      a.click()
-      URL.revokeObjectURL(url)
-    } catch {
-      alert('Errore nella generazione del file')
-    }
-  }
 
   function downloadAsFile(text: string, format: 'txt' | 'md' | 'html', msgIndex?: number) {
     const now = new Date()
