@@ -104,8 +104,13 @@ function wrapForPrint(rawHtml: string, title: string): string {
     // In fondo al `<body>`, non nel `<head>`: a parita' di `!important` vince
     // la regola che viene DOPO, e il documento del modello puo' contenere i
     // propri stili. Ultimo significa che l'ultima parola e' nostra.
-    return /<\/body>/i.test(rawHtml)
-      ? rawHtml.replace(/<\/body>/i, `${STILE_IMMAGINI}</body>`)
+    // `lastIndexOf`, non la prima occorrenza: un `</body>` dentro un commento o
+    // una stringa faceva finire lo stile li' dentro, dove non si applica —
+    // stessa classe del bug `split/join` corretto poco fa, cioe' fidarsi del
+    // primo match su HTML.
+    const fine = rawHtml.toLowerCase().lastIndexOf('</body>')
+    return fine >= 0
+      ? rawHtml.slice(0, fine) + STILE_IMMAGINI + rawHtml.slice(fine)
       : rawHtml + STILE_IMMAGINI
   }
   return `<!DOCTYPE html>
@@ -467,7 +472,16 @@ export async function generateDocxFromHtml(
   // diversi sono un difetto per conto loro.
   const tutti = immaginiDriveNellHtml(html)
   const idImmagini = tutti.slice(0, MAX_IMMAGINI_PER_DOCUMENTO)
-  const oltreIlTetto = tutti.slice(MAX_IMMAGINI_PER_DOCUMENTO)
+  // ⭐ `urlDriveIlleggibili` va CHIAMATA, non solo scritta: per un giro intero
+  // e' rimasta una funzione esportata, documentata e senza un solo chiamante —
+  // lo stesso errore di `oltreIlTetto` il giro prima. Nel frattempo
+  // `immaginiDriveNellHtml` aveva smesso di restituire quegli URL, e nel Word
+  // sparivano senza segnaposto e senza avviso: una divergenza rumorosa
+  // trasformata in una sparizione muta.
+  const oltreIlTetto = [
+    ...tutti.slice(MAX_IMMAGINI_PER_DOCUMENTO),
+    ...urlDriveIlleggibili(html),
+  ]
   /**
    * Una voce per OGNI immagine richiamata, nell'ordine del documento. Chi non
    * ce l'ha fatta resta come `null` e occupa comunque il suo posto.
@@ -687,7 +701,12 @@ export async function generateXlsxFromData(
 
     const { downloadFileBase64 } = await import('./drive')
     let riga = (sheetDef.rows?.length ?? 0) + 2
-    for (const id of sheetDef.immagini) {
+    // Stesso tetto e stessa deduplica di PDF e Word: un elenco lungo non deve
+    // scaricare centinaia di file dentro una funzione serverless, e lo stesso
+    // id ripetuto non si scarica due volte.
+    const richieste = Array.from(new Set(sheetDef.immagini))
+    for (const fuori of richieste.slice(MAX_IMMAGINI_PER_DOCUMENTO)) mancanti.push(fuori)
+    for (const id of richieste.slice(0, MAX_IMMAGINI_PER_DOCUMENTO)) {
       try {
         const { base64, mimeType } = await downloadFileBase64(id)
         const estensione = estensioneDocx(mimeType)

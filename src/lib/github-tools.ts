@@ -43,6 +43,11 @@ const PROTECTED_PATHS = [
   // conferma su /regola_ok2_ non proteggerebbe niente: basterebbe una PR che
   // modifica il system prompt per aggirarla. E' la porta accanto, non la porta.
   'src/lib/github-tools.ts', // altrimenti puo' togliersi da solo le protezioni
+  // La DECISIONE se mergiare vive qui, non in github-tools: senza, una sola PR
+  // che tocchi modulo e test insieme passerebbe la CI verde e toglierebbe la
+  // guardia nata per non ripetere l'8 settembre.
+  'src/lib/github-check-merge.ts',
+  'src/lib/github-check-merge.test.ts',
   'src/lib/prompts.ts', // il system prompt: chi e' e cosa deve fare
   'src/lib/regole-proposte.ts', // il meccanismo di conferma delle regole
 ]

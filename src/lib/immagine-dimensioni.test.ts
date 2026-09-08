@@ -217,12 +217,35 @@ describe('formatoStampabile — l elenco, voce per voce', () => {
     expect(estensioneDocx('image/jpeg; charset=binary')).toBe('jpg')
   })
 
-  // ⭐ L'INVARIANTE che tiene insieme i due formati: se uno accetta e l'altro
-  // no, dallo stesso HTML il PDF mostra la foto e il Word scrive
-  // "[Foto N non disponibile]".
-  it.each(['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp', 'image/avif', 'image/svg+xml', 'image/heic'])(
-    'PDF e Word sono d accordo su %s', (m) => {
-      expect(formatoStampabile(m)).toBe(estensioneDocx(m) !== null)
+  // ⭐ L'INVARIANTE, scritto nel verso giusto.
+  //
+  // Un primo tentativo lo aveva formulato come "i due elenchi devono
+  // COINCIDERE", e per farli coincidere aveva tolto WebP, AVIF e SVG dal PDF —
+  // dove Chromium li mostra benissimo (misurato). Era allineare verso il basso:
+  // una foto WebP che finiva nel PDF ha smesso di finirci, e il test blindava
+  // la regressione.
+  //
+  // L'invariante vero e': o l'immagine ENTRA nel documento, o viene DICHIARATA
+  // mancante. Nessuno dei due formati puo' TACERE. Che il PDF ne accetti di piu'
+  // del Word non e' un difetto: e' Chromium che sa fare piu' cose di `docx`.
+  it.each(['image/webp', 'image/avif', 'image/svg+xml'])(
+    '%s: entra nel PDF, e nel Word viene dichiarato', (m) => {
+      expect(formatoStampabile(m)).toBe(true)
+      expect(estensioneDocx(m)).toBeNull()
+    },
+  )
+
+  it.each(['image/heic', 'image/tiff', 'application/pdf'])(
+    '%s: non entra da nessuna parte, e lo dicono entrambi', (m) => {
+      expect(formatoStampabile(m)).toBe(false)
+      expect(estensioneDocx(m)).toBeNull()
+    },
+  )
+
+  it.each(['image/jpeg', 'image/png', 'image/gif', 'image/bmp'])(
+    '%s: entra in tutti e due', (m) => {
+      expect(formatoStampabile(m)).toBe(true)
+      expect(estensioneDocx(m)).not.toBeNull()
     },
   )
 })

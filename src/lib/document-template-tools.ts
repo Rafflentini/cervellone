@@ -11,18 +11,8 @@ import {
 import { validateValues, applyDefaults, riempiHtml } from './template-fill-html'
 import { generatePdfFromHtml } from './pdf-generator'
 import { avvisoImmagini } from './avviso-immagini'
+import { societaAttivaPerDocumenti } from './societa-documenti'
 
-/** La societa' attiva della conversazione, per il piede del documento. */
-async function societaPerModelli(conversationId?: string) {
-  try {
-    const { getSocietaAttiva } = await import('./societa-attiva')
-    const { getSocieta } = await import('./societa')
-    const s = getSocieta(await getSocietaAttiva(conversationId ?? ''))
-    return { denominazione: s.denominazione, piva: s.piva }
-  } catch {
-    return undefined
-  }
-}
 import { uploadBinaryToDrive } from './drive'
 import { generaAllegato10Cigo } from '@/v19/tools/cigo'
 import type { Allegato10Input } from '@/v19/tools/cigo/types'
@@ -403,7 +393,7 @@ export async function executeDocumentTemplateTool(
     }
 
     if (name === 'compila_modello') {
-      return await compila(input, await societaPerModelli(_conversationId))
+      return await compila(input, await societaAttivaPerDocumenti(_conversationId))
     }
 
     if (name === 'imposta_dati_fissi') {

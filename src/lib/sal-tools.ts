@@ -161,7 +161,11 @@ export async function cancelSal(id: string): Promise<string> {
   return 'SAL annullato.'
 }
 
-export async function confirmSalStep2(id: string): Promise<string> {
+export async function confirmSalStep2(
+  id: string,
+  /** Chi firma il SAL in fondo: le societa' sono due. */
+  societa?: { denominazione: string; piva: string },
+): Promise<string> {
   const sb = getSupabaseServer()
   const { data: claimed } = await sb.from('cervellone_sal_pending')
     .update({ conferme: 2, updated_at: new Date().toISOString() })
@@ -178,7 +182,7 @@ export async function confirmSalStep2(id: string): Promise<string> {
     const pdfBuf = await generatePdfFromHtml(
       buildSalHtml(payload.result, payload.meta),
       `SAL n${payload.result.numero_sal}`,
-      { onImmaginiMancanti: (ids) => { salMancanti = ids } },
+      { onImmaginiMancanti: (ids) => { salMancanti = ids }, societa },
     )
     const contabId = await getOrCreatePathFolders(payload.commessa_folder_id, [CONTAB_FOLDER])
     // Nome file conforme alla spec: SAL_<n>_<commessa>_<data>. Sanitizza la commessa

@@ -16,6 +16,7 @@ import { buildTemplateContext } from '@/lib/template-context'
 import { buildArtifactsPointer, captureArtifact } from '@/lib/artifact-capture'
 import { captureImageExtraction, buildImagesPointer, type UploadedImageRef } from '@/lib/image-memory'
 import { saveMessageOnly, saveEmbeddingOnly } from '@/lib/memory'
+import { societaAttivaPerDocumenti } from '@/lib/societa-documenti'
 import { conTetto } from '@/lib/tetto-attesa'
 import { waitUntil } from '@vercel/functions'
 
@@ -257,7 +258,7 @@ export async function POST(request: NextRequest) {
   if (mSalOk2 || mSalOk || mSalNo) {
     const uuid = (mSalOk2 ?? mSalOk ?? mSalNo)![1]
     const message = mSalOk2
-      ? await confirmSalStep2(uuid)
+? await confirmSalStep2(uuid, await societaAttivaPerDocumenti(conversationId))
       : mSalOk
         ? await confirmSalStep1(uuid)
         : await cancelSal(uuid)

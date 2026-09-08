@@ -21,7 +21,7 @@ export type Dimensioni = { larghezza: number; altezza: number }
  */
 export function dimensioniImmagine(byte: Buffer): Dimensioni | null {
   // PNG: firma di 8 byte, poi IHDR con larghezza e altezza a offset 16 e 20.
-  if (byte.length >= 24 && byte.readUInt32BE(0) === 0x89504e47) {
+  if (byte.length >= 20 && byte.readUInt32BE(0) === 0x89504e47) {
     return { larghezza: byte.readUInt32BE(16), altezza: byte.readUInt32BE(20) }
   }
 
@@ -75,13 +75,21 @@ export function tipoBase(mimeType: string): string {
 /**
  * Cio' che Chromium sa mostrare in un PDF stampato.
  *
- * ⚠️ Questo elenco e quello di `estensioneDocx` devono restare COERENTI: se
- * uno accetta un formato e l'altro no, dallo stesso HTML il PDF mostra la foto
- * e il Word scrive "[Foto N non disponibile]" — la divergenza fra formati che
- * questo lavoro esiste per chiudere. BMP e GIF stanno in entrambi; WebP, AVIF e
- * SVG in nessuno dei due, perche' `docx` non li sa impacchettare.
+ * ⚠️ NON e' lo stesso elenco di `estensioneDocx`, e la differenza e' VOLUTA.
+ * Chromium mostra WebP, AVIF e SVG (misurato su Chromium 148); `docx` non li sa
+ * impacchettare. In un primo tentativo li avevo tolti da qui per "allineare i
+ * due formati": era allineare verso il basso — una foto WebP che finiva nel PDF
+ * ha smesso di finirci, e il WebP e' formato di prima classe in tutta l'app
+ * (upload, chat, Telegram, check-in).
+ *
+ * La coerenza giusta non e' avere lo stesso elenco: e' che ogni formato o entra
+ * nel documento o viene DICHIARATO mancante. Nel Word un WebP si dichiara; nel
+ * PDF entra. Nessuno dei due tace.
  */
-const FORMATI_STAMPABILI = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/bmp']
+const FORMATI_STAMPABILI = [
+  'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/bmp',
+  'image/webp', 'image/avif', 'image/svg+xml',
+]
 
 export function estensioneDocx(mimeType: string): 'jpg' | 'png' | 'gif' | 'bmp' | null {
   switch (tipoBase(mimeType)) {
@@ -157,7 +165,8 @@ export function pianificaAllegato(
  *
  * HEIC (le foto dell'iPhone) e TIFF non li decodifica: incorporarli lascerebbe
  * un riquadro vuoto nel documento senza che nessuno lo dica, perche' il
- * download da Drive E' riuscito. WebP e AVIF invece li mostra.
+ * download da Drive E' riuscito. WebP, AVIF e SVG invece li mostra — e per
+ * questo restano qui anche se un Word non li sa contenere.
  */
 export function formatoStampabile(mimeType: string): boolean {
   return FORMATI_STAMPABILI.includes(tipoBase(mimeType))

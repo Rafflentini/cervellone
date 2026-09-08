@@ -421,7 +421,42 @@ describe('immagini negli Excel', () => {
     expect(buf.subarray(0, 2).toString()).toBe('PK')
     expect(downloadFileBase64).not.toHaveBeenCalled()
   })
+
+  // Il tetto c'era su PDF e Word e non su Excel: un elenco di 200 foto avrebbe
+  // scaricato 200 file dentro una funzione serverless. E lo stesso id ripetuto
+  // due volte scaricava due volte la stessa foto.
+  it('oltre il tetto le foto si dichiarano, non si scaricano', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: Buffer.from('pixel').toString('base64'), mimeType: 'image/jpeg', name: 'f.jpg',
+    })
+    const troppe = Array.from({ length: MAX_IMMAGINI_PER_DOCUMENTO + 3 }, (_, i) => `ID${String(i).padStart(10, '0')}`)
+    const mancanti: string[] = []
+
+    await generateXlsxFromData(
+      [{ name: 'Foto', rows: [['a']], immagini: troppe }],
+      'Registro',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+
+    expect(vi.mocked(downloadFileBase64).mock.calls).toHaveLength(MAX_IMMAGINI_PER_DOCUMENTO)
+    expect(mancanti).toEqual(troppe.slice(MAX_IMMAGINI_PER_DOCUMENTO))
+  })
+
+  it('lo stesso id ripetuto si scarica una volta sola', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: Buffer.from('pixel').toString('base64'), mimeType: 'image/jpeg', name: 'f.jpg',
+    })
+
+    await generateXlsxFromData(
+      [{ name: 'Foto', rows: [['a']], immagini: ['CCCCCCCCCCCC', 'CCCCCCCCCCCC', 'DDDDDDDDDDDD'] }],
+      'Registro',
+    )
+
+    expect(vi.mocked(downloadFileBase64).mock.calls).toHaveLength(2)
+  })
 })
+
+
 
 describe('coerenza fra PDF e Word, e tetto alle foto', () => {
   beforeEach(() => {
@@ -809,5 +844,48 @@ describe('l ORDINE delle foto nel Word', () => {
     // `docx` scrive in EMU: 9525 EMU per pixel.
     expect(misure[0].cx).toBeLessThanOrEqual(480 * 9525)
     expect(misure[0].cy).toBeLessThanOrEqual(620 * 9525)
+  })
+})
+
+describe('gli URL Drive che non si capiscono', () => {
+  beforeEach(() => {
+    vi.mocked(downloadFileBase64).mockReset()
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: 'AAAA', mimeType: 'image/jpeg', name: 'f.jpg',
+    })
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser() as never)
+  })
+
+  const html =
+    '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">' +
+    '<img src="https://drive.google.com/uc?export=view">' +
+    '<img src="https://lh3.googleusercontent.com/drive-viewer/AKxyz">'
+
+  // ⭐ `urlDriveIlleggibili` era stata scritta, documentata e MAI CHIAMATA: nel
+  // Word quelle foto sparivano senza segnaposto e senza avviso. Lo stesso
+  // errore di `oltreIlTetto` il giro prima — una funzione intera stavolta.
+  it('il Word li dichiara, non li fa sparire', async () => {
+    const mancanti: string[] = []
+    await generateDocxFromHtml(html, 'Perizia', {
+      onImmaginiMancanti: (ids) => { mancanti.push(...ids) },
+    })
+    expect(mancanti).toHaveLength(2)
+  })
+
+  it('PDF e Word ne dichiarano lo STESSO numero', async () => {
+    const daPdf: string[] = []
+    await generatePdfFromHtml(html, 'Perizia', { onImmaginiMancanti: (i) => { daPdf.push(...i) } })
+
+    const daDocx: string[] = []
+    await generateDocxFromHtml(html, 'Perizia', { onImmaginiMancanti: (i) => { daDocx.push(...i) } })
+
+    expect(daDocx.length).toBe(daPdf.length)
+  })
+
+  it('e nessuno dei due li passa a Drive come se fossero id', async () => {
+    vi.mocked(downloadFileBase64).mockClear()
+    await generateDocxFromHtml(html, 'Perizia')
+    const chiamati = vi.mocked(downloadFileBase64).mock.calls.map((c) => c[0])
+    expect(chiamati).toEqual(['AAAAAAAAAAAA'])
   })
 })

@@ -11,21 +11,8 @@
 
 import { getSupabaseServer } from './supabase-server'
 import { avvisoImmagini } from './avviso-immagini'
+import { societaAttivaPerDocumenti } from './societa-documenti'
 
-/**
- * La societa' che firma un documento generato. Best-effort: se non si riesce a
- * risolverla resta Restruktura, che e' il caso di gran lunga piu' frequente.
- */
-async function societaAttivaPerDocumenti(conversationId?: string) {
-  try {
-    const { getSocietaAttiva } = await import('./societa-attiva')
-    const { getSocieta } = await import('./societa')
-    const s = getSocieta(await getSocietaAttiva(conversationId ?? ''))
-    return { denominazione: s.denominazione, piva: s.piva }
-  } catch {
-    return undefined
-  }
-}
 import type { ToolDefinition } from './tools/types'
 import type { CodiceSocieta } from './societa'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
