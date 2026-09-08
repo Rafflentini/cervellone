@@ -177,3 +177,41 @@ describe('POST /api/chat — anche le risposte ai comandi vanno salvate', () => 
     expect(testo).toContain('Fattura 2026/123 emessa')
   })
 })
+
+describe('POST /api/chat — quello che il route deve passare al motore', () => {
+  // L'audit sui test (8 set 2026): toglierE il 4o argomento a saveMessageOnly
+  // lasciava la suite VERDE. `memory.salvataggio.test.ts` prova che il MOTORE
+  // onora `creatoIl`; niente provava che il ROUTE glielo passasse. E' il
+  // difetto della riga che si infila dopo la domanda successiva, e sarebbe
+  // tornato senza un rosso.
+  it('scrive la riga con l ISTANTE DEL TURNO, non con quello della scrittura', async () => {
+    loopChe('Ecco la risposta.')
+    const prima = new Date().toISOString()
+
+    await eseguiELeggi()
+
+    const [, , , creatoIl] = mockSaveSolaRiga.mock.calls[0]
+    expect(typeof creatoIl).toBe('string')
+    // Deve essere un istante preso all'INIZIO del turno: non piu' vecchio di
+    // quando abbiamo cominciato, e non piu' recente di adesso.
+    expect(creatoIl >= prima).toBe(true)
+    expect(creatoIl <= new Date().toISOString()).toBe(true)
+  })
+
+  // Stessa famiglia: togliere il tetto (`await scrittura` secco) lasciava tutto
+  // verde, perche' il mock risolve sempre subito. Lo spinner bloccato fino a
+  // 800 secondi sarebbe tornato in silenzio.
+  it('se la scrittura non risponde, chiude lo stream invece di aspettarla', async () => {
+    loopChe('Ecco la risposta.')
+    // Una scrittura che non si risolve MAI: senza tetto, `controller.close()`
+    // resterebbe dietro questa promessa.
+    mockSaveSolaRiga.mockImplementation(() => new Promise(() => {}))
+
+    const esito = await Promise.race([
+      eseguiELeggi().then(() => 'stream chiuso'),
+      new Promise((r) => setTimeout(() => r('APPESO'), 8_000)),
+    ])
+
+    expect(esito).toBe('stream chiuso')
+  }, 15_000)
+})

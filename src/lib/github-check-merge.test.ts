@@ -54,3 +54,28 @@ describe('decidiSeMergiare', () => {
     expect(esito.motivo).toMatch(/forzat/i)
   })
 })
+
+describe('decidiSeMergiare — i rami che l audit ha trovato scoperti', () => {
+  // Lo `state` complessivo di GitHub puo' dire `success` mentre singole
+  // check-run sono ancora `in_progress` o gia' `failure`. Senza questi due
+  // test, togliere `inCorso > 0` o `falliti.length > 0` dalle guardie lasciava
+  // la suite verde — e il modulo nato per non ripetere l'8 settembre avrebbe
+  // ripetuto l'8 settembre.
+  test('controlli ancora in corso anche se lo stato complessivo dice success', () => {
+    const esito = decidiSeMergiare(
+      { stato: 'success', inCorso: 2, falliti: [], totali: 3 },
+      {},
+    )
+    expect(esito.mergia).toBe(false)
+    expect(esito.motivo).toMatch(/in corso/i)
+  })
+
+  test('un job fallito anche se lo stato complessivo dice success', () => {
+    const esito = decidiSeMergiare(
+      { stato: 'success', inCorso: 0, falliti: ['typecheck + unit'], totali: 2 },
+      {},
+    )
+    expect(esito.mergia).toBe(false)
+    expect(esito.motivo).toContain('typecheck + unit')
+  })
+})

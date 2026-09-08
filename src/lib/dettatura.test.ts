@@ -115,3 +115,29 @@ describe('componiTestoDettatura', () => {
       .toBe('Primo pezzo secondo terzo')
   })
 })
+
+describe('l ordine delle guardie, che il docstring promette', () => {
+  // "Per primo, prima di ogni altra cosa": la guardia di sessione deve venire
+  // PRIMA del controllo sullo stop. L'audit sui test ha mostrato che
+  // scambiarle lasciava tutto verde, perche' i due test sulla sessione
+  // superata usavano entrambi `utenteVuoleRegistrare: true`.
+  //
+  // Il caso che distingue: evento di una sessione VECCHIA che arriva mentre lo
+  // stop e' gia' stato premuto. Deve essere ignorato, non trattato come "ferma":
+  // 'ferma' spegnerebbe una registrazione nuova appena avviata.
+  test('sessione superata E stop premuto: si ignora, non si ferma', () => {
+    expect(decidiDopoRiconoscimento(
+      { tipo: 'fine' },
+      { ...registrando(3_000), eLaSessioneCorrente: false, utenteVuoleRegistrare: false },
+      MAX_REGISTRAZIONE_MS,
+    )).toBe('ignora')
+  })
+
+  test('sessione superata e tetto superato: si ignora lo stesso', () => {
+    expect(decidiDopoRiconoscimento(
+      { tipo: 'fine' },
+      { ...registrando(MAX_REGISTRAZIONE_MS + 1), eLaSessioneCorrente: false },
+      MAX_REGISTRAZIONE_MS,
+    )).toBe('ignora')
+  })
+})

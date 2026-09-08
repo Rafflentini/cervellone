@@ -119,3 +119,15 @@ export function pianificaAllegato(
       : { tipo: 'assente' as const, indice: i, id }
   })
 }
+
+/**
+ * Il formato si vede in un PDF stampato da Chromium?
+ *
+ * HEIC (le foto dell'iPhone) e TIFF non li decodifica: incorporarli lascerebbe
+ * un riquadro vuoto nel documento senza che nessuno lo dica, perche' il
+ * download da Drive E' riuscito. WebP e AVIF invece li mostra.
+ */
+export function formatoStampabile(mimeType: string): boolean {
+  return ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/svg+xml']
+    .includes((mimeType || '').toLowerCase())
+}

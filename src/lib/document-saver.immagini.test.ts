@@ -41,3 +41,30 @@ describe('htmlInTestoPiatto', () => {
     expect(testo).toBe('Ciao')
   })
 })
+
+describe('htmlInTestoPiatto — i casi trovati dall audit sui test', () => {
+  // Il ternario distingueva Drive da non-Drive, ma nessun test lo esercitava:
+  // mutare la condizione in `tag.length >= 0` sopravviveva. E un `<img>` che
+  // non punta a Drive veniva (e viene) CANCELLATO in silenzio — meta' del
+  // difetto originale, rimasta aperta.
+  test('anche una foto NON di Drive lascia detto che c era', () => {
+    const { testo, immagini } = htmlInTestoPiatto('<p>Prima</p><img src="https://esempio.it/foto.jpg"><p>Dopo</p>')
+
+    expect(immagini).toEqual([])          // non e' un id Drive
+    expect(testo).toContain('Prima')
+    expect(testo).toContain('Dopo')
+    expect(testo).toMatch(/\[Foto 1\b/)   // ma il buco e' dichiarato lo stesso
+  })
+
+  // `immaginiDriveNellHtml` deduplica per id, il contatore dei segnaposto no:
+  // con la stessa foto richiamata due volte usciva `[Foto 2 — ...: ]` con l'id
+  // VUOTO, perche' l'array delle immagini ne aveva una sola.
+  test('la stessa foto richiamata due volte non produce un segnaposto vuoto', () => {
+    const doppia = '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">' +
+                   '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">'
+    const { testo } = htmlInTestoPiatto(doppia)
+
+    expect(testo).not.toMatch(/:\s*\]/)   // nessun segnaposto con l'id mancante
+    expect(testo.match(/AAAAAAAAAAAA/g) ?? []).toHaveLength(2)
+  })
+})

@@ -321,7 +321,11 @@ describe('DOCX — quando una foto non si scarica', () => {
       { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
     )
 
-    expect(mancanti).toEqual(['WWWWWWWWWWWW'])
+    // Col NOME del file, non solo l id: "Id Drive: 1a2b3c..." non dice
+    // all Ingegnere QUALE foto manca.
+    expect(mancanti).toHaveLength(1)
+    expect(mancanti[0]).toContain('WWWWWWWWWWWW')
+    expect(mancanti[0]).toContain('foto.webp')
   })
 })
 
@@ -443,5 +447,218 @@ describe('coerenza fra PDF e Word, e tetto alle foto', () => {
 
     expect(downloadFileBase64).toHaveBeenCalledTimes(MAX_IMMAGINI_PER_DOCUMENTO)
     expect(mancanti).toHaveLength(3)
+  })
+})
+
+describe('le foto nel PDF devono STARE nella pagina', () => {
+  beforeEach(() => {
+    vi.mocked(downloadFileBase64).mockReset()
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: 'AAAA', mimeType: 'image/jpeg', name: 'IMG_5685.jpeg',
+    })
+  })
+
+  // IL DIFETTO, trovato dall'audit end-to-end: `wrapForPrint` non aveva NESSUNA
+  // regola sulle immagini. I byte incorporati sono quelli ORIGINALI (il `sz=w900`
+  // dell'URL viene ignorato: si scarica con alt=media), quindi una foto iPhone
+  // 4032px finiva in un <img> largo 4032 su un'area utile A4 di ~680: Chromium
+  // in stampa RITAGLIA invece di ridurre, e si vedeva l'angolo in alto a
+  // sinistra della foto, su piu' pagine.
+  // ⭐ Prima del fix di stamattina il browser scaricava la MINIATURA a 900px:
+  // la geometria e' peggiorata proprio quando le foto hanno iniziato a entrare.
+  it('l HTML stampato impone alle immagini di stare nella larghezza utile', async () => {
+    const setContent = vi.fn(async (_html: string) => undefined)
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser({ setContent }) as never)
+
+    await generatePdfFromHtml('<p>Foto</p><img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">', 'Perizia')
+
+    const html = setContent.mock.calls[0][0]
+    expect(html).toMatch(/img\s*\{[^}]*max-width:\s*100%/)
+    expect(html).toMatch(/img\s*\{[^}]*height:\s*auto/)
+  })
+
+  // Il DOCX rifiutava i formati che Word non sa mostrare; il PDF no: un HEIC
+  // (le foto dell'iPhone) diventava `data:image/heic;base64,...`, Chromium non
+  // lo decodifica, e il riquadro restava vuoto SENZA che nessuno lo dicesse,
+  // perche' il download era riuscito.
+  it('un HEIC non viene incorporato in silenzio: si dichiara mancante', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: 'AAAA', mimeType: 'image/heic', name: 'IMG_5685.HEIC',
+    })
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser() as never)
+    const mancanti: string[] = []
+
+    await generatePdfFromHtml(
+      '<img src="https://drive.google.com/thumbnail?id=HHHHHHHHHHHH">',
+      'Perizia',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+
+    expect(mancanti).toHaveLength(1)
+  })
+
+  // L'avviso stampava l'id Drive nudo: l'Ingegnere leggeva "Id Drive: 1a2b3c..."
+  // e non sapeva QUALE foto mancasse. Il nome del file c'e' gia', lo restituisce
+  // `downloadFileBase64`, e veniva buttato.
+  it('quando puo, dice il NOME della foto e non solo l id', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: 'AAAA', mimeType: 'image/heic', name: 'IMG_5685.HEIC',
+    })
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser() as never)
+    const mancanti: string[] = []
+
+    await generatePdfFromHtml(
+      '<img src="https://drive.google.com/thumbnail?id=HHHHHHHHHHHH">',
+      'Perizia',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+
+    expect(mancanti[0]).toContain('IMG_5685.HEIC')
+  })
+})
+
+describe('il piede del documento porta la societa giusta', () => {
+  beforeEach(() => {
+    vi.mocked(downloadFileBase64).mockReset()
+  })
+
+  // L'audit end-to-end: `societa` veniva calcolata e passata SOLO a
+  // generateXlsxFromData, che non la legge; PDF e DOCX la leggono e non la
+  // ricevevano mai. Il fix del piede era INERTE AL 100%: ogni documento de La
+  // Real Estate portava comunque "RESTRUKTURA S.r.l. — P.IVA 02087420762".
+  it('il PDF de La Real Estate NON porta la partita IVA di Restruktura', async () => {
+    const pdf = vi.fn(async (opts: Record<string, unknown>) => {
+      return mockPdfBytes
+    })
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser({ pdf }) as never)
+
+    await generatePdfFromHtml('<p>Contratto</p>', 'Doc', {
+      societa: { denominazione: 'LA REAL ESTATE SRLS', piva: '02232730768' },
+    })
+
+    const opzioniPdf = pdf.mock.calls[0][0] as { footerTemplate: string }
+    expect(opzioniPdf.footerTemplate).toContain('LA REAL ESTATE SRLS')
+    expect(opzioniPdf.footerTemplate).toContain('02232730768')
+    expect(opzioniPdf.footerTemplate).not.toContain('02087420762')
+  })
+})
+
+describe('il tetto vale anche nel WORD, e nello stesso modo', () => {
+  beforeEach(() => {
+    vi.mocked(downloadFileBase64).mockReset()
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: 'AAAA', mimeType: 'image/jpeg', name: 'f.jpg',
+    })
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser() as never)
+  })
+
+  const htmlCon = (n: number) =>
+    Array.from({ length: n }, (_, i) =>
+      `<img src="https://drive.google.com/thumbnail?id=IMG${String(i).padStart(9, '0')}">`).join('')
+
+  // IL BUG VIVO, trovato da tutti e tre gli audit dell'8 set: `oltreIlTetto` era
+  // calcolato e MAI usato. Nel Word le foto oltre la ventesima non venivano
+  // incorporate NE' dichiarate: sparivano, che e' il difetto d'origine di tutta
+  // la giornata. Il describe precedente diceva "coerenza fra PDF e Word" ma
+  // chiamava solo il PDF: era un titolo, non un'asserzione.
+  it('nel Word le foto oltre il tetto vengono DETTE', async () => {
+    const mancanti: string[] = []
+    await generateDocxFromHtml(htmlCon(MAX_IMMAGINI_PER_DOCUMENTO + 3), 'Perizia', {
+      onImmaginiMancanti: (ids) => { mancanti.push(...ids) },
+    })
+    expect(mancanti).toHaveLength(3)
+  })
+
+  // Il tetto del PDF contava le RIUSCITE, quello del Word tagliava la lista a
+  // monte: con dei fallimenti i due formati finivano per contenere foto diverse
+  // dallo stesso HTML — proprio la divergenza che si voleva chiudere.
+  it('PDF e Word scaricano lo STESSO insieme di foto', async () => {
+    const html = htmlCon(MAX_IMMAGINI_PER_DOCUMENTO + 5)
+
+    await generatePdfFromHtml(html, 'Doc')
+    const idPdf = vi.mocked(downloadFileBase64).mock.calls.map((c) => c[0]).sort()
+
+    vi.mocked(downloadFileBase64).mockClear()
+    await generateDocxFromHtml(html, 'Doc')
+    const idDocx = vi.mocked(downloadFileBase64).mock.calls.map((c) => c[0]).sort()
+
+    expect(idPdf).toEqual(idDocx)
+    expect(idPdf).toHaveLength(MAX_IMMAGINI_PER_DOCUMENTO)
+  })
+})
+
+/**
+ * Apre un .docx (che e' uno ZIP) e restituisce cio' che serve per giudicarlo:
+ * quante foto contiene davvero, il testo del documento, e le dimensioni
+ * dichiarate per ciascuna immagine.
+ *
+ * Serve perche' `toContain('media/')` sul buffer compresso non discrimina:
+ * l'audit sui test ha mostrato che con quell'asserzione sopravvivevano sia
+ * l'accodamento (foto sotto la didascalia sbagliata) sia la misura fissa
+ * (verticali schiacciate).
+ */
+async function apriDocx(buf: Buffer) {
+  const JSZip = (await import('jszip')).default
+  const zip = await JSZip.loadAsync(buf)
+  const media = Object.keys(zip.files).filter((n) => n.startsWith('word/media/'))
+  const xml = await zip.file('word/document.xml')!.async('string')
+  const misure = Array.from(xml.matchAll(/<wp:extent\s+cx="(\d+)"\s+cy="(\d+)"/g))
+    .map((m) => ({ cx: Number(m[1]), cy: Number(m[2]) }))
+  const testo = Array.from(xml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)).map((m) => m[1]).join(' ')
+  return { quanteFoto: media.length, misure, testo }
+}
+
+describe('dentro il Word, guardato davvero', () => {
+  beforeEach(() => { vi.mocked(downloadFileBase64).mockReset() })
+
+  const jpegVerticale = (l: number, a: number) => {
+    const b = Buffer.alloc(13)
+    b.writeUInt16BE(0xffd8, 0)
+    b.writeUInt16BE(0xffc0, 2)
+    b.writeUInt16BE(9, 4)
+    b.writeUInt8(8, 6)
+    b.writeUInt16BE(a, 7)
+    b.writeUInt16BE(l, 9)
+    return b
+  }
+
+  // Uccide la mutazione "accodamento": con il filtro, le due foto riuscite
+  // finirebbero in posizione 1 e 2 e il segnaposto sparirebbe.
+  it('la foto mancante lascia il suo posto, DICHIARATO nel testo', async () => {
+    vi.mocked(downloadFileBase64).mockImplementation(async (id: string) => {
+      if (id === 'BBBBBBBBBBBB') throw new Error('File not found')
+      return { base64: jpegVerticale(1200, 1600).toString('base64'), mimeType: 'image/jpeg', name: `${id}.jpg` }
+    })
+
+    const buf = await generateDocxFromHtml(
+      '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">' +
+      '<img src="https://drive.google.com/thumbnail?id=BBBBBBBBBBBB">' +
+      '<img src="https://drive.google.com/thumbnail?id=CCCCCCCCCCCC">',
+      'Perizia',
+    )
+    const { quanteFoto, testo } = await apriDocx(buf)
+
+    expect(quanteFoto).toBe(2)
+    // Il buco e' al SECONDO posto, e lo dice.
+    expect(testo).toContain('Foto 2 non disponibile')
+    expect(testo).toContain('BBBBBBBBBBBB')
+  })
+
+  // Uccide la mutazione "misura fissa 480x360": una foto 1200x1600 deve
+  // restare VERTICALE dentro il documento.
+  it('una foto verticale resta verticale dentro il Word', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: jpegVerticale(1200, 1600).toString('base64'), mimeType: 'image/jpeg', name: 'f.jpg',
+    })
+
+    const buf = await generateDocxFromHtml(
+      '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">', 'Perizia',
+    )
+    const { misure } = await apriDocx(buf)
+
+    expect(misure).toHaveLength(1)
+    expect(misure[0].cy).toBeGreaterThan(misure[0].cx)
+    // 3:4, le proporzioni vere della foto
+    expect(misure[0].cx / misure[0].cy).toBeCloseTo(0.75, 2)
   })
 })

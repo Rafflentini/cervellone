@@ -22,13 +22,23 @@ export type TestoPiatto = {
 export function htmlInTestoPiatto(htmlContent: string): TestoPiatto {
   const immagini = immaginiDriveNellHtml(htmlContent)
 
+  /*
+    Il segnaposto vale per OGNI immagine, non solo per quelle di Drive: un
+    `<img>` che punta altrove veniva cancellato in silenzio, ed era meta' del
+    difetto che questo modulo doveva chiudere.
+
+    E l'identificativo si prende dal tag stesso, non da `immagini[i-1]`:
+    `immaginiDriveNellHtml` DEDUPLICA per id, il contatore no, e con la stessa
+    foto richiamata due volte usciva "[Foto 2 — ...: ]" con l'id vuoto.
+  */
   let i = 0
-  const conSegnaposto = htmlContent.replace(
-    /<img\b[^>]*>/gi,
-    (tag) => (/drive\.google\.com|googleusercontent\.com/i.test(tag)
-      ? `\n[Foto ${++i} — non inseribile in un Google Doc: ${immagini[i - 1] ?? ''}]\n`
-      : ''),
-  )
+  const conSegnaposto = htmlContent.replace(/<img\b[^>]*>/gi, (tag) => {
+    const src = tag.match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i)
+    const indirizzo = src ? (src[1] ?? src[2] ?? src[3] ?? '') : ''
+    const eDrive = /drive\.google\.com|googleusercontent\.com/i.test(indirizzo)
+    const quale = eDrive ? (estraiIdDrive(indirizzo) ?? indirizzo) : indirizzo
+    return `\n[Foto ${++i} — non inseribile in un Google Doc${quale ? `: ${quale}` : ''}]\n`
+  })
 
   const testo = conSegnaposto
     .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -44,4 +54,14 @@ export function htmlInTestoPiatto(htmlContent: string): TestoPiatto {
     .trim()
 
   return { testo, immagini }
+}
+
+/** L'id Drive da un URL, o null. Stessa logica del generatore documenti. */
+function estraiIdDrive(url: string): string | null {
+  const pulito = url.replace(/&(?:amp|#38);/gi, '&')
+  for (const re of [/[?&]id=([a-zA-Z0-9_-]{10,})/, /\/d\/([a-zA-Z0-9_-]{10,})/]) {
+    const m = pulito.match(re)
+    if (m) return m[1]
+  }
+  return null
 }

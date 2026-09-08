@@ -42,6 +42,7 @@ import {
   estensioneDocx,
   riquadroDocx,
   pianificaAllegato,
+  formatoStampabile,
 } from './immagine-dimensioni'
 
 /**
@@ -95,6 +96,17 @@ function wrapForPrint(rawHtml: string, title: string): string {
 body { font-family: 'Helvetica', Arial, sans-serif; font-size: 10pt; color: #1a1a1a; line-height: 1.4; margin: 0; }
 table { border-collapse: collapse; width: 100%; }
 h1, h2, h3 { color: #c8102e; }
+/*
+  Le foto devono STARE nella pagina. Senza questa regola una foto da telefono
+  (4032px) finisce in un img largo 4032 su un'area utile A4 di ~680: Chromium in
+  stampa RITAGLIA invece di ridurre, e si vede l'angolo in alto a sinistra della
+  foto, su piu' pagine.
+  I byte incorporati sono quelli ORIGINALI — il "sz=w900" nell'URL viene
+  ignorato, perche' si scarica con alt=media — quindi la riduzione la deve fare
+  il CSS. Prima dell'8 set 2026 il browser scaricava la miniatura a 900px: la
+  geometria e' peggiorata proprio quando le foto hanno iniziato a entrare.
+*/
+img { max-width: 100%; height: auto; page-break-inside: avoid; }
 </style>
 </head>
 <body>
@@ -161,61 +173,74 @@ async function embedDriveImages(html: string): Promise<EsitoImmagini> {
   if (driveMatches.length === 0) return { html, mancanti: [] }
 
   const { downloadFileBase64 } = await import('./drive')
-  let out = html
-  const cache = new Map<string, string>()
-  /** Per ID, non per URL: la stessa foto si scrive in piu' modi. */
-  const perId = new Map<string, string>()
   const mancanti: string[] = []
-  let incorporate = 0
 
+  /**
+   * Gli id da incorporare, nell'ordine del documento e senza ripetizioni.
+   * Il tetto si applica QUI, sugli id richiesti, esattamente come nel Word:
+   * contarlo sulle riuscite faceva incorporare al PDF piu' foto del Word dallo
+   * stesso HTML, e rendeva imprevedibile il numero di chiamate di rete.
+   */
+  const idRichiesti: string[] = []
   for (const m of driveMatches) {
-    const originalSrc = sorgenteDi(m)
-    if (cache.has(originalSrc)) continue // già sostituito (URL duplicata, replace precedente copre tutte le occorrenze)
+    const id = extractDriveFileId(sorgenteDi(m))
+    if (id && !idRichiesti.includes(id)) idRichiesti.push(id)
+  }
+  const daScaricare = idRichiesti.slice(0, MAX_IMMAGINI_PER_DOCUMENTO)
+  for (const id of idRichiesti.slice(MAX_IMMAGINI_PER_DOCUMENTO)) mancanti.push(id)
 
-    const fileId = extractDriveFileId(originalSrc)
-    if (fileId && perId.has(fileId)) {
-      // Stessa foto, URL diverso (`?id=` e `/d/` portano allo stesso file):
-      // si riusa il data URI gia' scaricato invece di ripagare il download.
-      // Il Word deduplicava per id e il PDF no: dallo stesso HTML i due
-      // formati scaricavano insiemi diversi.
-      out = out.split(originalSrc).join(perId.get(fileId)!)
-      cache.set(originalSrc, perId.get(fileId)!)
-      continue
-    }
-    if (incorporate >= MAX_IMMAGINI_PER_DOCUMENTO) {
-      // Ogni foto incorporata ricopia l'INTERA stringa dell'HTML: con decine di
-      // data URI da megabyte la function esaurisce la memoria e il documento
-      // non esce affatto. Meglio un documento con le prime N foto e l'elenco
-      // esplicito di quelle rimaste fuori.
-      if (!mancanti.includes(fileId ?? originalSrc)) mancanti.push(fileId ?? originalSrc)
-      continue
-    }
-    if (!fileId) {
-      // Un URL Drive da cui non si cava l'id va DICHIARATO, non saltato: prima
-      // spariva in silenzio, che e' lo stesso difetto che questo lavoro chiude.
-      console.error(`[PDF] URL Drive non riconosciuto: ${originalSrc}`)
-      if (!mancanti.includes(originalSrc)) mancanti.push(originalSrc)
-      continue
-    }
-
+  /** id → data URI, scaricato una volta sola anche se richiamato con URL diversi. */
+  const perId = new Map<string, string>()
+  for (const id of daScaricare) {
     try {
-      const { base64, mimeType } = await downloadFileBase64(fileId)
-      const dataUri = `data:${mimeType};base64,${base64}`
-      cache.set(originalSrc, dataUri)
-      perId.set(fileId, dataUri)
-      incorporate++
-      out = out.split(originalSrc).join(dataUri)
+      const { base64, mimeType, name } = await downloadFileBase64(id)
+      // Chromium non decodifica HEIC/TIFF: incorporarli lascerebbe un riquadro
+      // vuoto nel PDF senza che nessuno lo dica, perche' il download E' riuscito.
+      // Il Word questo controllo lo faceva gia'; il PDF no.
+      if (!formatoStampabile(mimeType)) {
+        console.error(`[PDF] formato non stampabile (${mimeType}) per ${id}`)
+        mancanti.push(name ? `${name} (${id})` : id)
+        continue
+      }
+      perId.set(id, `data:${mimeType};base64,${base64}`)
     } catch (err) {
       // NON basta un console.error. L'8 set 2026 il Preventivo Extra B e' uscito
       // a 178KB con la foto rotta e il bot l'ha dichiarato a posto tre volte:
       // il fallimento va RESTITUITO, cosi' chi consegna il documento lo sa e
       // puo' dirlo all'Ingegnere.
-      console.error(`[PDF] embed immagine Drive fallito per ${fileId}:`, err instanceof Error ? err.message : err)
-      if (!mancanti.includes(fileId)) mancanti.push(fileId)
-      // Si lascia l'URL originale: per un file condiviso "chiunque abbia il
-      // link" il fetch di rete puo' ancora riuscire.
+      console.error(`[PDF] embed immagine Drive fallito per ${id}:`, err instanceof Error ? err.message : err)
+      mancanti.push(id)
     }
   }
+
+  /*
+    La sostituzione avviene sul TAG INTERO, scorrendo da destra a sinistra.
+
+    Prima era `out.split(src).join(dataUri)`, che opera su sottostringhe: con due
+    URL di cui uno prefisso dell'altro — `...?id=ABC` e `...?id=ABC&sz=w600`, che
+    e' proprio la forma delle miniature Drive — la prima sostituzione entrava
+    DENTRO il secondo tag e lasciava `data:image/jpeg;base64,XXXX&sz=w600`.
+    Provato su Chromium: quell'immagine non si carica, e non finiva nemmeno fra
+    le mancanti. Da destra a sinistra gli indici dei match precedenti restano
+    validi.
+  */
+  let out = html
+  for (let i = driveMatches.length - 1; i >= 0; i--) {
+    const m = driveMatches[i]
+    const src = sorgenteDi(m)
+    const id = extractDriveFileId(src)
+    if (!id) {
+      console.error(`[PDF] URL Drive non riconosciuto: ${src}`)
+      if (!mancanti.includes(src)) mancanti.push(src)
+      continue
+    }
+    const dataUri = perId.get(id)
+    if (!dataUri) continue // gia' dichiarata mancante: si lascia il tag com'e'
+    const inizio = m.index ?? 0
+    const tagNuovo = m[0].split(src).join(dataUri)
+    out = out.slice(0, inizio) + tagNuovo + out.slice(inizio + m[0].length)
+  }
+
   return { html: out, mancanti }
 }
 
@@ -416,12 +441,18 @@ export async function generateDocxFromHtml(
    * sbagliato e' peggio di un documento senza foto.
    */
   const immagini: Array<{ byte: Buffer; tipo: 'jpg' | 'png' | 'gif' | 'bmp' } | null> = []
-  const mancanti: string[] = []
+  // ⭐ `oltreIlTetto` DENTRO le mancanti, non solo calcolato: per un giro intero
+  // e' rimasto una variabile morta, e nel Word le foto oltre la ventesima non
+  // venivano ne' incorporate ne' dichiarate. Sparivano — cioe' il difetto
+  // d'origine di tutta la giornata, riaperto dalla correzione che doveva
+  // chiuderlo. `tsc` non lo diceva (nessun noUnusedLocals) e nessun test
+  // guardava il Word: lo hanno trovato tre audit su tre.
+  const mancanti: string[] = [...oltreIlTetto]
   if (idImmagini.length > 0) {
     const { downloadFileBase64 } = await import('./drive')
     for (const id of idImmagini) {
       try {
-        const { base64, mimeType } = await downloadFileBase64(id)
+        const { base64, mimeType, name } = await downloadFileBase64(id)
         // Il tipo VERO, non 'jpg' per tutto: byte WEBP o HEIC dentro una parte
         // dichiarata JPEG diventano un riquadro rotto dentro Word, mentre il
         // download e' andato a buon fine e quindi nessuno avvisa.
@@ -429,7 +460,7 @@ export async function generateDocxFromHtml(
         if (!tipo) {
           console.error(`[DOCX] formato non inseribile in un Word (${mimeType}) per ${id}`)
           immagini.push(null)
-          mancanti.push(id)
+          mancanti.push(name ? `${name} (${id})` : id)
           continue
         }
         immagini.push({ byte: Buffer.from(base64, 'base64'), tipo })
@@ -439,8 +470,8 @@ export async function generateDocxFromHtml(
         mancanti.push(id)
       }
     }
-    if (mancanti.length > 0) opzioni.onImmaginiMancanti?.(mancanti)
   }
+  if (mancanti.length > 0) opzioni.onImmaginiMancanti?.(mancanti)
 
   const children: Paragraph[] = [
     new Paragraph({

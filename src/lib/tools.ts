@@ -162,6 +162,7 @@ async function executePdfTools(
       let immaginiMancanti: string[] = []
       const buffer = await generatePdfFromHtml(htmlContent, title, {
         onImmaginiMancanti: (ids) => { immaginiMancanti = ids },
+        societa,
       })
       const fileName = `${safeTitle}.pdf`
       const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, 'application/pdf', folderId)
@@ -175,6 +176,7 @@ async function executePdfTools(
       let docxMancanti: string[] = []
       const buffer = await generateDocxFromHtml(htmlContent, title, {
         onImmaginiMancanti: (ids) => { docxMancanti = ids },
+        societa,
       })
       const fileName = `${safeTitle}.docx`
       const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, DOCX_MIME, folderId)
@@ -191,7 +193,7 @@ async function executePdfTools(
     const buffer = await generateXlsxFromData(
       sheets as { name: string; rows: (string | number | null)[][]; immagini?: string[] }[],
       title,
-      { onImmaginiMancanti: (ids) => { xlsxMancanti = ids }, societa },
+      { onImmaginiMancanti: (ids) => { xlsxMancanti = ids } },
     )
     const fileName = `${safeTitle}.xlsx`
     const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, XLSX_MIME, folderId)

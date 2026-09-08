@@ -107,3 +107,45 @@ describe('pianificaAllegato', () => {
     expect(piano.every((v) => v.tipo === 'foto')).toBe(true)
   })
 })
+
+describe('i casi che l audit ha trovato scoperti', () => {
+  // Tutti gli input dei test erano gia' minuscoli: togliere `.toLowerCase()`
+  // sopravviveva. Drive restituisce anche mimeType con maiuscole.
+  test('il mimeType con maiuscole viene riconosciuto lo stesso', () => {
+    expect(estensioneDocx('IMAGE/JPEG')).toBe('jpg')
+    expect(estensioneDocx('Image/Png')).toBe('png')
+  })
+
+  test("'image/jpg' (la forma non canonica) e comunque un jpg", () => {
+    expect(estensioneDocx('image/jpg')).toBe('jpg')
+  })
+
+  // Alzare ALTEZZA_MAX_DOCX a 5000 sopravviveva: nessuna asserzione la pinnava.
+  // Una foto molto verticale sarebbe uscita piu' alta della pagina A4.
+  test('una foto altissima resta dentro la pagina', () => {
+    const r = riquadroDocx({ larghezza: 100, altezza: 4000 })
+    expect(r.altezza).toBeLessThanOrEqual(620)
+    // Precisione 2 e non 3: a proporzioni cosi' estreme l'arrotondamento al
+    // pixel intero (15,5 -> 16) sposta il rapporto del 3 per cento. Non e' un
+    // difetto, e' che i pixel sono interi.
+    expect(r.larghezza / r.altezza).toBeCloseTo(100 / 4000, 2)
+  })
+
+  // ⭐ La forma d'ingresso VERA non era coperta: `jpegFinto` metteva il SOF
+  // subito dopo il SOI, quindi il ciclo che salta i segmenti non veniva MAI
+  // eseguito. Un JPEG da telefono ha APP0/APP1 (EXIF) prima del SOF.
+  test('legge le dimensioni di un JPEG con i segmenti EXIF davanti', () => {
+    const soi = Buffer.from([0xff, 0xd8])
+    // APP1 (EXIF) lungo 100 byte, come in una foto da telefono
+    const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, 0x00, 0x64]), Buffer.alloc(98)])
+    const sof = Buffer.alloc(11)
+    sof.writeUInt16BE(0xffc0, 0)
+    sof.writeUInt16BE(9, 2)
+    sof.writeUInt8(8, 4)
+    sof.writeUInt16BE(3024, 5)  // altezza
+    sof.writeUInt16BE(4032, 7)  // larghezza
+    const jpeg = Buffer.concat([soi, app1, sof])
+
+    expect(dimensioniImmagine(jpeg)).toEqual({ larghezza: 4032, altezza: 3024 })
+  })
+})

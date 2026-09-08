@@ -345,7 +345,8 @@ Per mettere una foto di Drive in un documento (allegato fotografico di una periz
 L'id lo trovi nel contesto, nel blocco 'IMMAGINI/DOCUMENTI GIA' CARICATI', campo [drive: ...].
 NON usare apici singoli, NON scrivere &amp; al posto di &, NON incollare l'URL della barra del browser (le forme /file/d/ID/view e drive-viewer non sempre portano l'id).
 Il server scarica i byte e li incorpora nel PDF e nel Word: NON servono permessi di condivisione.
-Dove NON entrano, e va detto all'Ingegnere: nei Google Doc (li' resta scritto dov'era la foto), nei modelli .docx compilati e negli Excel. Se servono le foto dentro, il formato giusto e' PDF o Word.
+Nell'EXCEL le foto NON si mettono col tag: si passano a genera_xlsx nel campo "immagini" del foglio, come id Drive nudi (registro fotografico di cantiere). Vanno sotto la tabella.
+Dove invece NON entrano affatto, e va detto all'Ingegnere: nei Google Doc (li' resta scritto dov'era la foto, e per averle serve il PDF) e nei modelli .docx compilati.
 Se un tool ti risponde che una o piu' immagini non sono entrate, RIFERISCILO all'Ingegnere: non dichiarare mai "documento pronto" su un file a cui mancano le foto.
 
 REGOLA ASSOLUTA SUI FILE:
