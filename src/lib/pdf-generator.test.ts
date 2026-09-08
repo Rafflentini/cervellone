@@ -308,9 +308,9 @@ describe('DOCX — quando una foto non si scarica', () => {
     })
 
     expect(mancanti).toEqual(['BBBBBBBBBBBB'])
-    // Che il posto resti occupato da un segnaposto e' provato su
-    // `pianificaAllegato` (immagine-dimensioni.test.ts): un .docx e' uno ZIP
-    // compresso, qui dentro il testo non e' ispezionabile.
+    // Che il segnaposto resti al SUO posto, fra le due didascalie giuste, e'
+    // provato piu' sotto aprendo davvero lo ZIP ("nel Word la foto sta sotto la
+    // SUA didascalia"). Qui il buffer compresso non e' ispezionabile.
     expect(buf.subarray(0, 2).toString()).toBe('PK')
   })
 
@@ -995,5 +995,105 @@ describe('difetti trovati dagli audit avversariali del 8 set', () => {
     expect(mancanti).toHaveLength(2)
     expect(mancanti[0]).toContain('PRIMA')
     expect(mancanti[1]).toContain('SECONDA')
+  })
+})
+
+describe('nel Word la foto sta sotto la SUA didascalia', () => {
+  beforeEach(() => { vi.mocked(downloadFileBase64).mockReset() })
+
+  /**
+   * Il PDF metteva la foto dove stava il tag; il Word le accodava TUTTE IN
+   * FONDO, nell'ordine dei tag e senza didascalia. La stessa perizia usciva
+   * corretta in PDF e, in Word, con le didascalie nel testo e le foto in coda:
+   * il committente non poteva piu' sapere quale foto prova quale affermazione.
+   *
+   * E' la stessa classe del difetto gia' chiuso una volta ("la foto del balcone
+   * sotto la didascalia del cornicione"), risolto allora solo DENTRO l'allegato.
+   */
+  async function ordineNelDocx(buf: Buffer): Promise<string[]> {
+    const JSZip = (await import('jszip')).default
+    const zip = await JSZip.loadAsync(buf)
+    const xml = await zip.file('word/document.xml')!.async('string')
+    // Testo e immagini nell'ordine in cui compaiono nel documento.
+    return Array.from(xml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>|<a:blip\b/g))
+      .map((m) => (m[1] !== undefined ? m[1] : '[FOTO]'))
+      .filter((v) => v.trim() !== '')
+  }
+
+  it('due didascalie e due foto restano appaiate', async () => {
+    vi.mocked(downloadFileBase64).mockImplementation(async (id: string) => ({
+      base64: Buffer.from(`byte-${id}`).toString('base64'),
+      mimeType: 'image/jpeg',
+      name: `${id}.jpg`,
+    }))
+
+    const buf = await generateDocxFromHtml(
+      '<h1>Perizia</h1>'
+      + '<p>Foto 1 — distacco copriferro sul balcone</p>'
+      + '<p><img src="https://drive.google.com/uc?id=BALCONEAAAAA"></p>'
+      + '<p>Foto 2 — lesione sul cornicione</p>'
+      + '<p><img src="https://drive.google.com/uc?id=CORNICIONEBB"></p>',
+      'Perizia',
+    )
+
+    const ordine = await ordineNelDocx(buf)
+    const iBalcone = ordine.findIndex((v) => v.includes('balcone'))
+    const iCornicione = ordine.findIndex((v) => v.includes('cornicione'))
+    const foto = ordine.map((v, i) => (v === '[FOTO]' ? i : -1)).filter((i) => i >= 0)
+
+    expect(foto).toHaveLength(2)
+    // La prima foto sta FRA le due didascalie, non dopo tutte e due.
+    expect(foto[0]).toBeGreaterThan(iBalcone)
+    expect(foto[0]).toBeLessThan(iCornicione)
+    expect(foto[1]).toBeGreaterThan(iCornicione)
+  })
+
+  it('una foto che non si scarica lascia il segnaposto al SUO posto', async () => {
+    vi.mocked(downloadFileBase64).mockImplementation(async (id: string) => {
+      if (id === 'ROTTAAAAAAAA') throw new Error('File not found')
+      return { base64: Buffer.from('ok').toString('base64'), mimeType: 'image/jpeg', name: 'f.jpg' }
+    })
+
+    const buf = await generateDocxFromHtml(
+      '<p>Prima didascalia</p><p><img src="https://drive.google.com/uc?id=ROTTAAAAAAAA"></p>'
+      + '<p>Seconda didascalia</p><p><img src="https://drive.google.com/uc?id=BUONAAAAAAAA"></p>',
+      'Perizia',
+    )
+
+    const ordine = await ordineNelDocx(buf)
+    const iPrima = ordine.findIndex((v) => v.includes('Prima didascalia'))
+    const iSegnaposto = ordine.findIndex((v) => v.includes('non disponibile'))
+    const iSeconda = ordine.findIndex((v) => v.includes('Seconda didascalia'))
+    expect(iSegnaposto).toBeGreaterThan(iPrima)
+    expect(iSegnaposto).toBeLessThan(iSeconda)
+  })
+
+  // Il modello scrive spesso il tag NUDO, fra due paragrafi, senza avvolgerlo
+  // in un <p>. Li' non c'e' nessun blocco da cui pescarlo: serve il suo ramo.
+  it('un img fra due paragrafi, senza <p> attorno, sta al suo posto', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: Buffer.from('pixel').toString('base64'), mimeType: 'image/jpeg', name: 'f.jpg',
+    })
+
+    const buf = await generateDocxFromHtml(
+      '<p>Sopra</p><img src="https://drive.google.com/uc?id=NUDAAAAAAAAA"><p>Sotto</p>',
+      'Perizia',
+    )
+
+    const ordine = await ordineNelDocx(buf)
+    const iSopra = ordine.findIndex((v) => v.includes('Sopra'))
+    const iFoto = ordine.indexOf('[FOTO]')
+    const iSotto = ordine.findIndex((v) => v.includes('Sotto'))
+    expect(iFoto).toBeGreaterThan(iSopra)
+    expect(iFoto).toBeLessThan(iSotto)
+  })
+
+  // CONTROLLO POSITIVO: senza, un generatore che non mette nessuna foto
+  // passerebbe i due test qui sopra a mani basse.
+  it('un Word senza foto ha comunque il suo testo, e nessuna foto', async () => {
+    const buf = await generateDocxFromHtml('<h1>Titolo</h1><p>Solo testo</p>', 'Doc')
+    const ordine = await ordineNelDocx(buf)
+    expect(ordine.join(' ')).toContain('Solo testo')
+    expect(ordine).not.toContain('[FOTO]')
   })
 })

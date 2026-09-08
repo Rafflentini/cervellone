@@ -66,7 +66,7 @@ const PDF_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         title: { type: 'string', description: 'Nome file PDF (senza estensione, max 100 char)' },
-        html_content: { type: 'string', description: 'Contenuto HTML del documento (verrà convertito in PDF A4)' },
+        html_content: { type: 'string', description: "Contenuto HTML del documento (verrà convertito in PDF A4). Le foto di Drive si mettono con <img src=\"https://drive.google.com/thumbnail?id=ID\"> ed escono ESATTAMENTE dove scrivi il tag: JPEG, PNG, GIF, BMP, WebP, AVIF, SVG, max 20 per documento." },
         folder_id: { type: 'string', description: 'OPZIONALE — folder Drive di destinazione. Se omesso, salva in /BOZZE_PDF/' },
       },
       required: ['title', 'html_content'],
@@ -79,7 +79,7 @@ const PDF_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         title: { type: 'string', description: 'Nome file DOCX (senza estensione, max 100 char)' },
-        html_content: { type: 'string', description: 'Contenuto HTML semplice. h1/h2/h3 → headings Word, p/div/li → paragrafi. Niente tabelle complesse né CSS.' },
+        html_content: { type: 'string', description: "Contenuto HTML semplice. h1/h2/h3 → headings Word, p/div/li → paragrafi. Niente tabelle complesse né CSS. Le foto di Drive VENGONO incluse, con <img src=\"https://drive.google.com/thumbnail?id=ID\">, e restano dove scrivi il tag: solo JPEG/PNG/GIF/BMP (un WebP o un SVG nel Word non entra), max 20." },
         folder_id: { type: 'string', description: 'OPZIONALE — folder Drive di destinazione. Default /BOZZE_PDF/' },
       },
       required: ['title', 'html_content'],

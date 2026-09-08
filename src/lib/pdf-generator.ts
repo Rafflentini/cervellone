@@ -41,7 +41,6 @@ import {
   dimensioniImmagine,
   estensioneDocx,
   riquadroDocx,
-  pianificaAllegato,
   formatoStampabile,
 } from './immagine-dimensioni'
 
@@ -424,10 +423,16 @@ export async function generatePdfFromHtml(
 // DOCX — Generatore Word da HTML semplice (h1/h2/h3/p)
 // ═══════════════════════════════════════════════════════════════
 
-interface DocBlock {
-  text: string
-  type: 'h1' | 'h2' | 'h3' | 'p'
-}
+/**
+ * Un blocco del Word. Puo' essere testo oppure UNA FOTO, e la foto tiene il suo
+ * posto nella sequenza: prima le immagini venivano buttate via qui e accodate
+ * tutte in fondo, cosi' la stessa perizia usciva giusta in PDF e, in Word, con
+ * le didascalie nel testo e le foto in coda, nude. Un documento che non lascia
+ * piu' capire quale foto prova quale affermazione.
+ */
+type DocBlock =
+  | { type: 'h1' | 'h2' | 'h3' | 'p'; text: string }
+  | { type: 'immagine'; id: string }
 
 function htmlToDocxBlocks(rawHtml: string): DocBlock[] {
   const cleaned = rawHtml
@@ -437,9 +442,20 @@ function htmlToDocxBlocks(rawHtml: string): DocBlock[] {
     .replace(/<!--[\s\S]*?-->/g, '')
 
   const blocks: DocBlock[] = []
-  const blockRe = /<(h1|h2|h3|h4|h5|h6|p|div|tr|li)\b[^>]*>([\s\S]*?)<\/\1>/gi
+  // Un solo passaggio, in ordine di documento: o un blocco di testo, o un <img>
+  // che sta per conto suo. Le immagini DENTRO un blocco le raccoglie il ramo
+  // sotto, subito dopo il testo che le annuncia.
+  const blockRe = /<(h1|h2|h3|h4|h5|h6|p|div|tr|li)\b[^>]*>([\s\S]*?)<\/\1>|<img\b[^>]*>/gi
   let m: RegExpExecArray | null
   while ((m = blockRe.exec(cleaned)) !== null) {
+    if (m[1] === undefined) {
+      // Un <img> fuori da ogni blocco: nessun testo, solo la foto.
+      for (const solo of m[0].matchAll(RE_TAG_IMG)) {
+        const idSolo = extractDriveFileId(sorgenteDi(solo))
+        if (idSolo) blocks.push({ type: 'immagine', id: idSolo })
+      }
+      continue
+    }
     const tag = m[1].toLowerCase()
     const innerRaw = m[2]
     const inner = innerRaw
@@ -455,15 +471,29 @@ function htmlToDocxBlocks(rawHtml: string): DocBlock[] {
       .replace(/&#039;/g, "'")
       .replace(/\s+/g, ' ')
       .trim()
-    if (!inner) continue
-
-    let type: DocBlock['type'] = 'p'
+    let type: 'h1' | 'h2' | 'h3' | 'p' = 'p'
     if (tag === 'h1' || tag === 'h2' || tag === 'h3') type = tag
     else if (tag === 'h4' || tag === 'h5' || tag === 'h6') type = 'h3'
 
-    blocks.push({ text: inner, type })
+    // Il testo prima, poi le foto che quel blocco conteneva: cosi' un <p> fatto
+    // di didascalia + tag lascia la foto SOTTO la sua didascalia, e un <p> che
+    // contiene solo il tag non sparisce piu' (prima `inner` era vuoto e il
+    // blocco veniva scartato con dentro l'immagine).
+    if (inner) blocks.push({ text: inner, type })
+    for (const t of innerRaw.matchAll(RE_TAG_IMG)) {
+      const idInterno = extractDriveFileId(sorgenteDi(t))
+      if (idInterno) blocks.push({ type: 'immagine', id: idInterno })
+    }
   }
 
+  // Un HTML fatto di soli tag immagine, senza nemmeno un paragrafo, non deve
+  // finire nel fallback testuale: li' le foto sparirebbero.
+  if (blocks.length === 0) {
+    for (const t of cleaned.matchAll(RE_TAG_IMG)) {
+      const idNudo = extractDriveFileId(sorgenteDi(t))
+      if (idNudo) blocks.push({ type: 'immagine', id: idNudo })
+    }
+  }
   if (blocks.length === 0) {
     const fallback = cleaned
       .replace(/<[^>]+>/g, '')
@@ -511,17 +541,6 @@ export async function generateDocxFromHtml(
     ...urlDriveIlleggibili(html),
     ...immaginiSenzaSorgente(html),
   ]
-  /**
-   * Una voce per OGNI immagine richiamata, nell'ordine del documento. Chi non
-   * ce l'ha fatta resta come `null` e occupa comunque il suo posto.
-   *
-   * Prima le immagini riuscite venivano semplicemente accodate: se la seconda
-   * di sei falliva, la terza scivolava al secondo posto e nella perizia
-   * consegnata al committente la foto del balcone finiva sotto la didascalia
-   * del cornicione. Un documento che attribuisce la foto sbagliata al degrado
-   * sbagliato e' peggio di un documento senza foto.
-   */
-  const immagini: Array<{ byte: Buffer; tipo: 'jpg' | 'png' | 'gif' | 'bmp' } | null> = []
   // ⭐ `oltreIlTetto` DENTRO le mancanti, non solo calcolato: per un giro intero
   // e' rimasto una variabile morta, e nel Word le foto oltre la ventesima non
   // venivano ne' incorporate ne' dichiarate. Sparivano — cioe' il difetto
@@ -529,6 +548,8 @@ export async function generateDocxFromHtml(
   // chiuderlo. `tsc` non lo diceva (nessun noUnusedLocals) e nessun test
   // guardava il Word: lo hanno trovato tre audit su tre.
   const mancanti: string[] = [...oltreIlTetto]
+  /** id → byte pronti. Chi non c'e' e' stato dichiarato fra le mancanti. */
+  const perId = new Map<string, { byte: Buffer; tipo: 'jpg' | 'png' | 'gif' | 'bmp' }>()
   if (idImmagini.length > 0) {
     const { downloadFileBase64 } = await import('./drive')
     for (const id of idImmagini) {
@@ -540,14 +561,12 @@ export async function generateDocxFromHtml(
         const tipo = estensioneDocx(mimeType)
         if (!tipo) {
           console.error(`[DOCX] formato non inseribile in un Word (${mimeType}) per ${id}`)
-          immagini.push(null)
           mancanti.push(name ? `${name} (${id})` : id)
           continue
         }
-        immagini.push({ byte: Buffer.from(base64, 'base64'), tipo })
+        perId.set(id, { byte: Buffer.from(base64, 'base64'), tipo })
       } catch (err) {
         console.error(`[DOCX] immagine Drive non scaricata (${id}):`, err instanceof Error ? err.message : err)
-        immagini.push(null)
         mancanti.push(id)
       }
     }
@@ -563,7 +582,46 @@ export async function generateDocxFromHtml(
     new Paragraph({ children: [new TextRun(' ')] }),
   ]
 
+  let numeroFoto = 0
   for (const block of blocks) {
+    if (block.type === 'immagine') {
+      numeroFoto++
+      const voce = perId.get(block.id)
+      if (!voce) {
+        // Il posto resta occupato, e dichiarato: chi legge sa che li' manca una
+        // foto, invece di attribuire alla didascalia quella dopo.
+        children.push(
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [
+              new TextRun({
+                text: `[Foto ${numeroFoto} non disponibile — id Drive ${block.id}]`,
+                italics: true,
+                size: 18,
+              }),
+            ],
+          }),
+        )
+        continue
+      }
+      // Proporzioni VERE. Le foto di cantiere scattate col telefono sono in
+      // larga parte verticali: a 480x360 fissi uscivano tutte schiacciate.
+      const misura = riquadroDocx(dimensioniImmagine(voce.byte))
+      children.push(
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          children: [
+            new ImageRun({
+              type: voce.tipo,
+              data: voce.byte,
+              transformation: { width: misura.larghezza, height: misura.altezza },
+            }),
+          ],
+        }),
+      )
+      continue
+    }
+
     let heading: (typeof HeadingLevel)[keyof typeof HeadingLevel] | undefined
     if (block.type === 'h1') heading = HeadingLevel.HEADING_1
     else if (block.type === 'h2') heading = HeadingLevel.HEADING_2
@@ -573,44 +631,6 @@ export async function generateDocxFromHtml(
       new Paragraph({
         heading,
         children: [new TextRun({ text: block.text, size: heading ? 26 : 22 })],
-      }),
-    )
-  }
-
-  // Le foto, in fondo: l'allegato fotografico. Larghezza fissa a misura di A4
-  // con i margini, altezza proporzionata a 4:3 — senza dimensioni `docx` non
-  // sa che spazio darle e Word le mostra schiacciate.
-  for (const voce of pianificaAllegato(idImmagini, immagini)) {
-    if (voce.tipo === 'assente') {
-      // Il posto resta occupato, e dichiarato. Cosi' la foto dopo non slitta e
-      // chi legge sa che li' ne manca una, invece di guardare quella sbagliata.
-      children.push(
-        new Paragraph({
-          alignment: AlignmentType.CENTER,
-          children: [
-            new TextRun({
-              text: `[Foto ${voce.indice + 1} non disponibile — id Drive ${voce.id}]`,
-              italics: true,
-              size: 18,
-            }),
-          ],
-        }),
-      )
-      continue
-    }
-    // Proporzioni VERE. Le foto di cantiere scattate col telefono sono in larga
-    // parte verticali: a 480x360 fissi uscivano tutte schiacciate.
-    const misura = riquadroDocx(dimensioniImmagine(voce.byte))
-    children.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        children: [
-          new ImageRun({
-            type: voce.formato,
-            data: voce.byte,
-            transformation: { width: misura.larghezza, height: misura.altezza },
-          }),
-        ],
       }),
     )
   }

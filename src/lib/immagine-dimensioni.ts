@@ -131,35 +131,6 @@ export function riquadroDocx(dim: Dimensioni | null): Dimensioni {
   }
 }
 
-/** Cosa mettere nel documento al posto di ciascuna immagine richiamata. */
-export type VoceAllegato =
-  | { tipo: 'foto'; indice: number; byte: Buffer; formato: 'jpg' | 'png' | 'gif' | 'bmp' }
-  | { tipo: 'assente'; indice: number; id: string }
-
-/**
- * La sequenza dell'allegato fotografico, nell'ordine del documento.
- *
- * Una foto che non si e' potuta scaricare NON viene saltata: lascia il suo
- * posto occupato da una voce 'assente'. Prima le riuscite venivano accodate e
- * basta, quindi se la seconda di sei falliva la terza scivolava al secondo
- * posto: nella perizia consegnata al committente la foto del balcone finiva
- * sotto la didascalia del cornicione.
- *
- * Un documento che attribuisce la foto sbagliata al degrado sbagliato e' peggio
- * di un documento senza foto.
- */
-export function pianificaAllegato(
-  idImmagini: string[],
-  scaricate: Array<{ byte: Buffer; tipo: 'jpg' | 'png' | 'gif' | 'bmp' } | null>,
-): VoceAllegato[] {
-  return idImmagini.map((id, i) => {
-    const s = scaricate[i]
-    return s
-      ? { tipo: 'foto' as const, indice: i, byte: s.byte, formato: s.tipo }
-      : { tipo: 'assente' as const, indice: i, id }
-  })
-}
-
 /**
  * Il formato si vede in un PDF stampato da Chromium?
  *

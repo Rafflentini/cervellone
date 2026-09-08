@@ -1,6 +1,6 @@
 import { describe, test, it, expect } from 'vitest'
 import {
-  dimensioniImmagine, estensioneDocx, riquadroDocx, pianificaAllegato, formatoStampabile,
+  dimensioniImmagine, estensioneDocx, riquadroDocx, formatoStampabile,
 } from './immagine-dimensioni'
 
 /** JPEG minimo con un SOF0 che dichiara 1200x1600 (verticale, come le foto da telefono). */
@@ -83,30 +83,6 @@ describe('riquadroDocx', () => {
 
   test('senza dimensioni note ripiega su un 4:3, senza rompersi', () => {
     expect(riquadroDocx(null)).toEqual({ larghezza: 480, altezza: 360 })
-  })
-})
-
-describe('pianificaAllegato', () => {
-  const foto = (n: string) => ({ byte: Buffer.from(n), tipo: 'jpg' as const })
-
-  // IL DIFETTO trovato dall'audit: le foto riuscite venivano accodate, quindi
-  // una che falliva faceva slittare tutte le successive di un posto.
-  test('una foto mancante NON fa slittare le altre', () => {
-    const piano = pianificaAllegato(
-      ['AAA', 'BBB', 'CCC'],
-      [foto('a'), null, foto('c')],
-    )
-
-    expect(piano.map((v) => v.tipo)).toEqual(['foto', 'assente', 'foto'])
-    // la terza resta la terza
-    expect(piano[2]).toMatchObject({ tipo: 'foto', indice: 2 })
-    // e il buco e' dichiarato, con l'id per ritrovarlo
-    expect(piano[1]).toMatchObject({ tipo: 'assente', id: 'BBB' })
-  })
-
-  test('quando ci sono tutte, nessun buco', () => {
-    const piano = pianificaAllegato(['A', 'B'], [foto('a'), foto('b')])
-    expect(piano.every((v) => v.tipo === 'foto')).toBe(true)
   })
 })
 
