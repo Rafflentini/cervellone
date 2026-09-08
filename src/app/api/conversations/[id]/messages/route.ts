@@ -60,6 +60,27 @@ export async function POST(
     )
   }
 
+  // ⭐ Il commento qui sopra diceva gia' «qui passa il messaggio dell'UTENTE».
+  // Era un'invariante DICHIARATA e non fatta rispettare, e il 9 set 2026 e'
+  // stata misurata in produzione: fra le 18:42 e le 18:59, sulla conversazione
+  // del SAL della commessa C2026-008, SETTE risposte scritte dal server e
+  // SETTE dal browser — una a una, lo stesso testo due volte. Il commit che
+  // toglieva quel codice dal client era live da TRE ORE: la scheda
+  // dell'Ingegnere non aveva ricaricato la pagina e girava col bundle vecchio.
+  //
+  // Nessuna modifica al client puo' raggiungere una scheda gia' aperta. Questa
+  // rotta invece e' server, e il server e' aggiornato: la guardia va QUI.
+  //
+  // 409 e non 400: non e' una richiesta malformata, e' una richiesta che era
+  // valida ieri e oggi non lo e' piu'.
+  if (role !== 'user') {
+    console.warn(`[messages] rifiutato un ruolo "${role}" dal browser: la risposta la scrive il server`)
+    return NextResponse.json(
+      { error: 'Dal browser si salva solo la domanda: la risposta la scrive il server.' },
+      { status: 409 },
+    )
+  }
+
   const sanitized = sanitizeForStorage(content)
 
   // Qui c'era una difesa contro il doppio salvataggio, per i beacon

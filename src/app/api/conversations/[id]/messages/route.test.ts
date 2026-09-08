@@ -102,14 +102,14 @@ describe('POST /api/conversations/[id]/messages', () => {
   it('genera l embedding del testo sanitizzato', async () => {
     const { POST } = await import('./route')
     await POST(
-      req({ role: 'assistant', content: 'Contenzioso Blasi: la controreplica poggia sull articolo 5.1 del contratto.' }, getAuthToken()),
+      req({ role: 'user', content: 'Contenzioso Blasi: la controreplica poggia sull articolo 5.1 del contratto.' }, getAuthToken()),
       params
     )
 
     expect(saveEmbeddingOnlyMock).toHaveBeenCalledTimes(1)
     const [convId, role, testo] = saveEmbeddingOnlyMock.mock.calls[0]
     expect(convId).toBe('conv-1')
-    expect(role).toBe('assistant')
+    expect(role).toBe('user')
     expect(String(testo)).toContain('Blasi')
   })
 })
@@ -149,11 +149,11 @@ describe('POST — difesa contro il doppio salvataggio', () => {
     expect(righeInserite).toHaveLength(2)
   })
 
-  it('NON scarta una risposta breve ripetuta del bot su un altro argomento', async () => {
+  it('NON scarta un messaggio breve ripetuto su un altro argomento', async () => {
     duplicatoEsistente = { id: 'msg-fatto-precedente' }
 
     const { POST } = await import('./route')
-    await POST(req({ role: 'assistant', content: 'Fatto.' }, getAuthToken()), params)
+    await POST(req({ role: 'user', content: 'Fatto.' }, getAuthToken()), params)
 
     expect(righeInserite).toHaveLength(1)
   })
@@ -163,7 +163,7 @@ describe('POST — difesa contro il doppio salvataggio', () => {
 
     const { POST } = await import('./route')
     await POST(
-      req({ role: 'assistant', content: 'Un testo completamente diverso dal precedente, abbastanza lungo.' }, getAuthToken()),
+      req({ role: 'user', content: 'Un testo completamente diverso dal precedente, abbastanza lungo.' }, getAuthToken()),
       params
     )
 
