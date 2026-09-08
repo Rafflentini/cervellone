@@ -466,16 +466,20 @@ describe.each(CANALI)('loop %s', (_canale, esegui, entryPoint, lettoDallUtente) 
 // Non tutto deve essere uguale. Queste sono le uniche asimmetrie ammesse, e
 // stanno qui scritte perche' l'unificazione non le cancelli per distrazione.
 describe('cio che resta diverso, di proposito', () => {
-  it('il LOOP scrive a DB su Telegram, non sul web (sul web scrive il route)', async () => {
-    // Attenzione a non leggere questo come "sul web salva il browser": non e'
-    // piu' vero dall'8 set 2026. La risposta web la scrive il SERVER, ma in
-    // `api/chat/route.ts` invece che qui, perche' li' il testo e' completo —
-    // il route ci aggiunge i link ai documenti archiviati, che nascono DOPO il
-    // loop. Salvarla qui li perderebbe, e scriverla in tutti e due i posti
-    // farebbe due righe per turno.
+  it('il LOOP non scrive PIU la risposta: la scrive il chiamante, su tutti e due', async () => {
+    // ⭐ Questa asimmetria e' SPARITA il 9 set 2026, ed e' sparita nel verso
+    // giusto: prima il web salvava nel route (perche' li' il testo e' completo:
+    // il route ci aggiunge i link ai documenti, che nascono DOPO il loop) e
+    // Telegram salvava qui, quindi in `messages` finiva l'HTML grezzo e MAI il
+    // link. Il giorno dopo, "rimandami il link del preventivo" non trovava
+    // niente e il modello rigenerava il documento.
     //
-    // La prova che il route la salva davvero sta in
-    // `api/chat/route.salvataggio.test.ts`.
+    // Ora la risposta la scrive il CHIAMANTE su tutti e due i canali, con la
+    // stessa funzione (`salva-risposta.ts`). Il LOOP scrive ancora la riga
+    // UTENTE su Telegram — sul web quella la manda gia' il browser.
+    //
+    // Le prove che i chiamanti la salvino davvero:
+    // `api/chat/route.salvataggio.test.ts` e `agent-job.salvataggio.test.ts`.
     scriptedTurns = [{ text: 'Fatto.', toolUses: [], stopReason: 'end_turn' }]
 
     await callClaudeStream(richiestaBase('chat'), { onText: () => {} })
@@ -484,7 +488,7 @@ describe('cio che resta diverso, di proposito', () => {
     turnIndex = 0
     scriptedTurns = [{ text: 'Fatto.', toolUses: [], stopReason: 'end_turn' }]
     await callClaudeStreamTelegram(richiestaBase('telegram'), async () => {})
-    expect(savedMessages.map(m => m.role)).toEqual(['user', 'assistant'])
+    expect(savedMessages.map(m => m.role)).toEqual(['user'])
   })
 
   it('il web riceve il testo a delta, Telegram il testo accumulato', async () => {
@@ -825,48 +829,9 @@ describe('budget: troncare una run non e la stessa cosa che concluderla', () => 
     expect(out).toContain('budget di elaborazione')
   })
 
-  it('un turno fallito entra nella storia ma NON nella memoria semantica', async () => {
-    // Due errori opposti, evitati entrambi.
-    // Embeddarlo: il "non sono riuscito a sintetizzare" supera
-    // MIN_EMBEDDING_LENGTH e diventa recuperabile da searchMemory come se fosse
-    // conoscenza. La guardia esisteva solo per api_error, un motivo su tre.
-    // Non scriverlo affatto: il messaggio UTENTE e' gia' stato salvato prima del
-    // try, quindi resterebbe una domanda senza risposta e al turno dopo il
-    // modello rifarebbe da capo il lavoro parziale gia' fatto.
-    for (const [motivo, prepara] of [
-      ['empty', () => { scriptedTurns = [{ text: '', toolUses: [], stopReason: 'end_turn' }] }],
-      ['budget', () => { scriptedTurns = [{ text: 'Comincio.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' }] }],
-    ] as const) {
-      savedMessages.length = 0
-      embeddingGenerati.length = 0
-      turnIndex = 0
-      prepara()
-
-      await callClaudeStreamTelegram(
-        { ...richiestaBase('telegram'), maxRunTokens: motivo === 'budget' ? 1 : undefined } as Richiesta,
-        async () => {},
-      )
-
-      const assistente = savedMessages.filter(m => m.role === 'assistant')
-      expect(assistente, `motivo ${motivo}: la risposta deve restare nella storia`).toHaveLength(1)
-      // L'embedding e' una chiamata separata dall'8 set 2026: si guarda li',
-      // non piu' il flag della riga.
-      expect(
-        embeddingGenerati.filter(e => e.role === 'assistant'),
-        `motivo ${motivo}: non deve finire in memoria`,
-      ).toHaveLength(0)
-    }
-  })
-
-  it('un turno riuscito invece finisce anche in memoria', async () => {
-    // Controllo positivo: senza, il test qui sopra sarebbe verde anche se
-    // NESSUN messaggio venisse mai embeddato.
-    scriptedTurns = [{ text: 'Fatto, ecco il risultato completo del lavoro richiesto.', toolUses: [], stopReason: 'end_turn' }]
-
-    await callClaudeStreamTelegram(richiestaBase('telegram'), async () => {})
-
-    const assistente = savedMessages.filter(m => m.role === 'assistant')
-    expect(assistente).toHaveLength(1)
-    expect(embeddingGenerati.filter(e => e.role === 'assistant')).toHaveLength(1)
-  })
+  // ⭐ La distinzione "storia si', memoria semantica no" per i turni falliti
+  // NON vive piu' qui: dal 9 set 2026 la risposta la scrive il chiamante, e
+  // la regola sta in `salva-risposta.ts` (con i suoi test) e nei due
+  // chiamanti. Lasciare qui dei test che non toccano piu' quel codice
+  // sarebbe peggio che non averli: sarebbero verdi qualunque cosa succeda.
 })

@@ -61,7 +61,12 @@ vi.mock('@/lib/auto-debrief', () => ({
 }))
 vi.mock('@/lib/memory', () => ({
   saveMessageWithEmbedding: (...args: unknown[]) => mockSaveMessage(...args),
+  // La risposta del turno la scrive agent-job, non piu il motore.
+  saveMessageOnly: (...args: unknown[]) => { righeSalvate.push(args); return Promise.resolve(true) },
+  saveEmbeddingOnly: async () => true,
 }))
+/** Righe assistant scritte da agent-job: [convId, role, testo, istante]. */
+const righeSalvate: unknown[][] = []
 
 vi.mock('@/lib/working-memory', () => ({
   isWorkingMemoryEnabled: async () => false,

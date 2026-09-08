@@ -24,6 +24,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 
 import { callClaudeStreamTelegram } from '@/lib/claude'
+import { salvaRispostaTurno } from '@/lib/salva-risposta'
 import { isWorkingMemoryEnabled, buildProcedureContext, buildActiveProjectContext } from '@/lib/working-memory'
 import { buildTemplateContext } from '@/lib/template-context'
 import { captureArtifact, buildArtifactsPointer } from '@/lib/artifact-capture'
@@ -216,6 +217,10 @@ export async function runAgentJob(
   // VERI delle foto al testo estratto: per 24 ore il bot "sa" di aver estratto
   // da quelle foto un messaggio di scusa, e il pointer gli dice di fidarsene.
   let turnoFallito = false
+  // L'istante a cui attribuire la risposta: l'inizio del turno, non la fine
+  // della scrittura. Una scrittura lenta non deve infilarsi DOPO la domanda
+  // successiva dell'Ingegnere.
+  const inizioTurno = new Date().toISOString()
   const fullResponse = await callClaudeStreamTelegram(
     {
       messages: history,
@@ -246,95 +251,116 @@ export async function runAgentJob(
   // Path durable: hook assente → no-op.
   hooks.onStreamSettled?.()
 
-  // Gestisci documenti e risposta finale.
-  // Su turno fallito non si salva niente: il testo e' troncato a meta'.
-  const responseBlocks = turnoFallito ? [] : parseDocumentBlocks(fullResponse)
-  const textParts: string[] = []
+  // ⭐ Il salvataggio sta nel `finally`: qui sotto ci sono un insert su
+  // Supabase, un validatore e un edit Telegram, e se uno esplode la risposta
+  // del modello non deve sparire dalla storia. Prima la scriveva il motore,
+  // prima di tutto questo, e per questo non poteva contenere i link.
+  const linkDocumenti: string[] = []
+  try {
+    // Gestisci documenti e risposta finale.
+    // Su turno fallito non si salva niente: il testo e' troncato a meta'.
+    const responseBlocks = turnoFallito ? [] : parseDocumentBlocks(fullResponse)
+    const textParts: string[] = []
 
-  for (const block of responseBlocks) {
-    if (block.type === 'document') {
-      const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i)
-      const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
+    for (const block of responseBlocks) {
+      if (block.type === 'document') {
+        const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i)
+        const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
 
-      const savedDoc = await safeSupabase(
-        () => supabase.from('documents')
-          .insert({ name: title, content: block.content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
-          .select('id').single()
-      )
-      const docUrl = (savedDoc as any)?.id
-        ? `https://cervellone-five.vercel.app/doc/${(savedDoc as any).id}`
-        : 'https://cervellone-five.vercel.app'
+        const savedDoc = await safeSupabase(
+          () => supabase.from('documents')
+            .insert({ name: title, content: block.content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
+            .select('id').single()
+        )
+        const docUrl = (savedDoc as any)?.id
+          ? `https://cervellone-five.vercel.app/doc/${(savedDoc as any).id}`
+          : 'https://cervellone-five.vercel.app'
 
-      // FIX W1.3 (utente 2/5): NO auto-save su Drive di default.
-      // Il documento resta nella memoria permanente Cervellone (Supabase + URL /doc/[id]).
-      // Per salvare su Drive, l'utente deve chiederlo esplicitamente — Cervellone
-      // chiama il tool salva_su_drive che fa la mappatura Y+X.
-      textParts.push(`📄 *${title}*\n👉 ${docUrl}`)
-    } else if (block.content.trim()) {
-      textParts.push(block.content)
+        // FIX W1.3 (utente 2/5): NO auto-save su Drive di default.
+        // Il documento resta nella memoria permanente Cervellone (Supabase + URL /doc/[id]).
+        // Per salvare su Drive, l'utente deve chiederlo esplicitamente — Cervellone
+        // chiama il tool salva_su_drive che fa la mappatura Y+X.
+        textParts.push(`📄 *${title}*\n👉 ${docUrl}`)
+      // Lo stesso link va anche in STORIA: senza, al turno dopo il modello
+      // non puo ripassarlo e tende a RIGENERARE il documento.
+      linkDocumenti.push(`
+
+📄 ${title}
+👉 ${docUrl}`)
+      } else if (block.content.trim()) {
+        textParts.push(block.content)
+      }
     }
-  }
 
-  const finalText = textParts.join('\n\n') || fullResponse
+    const finalText = textParts.join('\n\n') || fullResponse
 
-  // Verifica che i link Drive citati esistano DAVVERO, prima di spedirli.
-  // `outgoingText` = finalText (+ eventuale avviso). Volutamente NON usato per
-  // captureArtifact più sotto: l'avviso non deve finire nelle bozze salvate.
-  const outgoingText = await annotateHallucinatedLinks(finalText)
+    // Verifica che i link Drive citati esistano DAVVERO, prima di spedirli.
+    // `outgoingText` = finalText (+ eventuale avviso). Volutamente NON usato per
+    // captureArtifact più sotto: l'avviso non deve finire nelle bozze salvate.
+    const outgoingText = await annotateHallucinatedLinks(finalText)
 
-  if (placeholderMsgId) {
-    if (outgoingText.length <= 4000) {
-      await editTelegramMessage(chatId, placeholderMsgId, outgoingText)
+    if (placeholderMsgId) {
+      if (outgoingText.length <= 4000) {
+        await editTelegramMessage(chatId, placeholderMsgId, outgoingText)
+      } else {
+        await editTelegramMessage(chatId, placeholderMsgId, outgoingText.slice(0, 4000))
+        const remaining = outgoingText.slice(4000)
+        if (remaining.trim()) await sendTelegramMessage(chatId, remaining)
+      }
     } else {
-      await editTelegramMessage(chatId, placeholderMsgId, outgoingText.slice(0, 4000))
-      const remaining = outgoingText.slice(4000)
-      if (remaining.trim()) await sendTelegramMessage(chatId, remaining)
+      await sendTelegramMessage(chatId, outgoingText)
     }
-  } else {
-    await sendTelegramMessage(chatId, outgoingText)
-  }
 
-  // Salva conoscenza file
-  if (!turnoFallito && fileBlocks.length > 0 && fullResponse.length > 200) {
-    const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
-    saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
-  }
+    // Salva conoscenza file
+    if (!turnoFallito && fileBlocks.length > 0 && fullResponse.length > 200) {
+      const knowledge = `[Analisi file "${fileDescription}"]\nDomanda: ${userText}\nAnalisi:\n${fullResponse.slice(0, 10000)}`
+      saveMessageWithEmbedding(conversationId, 'knowledge', knowledge).catch(() => {})
+    }
 
-  // Cattura automatica artefatti in-task: se il bot ha COMPOSTO un artefatto sostanziale
-  // (mail/lettera/documento) come testo — non già salvato come document block sopra — lo
-  // persistiamo in `documents` (auto-bozza) così non lo perde quando scorre fuori dalla
-  // finestra di history e lo recupera con ritrova_bozza. Best-effort, gated dal flag.
-  const hadDocumentBlock = responseBlocks.some((b) => b.type === 'document')
-  if (!turnoFallito && !hadDocumentBlock) {
-    captureArtifact(conversationId, finalText).catch(() => {})
-  }
+    // Cattura automatica artefatti in-task: se il bot ha COMPOSTO un artefatto sostanziale
+    // (mail/lettera/documento) come testo — non già salvato come document block sopra — lo
+    // persistiamo in `documents` (auto-bozza) così non lo perde quando scorre fuori dalla
+    // finestra di history e lo recupera con ritrova_bozza. Best-effort, gated dal flag.
+    const hadDocumentBlock = responseBlocks.some((b) => b.type === 'document')
+    if (!turnoFallito && !hadDocumentBlock) {
+      captureArtifact(conversationId, finalText).catch(() => {})
+    }
 
-  // Cattura "memoria immagini" a fine turno: lega l'estrazione testuale del turno ai
-  // riferimenti Drive delle foto caricate in questo turno. Usa `fullResponse` (testo
-  // GREZZO del modello, come fa il path web) e NON `finalText`: quest'ultimo, sui turni
-  // con document block, è il link "📄 …👉 url" e non l'estrazione vera. Best-effort;
-  // se uploadedImages è vuoto, captureImageExtraction non salva (reason: no-images).
-  if (!turnoFallito) {
-    captureImageExtraction(conversationId, fullResponse, input.uploadedImages ?? []).catch(() => {})
-  }
+    // Cattura "memoria immagini" a fine turno: lega l'estrazione testuale del turno ai
+    // riferimenti Drive delle foto caricate in questo turno. Usa `fullResponse` (testo
+    // GREZZO del modello, come fa il path web) e NON `finalText`: quest'ultimo, sui turni
+    // con document block, è il link "📄 …👉 url" e non l'estrazione vera. Best-effort;
+    // se uploadedImages è vuoto, captureImageExtraction non salva (reason: no-images).
+    if (!turnoFallito) {
+      captureImageExtraction(conversationId, fullResponse, input.uploadedImages ?? []).catch(() => {})
+    }
 
-  // Debrief di fine turno: distilla decisioni e lezioni in memoria durevole. È il
-  // pezzo che conserva il PERCHÉ di un lavoro, non solo i nomi che vi compaiono —
-  // il riassunto notturno, per progetto, scarta proprio i ragionamenti.
-  // Resta flag-gated (fail-closed) dentro maybeRunDebrief: accenderlo è una
-  // decisione separata. Il .catch è deliberato: la risposta è già stata
-  // consegnata all'utente, e un debrief fallito non deve poterla rovinare.
-  // Su turno fallito il debrief distillerebbe una "lezione" da un messaggio
-  // d'errore, e la metterebbe in memoria durevole.
-  const { maybeRunDebrief } = await import('./auto-debrief')
-  if (!turnoFallito) await maybeRunDebrief({
-    conversationId,
-    userText,
-    transcript: [
-      ...history.map((m) => `[${m.role}]: ${typeof m.content === 'string' ? m.content : ''}`),
-      `[user]: ${userText}`,
-      `[assistant]: ${fullResponse}`,
-    ].join('\n'),
-    sendSummary: (line: string) => { void sendTelegramMessage(chatId, line) },
-  }).catch(() => {})
+    // Debrief di fine turno: distilla decisioni e lezioni in memoria durevole. È il
+    // pezzo che conserva il PERCHÉ di un lavoro, non solo i nomi che vi compaiono —
+    // il riassunto notturno, per progetto, scarta proprio i ragionamenti.
+    // Resta flag-gated (fail-closed) dentro maybeRunDebrief: accenderlo è una
+    // decisione separata. Il .catch è deliberato: la risposta è già stata
+    // consegnata all'utente, e un debrief fallito non deve poterla rovinare.
+    // Su turno fallito il debrief distillerebbe una "lezione" da un messaggio
+    // d'errore, e la metterebbe in memoria durevole.
+    const { maybeRunDebrief } = await import('./auto-debrief')
+    if (!turnoFallito) await maybeRunDebrief({
+      conversationId,
+      userText,
+      transcript: [
+        ...history.map((m) => `[${m.role}]: ${typeof m.content === 'string' ? m.content : ''}`),
+        `[user]: ${userText}`,
+        `[assistant]: ${fullResponse}`,
+      ].join('\n'),
+      sendSummary: (line: string) => { void sendTelegramMessage(chatId, line) },
+    }).catch(() => {})
+  } finally {
+    await salvaRispostaTurno({
+      conversationId,
+      testo: fullResponse + linkDocumenti.join(String.fromCharCode(10)),
+      turnoFallito,
+      istante: inizioTurno,
+      tag: 'tg',
+    })
+  }
 }

@@ -19,6 +19,7 @@ import { saveMessageOnly, saveEmbeddingOnly } from '@/lib/memory'
 import { societaAttivaPerDocumenti } from '@/lib/societa-documenti'
 import { conTetto } from '@/lib/tetto-attesa'
 import { comprimiDocumentiNellaStoria, type MessaggioStoria } from '@/lib/compressione-documenti'
+import { salvaRispostaTurno } from '@/lib/salva-risposta'
 import { waitUntil } from '@vercel/functions'
 
 /**
@@ -431,40 +432,24 @@ export async function POST(request: NextRequest) {
         // acceso e pulsante invio bloccato — fino a `maxDuration`, 800 secondi.
         // Scaduto il tetto si chiude comunque e la scrittura prosegue in
         // background con `waitUntil`.
-        const testoDaSalvare = fullResponse + docLinks.join('\n') + testoErrore
-        if (conversationId && testoDaSalvare.trim()) {
-          // Un turno non consegnato entra nella STORIA ma non nella memoria
-          // semantica: e' testo troncato a meta', ed embeddarlo lo renderebbe
-          // recuperabile da searchMemory come se fosse conoscenza.
-          // Il criterio e' `turnoFallito` e SOLO quello. Non `testoErrore`: se
-          // il modello ha risposto benissimo e poi e' esploso l'insert in
-          // `documents`, la risposta e' valida e merita la memoria semantica.
-          //
-          // `inizioTurno` e non l'istante della scrittura: se la connessione
-          // dell'Ingegnere e' caduta e il server ha finito molto dopo, la riga
-          // scritta adesso si infilerebbe DOPO la domanda successiva — nella
-          // conversazione e nel contesto del modello.
-          const scrittura = saveMessageOnly(conversationId, 'assistant', testoDaSalvare, inizioTurno)
-          const salvato = await conTetto(scrittura, ATTESA_MASSIMA_SCRITTURA_MS, 'in-corso')
-          if (salvato === 'in-corso') {
-            console.warn('[chat] scrittura lenta: stream chiuso, la riga prosegue in background')
-            waitUntil(scrittura)
-          } else if (!salvato) {
-            console.error('[chat] RISPOSTA NON SALVATA: la riga non e\' finita in messages')
-          }
-          // L'embedding NON sta nel percorso critico: e' una chiamata di rete di
-          // parecchie centinaia di ms, e farla attendere allo stream terrebbe
-          // acceso lo spinner a risposta gia' completa. Quel che conta per non
-          // perdere lavoro e' la RIGA, ed e' gia' scritta.
-          //
-          // `waitUntil` e non un `.catch()` nudo: un fire-and-forget lanciato un
-          // istante prima di `controller.close()` puo' essere congelato con la
-          // function, e la risposta finirebbe in `messages` ma non in memoria —
-          // in silenzio. E' come la memoria persistente rimasta vuota per mesi.
-          if (!turnoFallito && salvato === true) {
-            waitUntil(saveEmbeddingOnly(conversationId, 'assistant', testoDaSalvare).catch(() => {}))
-          }
-        }
+        // La stessa funzione che usa Telegram (`salva-risposta.ts`): c'erano
+        // tre copie divergenti di questa logica, e quella di Telegram
+        // sbagliava in quattro modi.
+        //
+        // `inizioTurno` e non l'istante della scrittura: se la connessione
+        // dell'Ingegnere e' caduta e il server ha finito molto dopo, la riga
+        // scritta adesso si infilerebbe DOPO la domanda successiva.
+        //
+        // Il criterio per la memoria semantica e' `turnoFallito` e SOLO
+        // quello. Non `testoErrore`: se il modello ha risposto benissimo e
+        // poi e' esploso l'insert in `documents`, la risposta e' valida.
+        await salvaRispostaTurno({
+          conversationId: conversationId ?? '',
+          testo: fullResponse + docLinks.join(String.fromCharCode(10)) + testoErrore,
+          turnoFallito,
+          istante: inizioTurno,
+          tag: 'chat',
+        })
         controller.close()
       }
     },

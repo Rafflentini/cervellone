@@ -55,7 +55,12 @@ vi.mock('@/lib/image-memory', () => ({
 }))
 vi.mock('@/lib/sent-mail', () => ({ buildSentMailPointer: async () => '' }))
 vi.mock('@/lib/prompts', () => ({ getTelegramSystemPrompt: async () => 'system' }))
-vi.mock('@/lib/memory', () => ({ saveMessageWithEmbedding: async () => undefined }))
+vi.mock('@/lib/memory', () => ({
+  saveMessageWithEmbedding: async () => undefined,
+  // Dall'8 set 2026 la risposta la salva il chiamante (agent-job), non il motore.
+  saveMessageOnly: async () => true,
+  saveEmbeddingOnly: async () => true,
+}))
 vi.mock('@/lib/supabase', () => ({ supabase: { from: () => ({}) } }))
 vi.mock('@/lib/resilience', () => ({ safeSupabase: async () => null }))
 

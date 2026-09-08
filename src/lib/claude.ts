@@ -489,8 +489,6 @@ export interface ChannelPolicy {
   entryPoint: string
   /** Scrivere il messaggio UTENTE a DB. Il web no: lo fa gia' il browser (altrimenti due righe). */
   persistUserMessage: boolean
-  /** Scrivere la risposta ASSISTANT a DB. Idem. */
-  persistAssistantMessage: boolean
 }
 
 /** Traduce un errore API in una frase che l'utente possa capire. */
@@ -871,38 +869,12 @@ export async function runAgentTurn(
   //
   // Quindi: un turno non consegnato entra nella STORIA (l'utente l'ha letto) ma
   // NON nella memoria semantica.
-  if (policy.persistAssistantMessage && conversationId && fullResponse) {
-    // ⭐ Non un fire-and-forget. Prima era `salva.catch(() => {})`: la promessa
-    // non veniva attesa, la function Vercel resta viva finche' risolve
-    // `bgProcess` e non finche' risolve questa, quindi una scrittura lanciata
-    // un istante prima poteva essere congelata con la function. E' lo stesso
-    // modo in cui la memoria persistente e' rimasta vuota per mesi.
-    //
-    // Il `.catch` per giunta era codice morto: `saveMessageOnly` non rigetta
-    // mai, torna `false` — la stessa forma di errore di `sendTelegramMessage`.
-    // L'istante e' quello in cui la risposta e' stata consegnata, non quello in
-    // cui l'insert arriva a destinazione: una scrittura lenta o ritentata non
-    // deve infilarsi DOPO la domanda successiva dell'Ingegnere.
-    const istanteRisposta = new Date().toISOString()
-    const scrittura = saveMessageOnly(conversationId, 'assistant', fullResponse, istanteRisposta)
-    const salvato = await conTetto(scrittura, ATTESA_MASSIMA_SCRITTURA_MS, 'in-corso' as const)
-    if (salvato === 'in-corso') {
-      // Lenta, non persa: waitUntil e' l'unico modo perche' la function non
-      // muoia prima che arrivi.
-      console.warn('[tg] scrittura della risposta lenta: prosegue in background')
-      waitUntil(scrittura)
-    } else if (salvato === false) {
-      console.error('[tg] RISPOSTA NON SALVATA in messages')
-    }
-    // L'embedding e' una seconda chiamata di rete, e stava DENTRO la stessa
-    // promessa non attesa: era il primo a morire. Va allo sfondo per conto suo,
-    // e solo se la riga e' entrata davvero — un embedding senza il suo
-    // messaggio resta recuperabile da searchMemory senza niente a cui
-    // appartenere.
-    if (!turnoNonConsegnato && salvato !== false) {
-      waitUntil(saveEmbeddingOnly(conversationId, 'assistant', fullResponse).catch(() => {}))
-    }
-  }
+  // ⭐ La risposta la scrive il CHIAMANTE, non il motore, su tutti e due i
+  // canali. Qui il testo non e' ancora completo: i link ai documenti nascono
+  // dopo il loop, e salvare qui li perdeva. Su Telegram voleva dire che il
+  // giorno dopo «rimandami il link del preventivo» non trovava niente, e il
+  // modello tendeva a RIGENERARE il documento — l'errore che il system prompt
+  // gli vieta. La regola sta in src/lib/salva-risposta.ts, una volta sola.
 
   const FALLBACK_PREFIX = '⚠️ Non sono riuscito a sintetizzare'
   const outcome: ModelOutcome = apiErrorOccurred
@@ -993,7 +965,7 @@ export async function callClaudeStream(
     // `persistUserMessage` resta false: il messaggio dell'utente lo scrive il
     // client PRIMA di partire, e cosi' sopravvive anche a una richiesta che non
     // parte affatto — cosa che da qui non potremmo fare.
-    { tag: 'web', entryPoint: 'chat', persistUserMessage: false, persistAssistantMessage: false },
+    { tag: 'web', entryPoint: 'chat', persistUserMessage: false },
   )
 }
 
@@ -1038,7 +1010,7 @@ export async function callClaudeStreamTelegram(
       // parziale.
       onFinal: async (testo) => { await onChunk(testo) },
     },
-    { tag: 'tg', entryPoint: 'telegram', persistUserMessage: true, persistAssistantMessage: true },
+    { tag: 'tg', entryPoint: 'telegram', persistUserMessage: true },
   )
 }
 
