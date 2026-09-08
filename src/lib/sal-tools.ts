@@ -175,14 +175,20 @@ export async function confirmSalStep2(
 
   const payload = claimed[0].payload as SalPayload
   try {
-    const xlsxBuf = await generateXlsxFromData(buildSalSheets(payload.result, payload.meta), `SAL_${payload.result.numero_sal}`)
     // Il SAL oggi non porta foto, ma l'avviso va agganciato lo stesso: senza,
     // il giorno che l'HTML del SAL ne conterra' una, sparirebbe in silenzio.
-    let salMancanti: string[] = []
+    // Una lista sola per i due formati: con due assegnazioni separate il secondo
+    // generatore cancellava le mancanti del primo.
+    const salMancanti: string[] = []
+    const xlsxBuf = await generateXlsxFromData(
+      buildSalSheets(payload.result, payload.meta),
+      `SAL_${payload.result.numero_sal}`,
+      { onImmaginiMancanti: (ids) => { salMancanti.push(...ids) } },
+    )
     const pdfBuf = await generatePdfFromHtml(
       buildSalHtml(payload.result, payload.meta),
       `SAL n${payload.result.numero_sal}`,
-      { onImmaginiMancanti: (ids) => { salMancanti = ids }, societa },
+      { onImmaginiMancanti: (ids) => { salMancanti.push(...ids) }, societa },
     )
     const contabId = await getOrCreatePathFolders(payload.commessa_folder_id, [CONTAB_FOLDER])
     // Nome file conforme alla spec: SAL_<n>_<commessa>_<data>. Sanitizza la commessa

@@ -652,14 +652,12 @@ export async function POST(request: NextRequest) {
     // ─── Conferma invio mail a LINGUAGGIO NATURALE: "invia pure mail" ───
     // Conferma l'ultimo pending non scaduto senza codice uuid. Match SOLO su
     // frasi-conferma brevi (NON su "invia una mail a Mario ..." = composizione).
-    // Pre-normalizza artefatti di trascrizione vocale comuni:
-    // - "in via" → "invia"  (Telegram trascrive spesso "invia pure" → "in via pure/pura")
-    // - "pura"/"puro" → "pure"  (genere errato da speech-to-text)
+    // La regola sta in src/lib/conferma-invio.ts, una volta sola: la stessa
+    // regex e la stessa pre-normalizzazione della voce valgono anche sul web,
+    // che dall 8 set 2026 ha la dettatura.
     {
-      const normalizedForConfirm = userText.trim()
-        .replace(/\bin\s+via\b/gi, 'invia')
-        .replace(/\bpur[ao]\b/gi, 'pure')
-      if (/^\s*(s[iì][,.\s]+)?(conferm[oai]\s+(l'?\s*)?invio|(invia|manda|spedisci)(la|lo|tela)?(\s+pure)?\s+(la\s+|quella\s+)?(mail|email|e-?mail|messaggio))(\s+pure)?\s*[.!…]*\s*$/i.test(normalizedForConfirm)) {
+      const { eConfermaInvio } = await import('@/lib/conferma-invio')
+      if (eConfermaInvio(userText)) {
         const { confirmLatestPendingSend } = await import('@/v19/tools/email/telegram-confirm')
         const r = await confirmLatestPendingSend()
         await sendTelegramMessage(chatId, r.message)

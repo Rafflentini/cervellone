@@ -53,6 +53,10 @@ async function cercaCartella(nome: string, genitore: string): Promise<string | n
     fields: 'files(id)',
     pageSize: 1,
     supportsAllDrives: true,
+    // Senza questo la lista ESCLUDE gli elementi dei Drive condivisi e torna
+    // vuota: cercaCartella diceva "non c e", cartellaOCrea ne creava un altra
+    // con lo stesso nome. Tre cartelle nuove per ogni foto di documento.
+    includeItemsFromAllDrives: true,
   })
   return res.data.files?.[0]?.id ?? null
 }

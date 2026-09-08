@@ -1,6 +1,11 @@
 /**
- * `downloadFile` era l'UNICA funzione di drive.ts a non passare
- * `supportsAllDrives: true` — tutte le altre trenta chiamate all'API lo fanno.
+ * `downloadFile` non passava `supportsAllDrives: true`.
+ *
+ * ⭐ Qui c'era scritto che era «l'UNICA» e che «tutte le altre trenta chiamate
+ * lo fanno». Era FALSO: la frase era stata verificata guardando drive.ts, non il
+ * repo. Un audit avversariale ha poi trovato SETTE chiamate rotte dentro
+ * drive.ts e TRE fuori, in file che si costruiscono un client Drive per conto
+ * loro. L'invariante su tutte sta in `drive.tutte-le-chiamate.test.ts`.
  *
  * Su un file che vive in un Drive condiviso l'API risponde 404 "File not found",
  * e il chiamante che conta di piu' e' `embedDriveImages` in `pdf-generator.ts`:

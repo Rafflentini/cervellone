@@ -889,3 +889,111 @@ describe('gli URL Drive che non si capiscono', () => {
     expect(chiamati).toEqual(['AAAAAAAAAAAA'])
   })
 })
+
+describe('difetti trovati dagli audit avversariali del 8 set', () => {
+  beforeEach(() => {
+    vi.mocked(downloadFileBase64).mockReset()
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser() as never)
+  })
+
+  // Un <img> senza src NON entra in RE_TAG_IMG: non veniva ne' incorporato ne'
+  // dichiarato. Il modello che scrive `<img alt="Facciata Est">` produceva una
+  // perizia con un buco muto - lo stesso difetto d'origine di tutta la giornata.
+  it('un img senza src viene DICHIARATO, non taciuto (PDF)', async () => {
+    const mancanti: string[] = []
+    await generatePdfFromHtml(
+      '<p>Prima</p><img alt="Facciata Est"><p>Dopo</p>',
+      'Perizia',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+    expect(mancanti).toHaveLength(1)
+    expect(mancanti[0]).toContain('Facciata Est')
+  })
+
+  it('un img senza src viene DICHIARATO, non taciuto (Word)', async () => {
+    const mancanti: string[] = []
+    await generateDocxFromHtml(
+      '<p>Prima</p><img alt="Facciata Est"><p>Dopo</p>',
+      'Perizia',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+    expect(mancanti).toHaveLength(1)
+    expect(mancanti[0]).toContain('Facciata Est')
+  })
+
+  it('un img con src vuoto conta come img senza src', async () => {
+    const mancanti: string[] = []
+    await generatePdfFromHtml(
+      '<img src="">',
+      'Perizia',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+    expect(mancanti).toHaveLength(1)
+  })
+
+  it('un img valido non finisce fra i senza-src', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: 'AAAA', mimeType: 'image/jpeg', name: 'f.jpg',
+    })
+    const mancanti: string[] = []
+    await generatePdfFromHtml(
+      '<img src="https://drive.google.com/uc?id=AAAAAAAAAAAA"><img src="https://esempio.it/logo.png"><img src="data:image/png;base64,QQ==">',
+      'Perizia',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+    expect(mancanti).toEqual([])
+  })
+
+  // Il caso vero: una perizia HA le foto Drive E il modello ci infila anche un
+  // <img> rotto. Il ramo con foto Drive e diverso da quello senza, e senza
+  // questo test la mutazione che toglie la riga sopravviveva.
+  it('un img senza src viene detto ANCHE quando ci sono foto Drive buone', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: 'AAAA', mimeType: 'image/jpeg', name: 'f.jpg',
+    })
+    const mancanti: string[] = []
+    await generatePdfFromHtml(
+      '<img src="https://drive.google.com/uc?id=AAAAAAAAAAAA"><img alt="Balcone">',
+      'Perizia',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+    expect(mancanti).toHaveLength(1)
+    expect(mancanti[0]).toContain('Balcone')
+  })
+
+  it('un src fatto di soli spazi e un src vuoto', async () => {
+    const mancanti: string[] = []
+    await generatePdfFromHtml(
+      '<img src="   " alt="Cornicione">',
+      'Perizia',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+    expect(mancanti).toHaveLength(1)
+    expect(mancanti[0]).toContain('Cornicione')
+  })
+
+  it('l etichetta si legge sia dagli apici doppi sia dai singoli', async () => {
+    const doppi: string[] = []
+    await generatePdfFromHtml('<img alt="Doppi">', 'P', { onImmaginiMancanti: (i) => { doppi.push(...i) } })
+    const singoli: string[] = []
+    await generatePdfFromHtml("<img alt='Singoli'>", 'P', { onImmaginiMancanti: (i) => { singoli.push(...i) } })
+    expect(doppi[0]).toBe('immagine senza indirizzo: Doppi')
+    expect(singoli[0]).toBe('immagine senza indirizzo: Singoli')
+  })
+
+  // La sostituzione scorre da destra a sinistra, e gli URL illeggibili venivano
+  // accodati in quell'ordine: l'elenco mostrato a chi consegna il documento era
+  // al contrario rispetto al documento.
+  it('le mancanti sono nell ordine del documento, non a rovescio', async () => {
+    const mancanti: string[] = []
+    await generatePdfFromHtml(
+      '<img src="https://lh3.googleusercontent.com/drive-viewer/PRIMA">' +
+      '<img src="https://lh3.googleusercontent.com/drive-viewer/SECONDA">',
+      'Perizia',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+    expect(mancanti).toHaveLength(2)
+    expect(mancanti[0]).toContain('PRIMA')
+    expect(mancanti[1]).toContain('SECONDA')
+  })
+})

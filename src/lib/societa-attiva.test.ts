@@ -76,7 +76,11 @@ describe('blocco iniettato nel contesto', () => {
   it('vieta esplicitamente di dedurre la societa da solo', () => {
     const testo = bloccoSocietaAttiva(getSocieta('restruktura'))
     expect(testo).toMatch(/NON dedurlo/i)
-    expect(testo).toContain('/societa')
+    // Prima diceva "usa /societa": un comando che esiste SOLO su Telegram.
+    // Chi legge dalla chat web veniva mandato contro un muro. Il tool c e su
+    // tutti e due i canali.
+    expect(testo).toContain('imposta_societa_attiva')
+    expect(testo).not.toContain('/societa')
   })
 
   it('distingue le due societa', () => {

@@ -239,7 +239,7 @@ export async function trashFilesByName(folderId: string, name: string): Promise<
   })
   const files = res.data.files || []
   for (const f of files) {
-    if (f.id) await drive.files.update({ fileId: f.id, requestBody: { trashed: true } })
+    if (f.id) await drive.files.update({ fileId: f.id, requestBody: { trashed: true }, supportsAllDrives: true })
   }
   return files.length
 }
@@ -576,6 +576,7 @@ export async function createFolder(name: string, parentId: string): Promise<stri
         parents: [parentId],
       },
       fields: 'id, name',
+      supportsAllDrives: true,
     })
 
     return `Cartella "${res.data.name}" creata. [ID: ${res.data.id}]`
@@ -720,6 +721,7 @@ export async function renameFile(fileId: string, newName: string): Promise<strin
     await drive.files.update({
       fileId,
       requestBody: { name: newName },
+      supportsAllDrives: true,
     })
 
     return `File rinominato in "${newName}".`
@@ -769,6 +771,7 @@ export async function createDocument(name: string, content: string, folderId: st
         parents: [folderId],
       },
       fields: 'id, name, webViewLink',
+      supportsAllDrives: true,
     })
 
     // Scrivi il contenuto usando Docs API
@@ -928,6 +931,7 @@ export async function getOrCreateBozzeFolder(): Promise<string> {
       parents: [DRIVE_FOLDERS.DOC_IMPRESA],
     },
     fields: 'id',
+    supportsAllDrives: true,
   })
   const id = res.data.id!
   _folderIdCache.set(CACHE_KEY, id)
@@ -965,6 +969,7 @@ export async function getTelegramInboxFolderId(): Promise<string> {
       parents: [DRIVE_FOLDERS.DOC_IMPRESA],
     },
     fields: 'id',
+    supportsAllDrives: true,
   })
   const id = res.data.id!
   _folderIdCache.set(CACHE_KEY, id)
@@ -1013,6 +1018,7 @@ export async function getOrCreatePathFolders(baseFolderId: string, segments: str
         parents: [parentId],
       },
       fields: 'id',
+      supportsAllDrives: true,
     })
     const id = created.data.id!
     _folderIdCache.set(cacheKey, id)

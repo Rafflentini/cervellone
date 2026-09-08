@@ -125,6 +125,11 @@ async function findClientFolderInParent(
       q: `'${parentFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
       fields: 'files(id, name)',
       pageSize: 200,
+      // STUDIO_ATTIVI e CANTIERI_ATTIVI stanno su un Drive condiviso (provato
+      // in produzione l 8 set): senza questi la lista torna vuota, il cliente
+      // non si trova e il documento finisce in _Bozze. In silenzio.
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
     })
     const folders = res.data.files || []
     const queryLower = clientName.toLowerCase()

@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const drive = await getDrive()
-    const res = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'arraybuffer' })
+    const res = await drive.files.get({ fileId, alt: 'media', supportsAllDrives: true }, { responseType: 'arraybuffer' })
     const testo = Buffer.from(res.data as ArrayBuffer).toString('utf8')
 
     const voci = leggiCsv(testo)

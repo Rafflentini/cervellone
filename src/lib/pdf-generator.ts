@@ -204,6 +204,29 @@ export function urlDriveIlleggibili(html: string): string[] {
   return Array.from(new Set(url))
 }
 
+/**
+ * Le immagini richiamate SENZA un indirizzo utile: `<img>` senza `src`, oppure
+ * con `src` vuoto. `RE_TAG_IMG` pretende il `src`, quindi questi tag non
+ * entravano ne fra le immagini da incorporare ne fra le mancanti: il modello
+ * che scrive `<img alt="Facciata Est">` produceva una perizia con un buco muto.
+ * Restituisce un etichetta leggibile, non un id: qui un id non c e.
+ */
+const RE_IMG_QUALSIASI = /<img\b[^>]*>/gi
+const RE_SRC = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i
+const RE_ALT = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)')/i
+export function immaginiSenzaSorgente(html: string): string[] {
+  const fuori: string[] = []
+  for (const m of html.matchAll(RE_IMG_QUALSIASI)) {
+    const src = RE_SRC.exec(m[0])
+    const indirizzo = src ? (src[1] ?? src[2] ?? src[3] ?? '') : ''
+    if (indirizzo.trim() !== '') continue
+    const alt = RE_ALT.exec(m[0])
+    const etichetta = alt?.[1] ?? alt?.[2] ?? ''
+    fuori.push(`immagine senza indirizzo: ${etichetta || m[0]}`)
+  }
+  return fuori
+}
+
 export type EsitoImmagini = {
   html: string
   /** Id delle immagini che NON e' stato possibile incorporare. */
@@ -213,10 +236,14 @@ export type EsitoImmagini = {
 async function embedDriveImages(html: string): Promise<EsitoImmagini> {
   const matches = Array.from(html.matchAll(RE_TAG_IMG))
   const driveMatches = matches.filter((m) => eUrlDrive(sorgenteDi(m)))
-  if (driveMatches.length === 0) return { html, mancanti: [] }
+  if (driveMatches.length === 0) return { html, mancanti: immaginiSenzaSorgente(html) }
 
   const { downloadFileBase64 } = await import('./drive')
-  const mancanti: string[] = []
+  // Gli URL Drive di cui non si estrae l id: raccolti QUI, in ordine di
+  // documento. Prima venivano accodati dentro il ciclo di sostituzione, che
+  // scorre da destra a sinistra: l elenco consegnato a chi salva il file era
+  // al contrario rispetto al documento.
+  const mancanti: string[] = [...urlDriveIlleggibili(html)]
 
   /**
    * Gli id da incorporare, nell'ordine del documento e senza ripetizioni.
@@ -273,8 +300,8 @@ async function embedDriveImages(html: string): Promise<EsitoImmagini> {
     const src = sorgenteDi(m)
     const id = extractDriveFileId(src)
     if (!id) {
+      // Gia dichiarato sopra da urlDriveIlleggibili, in ordine di documento.
       console.error(`[PDF] URL Drive non riconosciuto: ${src}`)
-      if (!mancanti.includes(src)) mancanti.push(src)
       continue
     }
     const dataUri = perId.get(id)
@@ -284,6 +311,7 @@ async function embedDriveImages(html: string): Promise<EsitoImmagini> {
     out = out.slice(0, inizio) + tagNuovo + out.slice(inizio + m[0].length)
   }
 
+  mancanti.push(...immaginiSenzaSorgente(html))
   return { html: out, mancanti }
 }
 
@@ -481,6 +509,7 @@ export async function generateDocxFromHtml(
   const oltreIlTetto = [
     ...tutti.slice(MAX_IMMAGINI_PER_DOCUMENTO),
     ...urlDriveIlleggibili(html),
+    ...immaginiSenzaSorgente(html),
   ]
   /**
    * Una voce per OGNI immagine richiamata, nell'ordine del documento. Chi non

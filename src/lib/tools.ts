@@ -584,6 +584,60 @@ async function executeProjectWrapper(
   }
 }
 
+/**
+ * 2026-09-08 — La societa attiva si sceglie da ENTRAMBI i canali.
+ *
+ * Prima esisteva solo il comando /societa di Telegram: dalla chat web la
+ * societa restava per sempre sul default (Restruktura) e un SAL de La Real
+ * Estate confermato dal web usciva con la partita IVA sbagliata. Un tool, non
+ * un comando: getToolDefinitions() non conosce i canali, quindi nasce
+ * equipollente per costruzione.
+ */
+const SOCIETA_TOOLS: ToolDefinition[] = [
+  {
+    name: 'imposta_societa_attiva',
+    description: "Imposta quale delle due societa (Restruktura oppure La Real Estate) vale per i documenti e le operazioni contabili di QUESTA conversazione. Usalo quando l'Ingegnere dice esplicitamente di quale societa si tratta. NON dedurre da solo: se non e detto, chiedi.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        societa: {
+          type: 'string',
+          description: "Nome o codice della societa: \"restruktura\" oppure \"larealestate\" (accetta anche la denominazione estesa).",
+        },
+      },
+      required: ['societa'],
+    },
+  },
+]
+
+async function executeSocietaTool(
+  name: string,
+  input: Record<string, unknown>,
+  conversationId?: string,
+): Promise<string | null> {
+  if (name !== 'imposta_societa_attiva') return null
+  if (!conversationId) return 'Contesto conversazione non disponibile.'
+  try {
+    const { setSocietaAttiva } = await import('./societa-attiva')
+    const { getSocieta, risolviSocieta, listaSocieta } = await import('./societa')
+    // Stessa regola del comando Telegram: se il testo non nomina UNA societa
+    // con certezza non si indovina. Una deduzione sbagliata qui produce un
+    // documento fiscale intestato all azienda sbagliata.
+    const codice = risolviSocieta(String(input.societa ?? ''))
+    if (!codice) {
+      const elenco = listaSocieta().map((s) => `${s.denominazione} (${s.codice})`).join(' · ')
+      return `⛔ Societa non riconosciuta. Non tiro a indovinare: ${elenco}.`
+    }
+    const esito = await setSocietaAttiva(conversationId, codice)
+    const s = getSocieta(codice)
+    return esito.ok
+      ? `✅ Societa attiva: ${s.denominazione} (P.IVA ${s.piva}) — IVA di riferimento ${s.aliquotaIvaDefault}%.`
+      : `⚠️ Non sono riuscito a impostare la societa: ${esito.error}`
+  } catch (err) {
+    return `⚠️ Errore impostando la societa: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 // 2026-06-04 FASE 2 Gestione bozze/documenti: ritrovare, modificare in-place e
 // salvare su Drive un documento già generato (per QUALSIASI tipo), senza rigenerare.
 const DRAFT_TOOLS: ToolDefinition[] = [
@@ -716,6 +770,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...MEMORIA_TOOLS, // 2026-05-07 Memoria persistente sub-progetto B: 4 tool
   ...WORKING_MEMORY_TOOLS, // 2026-06-04 FASE 1 Memoria procedurale: registra_apprendimento
   ...PROJECT_TOOLS, // 2026-06-04 FASE 2 Memoria di progetto: imposta/aggiorna/chiudi progetto attivo
+  ...SOCIETA_TOOLS, // 2026-09-08: la societa attiva si sceglie anche dal web, non solo con /societa
   ...DRAFT_TOOLS, // 2026-06-04 FASE 2 Gestione bozze: lista/ritrova/aggiorna/salva_pdf documenti
   ...PDF_TOOLS, // 2026-05-07 Pipeline PDF: genera_pdf
   ...(DOCUMENT_TEMPLATE_TOOLS as unknown as ToolDefinition[]), // 2026-06-11 Modelli documento Fase 1: insegna/compila/lista/ritrova
@@ -782,7 +837,7 @@ const executeRiconciliazioneWrapper = contabile(executeRiconciliazioneTool, nomi
 const executePrimaNotaWrapper = contabile(executePrimaNotaTool, nomiDi(PRIMA_NOTA_TOOLS))
 const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI_TOOLS))
 
-const EXECUTORS = [executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
+const EXECUTORS = [executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [
