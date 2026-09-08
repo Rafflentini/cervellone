@@ -22,7 +22,7 @@ import { rateLimit } from '@/lib/rate-limiter'
 import { risolviAccesso } from '@/lib/checkin/accesso'
 import { leggiPratica } from '@/lib/checkin/pratica'
 import { linkScaduto } from '@/lib/checkin/token-prenotazione'
-import { salvaDocumento, tipoAmmesso, MAX_BYTE, type Lato } from '@/lib/checkin/documenti'
+import { salvaDocumento, eliminaDocumento, tipoAmmesso, MAX_BYTE, type Lato } from '@/lib/checkin/documenti'
 import { aggiornaRiga } from '@/lib/checkin/foglio-google'
 import { aRiga } from '@/lib/checkin/merge-pratica'
 import {
@@ -112,7 +112,30 @@ export async function POST(req: NextRequest) {
 
     // Nel foglio va l'identificativo, MAI un collegamento condivisibile.
     const dati = { ...scheda.dati, [lato === 'retro' ? 'Doc retro' : 'Doc fronte']: fileId }
-    await aggiornaRiga(FOGLIO_CHECKIN_ID, SCHEDA_OSPITI, scheda.numeroRiga, aRiga(COL_OSPITI, dati))
+    try {
+      await aggiornaRiga(FOGLIO_CHECKIN_ID, SCHEDA_OSPITI, scheda.numeroRiga, aRiga(COL_OSPITI, dati))
+    } catch (err) {
+      // ⭐ Se cade la rete FRA la creazione su Drive e la scrittura della cella,
+      // il file resta e non lo nomina piu' nessuno: la pulizia notturna
+      // cancella solo cio' che trova NELLE CELLE, quindi un documento
+      // d'identita' di una persona vera resterebbe li' per sempre, e nessuno
+      // saprebbe che c'e'. Non e' un caso di laboratorio: e' un ospite che
+      // carica la carta d'identita' dal telefono, a Maratea, con la linea che
+      // va e viene.
+      //
+      // Si torna indietro: il file appena creato si toglie.
+      try {
+        await eliminaDocumento(fileId)
+      } catch (errPulizia) {
+        // Non si puo' fare altro che DIRLO, con l'id: e' l'unico modo per
+        // ritrovarlo a mano.
+        console.error(
+          `[CHECKIN] foto orfana su Drive, da togliere a mano: ${fileId}`,
+          errPulizia instanceof Error ? errPulizia.message : 'errore',
+        )
+      }
+      throw err
+    }
 
     return NextResponse.json({ ok: true, lato, caricato: true })
   } catch (err) {

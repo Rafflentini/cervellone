@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
+import { scaricaFileQuestura } from '@/lib/checkin/scarica-file'
 
 type StatoFattura = 'DA FARE' | 'COMPILATA' | 'EMESSA'
 type Vista = 'adesso' | 'archivio'
@@ -198,6 +199,34 @@ function Gestione() {
     dichiarata come adempimento assolto, su un obbligo che scade in 24 ore.
   */
   const [erroreQ, setErroreQ] = useState('')
+  // L'errore va mostrato SOTTO il pulsante che l'ha prodotto: su un telefono
+  // un messaggio in cima al pannello, con tre strutture in elenco, sta fuori
+  // schermo e non lo vede nessuno.
+  const [erroreScarico, setErroreScarico] = useState<{ struttura: string; messaggio: string } | null>(null)
+
+  /**
+   * Prima era un `<a download>`, e il browser salvava QUALUNQUE cosa
+   * rispondesse la rotta: un 401 finiva sul telefono come un
+   * `Alloggiati_20260909.txt` di 45 byte, apparentemente pronto per il
+   * Portale, senza nessun messaggio. Il commento in cima alla rotta lo dice
+   * da sempre: un file che si scarica senza dire niente sembra pronto.
+   */
+  async function scaricaQuestura(struttura: string) {
+    setErroreScarico(null)
+    const url = `/api/checkin/alloggiati?k=${encodeURIComponent(k)}&data=${dataQ}`
+      + `&struttura=${encodeURIComponent(struttura)}&scarica=1`
+    const esito = await scaricaFileQuestura(url)
+    if (!esito.ok) { setErroreScarico({ struttura, messaggio: esito.errore }); return }
+
+    const blob = new Blob([esito.contenuto], { type: 'text/plain;charset=utf-8' })
+    const href = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = href
+    a.download = esito.nome
+    a.click()
+    URL.revokeObjectURL(href)
+    setTimeout(() => { void carica() }, 2500)
+  }
   const [giorniDaFare, setGiorniDaFare] = useState<GiornoDaFare[] | null>(null)
   const [giorniInCorso, setGiorniInCorso] = useState(false)
 
@@ -648,16 +677,18 @@ function Gestione() {
                 </div>
 
                 {g.pronto ? (
-                  <a
+                  <button
+                    type="button"
                     className="btn-mini pieno"
-                    href={`/api/checkin/alloggiati?k=${encodeURIComponent(k)}&data=${dataQ}&struttura=${encodeURIComponent(g.struttura)}&scarica=1`}
-                    download
-                    onClick={() => { setTimeout(() => { void carica() }, 2500) }}
+                    onClick={() => { void scaricaQuestura(g.struttura) }}
                   >
                     Scarica il file
-                  </a>
+                  </button>
                 ) : (
                   <ul className="avvisi">{g.avvisi.map((a, i) => <li key={i}>{a}</li>)}</ul>
+                )}
+                {erroreScarico?.struttura === g.struttura && (
+                  <div className="esito ko" style={{ marginTop: 8 }}>{erroreScarico.messaggio}</div>
                 )}
               </div>
             ))}
