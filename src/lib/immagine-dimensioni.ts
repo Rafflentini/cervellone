@@ -25,6 +25,18 @@ export function dimensioniImmagine(byte: Buffer): Dimensioni | null {
     return { larghezza: byte.readUInt32BE(16), altezza: byte.readUInt32BE(20) }
   }
 
+  // GIF: 'GIF87a'/'GIF89a', poi larghezza e altezza a 16 bit little-endian.
+  if (byte.length >= 10 && byte.toString('latin1', 0, 3) === 'GIF') {
+    return { larghezza: byte.readUInt16LE(6), altezza: byte.readUInt16LE(8) }
+  }
+
+  // BMP: 'BM', poi larghezza e altezza a 32 bit little-endian nell'header DIB.
+  // L'altezza puo' essere NEGATIVA (bitmap scritta dall'alto): conta il valore
+  // assoluto, o una foto uscirebbe con altezza zero.
+  if (byte.length >= 26 && byte.toString('latin1', 0, 2) === 'BM') {
+    return { larghezza: byte.readInt32LE(18), altezza: Math.abs(byte.readInt32LE(22)) }
+  }
+
   // JPEG: si scorrono i segmenti fino a un SOF, che porta altezza e larghezza.
   if (byte.length >= 4 && byte.readUInt16BE(0) === 0xffd8) {
     let i = 2
@@ -51,8 +63,28 @@ export function dimensioniImmagine(byte: Buffer): Dimensioni | null {
  * chiama deve trattarlo come immagine NON inserita e dirlo, invece di
  * impacchettare byte WEBP dentro una parte dichiarata JPEG.
  */
+/**
+ * Il tipo, senza i parametri e senza maiuscole. Drive restituisce anche cose
+ * come `image/jpeg; charset=binary`: un confronto sulla stringa intera le
+ * scartava come formati sconosciuti.
+ */
+export function tipoBase(mimeType: string): string {
+  return (mimeType || '').split(';')[0].trim().toLowerCase()
+}
+
+/**
+ * Cio' che Chromium sa mostrare in un PDF stampato.
+ *
+ * ⚠️ Questo elenco e quello di `estensioneDocx` devono restare COERENTI: se
+ * uno accetta un formato e l'altro no, dallo stesso HTML il PDF mostra la foto
+ * e il Word scrive "[Foto N non disponibile]" — la divergenza fra formati che
+ * questo lavoro esiste per chiudere. BMP e GIF stanno in entrambi; WebP, AVIF e
+ * SVG in nessuno dei due, perche' `docx` non li sa impacchettare.
+ */
+const FORMATI_STAMPABILI = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/bmp']
+
 export function estensioneDocx(mimeType: string): 'jpg' | 'png' | 'gif' | 'bmp' | null {
-  switch ((mimeType || '').toLowerCase()) {
+  switch (tipoBase(mimeType)) {
     case 'image/jpeg':
     case 'image/jpg':
       return 'jpg'
@@ -128,6 +160,5 @@ export function pianificaAllegato(
  * download da Drive E' riuscito. WebP e AVIF invece li mostra.
  */
 export function formatoStampabile(mimeType: string): boolean {
-  return ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/svg+xml']
-    .includes((mimeType || '').toLowerCase())
+  return FORMATI_STAMPABILI.includes(tipoBase(mimeType))
 }

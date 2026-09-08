@@ -695,7 +695,11 @@ async function executeDraftWrapper(
     }
 
     // salva_bozza_pdf
-    return await saveDraftPdfToDrive(String(input.doc_id), String(input.folder_id))
+    return await saveDraftPdfToDrive(
+      String(input.doc_id),
+      String(input.folder_id),
+      await societaAttivaPerDocumenti(conversationId),
+    )
   } catch (err) {
     return `Errore bozze: ${err instanceof Error ? err.message : err}`
   }

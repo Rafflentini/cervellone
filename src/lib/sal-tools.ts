@@ -2,6 +2,7 @@ import { calcolaSal, SalReconcileError, type SalCalcInput, type SalResult } from
 import { buildSalHtml, buildSalSheets, type SalMeta } from './sal-render'
 import { getOrCreatePathFolders, searchFilesFullText, readPdfFromDrive, readXlsxFromDrive, readOdsFromDrive, readDocxFromDrive, uploadBinaryToDrive, trashFilesByName } from './drive'
 import { generatePdfFromHtml, generateXlsxFromData } from './pdf-generator'
+import { avvisoImmagini } from './avviso-immagini'
 import { getSupabaseServer } from './supabase-server'
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -171,7 +172,14 @@ export async function confirmSalStep2(id: string): Promise<string> {
   const payload = claimed[0].payload as SalPayload
   try {
     const xlsxBuf = await generateXlsxFromData(buildSalSheets(payload.result, payload.meta), `SAL_${payload.result.numero_sal}`)
-    const pdfBuf = await generatePdfFromHtml(buildSalHtml(payload.result, payload.meta), `SAL n${payload.result.numero_sal}`)
+    // Il SAL oggi non porta foto, ma l'avviso va agganciato lo stesso: senza,
+    // il giorno che l'HTML del SAL ne conterra' una, sparirebbe in silenzio.
+    let salMancanti: string[] = []
+    const pdfBuf = await generatePdfFromHtml(
+      buildSalHtml(payload.result, payload.meta),
+      `SAL n${payload.result.numero_sal}`,
+      { onImmaginiMancanti: (ids) => { salMancanti = ids } },
+    )
     const contabId = await getOrCreatePathFolders(payload.commessa_folder_id, [CONTAB_FOLDER])
     // Nome file conforme alla spec: SAL_<n>_<commessa>_<data>. Sanitizza la commessa
     // (niente slash/caratteri problematici per un nome file Drive).
@@ -184,7 +192,7 @@ export async function confirmSalStep2(id: string): Promise<string> {
     const xlsx = await uploadBinaryToDrive(xlsxBuf, `${base}.xlsx`, XLSX_MIME, contabId)
     const pdf = await uploadBinaryToDrive(pdfBuf, `${base}.pdf`, PDF_MIME, contabId)
     await sb.from('cervellone_sal_pending').update({ stato: 'creato', updated_at: new Date().toISOString() }).eq('id', id).eq('conferme', 2)
-    return `✅ SAL n° ${payload.result.numero_sal} salvato in ${CONTAB_FOLDER}:\n📊 ${xlsx.webViewLink}\n📄 ${pdf.webViewLink}`
+    return `✅ SAL n° ${payload.result.numero_sal} salvato in ${CONTAB_FOLDER}:\n📊 ${xlsx.webViewLink}\n📄 ${pdf.webViewLink}${avvisoImmagini(salMancanti)}`
   } catch (err) {
     await sb.from('cervellone_sal_pending').update({ conferme: 1, updated_at: new Date().toISOString() }).eq('id', id)
     return `Errore in generazione/salvataggio SAL: ${err instanceof Error ? err.message : String(err)}. Riprova con /sal_ok2_${id}.`

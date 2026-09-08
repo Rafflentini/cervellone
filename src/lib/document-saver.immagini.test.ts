@@ -50,7 +50,9 @@ describe('htmlInTestoPiatto — i casi trovati dall audit sui test', () => {
   test('anche una foto NON di Drive lascia detto che c era', () => {
     const { testo, immagini } = htmlInTestoPiatto('<p>Prima</p><img src="https://esempio.it/foto.jpg"><p>Dopo</p>')
 
-    expect(immagini).toEqual([])          // non e' un id Drive
+    // Conta anche le non-Drive: il numero dei buchi nel documento e quello
+    // dichiarato all'Ingegnere devono coincidere.
+    expect(immagini).toEqual(['https://esempio.it/foto.jpg'])
     expect(testo).toContain('Prima')
     expect(testo).toContain('Dopo')
     expect(testo).toMatch(/\[Foto 1\b/)   // ma il buco e' dichiarato lo stesso
@@ -66,5 +68,48 @@ describe('htmlInTestoPiatto — i casi trovati dall audit sui test', () => {
 
     expect(testo).not.toMatch(/:\s*\]/)   // nessun segnaposto con l'id mancante
     expect(testo.match(/AAAAAAAAAAAA/g) ?? []).toHaveLength(2)
+  })
+})
+
+describe('htmlInTestoPiatto — i difetti trovati dagli audit', () => {
+  // Un data URI e' gia' l'immagine: stamparlo nel segnaposto riversava
+  // migliaia di caratteri di base64 dentro il Google Doc consegnato al
+  // committente. Prima veniva rimosso e basta.
+  test('un data URI non finisce dentro il documento', () => {
+    const dataUri = 'data:image/png;base64,' + 'A'.repeat(3000)
+    const { testo } = htmlInTestoPiatto(`<p>Prima</p><img src="${dataUri}"><p>Dopo</p>`)
+
+    expect(testo.length).toBeLessThan(300)
+    expect(testo).not.toContain('AAAAAAAAAA')
+    expect(testo).toContain('Prima')
+    expect(testo).toContain('Dopo')
+  })
+
+  // Un indirizzo lunghissimo non deve comunque riversarsi nel documento.
+  test('un URL lunghissimo viene accorciato', () => {
+    const lungo = 'https://esempio.it/' + 'x'.repeat(500) + '.jpg'
+    const { testo } = htmlInTestoPiatto(`<img src="${lungo}">`)
+    expect(testo.length).toBeLessThan(200)
+  })
+
+  // ⭐ Il conteggio dei buchi nel documento deve corrispondere a quello che il
+  // bot dichiara. Prima i segnaposto erano su OGNI img e `immagini` contava
+  // solo le Drive deduplicate: nel documento due buchi, nell'avviso uno.
+  test('quante foto mancano nel testo, tante ne dichiara', () => {
+    const { testo, immagini } = htmlInTestoPiatto(
+      '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">' +
+      '<img src="https://esempio.it/foto.jpg">',
+    )
+    const buchi = (testo.match(/\[Foto \d+/g) ?? []).length
+    expect(buchi).toBe(immagini.length)
+  })
+
+  test('e con la stessa foto ripetuta, il conto regge lo stesso', () => {
+    const { testo, immagini } = htmlInTestoPiatto(
+      '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">' +
+      '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">',
+    )
+    const buchi = (testo.match(/\[Foto \d+/g) ?? []).length
+    expect(buchi).toBe(immagini.length)
   })
 })

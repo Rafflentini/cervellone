@@ -22,3 +22,20 @@ describe('avvisoImmagini', () => {
     expect(avvisoImmagini([])).toBe('')
   })
 })
+
+describe('l etichetta non deve mentire', () => {
+  // Da quando le voci possono essere "nome (id)", l'etichetta fissa "Id Drive:"
+  // produceva un formato misto e una bugia:
+  //   Id Drive: facciata_nord.heic (1a2b3c), 9z8y7x
+  test('non chiama "id Drive" quello che e un nome di file', () => {
+    const avviso = avvisoImmagini(['facciata_nord.heic (1a2b3c4d5e6f7g)'])
+    expect(avviso).not.toContain('Id Drive:')
+    expect(avviso).toContain('facciata_nord.heic')
+  })
+
+  test('elenca ogni voce su una riga sua, che sia nome o id', () => {
+    const avviso = avvisoImmagini(['facciata.heic (1a2b3c)', '9z8y7x'])
+    const righe = avviso.split('\n').filter((r) => r.trim().startsWith('•'))
+    expect(righe).toHaveLength(2)
+  })
+})

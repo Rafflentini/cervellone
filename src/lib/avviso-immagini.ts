@@ -10,12 +10,16 @@
  * Un documento tecnico a cui mancano le foto del degrado non e' un documento
  * con meno grafica: e' un documento che non prova quello che afferma.
  */
-export function avvisoImmagini(idMancanti: string[]): string {
-  if (idMancanti.length === 0) return ''
-  const quante = idMancanti.length === 1 ? '1 immagine' : `${idMancanti.length} immagini`
+export function avvisoImmagini(mancanti: string[]): string {
+  if (mancanti.length === 0) return ''
+  const quante = mancanti.length === 1 ? '1 immagine' : `${mancanti.length} immagini`
+  // Una riga per voce, e NESSUNA etichetta "Id Drive": da quando si riesce si
+  // dice il nome del file, e chiamarlo id era una bugia oltre che un formato
+  // misto illeggibile ("Id Drive: facciata.heic (1a2b3c), 9z8y7x").
+  const elenco = mancanti.map((m) => `\n• ${m}`).join('')
   return (
-    `\n\n⚠️ **Attenzione: ${quante} non sono entrate nel documento** e li' dentro risultano rotte.` +
-    `\nId Drive: ${idMancanti.join(', ')}` +
-    `\nControlli che i file esistano e siano accessibili prima di consegnarlo.`
+    `\n\n⚠️ **Attenzione: ${quante} non sono entrate nel documento** e li' dentro risultano rotte:` +
+    elenco +
+    `\nControlli che i file esistano, siano accessibili e in un formato che il documento sa contenere (JPEG, PNG, GIF, BMP), prima di consegnarlo.`
   )
 }

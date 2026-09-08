@@ -81,7 +81,17 @@ describe('generatePdfFromHtml', () => {
     await generatePdfFromHtml(fullDoc, 'Ignored')
 
     const passedHtml = setContent.mock.calls[0][0]
-    expect(passedHtml).toBe(fullDoc)
+    // Niente doppio wrap: il documento resta il suo, titolo e corpo intatti.
+    expect(passedHtml).toContain('<title>Mio</title>')
+    expect(passedHtml).toContain('<body>x')
+    expect(passedHtml.match(/<html/g) ?? []).toHaveLength(1)
+    // Lo stile sta in fondo al body: a parita' di `!important` vince la regola
+    // che viene DOPO, e il documento del modello puo' avere i suoi stili.
+    expect(passedHtml.indexOf('max-width')).toBeGreaterThan(passedHtml.indexOf('<body>'))
+    // Ma la regola sulle immagini viene iniettata ANCHE qui: prima si usciva
+    // subito e su questo ramo le foto restavano tagliate come senza il fix, e
+    // `genera_pdf` accetta HTML arbitrario dal modello.
+    expect(passedHtml).toMatch(/img\s*\{[^}]*max-width:\s*100%/)
   })
 
   it('escapes HTML in title to prevent injection', async () => {
@@ -660,5 +670,144 @@ describe('dentro il Word, guardato davvero', () => {
     expect(misure[0].cy).toBeGreaterThan(misure[0].cx)
     // 3:4, le proporzioni vere della foto
     expect(misure[0].cx / misure[0].cy).toBeCloseTo(0.75, 2)
+  })
+})
+
+describe('l HTML consegnato a Chromium, guardato davvero', () => {
+  beforeEach(() => { vi.mocked(downloadFileBase64).mockReset() })
+
+  // ⭐ La correzione di punta — sostituire il TAG INTERO da destra a sinistra —
+  // non era coperta da NIENTE: rimettere `split/join`, o invertire il verso,
+  // passava tutte e 1970 le prove. I test guardavano le chiamate di rete, che
+  // sono identiche prima e dopo. Qui si guarda il risultato.
+  it('con due foto, l HTML resta integro e ogni tag ha il SUO data URI', async () => {
+    vi.mocked(downloadFileBase64).mockImplementation(async (id: string) => ({
+      base64: Buffer.from(`byte-${id}`).toString('base64'),
+      mimeType: 'image/png',
+      name: `${id}.png`,
+    }))
+    const setContent = vi.fn(async (_html: string) => undefined)
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser({ setContent }) as never)
+
+    await generatePdfFromHtml(
+      '<p>Prima</p><img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">' +
+      '<p>Mezzo</p><img src="https://drive.google.com/thumbnail?id=BBBBBBBBBBBB"><p>Dopo</p>',
+      'Doc',
+    )
+
+    const html = setContent.mock.calls[0][0]
+    // Il testo del documento non e' stato toccato
+    expect(html).toContain('<p>Prima</p>')
+    expect(html).toContain('<p>Mezzo</p>')
+    expect(html).toContain('<p>Dopo</p>')
+    // Due tag img, ciascuno col proprio contenuto, e nessun URL Drive residuo
+    const tag = html.match(/<img[^>]*>/g) ?? []
+    expect(tag).toHaveLength(2)
+    expect(tag[0]).toContain(Buffer.from('byte-AAAAAAAAAAAA').toString('base64'))
+    expect(tag[1]).toContain(Buffer.from('byte-BBBBBBBBBBBB').toString('base64'))
+    expect(html).not.toContain('drive.google.com')
+  })
+
+  // La forma che rompeva davvero: un URL prefisso dell'altro.
+  it('due URL della stessa foto, uno prefisso dell altro, non si corrompono', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: 'QUJD', mimeType: 'image/png', name: 'f.png',
+    })
+    const setContent = vi.fn(async (_html: string) => undefined)
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser({ setContent }) as never)
+
+    await generatePdfFromHtml(
+      '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">' +
+      '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA&sz=w600">',
+      'Doc',
+    )
+
+    const html = setContent.mock.calls[0][0]
+    // Nessun avanzo dell'URL appiccicato in coda al base64
+    expect(html).not.toContain('sz=w600')
+    expect(html.match(/data:image\/png;base64,QUJD"/g) ?? []).toHaveLength(2)
+    // e una sola chiamata di rete: e' la stessa foto
+    expect(downloadFileBase64).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('il piede: sul Word come sul PDF', () => {
+  beforeEach(() => { vi.mocked(downloadFileBase64).mockReset() })
+
+  // Il describe precedente si chiamava "il piede del documento porta la
+  // societa giusta" e chiamava SOLO il PDF: cablare di nuovo Restruktura nel
+  // Word lasciava la suite verde. Stesso errore di forma del vecchio
+  // "coerenza fra PDF e Word".
+  it('il Word de La Real Estate NON porta la partita IVA di Restruktura', async () => {
+    const buf = await generateDocxFromHtml('<p>Contratto</p>', 'Doc', {
+      societa: { denominazione: 'LA REAL ESTATE SRLS', piva: '02232730768' },
+    })
+    const { testo } = await apriDocx(buf)
+
+    expect(testo).toContain('LA REAL ESTATE SRLS')
+    expect(testo).toContain('02232730768')
+    expect(testo).not.toContain('02087420762')
+  })
+
+  it('senza indicazioni resta Restruktura', async () => {
+    const buf = await generateDocxFromHtml('<p>Contratto</p>', 'Doc')
+    const { testo } = await apriDocx(buf)
+    expect(testo).toContain('02087420762')
+  })
+})
+
+describe('l ORDINE delle foto nel Word', () => {
+  beforeEach(() => { vi.mocked(downloadFileBase64).mockReset() })
+
+  // Il test precedente usava byte IDENTICI per tutte le foto: invertire
+  // l'ordine lasciava conteggio e segnaposto invariati, quindi la mutazione
+  // sopravviveva. Qui ogni foto ha dimensioni proprie, cosi' `wp:extent` dice
+  // quale sta dove.
+  const jpeg = (l: number, a: number) => {
+    const b = Buffer.alloc(13)
+    b.writeUInt16BE(0xffd8, 0); b.writeUInt16BE(0xffc0, 2); b.writeUInt16BE(9, 4)
+    b.writeUInt8(8, 6); b.writeUInt16BE(a, 7); b.writeUInt16BE(l, 9)
+    return b
+  }
+
+  it('le foto escono nell ordine del documento, non in un altro', async () => {
+    // tre proporzioni ben distinte: 1:2 verticale, 1:1 quadrata, 2:1 orizzontale
+    const forme: Record<string, [number, number]> = {
+      AAAAAAAAAAAA: [400, 800],
+      BBBBBBBBBBBB: [600, 600],
+      CCCCCCCCCCCC: [800, 400],
+    }
+    vi.mocked(downloadFileBase64).mockImplementation(async (id: string) => ({
+      base64: jpeg(...forme[id]).toString('base64'), mimeType: 'image/jpeg', name: `${id}.jpg`,
+    }))
+
+    const buf = await generateDocxFromHtml(
+      Object.keys(forme).map((id) => `<img src="https://drive.google.com/thumbnail?id=${id}">`).join(''),
+      'Perizia',
+    )
+    const { misure } = await apriDocx(buf)
+
+    expect(misure).toHaveLength(3)
+    const rapporti = misure.map((m) => Number((m.cx / m.cy).toFixed(2)))
+    // 0.5 (verticale), 1 (quadrata), 2 (orizzontale): nell'ordine del documento
+    expect(rapporti).toEqual([0.5, 1, 2])
+  })
+
+  // La misura ASSOLUTA non era pinnata: raddoppiare tutte le dimensioni
+  // lasciava verde il rapporto. Una foto piu' larga della pagina esce tagliata
+  // anche nel Word.
+  it('nessuna foto supera la larghezza utile della pagina', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: jpeg(4032, 3024).toString('base64'), mimeType: 'image/jpeg', name: 'grande.jpg',
+    })
+
+    const buf = await generateDocxFromHtml(
+      '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">', 'Perizia',
+    )
+    const { misure } = await apriDocx(buf)
+
+    // `docx` scrive in EMU: 9525 EMU per pixel.
+    expect(misure[0].cx).toBeLessThanOrEqual(480 * 9525)
+    expect(misure[0].cy).toBeLessThanOrEqual(620 * 9525)
   })
 })

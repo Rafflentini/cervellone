@@ -211,7 +211,17 @@ export async function updateDraft(id: string, newContent: string): Promise<strin
  * file caricato, oppure un messaggio d'errore CHIARO (doc inesistente, cartella
  * non scrivibile, generazione PDF fallita, upload fallito).
  */
-export async function saveDraftPdfToDrive(id: string, folderId: string): Promise<string> {
+export async function saveDraftPdfToDrive(
+  id: string,
+  folderId: string,
+  /**
+   * Chi firma il documento in fondo. Passata dall'executor, che conosce la
+   * conversazione: senza, un documento de La Real Estate CONSEGNATO da qui
+   * portava la partita IVA di Restruktura — ed e' proprio questo il tool che il
+   * prompt raccomanda per consegnare.
+   */
+  societa?: { denominazione: string; piva: string },
+): Promise<string> {
   // 1. Recupera il documento
   const draft = await getDraft(id)
   if (!draft.ok || !draft.content) {
@@ -238,6 +248,7 @@ export async function saveDraftPdfToDrive(id: string, folderId: string): Promise
   try {
     pdf = await generatePdfFromHtml(htmlContent, name, {
       onImmaginiMancanti: (ids) => { immaginiMancanti = ids },
+      societa,
     })
   } catch (err) {
     return `Impossibile generare il PDF del documento "${name}": ${err instanceof Error ? err.message : String(err)}`

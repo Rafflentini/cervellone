@@ -185,17 +185,27 @@ describe('POST /api/chat — quello che il route deve passare al motore', () => 
   // difetto della riga che si infila dopo la domanda successiva, e sarebbe
   // tornato senza un rosso.
   it('scrive la riga con l ISTANTE DEL TURNO, non con quello della scrittura', async () => {
-    loopChe('Ecco la risposta.')
-    const prima = new Date().toISOString()
+    // Il turno DURA: il loop impiega tempo prima che si arrivi a salvare. Senza
+    // questo ritardo l'istante del turno e quello della scrittura coincidono al
+    // millisecondo e il test non distingue i due casi — era vacuo.
+    mockCallClaude.mockImplementation(async (
+      _req: unknown,
+      callbacks: { onText: (t: string) => void },
+    ) => {
+      await new Promise((r) => setTimeout(r, 60))
+      callbacks.onText('Ecco la risposta.')
+      return 'Ecco la risposta.'
+    })
 
     await eseguiELeggi()
+    const dopoLaScrittura = new Date().toISOString()
 
     const [, , , creatoIl] = mockSaveSolaRiga.mock.calls[0]
     expect(typeof creatoIl).toBe('string')
-    // Deve essere un istante preso all'INIZIO del turno: non piu' vecchio di
-    // quando abbiamo cominciato, e non piu' recente di adesso.
-    expect(creatoIl >= prima).toBe(true)
-    expect(creatoIl <= new Date().toISOString()).toBe(true)
+    // L'istante deve essere PRECEDENTE alla fine del turno di almeno il tempo
+    // che il loop ha impiegato: se fosse quello della scrittura, sarebbe qui.
+    expect(new Date(dopoLaScrittura).getTime() - new Date(creatoIl).getTime())
+      .toBeGreaterThanOrEqual(50)
   })
 
   // Stessa famiglia: togliere il tetto (`await scrittura` secco) lasciava tutto
@@ -209,6 +219,23 @@ describe('POST /api/chat — quello che il route deve passare al motore', () => 
 
     const esito = await Promise.race([
       eseguiELeggi().then(() => 'stream chiuso'),
+      new Promise((r) => setTimeout(() => r('APPESO'), 8_000)),
+    ])
+
+    expect(esito).toBe('stream chiuso')
+  }, 15_000)
+})
+
+describe('POST /api/chat — anche i comandi hanno il tetto sullo stream', () => {
+  // Il tetto era provato su UNO dei due `controller.close()`. I nove rami
+  // `rispostaSemplice` (conferme FIC, SAL, mail, /condividi_ok_) potevano
+  // restare appesi fino a `maxDuration` = 800 secondi senza un rosso.
+  it('un comando non resta appeso se la scrittura non risponde', async () => {
+    mockFicStep2.mockResolvedValue('✅ Fattura 2026/123 emessa.')
+    mockSaveSolaRiga.mockImplementation(() => new Promise(() => {}))
+
+    const esito = await Promise.race([
+      eseguiELeggi('/fic_ok2_11111111-2222-3333-4444-555555555555').then(() => 'stream chiuso'),
       new Promise((r) => setTimeout(() => r('APPESO'), 8_000)),
     ])
 

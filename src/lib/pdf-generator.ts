@@ -84,8 +84,30 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#039;')
 }
 
+/**
+ * Le regole che valgono SEMPRE, anche quando il modello consegna un HTML gia'
+ * completo di `<html>` — caso in cui prima si usciva subito e le foto restavano
+ * tagliate come se il fix non ci fosse. `genera_pdf` accetta HTML arbitrario,
+ * quindi quel ramo si percorre davvero.
+ *
+ * `max-height` oltre a `max-width`: una panoramica scalata in larghezza supera
+ * comunque l'altezza della pagina, e `page-break-inside` da solo non basta.
+ * `!important` perche' questo blocco viene iniettato DOPO gli stili del
+ * documento: senza, una regola del modello lo annullerebbe.
+ */
+const STILE_IMMAGINI = `<style>
+img { max-width: 100% !important; max-height: 240mm !important; height: auto !important; page-break-inside: avoid; }
+</style>`
+
 function wrapForPrint(rawHtml: string, title: string): string {
-  if (/<html[\s>]/i.test(rawHtml)) return rawHtml
+  if (/<html[\s>]/i.test(rawHtml)) {
+    // In fondo al `<body>`, non nel `<head>`: a parita' di `!important` vince
+    // la regola che viene DOPO, e il documento del modello puo' contenere i
+    // propri stili. Ultimo significa che l'ultima parola e' nostra.
+    return /<\/body>/i.test(rawHtml)
+      ? rawHtml.replace(/<\/body>/i, `${STILE_IMMAGINI}</body>`)
+      : rawHtml + STILE_IMMAGINI
+  }
   return `<!DOCTYPE html>
 <html lang="it">
 <head>
@@ -106,11 +128,11 @@ h1, h2, h3 { color: #c8102e; }
   il CSS. Prima dell'8 set 2026 il browser scaricava la miniatura a 900px: la
   geometria e' peggiorata proprio quando le foto hanno iniziato a entrare.
 */
-img { max-width: 100%; height: auto; page-break-inside: avoid; }
 </style>
 </head>
 <body>
 ${rawHtml}
+${STILE_IMMAGINI}
 </body>
 </html>`
 }
@@ -157,8 +179,24 @@ export function immaginiDriveNellHtml(html: string): string[] {
   const ids = Array.from(html.matchAll(RE_TAG_IMG))
     .map(sorgenteDi)
     .filter(eUrlDrive)
-    .map((src) => extractDriveFileId(src) ?? src)
+    .map(extractDriveFileId)
+    .filter((id): id is string => id !== null)
   return Array.from(new Set(ids))
+}
+
+/**
+ * Gli URL Drive presenti nell'HTML da cui NON si riesce a estrarre un id.
+ * Vanno dichiarati mancanti, ma NON devono consumare un posto del tetto ne'
+ * essere passati a Drive come se fossero id — cosa che il Word faceva,
+ * garantendo una chiamata destinata a fallire e una foto in meno rispetto al
+ * PDF dallo stesso identico HTML.
+ */
+export function urlDriveIlleggibili(html: string): string[] {
+  const url = Array.from(html.matchAll(RE_TAG_IMG))
+    .map(sorgenteDi)
+    .filter(eUrlDrive)
+    .filter((src) => extractDriveFileId(src) === null)
+  return Array.from(new Set(url))
 }
 
 export type EsitoImmagini = {

@@ -11,7 +11,6 @@
  * si puo' fare e' non farle sparire in silenzio. Resta una riga che dice dov'era
  * la foto e quale, e chi consegna il documento viene avvisato.
  */
-import { immaginiDriveNellHtml } from './pdf-generator'
 
 export type TestoPiatto = {
   testo: string
@@ -20,24 +19,25 @@ export type TestoPiatto = {
 }
 
 export function htmlInTestoPiatto(htmlContent: string): TestoPiatto {
-  const immagini = immaginiDriveNellHtml(htmlContent)
-
   /*
-    Il segnaposto vale per OGNI immagine, non solo per quelle di Drive: un
-    `<img>` che punta altrove veniva cancellato in silenzio, ed era meta' del
-    difetto che questo modulo doveva chiudere.
+    Un segnaposto per OGNI immagine, e la LISTA che ne tiene il conto esatto.
 
-    E l'identificativo si prende dal tag stesso, non da `immagini[i-1]`:
-    `immaginiDriveNellHtml` DEDUPLICA per id, il contatore no, e con la stessa
-    foto richiamata due volte usciva "[Foto 2 — ...: ]" con l'id vuoto.
+    Prima i segnaposto erano su ogni `<img>` mentre `immagini` conteneva solo le
+    Drive, deduplicate: chi leggeva il Google Doc contava due buchi e il bot ne
+    dichiarava uno. Il numero di cose che mancano non e' un dettaglio di forma.
+
+    L'identificativo si prende dal tag: `immaginiDriveNellHtml` deduplica, il
+    contatore no, e con la stessa foto richiamata due volte usciva
+    "[Foto 2 — ...: ]" con l'id vuoto.
   */
-  let i = 0
+  const immagini: string[] = []
   const conSegnaposto = htmlContent.replace(/<img\b[^>]*>/gi, (tag) => {
     const src = tag.match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i)
     const indirizzo = src ? (src[1] ?? src[2] ?? src[3] ?? '') : ''
-    const eDrive = /drive\.google\.com|googleusercontent\.com/i.test(indirizzo)
-    const quale = eDrive ? (estraiIdDrive(indirizzo) ?? indirizzo) : indirizzo
-    return `\n[Foto ${++i} — non inseribile in un Google Doc${quale ? `: ${quale}` : ''}]\n`
+    immagini.push(descriviImmagine(indirizzo))
+    return `\n[Foto ${immagini.length} — non inseribile in un Google Doc${
+      immagini[immagini.length - 1] ? `: ${immagini[immagini.length - 1]}` : ''
+    }]\n`
   })
 
   const testo = conSegnaposto
@@ -64,4 +64,19 @@ function estraiIdDrive(url: string): string | null {
     if (m) return m[1]
   }
   return null
+}
+
+/**
+ * Come chiamare un'immagine nel segnaposto, in poche parole.
+ *
+ * Un data URI e' GIA' l'immagine: stamparlo riversava migliaia di caratteri di
+ * base64 nel Google Doc consegnato al committente. Un URL lunghissimo idem.
+ * Qui si dice quanto basta a ritrovarla, non di piu'.
+ */
+function descriviImmagine(indirizzo: string): string {
+  if (!indirizzo) return ''
+  if (/^data:/i.test(indirizzo)) return 'immagine incorporata nel documento'
+  const id = estraiIdDrive(indirizzo)
+  if (id) return id
+  return indirizzo.length > 80 ? `${indirizzo.slice(0, 77)}…` : indirizzo
 }

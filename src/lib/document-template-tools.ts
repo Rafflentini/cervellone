@@ -11,6 +11,18 @@ import {
 import { validateValues, applyDefaults, riempiHtml } from './template-fill-html'
 import { generatePdfFromHtml } from './pdf-generator'
 import { avvisoImmagini } from './avviso-immagini'
+
+/** La societa' attiva della conversazione, per il piede del documento. */
+async function societaPerModelli(conversationId?: string) {
+  try {
+    const { getSocietaAttiva } = await import('./societa-attiva')
+    const { getSocieta } = await import('./societa')
+    const s = getSocieta(await getSocietaAttiva(conversationId ?? ''))
+    return { denominazione: s.denominazione, piva: s.piva }
+  } catch {
+    return undefined
+  }
+}
 import { uploadBinaryToDrive } from './drive'
 import { generaAllegato10Cigo } from '@/v19/tools/cigo'
 import type { Allegato10Input } from '@/v19/tools/cigo/types'
@@ -195,7 +207,10 @@ function todayTag(): string {
   return new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' })
 }
 
-async function compila(input: Record<string, unknown>): Promise<string> {
+async function compila(
+  input: Record<string, unknown>,
+  societa?: { denominazione: string; piva: string },
+): Promise<string> {
   const slug = normalizeSlug(String(input.slug ?? ''))
   const valoriRaw = (input.valori as Record<string, unknown>) ?? {}
   const tpl: DocumentTemplate | null = await getTemplate(slug)
@@ -286,6 +301,7 @@ async function compila(input: Record<string, unknown>): Promise<string> {
   let immaginiMancanti: string[] = []
   const pdfBuffer = await generatePdfFromHtml(html, tpl.titolo, {
     onImmaginiMancanti: (ids) => { immaginiMancanti = ids },
+    societa,
   })
   const romeDate = todayTag()
   const fileName = `${slug}_${romeDate}.pdf`
@@ -387,7 +403,7 @@ export async function executeDocumentTemplateTool(
     }
 
     if (name === 'compila_modello') {
-      return await compila(input)
+      return await compila(input, await societaPerModelli(_conversationId))
     }
 
     if (name === 'imposta_dati_fissi') {

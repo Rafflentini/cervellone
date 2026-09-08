@@ -1,5 +1,7 @@
-import { describe, test, expect } from 'vitest'
-import { dimensioniImmagine, estensioneDocx, riquadroDocx, pianificaAllegato } from './immagine-dimensioni'
+import { describe, test, it, expect } from 'vitest'
+import {
+  dimensioniImmagine, estensioneDocx, riquadroDocx, pianificaAllegato, formatoStampabile,
+} from './immagine-dimensioni'
 
 /** JPEG minimo con un SOF0 che dichiara 1200x1600 (verticale, come le foto da telefono). */
 function jpegFinto(larghezza: number, altezza: number): Buffer {
@@ -147,5 +149,131 @@ describe('i casi che l audit ha trovato scoperti', () => {
     const jpeg = Buffer.concat([soi, app1, sof])
 
     expect(dimensioniImmagine(jpeg)).toEqual({ larghezza: 4032, altezza: 3024 })
+  })
+})
+
+describe('dimensioniImmagine — le forme che arrivano davvero', () => {
+  const sof = (l: number, a: number) => {
+    const b = Buffer.alloc(11)
+    b.writeUInt16BE(0xffc0, 0); b.writeUInt16BE(9, 2); b.writeUInt8(8, 4)
+    b.writeUInt16BE(a, 5); b.writeUInt16BE(l, 7)
+    return b
+  }
+  const segmento = (marker: number, lunghezza: number) => {
+    const b = Buffer.alloc(2 + lunghezza)
+    b.writeUInt16BE(marker, 0)
+    b.writeUInt16BE(lunghezza, 2)
+    return b
+  }
+  const SOI = Buffer.from([0xff, 0xd8])
+
+  // ⭐ MISURATO dall'audit: senza l'esclusione di DHT/JPG/DAC dai marker SOF,
+  // un JPEG con la tabella di Huffman prima dell'immagine restituiva
+  // 4369x4369 invece di 4032x3024 — una foto gonfiata fuori pagina nel Word.
+  // I JPEG veri da fotocamera hanno spesso DHT prima del SOF.
+  it('un JPEG con la tabella di Huffman (DHT) prima del SOF', () => {
+    const dht = segmento(0xffc4, 30)
+    expect(dimensioniImmagine(Buffer.concat([SOI, dht, sof(4032, 3024)])))
+      .toEqual({ larghezza: 4032, altezza: 3024 })
+  })
+
+  it.each([
+    ['DAC (0xffcc)', 0xffcc],
+    ['JPG riservato (0xffc8)', 0xffc8],
+  ])('%s non viene scambiato per un SOF', (_nome, marker) => {
+    expect(dimensioniImmagine(Buffer.concat([SOI, segmento(marker, 20), sof(800, 600)])))
+      .toEqual({ larghezza: 800, altezza: 600 })
+  })
+
+  // Un download interrotto a meta' non deve far esplodere l'intero documento
+  // con un RangeError: si rinuncia alle dimensioni e si ripiega.
+  it('un JPEG troncato non fa esplodere niente', () => {
+    expect(dimensioniImmagine(Buffer.concat([SOI, segmento(0xffe1, 100).subarray(0, 6)]))).toBeNull()
+  })
+
+  it('un PNG troncato non fa esplodere niente', () => {
+    const png = Buffer.alloc(16)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png, 0)
+    expect(dimensioniImmagine(png)).toBeNull()
+  })
+})
+
+describe('formatoStampabile — l elenco, voce per voce', () => {
+  // Non era nemmeno importata dai test: era coperta solo di rimbalzo dal caso
+  // HEIC, quindi togliere 'image/png' dall'elenco sopravviveva e ogni PNG
+  // sarebbe stato dichiarato mancante.
+  it.each(['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/bmp'])(
+    '%s si stampa', (m) => expect(formatoStampabile(m)).toBe(true),
+  )
+
+  it.each(['image/heic', 'image/heif', 'image/tiff', 'application/pdf', 'application/octet-stream', ''])(
+    '%s NON si stampa', (m) => expect(formatoStampabile(m)).toBe(false),
+  )
+
+  // Drive restituisce anche `image/jpeg; charset=binary`: il confronto sulla
+  // stringa intera lo scartava come formato sconosciuto.
+  it('i parametri del mime non fanno scartare una foto buona', () => {
+    expect(formatoStampabile('image/jpeg; charset=binary')).toBe(true)
+    expect(estensioneDocx('image/jpeg; charset=binary')).toBe('jpg')
+  })
+
+  // ⭐ L'INVARIANTE che tiene insieme i due formati: se uno accetta e l'altro
+  // no, dallo stesso HTML il PDF mostra la foto e il Word scrive
+  // "[Foto N non disponibile]".
+  it.each(['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp', 'image/avif', 'image/svg+xml', 'image/heic'])(
+    'PDF e Word sono d accordo su %s', (m) => {
+      expect(formatoStampabile(m)).toBe(estensioneDocx(m) !== null)
+    },
+  )
+})
+
+describe('GIF e BMP: senza dimensioni finivano nel 4:3 forzato', () => {
+  // `estensioneDocx` li accetta, ma `dimensioniImmagine` non li leggeva:
+  // `riquadroDocx(null)` ripiega su 480x360, cioe' la squadratura orizzontale
+  // che questo lavoro esiste per eliminare — ancora viva su due formati.
+  it('legge un GIF verticale', () => {
+    const gif = Buffer.alloc(10)
+    gif.write('GIF89a', 0, 'latin1')
+    gif.writeUInt16LE(600, 6)
+    gif.writeUInt16LE(800, 8)
+    expect(dimensioniImmagine(gif)).toEqual({ larghezza: 600, altezza: 800 })
+  })
+
+  it('legge un BMP, anche scritto dall alto (altezza negativa)', () => {
+    const bmp = Buffer.alloc(26)
+    bmp.write('BM', 0, 'latin1')
+    bmp.writeInt32LE(1024, 18)
+    bmp.writeInt32LE(-768, 22)   // bitmap top-down: altezza negativa
+    expect(dimensioniImmagine(bmp)).toEqual({ larghezza: 1024, altezza: 768 })
+  })
+
+  it('un GIF verticale resta verticale nel documento', () => {
+    const gif = Buffer.alloc(10)
+    gif.write('GIF89a', 0, 'latin1')
+    gif.writeUInt16LE(600, 6)
+    gif.writeUInt16LE(800, 8)
+    const r = riquadroDocx(dimensioniImmagine(gif))
+    expect(r.altezza).toBeGreaterThan(r.larghezza)
+  })
+})
+
+describe('riquadroDocx — le proporzioni estreme', () => {
+  // Senza `Math.max(1, ...)` una panoramica 4000x1 usciva con altezza ZERO:
+  // un'immagine invisibile dentro il documento, che e' peggio di una assente
+  // perche' nessuno se ne accorge.
+  test('una panoramica estrema non esce con altezza zero', () => {
+    const r = riquadroDocx({ larghezza: 4000, altezza: 1 })
+    expect(r.altezza).toBeGreaterThanOrEqual(1)
+    expect(r.larghezza).toBeGreaterThanOrEqual(1)
+  })
+
+  test('una colonna estrema non esce con larghezza zero', () => {
+    const r = riquadroDocx({ larghezza: 1, altezza: 4000 })
+    expect(r.larghezza).toBeGreaterThanOrEqual(1)
+  })
+
+  test('dimensioni assurde (zero o negative) ripiegano invece di rompere', () => {
+    expect(riquadroDocx({ larghezza: 0, altezza: 0 })).toEqual({ larghezza: 480, altezza: 360 })
+    expect(riquadroDocx({ larghezza: -5, altezza: 100 })).toEqual({ larghezza: 480, altezza: 360 })
   })
 })
