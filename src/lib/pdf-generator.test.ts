@@ -180,3 +180,91 @@ describe('generateXlsxFromData', () => {
     expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
   })
 })
+
+// ── Immagini nei documenti (8 set 2026) ──
+//
+// Il caso vero: Preventivo Extra B della commessa C2026-008. Il PDF usciva a
+// 178KB con la foto ROTTA, e il bot dichiarava "confermato, e' a posto" tre
+// volte di fila. La causa era in `drive.ts` (mancava `supportsAllDrives`), ma il
+// difetto che l'ha resa invisibile e' qui: il fallimento veniva ingoiato.
+
+vi.mock('./drive', () => ({
+  downloadFileBase64: vi.fn(),
+}))
+import { downloadFileBase64 } from './drive'
+
+const HTML_CON_FOTO =
+  '<h1>Preventivo</h1><p>Facciata Est</p>' +
+  '<img src="https://drive.google.com/thumbnail?id=1Zg97_TDKOoUWeAAYsTQ-TrlH5m601rXU&sz=w600">'
+
+describe('immagini Drive nei PDF', () => {
+  beforeEach(() => {
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser() as never)
+    vi.mocked(downloadFileBase64).mockReset()
+  })
+
+  it('incorpora la foto come data URI invece di lasciare l URL', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: Buffer.from('pixel').toString('base64'), mimeType: 'image/jpeg', name: 'IMG.jpeg',
+    })
+    const setContent = vi.fn(async (_html: string) => undefined)
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser({ setContent }) as never)
+
+    await generatePdfFromHtml(HTML_CON_FOTO, 'Preventivo')
+
+    const htmlRenderizzato = setContent.mock.calls[0][0]
+    expect(htmlRenderizzato).toContain('data:image/jpeg;base64,')
+    expect(htmlRenderizzato).not.toContain('drive.google.com/thumbnail')
+  })
+
+  it('DICE quali immagini non e riuscito a incorporare, invece di tacere', async () => {
+    // Prima: `catch` con un console.error e via — il PDF usciva con la foto
+    // rotta e il bot lo consegnava come riuscito.
+    vi.mocked(downloadFileBase64).mockRejectedValue(new Error('File not found'))
+    const mancanti: string[] = []
+
+    await generatePdfFromHtml(HTML_CON_FOTO, 'Preventivo', {
+      onImmaginiMancanti: (ids) => { mancanti.push(...ids) },
+    })
+
+    expect(mancanti).toEqual(['1Zg97_TDKOoUWeAAYsTQ-TrlH5m601rXU'])
+  })
+
+  it('non disturba quando sono entrate tutte', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: 'AAAA', mimeType: 'image/jpeg', name: 'IMG.jpeg',
+    })
+    const onImmaginiMancanti = vi.fn()
+
+    await generatePdfFromHtml(HTML_CON_FOTO, 'Preventivo', { onImmaginiMancanti })
+
+    expect(onImmaginiMancanti).not.toHaveBeenCalled()
+  })
+})
+
+describe('immagini Drive nei DOCX', () => {
+  beforeEach(() => { vi.mocked(downloadFileBase64).mockReset() })
+
+  it('mette la foto DENTRO il Word, non la butta via', async () => {
+    // Il generatore DOCX dichiarava "no immagini" come limite accettato: un
+    // Word con l'allegato fotografico usciva senza le foto, in silenzio.
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: Buffer.from('pixel-di-prova').toString('base64'),
+      mimeType: 'image/jpeg',
+      name: 'IMG.jpeg',
+    })
+
+    const buf = await generateDocxFromHtml(HTML_CON_FOTO, 'Preventivo')
+
+    expect(downloadFileBase64).toHaveBeenCalledWith('1Zg97_TDKOoUWeAAYsTQ-TrlH5m601rXU')
+    // Un DOCX e' uno ZIP: con un'immagine dentro contiene la cartella media/.
+    expect(buf.subarray(0, 2).toString()).toBe('PK')
+    expect(buf.toString('latin1')).toContain('media/')
+  })
+
+  it('un Word senza foto resta un Word valido', async () => {
+    const buf = await generateDocxFromHtml('<h1>Solo testo</h1><p>Nessuna foto.</p>', 'Titolo')
+    expect(buf.subarray(0, 2).toString()).toBe('PK')
+    expect(downloadFileBase64).not.toHaveBeenCalled()
+  })
+})

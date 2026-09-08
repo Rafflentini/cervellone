@@ -14,6 +14,7 @@
  */
 import { getSupabaseServer } from './supabase-server'
 import { generatePdfFromHtml } from './pdf-generator'
+import { avvisoImmagini } from './avviso-immagini'
 import { assertWriteAllowed, uploadBinaryToDrive, describeWriteCheckFailure } from './drive'
 
 /** Path relativo del link pubblico di un documento. Il chiamante compone l'host. */
@@ -225,9 +226,14 @@ export async function saveDraftPdfToDrive(id: string, folderId: string): Promise
       ? wrapPlainTextAsHtml(draft.content)
       : draft.content
 
+  // Le foto che non entrano nel PDF vanno dette a chi lo consegna: un documento
+  // con le immagini rotte, dichiarato a posto, e' peggio di un errore.
+  let immaginiMancanti: string[] = []
   let pdf: Buffer
   try {
-    pdf = await generatePdfFromHtml(htmlContent, name)
+    pdf = await generatePdfFromHtml(htmlContent, name, {
+      onImmaginiMancanti: (ids) => { immaginiMancanti = ids },
+    })
   } catch (err) {
     return `Impossibile generare il PDF del documento "${name}": ${err instanceof Error ? err.message : String(err)}`
   }
@@ -246,7 +252,7 @@ export async function saveDraftPdfToDrive(id: string, folderId: string): Promise
   try {
     const fileName = name.endsWith('.pdf') ? name : `${name}.pdf`
     const { webViewLink } = await uploadBinaryToDrive(pdf, fileName, 'application/pdf', folderId)
-    return `✅ PDF "${fileName}" salvato su Drive.\n👉 ${webViewLink}`
+    return `✅ PDF "${fileName}" salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(immaginiMancanti)}`
   } catch (err) {
     return `Errore caricando il PDF su Drive: ${err instanceof Error ? err.message : String(err)}`
   }

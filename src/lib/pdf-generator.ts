@@ -14,7 +14,11 @@
  * uscivano vuote nel PDF perché Puppeteer headless server-side non ha la
  * sessione Google dell'utente (il fetch della miniatura fallisce silenziosamente
  * se il file non è condiviso "chiunque abbia il link"). Ora i byte vengono
- * scaricati via Drive API (stesso service account di drive_*/rivedi_immagine)
+ * scaricati via Drive API, con lo stesso service account degli altri tool Drive
+ * (NB: non scrivere qui la forma abbreviata con l'asterisco e la barra — chiude
+ * il commento e rompe il file. E' successo l'8 set 2026: il build falliva, il
+ * deploy non partiva e il fix restava fuori dalla produzione mentre sembrava
+ * mergiato.)
  * e incorporati come data URI PRIMA del rendering: nessuna dipendenza di rete
  * esterna, funziona indipendentemente dai permessi di condivisione del file.
  *
@@ -27,6 +31,7 @@ import {
   Packer,
   Paragraph,
   TextRun,
+  ImageRun,
   HeadingLevel,
   AlignmentType,
   PageOrientation,
@@ -89,16 +94,34 @@ function extractDriveFileId(url: string): string | null {
  * Se il download di una singola immagine fallisce, logga e lascia l'URL
  * originale (nessun blocco dell'intera generazione per un file problematico).
  */
-async function embedDriveImages(html: string): Promise<string> {
-  const isDriveUrl = (u: string) => /drive\.google\.com|googleusercontent\.com/i.test(u)
-  const imgTagRe = /<img\b[^>]*\bsrc="([^"]+)"[^>]*>/gi
-  const matches = Array.from(html.matchAll(imgTagRe))
-  const driveMatches = matches.filter((m) => isDriveUrl(m[1]))
-  if (driveMatches.length === 0) return html
+const RE_TAG_IMG = /<img\b[^>]*\bsrc="([^"]+)"[^>]*>/gi
+const eUrlDrive = (u: string) => /drive\.google\.com|googleusercontent\.com/i.test(u)
+
+/** Gli id Drive di tutte le immagini richiamate da un HTML, senza ripetizioni. */
+export function immaginiDriveNellHtml(html: string): string[] {
+  const ids = Array.from(html.matchAll(RE_TAG_IMG))
+    .map((m) => m[1])
+    .filter(eUrlDrive)
+    .map(extractDriveFileId)
+    .filter((id): id is string => id !== null)
+  return Array.from(new Set(ids))
+}
+
+export type EsitoImmagini = {
+  html: string
+  /** Id delle immagini che NON e' stato possibile incorporare. */
+  mancanti: string[]
+}
+
+async function embedDriveImages(html: string): Promise<EsitoImmagini> {
+  const matches = Array.from(html.matchAll(RE_TAG_IMG))
+  const driveMatches = matches.filter((m) => eUrlDrive(m[1]))
+  if (driveMatches.length === 0) return { html, mancanti: [] }
 
   const { downloadFileBase64 } = await import('./drive')
   let out = html
   const cache = new Map<string, string>()
+  const mancanti: string[] = []
 
   for (const m of driveMatches) {
     const originalSrc = m[1]
@@ -113,12 +136,17 @@ async function embedDriveImages(html: string): Promise<string> {
       cache.set(originalSrc, dataUri)
       out = out.split(originalSrc).join(dataUri)
     } catch (err) {
+      // NON basta un console.error. L'8 set 2026 il Preventivo Extra B e' uscito
+      // a 178KB con la foto rotta e il bot l'ha dichiarato a posto tre volte:
+      // il fallimento va RESTITUITO, cosi' chi consegna il documento lo sa e
+      // puo' dirlo all'Ingegnere.
       console.error(`[PDF] embed immagine Drive fallito per ${fileId}:`, err instanceof Error ? err.message : err)
-      // Lascia l'URL originale: un tentativo di fetch di rete (potrebbe funzionare
-      // per file pubblici) è preferibile a un errore bloccante sull'intero PDF.
+      if (!mancanti.includes(fileId)) mancanti.push(fileId)
+      // Si lascia l'URL originale: per un file condiviso "chiunque abbia il
+      // link" il fetch di rete puo' ancora riuscire.
     }
   }
-  return out
+  return { html: out, mancanti }
 }
 
 // Risolve il percorso del binario Chromium da usare. Sempre lanciato via puppeteer-core
@@ -173,8 +201,22 @@ async function getBrowser(): Promise<any> {
  * Converte HTML in Buffer PDF A4 via Chromium headless (rendering identico al browser).
  * Mantiene la firma pubblica precedente — caller (`tools.ts:217`) non deve cambiare.
  */
-export async function generatePdfFromHtml(html: string, title: string): Promise<Buffer> {
-  const htmlWithEmbeddedImages = await embedDriveImages(html)
+export type OpzioniDocumento = {
+  /**
+   * Chiamata con gli id delle immagini rimaste fuori. Serve a NON consegnare in
+   * silenzio un documento con le foto rotte: chi salva il file puo' dirlo
+   * all'Ingegnere invece di dichiararlo a posto.
+   */
+  onImmaginiMancanti?: (idMancanti: string[]) => void
+}
+
+export async function generatePdfFromHtml(
+  html: string,
+  title: string,
+  opzioni: OpzioniDocumento = {},
+): Promise<Buffer> {
+  const { html: htmlWithEmbeddedImages, mancanti } = await embedDriveImages(html)
+  if (mancanti.length > 0) opzioni.onImmaginiMancanti?.(mancanti)
   const wrappedHtml = wrapForPrint(htmlWithEmbeddedImages, title)
   // FIX #10 (report 13/08): Chromium serverless fallisce a intermittenza (cold start,
   // launch race). Retry con browser fresco + timeout su setContent per non appendere.
@@ -263,11 +305,41 @@ function htmlToDocxBlocks(rawHtml: string): DocBlock[] {
 
 /**
  * Converte HTML semplice in Buffer .docx A4 portrait.
- * Limiti accettati: no tabelle native (`<table>` → righe testo), no immagini, no CSS.
+ *
+ * Le immagini Drive VENGONO incluse (8 set 2026). Prima il limite dichiarato era
+ * "no immagini": un Word con l'allegato fotografico usciva senza le foto, e
+ * senza dirlo. Un documento consegnato al committente a cui mancano le foto del
+ * degrado non e' un documento con meno grafica: e' un documento che non prova
+ * quello che afferma.
+ *
+ * Limiti che restano: no tabelle native (`<table>` → righe testo), no CSS.
  * Per output con tabelle vere usare generateXlsxFromData.
  */
-export async function generateDocxFromHtml(html: string, title: string): Promise<Buffer> {
+export async function generateDocxFromHtml(
+  html: string,
+  title: string,
+  opzioni: OpzioniDocumento = {},
+): Promise<Buffer> {
   const blocks = htmlToDocxBlocks(html)
+
+  // Le foto si scaricano PRIMA di comporre il documento: `docx` vuole i byte,
+  // non un URL.
+  const idImmagini = immaginiDriveNellHtml(html)
+  const immagini: Buffer[] = []
+  const mancanti: string[] = []
+  if (idImmagini.length > 0) {
+    const { downloadFileBase64 } = await import('./drive')
+    for (const id of idImmagini) {
+      try {
+        const { base64 } = await downloadFileBase64(id)
+        immagini.push(Buffer.from(base64, 'base64'))
+      } catch (err) {
+        console.error(`[DOCX] immagine Drive non scaricata (${id}):`, err instanceof Error ? err.message : err)
+        mancanti.push(id)
+      }
+    }
+    if (mancanti.length > 0) opzioni.onImmaginiMancanti?.(mancanti)
+  }
 
   const children: Paragraph[] = [
     new Paragraph({
@@ -288,6 +360,24 @@ export async function generateDocxFromHtml(html: string, title: string): Promise
       new Paragraph({
         heading,
         children: [new TextRun({ text: block.text, size: heading ? 26 : 22 })],
+      }),
+    )
+  }
+
+  // Le foto, in fondo: l'allegato fotografico. Larghezza fissa a misura di A4
+  // con i margini, altezza proporzionata a 4:3 — senza dimensioni `docx` non
+  // sa che spazio darle e Word le mostra schiacciate.
+  for (const byte of immagini) {
+    children.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [
+          new ImageRun({
+            type: 'jpg',
+            data: byte,
+            transformation: { width: 480, height: 360 },
+          }),
+        ],
       }),
     )
   }

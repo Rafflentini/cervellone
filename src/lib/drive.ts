@@ -382,12 +382,20 @@ export async function searchFilesFullText(query: string, folderId?: string): Pro
 // FIX W1.3 Task 3: download binario per parsing client-side (PDF/DOCX/XLSX)
 async function downloadFile(fileId: string): Promise<{ buffer: Buffer; mimeType: string; name: string }> {
   const drive = await getDrive()
-  const meta = await drive.files.get({ fileId, fields: 'name, mimeType, size' })
+  // `supportsAllDrives` su ENTRAMBE le chiamate. Questa funzione era l'unica di
+  // drive.ts a non passarlo: su un file che vive in un Drive condiviso l'API
+  // risponde 404 "File not found", e il chiamante che ne soffre di piu' e'
+  // `embedDriveImages` del generatore PDF, dove il fallimento viene ingoiato e
+  // il documento esce con la foto rotta senza che nessuno lo dica.
+  const meta = await drive.files.get({ fileId, fields: 'name, mimeType, size', supportsAllDrives: true })
   const sizeBytes = Number(meta.data.size || 0)
   if (sizeBytes > 20 * 1024 * 1024) {
     throw new Error(`File troppo grande (${(sizeBytes / 1024 / 1024).toFixed(1)} MB > 20 MB max)`)
   }
-  const res = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'arraybuffer' })
+  const res = await drive.files.get(
+    { fileId, alt: 'media', supportsAllDrives: true },
+    { responseType: 'arraybuffer' },
+  )
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const buffer = Buffer.from(res.data as any)
   return {

@@ -10,6 +10,7 @@
  */
 
 import { getSupabaseServer } from './supabase-server'
+import { avvisoImmagini } from './avviso-immagini'
 import type { ToolDefinition } from './tools/types'
 import type { CodiceSocieta } from './societa'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
@@ -128,20 +129,28 @@ async function executePdfTools(name: string, input: Record<string, unknown>): Pr
       const htmlContent = input.html_content as string
       if (!htmlContent) return 'Errore: html_content è richiesto.'
       const { generatePdfFromHtml } = await import('./pdf-generator')
-      const buffer = await generatePdfFromHtml(htmlContent, title)
+      // Le foto che non entrano vanno DETTE. Un documento consegnato con le
+      // immagini rotte e dichiarato a posto e' peggio di un errore.
+      let immaginiMancanti: string[] = []
+      const buffer = await generatePdfFromHtml(htmlContent, title, {
+        onImmaginiMancanti: (ids) => { immaginiMancanti = ids },
+      })
       const fileName = `${safeTitle}.pdf`
       const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, 'application/pdf', folderId)
-      return `📄 **${fileName}** salvato su Drive.\n👉 ${webViewLink}`
+      return `📄 **${fileName}** salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(immaginiMancanti)}`
     }
 
     if (name === 'genera_docx') {
       const htmlContent = input.html_content as string
       if (!htmlContent) return 'Errore: html_content è richiesto.'
       const { generateDocxFromHtml } = await import('./pdf-generator')
-      const buffer = await generateDocxFromHtml(htmlContent, title)
+      let docxMancanti: string[] = []
+      const buffer = await generateDocxFromHtml(htmlContent, title, {
+        onImmaginiMancanti: (ids) => { docxMancanti = ids },
+      })
       const fileName = `${safeTitle}.docx`
       const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, DOCX_MIME, folderId)
-      return `📝 **${fileName}** salvato su Drive.\n👉 ${webViewLink}`
+      return `📝 **${fileName}** salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(docxMancanti)}`
     }
 
     // genera_xlsx
