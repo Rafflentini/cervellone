@@ -42,9 +42,13 @@ export async function POST(
   const { id } = await params
   const { role, content, files, emergenza } = await request.json()
 
-  // Questa e l'UNICA riga scritta per il turno web: il server non ne scrive una
-  // seconda. Quindi qui devono avvenire anche le due cose che prima faceva solo
-  // il server — sanitizzazione dei dati sensibili e generazione dell'embedding.
+  // Dall'8 set 2026 questa NON e' piu' l'unica riga del turno web: la RISPOSTA
+  // la scrive il server (`api/chat/route.ts`), qui passa il messaggio
+  // dell'UTENTE, che il browser salva prima ancora di partire — cosi'
+  // sopravvive anche a una richiesta che non parte affatto.
+  //
+  // Sanitizzazione ed embedding restano necessari qui: per il messaggio utente
+  // questo resta l'unico punto di scrittura.
   //
   // Il contenuto DEVE essere una stringa: se non lo fosse, la sanitizzazione non
   // potrebbe essere applicata e finirebbe testo grezzo nel database. Meglio

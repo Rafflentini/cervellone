@@ -28,6 +28,15 @@ vi.mock('@/lib/claude', () => ({
   trimMessages: (m: unknown) => m,
 }))
 vi.mock('@/lib/prompts', () => ({ getChatSystemPrompt: async () => 'system' }))
+// Il salvataggio della risposta (8 set 2026) passa da qui e finirebbe nel mock
+// di supabase qui sotto, contando come un insert di DOCUMENTO. Quello che questo
+// test guarda e' l'archiviazione, non la scrittura del messaggio: vive in
+// `route.salvataggio.test.ts`.
+vi.mock('@/lib/memory', () => ({
+  saveMessageWithEmbedding: async () => true,
+  saveMessageOnly: async () => true,
+  saveEmbeddingOnly: async () => undefined,
+}))
 vi.mock('@/lib/artifact-capture', () => ({
   buildArtifactsPointer: async () => '',
   captureArtifact: (...args: unknown[]) => mockCaptureArtifact(...args),

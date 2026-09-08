@@ -930,8 +930,13 @@ export async function runAgentTurn(
 
 /**
  * Chat web. Appende ogni delta allo stream HTTP: l'utente vede il testo
- * comparire mentre viene generato. Non scrive a DB — la riga la scrive il
- * browser con una POST separata, e scriverla anche qui produceva due righe.
+ * comparire mentre viene generato.
+ *
+ * Non scrive a DB, ma non perche' scriva il browser: dall'8 set 2026 la
+ * risposta la salva il SERVER, in `api/chat/route.ts`. Deve farlo li' perche'
+ * il testo completo lo conosce solo il route, che aggiunge i link ai documenti
+ * dopo che il loop e' finito. Scriverla in tutti e due i posti farebbe due
+ * righe per turno.
  */
 export async function callClaudeStream(
   request: ClaudeRequest,
@@ -944,6 +949,16 @@ export async function callClaudeStream(
       onServerTool: (nome) => { callbacks.onToolStart?.(nome) },
       onTurnFailed: (motivo) => { callbacks.onTurnFailed?.(motivo) },
     },
+    // Sul web il loop non scrive a DB, ma NON perche' scriva il browser: dall'8
+    // set 2026 la risposta la salva il SERVER, in `api/chat/route.ts`. Deve
+    // farlo li' e non qui perche' il testo che l'Ingegnere legge non e' solo
+    // `fullResponse`: il route ci aggiunge i link ai documenti archiviati
+    // (`docLinks`) dopo che il loop e' finito. Salvare qui perderebbe proprio
+    // quelli, cioe' il pezzo per cui si riapre una conversazione vecchia.
+    //
+    // `persistUserMessage` resta false: il messaggio dell'utente lo scrive il
+    // client PRIMA di partire, e cosi' sopravvive anche a una richiesta che non
+    // parte affatto — cosa che da qui non potremmo fare.
     { tag: 'web', entryPoint: 'chat', persistUserMessage: false, persistAssistantMessage: false },
   )
 }

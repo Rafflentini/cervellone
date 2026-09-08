@@ -455,9 +455,16 @@ describe.each(CANALI)('loop %s', (_canale, esegui, entryPoint, lettoDallUtente) 
 // Non tutto deve essere uguale. Queste sono le uniche asimmetrie ammesse, e
 // stanno qui scritte perche' l'unificazione non le cancelli per distrazione.
 describe('cio che resta diverso, di proposito', () => {
-  it('Telegram scrive i messaggi a DB, il web no (li scrive il browser)', async () => {
-    // Sul web la riga la scrive il browser con una POST separata: scriverla
-    // anche nel loop produceva DUE righe per ogni turno.
+  it('il LOOP scrive a DB su Telegram, non sul web (sul web scrive il route)', async () => {
+    // Attenzione a non leggere questo come "sul web salva il browser": non e'
+    // piu' vero dall'8 set 2026. La risposta web la scrive il SERVER, ma in
+    // `api/chat/route.ts` invece che qui, perche' li' il testo e' completo —
+    // il route ci aggiunge i link ai documenti archiviati, che nascono DOPO il
+    // loop. Salvarla qui li perderebbe, e scriverla in tutti e due i posti
+    // farebbe due righe per turno.
+    //
+    // La prova che il route la salva davvero sta in
+    // `api/chat/route.salvataggio.test.ts`.
     scriptedTurns = [{ text: 'Fatto.', toolUses: [], stopReason: 'end_turn' }]
 
     await callClaudeStream(richiestaBase('chat'), { onText: () => {} })

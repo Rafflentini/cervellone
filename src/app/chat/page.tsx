@@ -15,12 +15,13 @@ const MarkdownRenderer = React.memo(MarkdownRendererBase, (prev, next) => prev.c
 import DocumentPreviewPanel from '@/components/DocumentPreviewPanel'
 import SplitPanel from '@/components/SplitPanel'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
-import { staNelTettoKeepalive, tagliaAiByte } from '@/lib/chat-save-limits'
+import { staNelTettoKeepalive } from '@/lib/chat-save-limits'
 import {
   decidiDopoRiconoscimento,
   componiTestoDettatura,
   MAX_REGISTRAZIONE_MS,
 } from '@/lib/dettatura'
+import { messaggioErroreChat } from '@/lib/chat-errori'
 
 type FileAttachment = {
   name: string
@@ -39,6 +40,13 @@ type DisplayMessage = {
   role: 'user' | 'assistant'
   text: string
   files?: FileAttachment[]
+  /**
+   * Avvisi scritti dalla pagina, non dal modello: "Connessione persa", "I file
+   * sono troppo pesanti". Restano sotto gli occhi dell'Ingegnere ma NON vanno
+   * spediti al modello come se fossero una sua risposta — glielo farebbero
+   * credere di aver fallito, e rifarebbe un lavoro che il server ha finito.
+   */
+  soloLocale?: boolean
 }
 
 type Conversation = {
@@ -147,6 +155,11 @@ export default function ChatPage() {
   const inizioSessioneRef = useRef<number>(0)
   /** Sessioni chiuse subito, di fila, senza aver riconosciuto una sola parola. */
   const riavviiRapidiRef = useRef(0)
+  /**
+   * Cresce a ogni avvio e a ogni stop. Serve a riconoscere uno stream aperto da
+   * una dettatura ormai abbandonata: `getUserMedia` puo' risolvere dopo lo stop.
+   */
+  const generazioneDettaturaRef = useRef(0)
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -155,63 +168,18 @@ export default function ChatPage() {
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const batchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const pendingTextRef = useRef('')
-  // Risposta in arrivo, non ancora salvata. Serve al salvataggio d'emergenza
-  // quando la pagina viene chiusa a meta streaming: senza questo, quel pezzo di
-  // lavoro non esiste da nessuna parte — ne in messages, ne negli embedding, ne
-  // nell'estrazione notturna.
-  const rispostaInCorsoRef = useRef<{ convId: string; text: string } | null>(null)
   const router = useRouter()
 
-  // Salvataggio d'emergenza alla chiusura della pagina.
-  // `pagehide` e non `beforeunload`: e l'unico che scatta in modo affidabile
-  // anche su Safari e su mobile. `sendBeacon` sopravvive alla morte della
-  // pagina, cosa che una fetch normale non fa.
-  // Il rischio di doppio salvataggio e coperto lato server: la route rifiuta un
-  // messaggio identico arrivato negli ultimi 5 minuti.
-  useEffect(() => {
-    const salvaSeInterrotta = () => {
-      const inCorso = rispostaInCorsoRef.current
-      if (!inCorso || !inCorso.text.trim()) return
-      // Disarma subito: pagehide puo scattare piu volte (bfcache), e un secondo
-      // invio con lo stesso testo sarebbe un doppione.
-      rispostaInCorsoRef.current = null
-
-      const invia = (testo: string): boolean => {
-        const corpo = new Blob(
-          [JSON.stringify({ role: 'assistant', content: testo, files: [], emergenza: true })],
-          { type: 'application/json' }
-        )
-        return navigator.sendBeacon(`/api/conversations/${inCorso.convId}/messages`, corpo)
-      }
-
-      try {
-        if (invia(inCorso.text)) return
-
-        // sendBeacon ha rifiutato: quasi sempre perche il corpo supera il tetto
-        // del browser (~64KB), cioe proprio sulle risposte lunghe — computi,
-        // preventivi, relazioni — che sono quelle che piu vale la pena salvare.
-        // Meglio salvarne la parte iniziale, DICHIARANDO il taglio, che perdere
-        // tutto in silenzio.
-        //
-        // Il taglio si misura in BYTE e non in caratteri: su testo tecnico
-        // italiano (accenti, €, m²) 60.000 caratteri superano abbondantemente i
-        // 64KB, e il ripiego fallirebbe come il primo tentativo. La funzione sta
-        // in `chat-save-limits`, dove e coperta da test.
-        const parziale = tagliaAiByte(inCorso.text)
-
-        const riuscito = parziale.length > 0 && invia(
-          parziale +
-          '\n\n[risposta troncata dal salvataggio d\'emergenza: la pagina e stata chiusa mentre arrivava]'
-        )
-        if (!riuscito) {
-          // Ultima spiaggia prima del silenzio: almeno resta una traccia.
-          console.warn('[chat] salvataggio d\'emergenza fallito: la risposta interrotta non e stata salvata')
-        }
-      } catch { /* la pagina sta morendo: non c'e altro da tentare */ }
-    }
-    window.addEventListener('pagehide', salvaSeInterrotta)
-    return () => window.removeEventListener('pagehide', salvaSeInterrotta)
-  }, [])
+  // Il salvataggio d'emergenza alla chiusura della pagina non c'e' piu': dall'8
+  // set 2026 la risposta la scrive il SERVER (`api/chat/route.ts`), che la
+  // scrive per intero anche se il browser sparisce a meta' streaming.
+  //
+  // Toglierlo non e' una perdita, e' una correzione: il beacon partiva a meta'
+  // streaming, cioe' PRIMA del server, quindi la deduplica a 5 minuti della
+  // route non poteva vederlo — e siccome il testo parziale non e' mai identico
+  // a quello completo, non lo avrebbe scartato comunque. Il risultato erano DUE
+  // righe: una mutilata e una intera, e la mutilata rientrava anche nel
+  // contesto del modello al turno dopo.
 
   // Carica lista conversazioni
   const loadConversations = useCallback(async () => {
@@ -241,7 +209,12 @@ export default function ChatPage() {
   }
 
   // Salva messaggio su Supabase
-  async function saveMessage(convId: string, role: string, content: string, files?: FileAttachment[]) {
+  async function saveMessage(
+    convId: string,
+    role: string,
+    content: string,
+    files?: FileAttachment[],
+  ) {
     try {
       const corpo = JSON.stringify({
         role,
@@ -254,12 +227,18 @@ export default function ChatPage() {
       // SEMPRE, non solo durante la chiusura. Attivarlo indiscriminatamente
       // farebbe fallire in silenzio il salvataggio di ogni risposta lunga anche
       // a scheda aperta. La soglia e in `chat-save-limits`, dove ha dei test.
-      await fetch(`/api/conversations/${convId}/messages`, {
+      const res = await fetch(`/api/conversations/${convId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         keepalive: staNelTettoKeepalive(corpo),
         body: corpo,
       })
+      // `fetch` non lancia sui 4xx/5xx. Senza questo controllo un rifiuto della
+      // route spariva in silenzio: da quando la RISPOSTA la scrive il server,
+      // una domanda persa qui lascerebbe in `messages` una risposta orfana.
+      if (!res.ok) {
+        console.warn(`[chat] messaggio non salvato (${role}): HTTP ${res.status}`)
+      }
     } catch (err) {
       // Non piu ingoiato: un messaggio che non si salva e una perdita, e va
       // almeno lasciata a log invece di sparire senza traccia.
@@ -340,7 +319,24 @@ export default function ChatPage() {
     }, 100)
   }, [messages])
 
+  // Uscendo dalla chat mentre si detta, il riconoscimento e il MediaRecorder
+  // restavano vivi e nessuno poteva piu' fermarli: il pulsante non c'e' piu'.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => {
+    vuoleRegistrareRef.current = false
+    try { recognitionRef.current?.stop() } catch { /* gia' fermo */ }
+    recognitionRef.current = null
+    // Zittisce `onstop` PRIMA di fermare il registratore: altrimenti fermarlo
+    // farebbe partire una trascrizione sul server per una pagina che non c'e'
+    // piu' — pagata, e con nessuno a leggerne il risultato.
+    if (recorderRef.current) recorderRef.current.onstop = null
+    stopAudioAnalysis()
+  }, [])
+
   function stopAudioAnalysis() {
+    // Invalida qualunque `getUserMedia` ancora in volo: lo stream che arrivera'
+    // dopo si accorgera' di appartenere a una dettatura gia' chiusa.
+    generazioneDettaturaRef.current++
     if (timerRegistrazioneRef.current) {
       clearTimeout(timerRegistrazioneRef.current)
       timerRegistrazioneRef.current = null
@@ -401,7 +397,17 @@ export default function ChatPage() {
   }
 
   function startAudioAnalysis() {
+    // `getUserMedia` e' asincrona e puo' metterci parecchio (il browser chiede
+    // il permesso). Se nel frattempo l'Ingegnere preme stop, `stopAudioAnalysis`
+    // non trova ancora niente da fermare: senza questa generazione lo stream si
+    // aprirebbe DOPO, con il microfono acceso a tempo indeterminato, il pulsante
+    // gia' tornato a riposo e nemmeno il tetto armato.
+    const generazione = ++generazioneDettaturaRef.current
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      if (generazione !== generazioneDettaturaRef.current) {
+        stream.getTracks().forEach(t => t.stop())
+        return
+      }
       streamRef.current = stream
 
       // Registrazione parallela sullo stesso stream. Best-effort: se il browser
@@ -714,17 +720,32 @@ export default function ChatPage() {
     if (e.target.files) processFiles(e.target.files)
   }
 
+  /**
+   * Solo i FILE ci interessano. Senza questo controllo, `preventDefault` su
+   * tutta la colonna impedirebbe anche di trascinare del TESTO nella casella —
+   * da un messaggio della chat o da un'altra finestra — e farebbe lampeggiare
+   * l'invito "Rilascia i file qui" per una selezione di parole.
+   */
+  const staTrascinandoFile = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer?.types ?? []).includes('Files')
+
   function handleDragOver(e: React.DragEvent) {
+    if (!staTrascinandoFile(e)) return
     e.preventDefault()
     setIsDragOver(true)
   }
 
   function handleDragLeave(e: React.DragEvent) {
     e.preventDefault()
+    // Ora che la zona di rilascio e' tutta la colonna, `dragleave` scatta a ogni
+    // passaggio da un figlio all'altro. Senza questa guardia l'invito
+    // "Rilascia i file qui" lampeggerebbe mentre si attraversa la pagina.
+    if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return
     setIsDragOver(false)
   }
 
   function handleDrop(e: React.DragEvent) {
+    if (!staTrascinandoFile(e)) return
     e.preventDefault()
     setIsDragOver(false)
     if (e.dataTransfer.files.length > 0) processFiles(e.dataTransfer.files)
@@ -821,8 +842,12 @@ export default function ChatPage() {
 
     // Solo l'ultimo messaggio utente manda i file reali — i precedenti mandano solo testo
     // I messaggi assistant vecchi: comprimi i blocchi ~~~document (HTML enorme) in un riferimento breve
-    const lastIdx = newMessages.length - 1
-    const apiMessages = newMessages.map((m, idx) => {
+    // Gli avvisi scritti dalla pagina (connessione persa, file troppo pesanti)
+    // NON vanno al modello: non sono sue risposte, e spedirglieli gli farebbe
+    // credere di aver fallito un turno che il server ha invece completato.
+    const daMandare = newMessages.filter(m => !m.soloLocale)
+    const lastIdx = daMandare.length - 1
+    const apiMessages = daMandare.map((m, idx) => {
       const isLast = idx === lastIdx
       let content = buildApiContent(m, isLast && m.role === 'user')
       // Comprimi blocchi ~~~document nei messaggi assistant NON ultimi
@@ -832,11 +857,9 @@ export default function ChatPage() {
       return { role: m.role, content }
     })
 
-    // Dichiarato FUORI dal try: da quando il server non scrive piu la sua riga,
-    // questo e l'unico punto che salva la risposta. Se lo stream viene interrotto
-    // (pulsante stop, rete caduta) il testo gia ricevuto deve essere salvato lo
-    // stesso, altrimenti sparisce da messages, dagli embedding e dall'estrazione
-    // notturna: una perdita muta, che e esattamente cio che stiamo eliminando.
+    // Serve solo a MOSTRARE il testo mentre arriva. Dall'8 set 2026 non e' piu'
+    // questo il punto che salva la risposta: la scrive il server in
+    // `api/chat/route.ts`, per intero e anche se il browser sparisce a meta'.
     let fullText = ''
 
     try {
@@ -876,9 +899,6 @@ export default function ChatPage() {
           fullText += pendingTextRef.current
           pendingTextRef.current = ''
           const textSnapshot = fullText
-          // Tenuto aggiornato per il salvataggio d'emergenza: se la pagina muore
-          // adesso, questo e tutto cio che esiste della risposta.
-          rispostaInCorsoRef.current = { convId, text: textSnapshot }
           setMessages([...newMessages, { role: 'assistant', text: textSnapshot }])
         }
       }
@@ -900,44 +920,35 @@ export default function ChatPage() {
         batchTimeoutRef.current = null
       }
       flushBatch()
-      // Salva risposta assistente. La guardia sul vuoto c'era solo nel ramo
-      // AbortError qui sotto: nel percorso normale una risposta a zero caratteri
-      // finiva in `messages` come riga muta, che poi il turno dopo veniva scartata
-      // dalla history. Il turno spariva due volte, senza lasciare traccia.
-      rispostaInCorsoRef.current = null
-      if (fullText.trim()) await saveMessage(convId, 'assistant', fullText)
+      // La risposta NON la salva il browser: la scrive il server in
+      // `api/chat/route.ts`, per intero e con i link ai documenti.
       // Aggiorna lista conversazioni (senza ricaricare messaggi)
       loadConversations().catch(() => {})
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
-        // Risposta interrotta: quello che e arrivato va salvato lo stesso.
-        // Se non lo facciamo qui non lo fa piu nessuno, e il pezzo di lavoro
-        // svanisce senza lasciare traccia da nessuna parte.
-        // Il ref va disarmato PRIMA di attendere, come nel percorso normale:
-        // altrimenti una chiusura di pagina durante questo salvataggio farebbe
-        // partire anche il beacon, con due scritture in volo insieme.
-        rispostaInCorsoRef.current = null
-        if (fullText.trim()) await saveMessage(convId, 'assistant', fullText)
+        // Risposta interrotta dall'Ingegnere. Non si salva niente da qui: il
+        // server sta comunque portando a termine il turno e scrivera' lui la
+        // riga, intera. Salvare anche il parziale farebbe due righe, e quella
+        // mutilata rientrerebbe nel contesto del modello al turno dopo.
         return
       }
       console.error('CHAT errore:', err)
       const fileCount = userMsg.files?.length || 0
-      let errorMessage: string
-      if (err instanceof Error && err.message) {
-        errorMessage = `⚠️ ${err.message}`
-      } else if (err instanceof TypeError && err.message?.includes('fetch')) {
-        errorMessage = '⚠️ Connessione persa.\n\n💡 Cosa fare:\n• Controlla la connessione internet\n• Se stavi caricando file pesanti, prova uno alla volta'
-      } else {
-        errorMessage = fileCount > 0
-          ? `⚠️ Errore durante l'analisi dei file.\n\n💡 Cosa fare:\n• Carica i file uno alla volta — ogni analisi viene salvata in memoria\n• Per i PDF, prova la funzione "Carica progetto ZIP"\n• Se il file è molto grande, prova a comprimerlo prima`
-          : '⚠️ Errore di connessione. Riprova.'
-      }
-      setMessages([...newMessages, { role: 'assistant', text: errorMessage }])
+      // `soloLocale`: l'avviso resta a schermo ma non viene spedito al modello
+      // al turno dopo. Senza, il modello riceverebbe "⚠️ Connessione persa"
+      // come propria risposta precedente e rifarebbe un lavoro che il server ha
+      // invece portato a termine e salvato.
+      //
+      // Prima qui c'era una rilettura dal DB, ed era peggio del male: su un 413
+      // ("i file sono troppo pesanti") il server non ha scritto NIENTE, quindi
+      // la rilettura cancellava dallo schermo la spiegazione appena mostrata e
+      // lasciava la domanda seguita dal vuoto.
+      setMessages([...newMessages, {
+        role: 'assistant',
+        text: messaggioErroreChat(err, fileCount),
+        soloLocale: true,
+      }])
     } finally {
-      // Comunque sia finito il turno — riuscito, interrotto o in errore — non
-      // c'e piu una risposta "in volo": il salvataggio d'emergenza non deve
-      // poter rimandare due volte lo stesso testo.
-      rispostaInCorsoRef.current = null
       setLoading(false)
     }
   }
@@ -1283,8 +1294,17 @@ export default function ChatPage() {
         ) : null}
         onClosePanel={() => setPreviewHtml(null)}
       >
-      {/* Area chat principale */}
-      <div className="flex flex-col min-w-0 h-full">
+      {/* Area chat principale — ed e' anche la zona di rilascio dei file.
+          Gli handler stavano SOLO sull'elenco dei messaggi: trascinando una
+          foto sulla casella di testo, o sulla riga in fondo, non succedeva
+          niente (anzi, senza `preventDefault` il browser provava ad aprire il
+          file). Qui coprono tutta la colonna, casella compresa. */}
+      <div
+        className="flex flex-col min-w-0 h-full"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         {/* Hamburger mobile + Esci (sempre visibile su mobile, dove la sidebar e' nascosta) */}
         <div className="md:hidden flex items-center justify-between px-4 py-2 flex-shrink-0">
           <button onClick={() => setShowSidebar(!showSidebar)} className="text-gray-500 hover:text-gray-700">
@@ -1298,9 +1318,6 @@ export default function ChatPage() {
         {/* Messages + drag area */}
         <div
           className={`relative flex-1 overflow-y-auto px-4 py-6 space-y-6 transition-colors ${isDragOver ? 'bg-blue-50' : ''}`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
         >
           {isDragOver && (
             <div className="absolute inset-0 flex items-center justify-center bg-blue-50/90 z-10 border-2 border-dashed border-blue-400 m-2 rounded-2xl pointer-events-none">

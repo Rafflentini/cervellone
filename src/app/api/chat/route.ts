@@ -15,6 +15,8 @@ import { isWorkingMemoryEnabled, buildProcedureContext, buildActiveProjectContex
 import { buildTemplateContext } from '@/lib/template-context'
 import { buildArtifactsPointer, captureArtifact } from '@/lib/artifact-capture'
 import { captureImageExtraction, buildImagesPointer, type UploadedImageRef } from '@/lib/image-memory'
+import { saveMessageOnly, saveEmbeddingOnly } from '@/lib/memory'
+import { waitUntil } from '@vercel/functions'
 
 export const maxDuration = 800
 
@@ -142,8 +144,29 @@ export async function POST(request: NextRequest) {
   const rispostaSemplice = (testo: string) =>
     new Response(
       new ReadableStream({
-        start(controller) {
+        async start(controller) {
           controller.enqueue(new TextEncoder().encode(testo))
+          // Anche queste risposte vanno in `messages`, e devono passare da qui:
+          // i nove rami che chiamano `rispostaSemplice` escono PRIMA del
+          // salvataggio in fondo al file. Finche' a salvare era il browser non
+          // si notava; da quando salva il server, senza questa riga la conferma
+          // di un comando sparirebbe.
+          //
+          // Il caso peggiore e' `/condividi_ok_`, che risponde con un link
+          // firmato: non e' ricostruibile da nessuna parte. Ma vale anche per
+          // "Fattura emessa" e "Mail inviata a...": riaprendo la conversazione
+          // si troverebbe il comando e sotto il vuoto, e al turno dopo il
+          // modello potrebbe ri-proporre un'operazione gia' fatta.
+          if (conversationId && testo.trim()) {
+            // Solo la RIGA nel percorso critico: aspettare anche l'embedding
+            // terrebbe il comando appeso mezzo secondo a testo gia' a schermo,
+            // col pulsante invio bloccato e i messaggi dirottati in coda.
+            const salvato = await saveMessageOnly(conversationId, 'assistant', testo)
+            if (!salvato) console.error('[chat] risposta a comando NON salvata')
+            if (salvato) {
+              waitUntil(saveEmbeddingOnly(conversationId, 'assistant', testo).catch(() => {}))
+            }
+          }
           controller.close()
         },
       }),
@@ -304,8 +327,16 @@ export async function POST(request: NextRequest) {
       const invia = (testo: string) => {
         try { controller.enqueue(encoder.encode(testo)) } catch { /* client andato via */ }
       }
+      // Dichiarati FUORI dal try: il salvataggio avviene nel `finally`, e da li'
+      // quello che l'Ingegnere ha gia' letto dev'essere raggiungibile anche se a
+      // meta' strada e' stata sollevata un'eccezione. Con la `const` dentro il
+      // try, un guasto della pipeline di archiviazione buttava via una risposta
+      // gia' consegnata a schermo.
+      let fullResponse = ''
+      const docLinks: string[] = []
+      let testoErrore = ''
       try {
-        const fullResponse = await callClaudeStream(
+        fullResponse = await callClaudeStream(
           { messages: trimmedMessages, systemPrompt: await getChatSystemPrompt(userQuery), userQuery, conversationId, hasFiles, workingContext },
           {
             onText: (text) => invia(text),
@@ -322,7 +353,6 @@ export async function POST(request: NextRequest) {
         // Estrai document blocks e salva come documenti linkabili.
         // Su turno fallito non si salva niente: il testo e' troncato a meta'.
         const responseBlocks = turnoFallito ? [] : parseDocumentBlocks(fullResponse)
-        const docLinks: string[] = []
 
         for (const block of responseBlocks) {
           if (block.type === 'document') {
@@ -349,13 +379,58 @@ export async function POST(request: NextRequest) {
         if (docLinks.length > 0) {
           invia(docLinks.join('\n'))
         }
+
       } catch (err) {
         // Rete di sicurezza per gli errori NON-API (il motore quelli li gestisce
         // da se'): guasti della pipeline di archiviazione, Supabase, ecc.
         const msg = err instanceof Error ? err.message : String(err)
         console.error('CHAT error:', msg)
-        invia(`\n\n⚠️ ${msg.slice(0, 300)}`)
+        testoErrore = `\n\n⚠️ ${msg.slice(0, 300)}`
+        invia(testoErrore)
       } finally {
+        // ── La risposta la salva il SERVER (8 set 2026) ──
+        // Prima la scriveva il browser a streaming finito. Misurato in
+        // produzione: due turni conclusi con `success` (199 e 2.961 token,
+        // $0,27) non sono mai arrivati a `messages`, perche' era caduta la
+        // connessione. Il lavoro del server non puo' dipendere dal fatto che il
+        // browser sia ancora vivo.
+        //
+        // Si salva QUI e non nel loop perche' qui il testo e' completo: i link
+        // ai documenti nascono dopo il loop, e ritrovarli e' il motivo per cui
+        // si riapre una conversazione vecchia.
+        //
+        // Nel `finally` e non in fondo al try: quello che l'Ingegnere ha gia'
+        // letto va salvato anche se la pipeline di archiviazione e' esplosa a
+        // meta'. E si salva anche il testo dell'errore, perche' e' cio' che ha
+        // sotto gli occhi.
+        //
+        // `await`, non fire-and-forget: su serverless quel che parte dopo la
+        // chiusura dello stream non e' garantito che arrivi in fondo.
+        const testoDaSalvare = fullResponse + docLinks.join('\n') + testoErrore
+        if (conversationId && testoDaSalvare.trim()) {
+          // Un turno non consegnato entra nella STORIA ma non nella memoria
+          // semantica: e' testo troncato a meta', ed embeddarlo lo renderebbe
+          // recuperabile da searchMemory come se fosse conoscenza.
+          // Il criterio e' `turnoFallito` e SOLO quello. Non `testoErrore`: se
+          // il modello ha risposto benissimo e poi e' esploso l'insert in
+          // `documents`, la risposta e' valida e merita la memoria semantica.
+          const salvato = await saveMessageOnly(conversationId, 'assistant', testoDaSalvare)
+          if (!salvato) {
+            console.error('[chat] RISPOSTA NON SALVATA: la riga non e\' finita in messages')
+          }
+          // L'embedding NON sta nel percorso critico: e' una chiamata di rete di
+          // parecchie centinaia di ms, e farla attendere allo stream terrebbe
+          // acceso lo spinner a risposta gia' completa. Quel che conta per non
+          // perdere lavoro e' la RIGA, ed e' gia' scritta.
+          //
+          // `waitUntil` e non un `.catch()` nudo: un fire-and-forget lanciato un
+          // istante prima di `controller.close()` puo' essere congelato con la
+          // function, e la risposta finirebbe in `messages` ma non in memoria —
+          // in silenzio. E' come la memoria persistente rimasta vuota per mesi.
+          if (!turnoFallito && salvato) {
+            waitUntil(saveEmbeddingOnly(conversationId, 'assistant', testoDaSalvare).catch(() => {}))
+          }
+        }
         controller.close()
       }
     },

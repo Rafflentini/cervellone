@@ -27,8 +27,13 @@ export async function saveMessageWithEmbedding(
   content: string,
   projectId?: string | null,
 ) {
-  await saveMessageOnly(conversationId, role, content)
-  await saveEmbeddingOnly(conversationId, role, content, projectId)
+  const salvato = await saveMessageOnly(conversationId, role, content)
+  // Solo se la riga e' entrata davvero: un embedding senza il suo messaggio
+  // resta recuperabile da `searchMemory` senza niente a cui appartenere.
+  if (salvato) await saveEmbeddingOnly(conversationId, role, content, projectId)
+  // L'esito che conta e' quello della RIGA: senza embedding si perde memoria
+  // semantica, senza riga si perde la risposta.
+  return salvato
 }
 
 /**
@@ -42,20 +47,35 @@ export async function saveMessageWithEmbedding(
  *   MIN_EMBEDDING_LENGTH e diventerebbe recuperabile da searchMemory come se
  *   fosse conoscenza.
  */
+/**
+ * Ritorna `true` solo se la riga e' davvero entrata.
+ *
+ * `supabase-js` NON lancia su un insert rifiutato: mette l'errore in `.error` e
+ * ritorna normalmente, quindi il `try/catch` che c'era qui non scattava mai e
+ * `logWarn` era codice morto. Da quando la risposta della chat web la scrive
+ * SOLO il server (8 set 2026), un rifiuto silenzioso qui e' una risposta persa
+ * senza nemmeno una riga di log.
+ */
 export async function saveMessageOnly(
   conversationId: string,
   role: string,
   content: string,
-): Promise<void> {
+): Promise<boolean> {
   const sanitized = sanitizeForStorage(content)
   try {
-    await supabase.from('messages').insert({
+    const { error } = await supabase.from('messages').insert({
       conversation_id: conversationId,
       role,
       content: sanitized,
     })
+    if (error) {
+      logWarn(`Messages insert error: ${error.message}`)
+      return false
+    }
+    return true
   } catch (err) {
     logWarn(`Messages insert failed: ${(err as Error).message}`)
+    return false
   }
 }
 
