@@ -3,7 +3,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { callClaudeStream, trimMessages } from '@/lib/claude'
+import { callClaudeStream, trimMessages, messaggioErroreUtente } from '@/lib/claude'
 import { getChatSystemPrompt } from '@/lib/prompts'
 import { validateAuth } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
@@ -20,6 +20,8 @@ import { societaAttivaPerDocumenti } from '@/lib/societa-documenti'
 import { conTetto } from '@/lib/tetto-attesa'
 import { comprimiDocumentiNellaStoria, type MessaggioStoria } from '@/lib/compressione-documenti'
 import { salvaRispostaTurno } from '@/lib/salva-risposta'
+import { saveMessageWithEmbedding } from '@/lib/memory'
+import { annotateHallucinatedLinks } from '@/lib/link-allucinati'
 import { waitUntil } from '@vercel/functions'
 
 /**
@@ -96,6 +98,16 @@ export async function POST(request: NextRequest) {
       b.type === 'image' || b.type === 'document'
     )
   )
+  // Come su Telegram: serve per l'etichetta della "conoscenza file".
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const nomiAllegati = trimmedMessages.flatMap((m) =>
+    Array.isArray(m.content)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ? (m.content as any[])
+          .filter((b: any) => b.type === 'image' || b.type === 'document')
+          .map((b: any) => String(b.title ?? b.source?.filename ?? b.type))
+      : [],
+  ).join(', ')
 
   // Parità con Telegram: salva SUBITO su Drive (Inbox) + record foto_pending le foto caricate da web.
   let uploadedImageRefs: UploadedImageRef[] = []
@@ -366,14 +378,63 @@ export async function POST(request: NextRequest) {
           },
         )
 
-        if (conversationId && !turnoFallito) {
-          captureArtifact(conversationId, fullResponse).catch(() => {})
-          captureImageExtraction(conversationId, fullResponse, uploadedImageRefs).catch(() => {})
-        }
-
         // Estrai document blocks e salva come documenti linkabili.
         // Su turno fallito non si salva niente: il testo e' troncato a meta'.
         const responseBlocks = turnoFallito ? [] : parseDocumentBlocks(fullResponse)
+        const haBloccoDocumento = responseBlocks.some((b) => b.type === 'document')
+
+        // `!haBloccoDocumento` come su Telegram: un turno con un blocco
+        // ~~~document produce gia' una riga in `documents` (qui sotto), e senza
+        // questa guardia ne produceva una SECONDA come auto-bozza. Nel
+        // `lista_bozze` lo stesso documento compariva due volte.
+        if (conversationId && !turnoFallito && !haBloccoDocumento) {
+          captureArtifact(conversationId, fullResponse).catch(() => {})
+        }
+        // La memoria immagini NON e' gated da `haBloccoDocumento`: lega i
+        // drive_file_id veri delle foto al testo estratto, e un turno che
+        // produce un documento e' proprio quello in cui le foto sono state
+        // lette. Su Telegram la guardia vale solo per l'auto-bozza; averle
+        // legate insieme qui sarebbe stata una divergenza nuova.
+        if (conversationId && !turnoFallito) {
+          captureImageExtraction(conversationId, fullResponse, uploadedImageRefs).catch(() => {})
+        }
+
+        // ── Conoscenza file: girava solo su Telegram ──
+        // Lo stesso capitolato analizzato dai due canali produceva due
+        // memorie diverse. `searchMemory` e' comune, quindi il web CONSUMAVA
+        // una memoria che non contribuiva mai ad alimentare: caricato il PDF
+        // dalla chat web e discusso mezz'ora, una settimana dopo da Telegram
+        // non se ne trovava traccia.
+        if (conversationId && !turnoFallito && hasFiles && fullResponse.length > 200) {
+          const conoscenza = [
+            `[Analisi file "${nomiAllegati || 'allegato'}"]`,
+            `Domanda: ${userQuery}`,
+            `Analisi:`,
+            fullResponse.slice(0, 10000),
+          ].join(String.fromCharCode(10))
+          waitUntil(saveMessageWithEmbedding(conversationId, 'knowledge', conoscenza).catch(() => {}))
+        }
+
+        // ── Debrief di fine turno: idem, girava solo su Telegram ──
+        // Resta flag-gated (fail-closed) dentro maybeRunDebrief. Il .catch e'
+        // deliberato: la risposta e' gia' a schermo, e un debrief fallito non
+        // deve poterla rovinare. Su turno fallito distillerebbe una "lezione"
+        // da un messaggio d'errore.
+        if (conversationId && !turnoFallito) {
+          const { maybeRunDebrief } = await import('@/lib/auto-debrief')
+          waitUntil(maybeRunDebrief({
+            conversationId,
+            userText: userQuery,
+            transcript: [
+              ...trimmedMessages.map((m) => `[${m.role}]: ${typeof m.content === 'string' ? m.content : ''}`),
+              `[assistant]: ${fullResponse}`,
+            ].join(String.fromCharCode(10)),
+            // Sul web non c'e' un canale fuori banda: il riassunto va nello
+            // stesso flusso che l'Ingegnere sta leggendo.
+            sendSummary: (riga: string) => { invia(String.fromCharCode(10, 10) + riga) },
+          }).catch(() => {}))
+        }
+
 
         for (const block of responseBlocks) {
           if (block.type === 'document') {
@@ -401,12 +462,34 @@ export async function POST(request: NextRequest) {
           invia(docLinks.join('\n'))
         }
 
+        // Verifica che i link Drive citati esistano DAVVERO. Girava solo su
+        // Telegram: sul web la difesa era testo nel system prompt e nient'altro,
+        // e l'Ingegnere cliccava su un id inventato senza modo di sapere se il
+        // file c'e' con un altro nome o non c'e' affatto.
+        //
+        // In coda e non in testa: qui il testo e' gia' stato mandato a schermo
+        // pezzo per pezzo, e la pagina lo mostra tutto insieme. Su Telegram va
+        // in testa perche' sopra i 4000 caratteri il messaggio viene spezzato.
+        //
+        // Non entra nel testo salvato: e' un avviso del server, non parole del
+        // modello. Stessa scelta di Telegram (`outgoingText` non si salva).
+        const conAvviso = await annotateHallucinatedLinks(fullResponse)
+        if (conAvviso !== fullResponse) {
+          const soloAvviso = conAvviso.slice(0, conAvviso.length - fullResponse.length).trim()
+          invia(String.fromCharCode(10, 10) + soloAvviso)
+        }
+
       } catch (err) {
         // Rete di sicurezza per gli errori NON-API (il motore quelli li gestisce
         // da se'): guasti della pipeline di archiviazione, Supabase, ecc.
         const msg = err instanceof Error ? err.message : String(err)
         console.error('CHAT error:', msg)
-        testoErrore = `\n\n⚠️ ${msg.slice(0, 300)}`
+        // NON il messaggio grezzo dell'eccezione. Da quando questo testo entra
+        // anche in `messages` (8 set), un errore PostgREST — che puo' portarsi
+        // dietro nomi di colonna, vincoli, frammenti di payload — diventerebbe
+        // "risposta precedente dell'assistente" nel contesto del modello.
+        // Telegram mappava gia' i casi noti; ora la mappa e' una sola.
+        testoErrore = String.fromCharCode(10, 10) + messaggioErroreUtente(msg, msg)
         invia(testoErrore)
       } finally {
         // ── La risposta la salva il SERVER (8 set 2026) ──
@@ -514,6 +597,16 @@ async function resolveFileUrls(messages: any[]) {
 function extractText(msg: any): string {
   if (!msg) return ''
   if (typeof msg.content === 'string') return msg.content
-  if (Array.isArray(msg.content)) return msg.content.find((b: any) => b.type === 'text')?.text || ''
+  // TUTTI i blocchi di testo, non solo il primo: con un allegato piu' un
+  // comando, se il blocco testo non e' il primo il comando non veniva
+  // intercettato e finiva al modello — che poi risponde che non puo'
+  // scavalcare il dispatcher. Telegram usa `text || caption`, non il primo.
+  if (Array.isArray(msg.content)) {
+    return msg.content
+      .filter((b: any) => b.type === 'text' && typeof b.text === 'string')
+      .map((b: any) => b.text)
+      .join(' ')
+      .trim()
+  }
   return ''
 }

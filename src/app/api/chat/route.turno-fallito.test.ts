@@ -124,10 +124,26 @@ describe('POST /api/chat — quando il turno non e lavoro compiuto', () => {
 
     const uscita = await eseguiELeggi()
 
-    expect(mockCaptureArtifact).toHaveBeenCalledTimes(1)
+    // ⭐ NON captureArtifact: il turno HA un blocco documento, quindi la riga
+    // in `documents` c'e' gia'. Prima ne produceva una SECONDA come
+    // auto-bozza e in `lista_bozze` lo stesso documento compariva due volte.
+    // Su Telegram la guardia c'era; qui no.
+    expect(mockCaptureArtifact).not.toHaveBeenCalled()
     expect(mockCaptureImageExtraction).toHaveBeenCalledTimes(1)
     expect(mockInsertDocumento).toHaveBeenCalledTimes(1)
     expect(uscita).toContain('Apri documento')
+  })
+
+  // CONTROLLO POSITIVO per la guardia qui sopra: senza un turno in cui
+  // captureArtifact viene DAVVERO chiamata, un `not.toHaveBeenCalled()`
+  // resterebbe verde anche se l'auto-bozza fosse morta del tutto.
+  it('un turno SENZA blocco documento salva comunque l auto-bozza', async () => {
+    loopChe('Ecco la bozza della lettera al committente, in chiaro nel testo.')
+
+    await eseguiELeggi()
+
+    expect(mockCaptureArtifact).toHaveBeenCalledTimes(1)
+    expect(mockInsertDocumento).not.toHaveBeenCalled()
   })
 
   it('un turno fallito non archivia niente e non promette un documento', async () => {

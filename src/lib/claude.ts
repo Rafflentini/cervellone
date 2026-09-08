@@ -492,7 +492,7 @@ export interface ChannelPolicy {
 }
 
 /** Traduce un errore API in una frase che l'utente possa capire. */
-function messaggioErroreUtente(message: string, details: string): string {
+export function messaggioErroreUtente(message: string, details: string): string {
   if (/not_found_error|404/i.test(message)) {
     return '⚠️ Modello AI temporaneamente non disponibile. Il sistema sta cercando di recuperare automaticamente, riprovi tra un momento.'
   }
