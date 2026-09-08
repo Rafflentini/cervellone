@@ -7,7 +7,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { getToolDefinitions, executeTool } from './tools'
-import { searchMemory, saveMessageWithEmbedding, saveMessageOnly } from './memory'
+import { searchMemory, saveMessageWithEmbedding, saveMessageOnly, saveEmbeddingOnly } from './memory'
 import { logError } from './sanitize'
 import { consumeStreamWithRetry } from './stream-retry'
 import { supabase } from './supabase'
@@ -20,6 +20,14 @@ import { isOpusExpired, SONNET_MODEL } from './opus-ttl'
 import { splitSystemPrompt } from './system-prompt-split'
 import { truncateToolResult } from './tool-result-utils'
 import { applyIncrementalCacheBreakpoint } from './cache-breakpoints'
+import { conTetto } from './tetto-attesa'
+import { waitUntil } from '@vercel/functions'
+
+/**
+ * Quanto si sta ad aspettare che la riga arrivi a Supabase prima di passarla
+ * allo sfondo. Lo stesso tetto del canale web (`api/chat/route.ts`).
+ */
+const ATTESA_MASSIMA_SCRITTURA_MS = 5_000
 
 const client = new Anthropic()
 const ANTHROPIC_BILLING_ALERT_KEY = 'anthropic_billing_alerted'
@@ -864,10 +872,36 @@ export async function runAgentTurn(
   // Quindi: un turno non consegnato entra nella STORIA (l'utente l'ha letto) ma
   // NON nella memoria semantica.
   if (policy.persistAssistantMessage && conversationId && fullResponse) {
-    const salva = turnoNonConsegnato
-      ? saveMessageOnly(conversationId, 'assistant', fullResponse)
-      : saveMessageWithEmbedding(conversationId, 'assistant', fullResponse)
-    salva.catch(() => {})
+    // ⭐ Non un fire-and-forget. Prima era `salva.catch(() => {})`: la promessa
+    // non veniva attesa, la function Vercel resta viva finche' risolve
+    // `bgProcess` e non finche' risolve questa, quindi una scrittura lanciata
+    // un istante prima poteva essere congelata con la function. E' lo stesso
+    // modo in cui la memoria persistente e' rimasta vuota per mesi.
+    //
+    // Il `.catch` per giunta era codice morto: `saveMessageOnly` non rigetta
+    // mai, torna `false` — la stessa forma di errore di `sendTelegramMessage`.
+    // L'istante e' quello in cui la risposta e' stata consegnata, non quello in
+    // cui l'insert arriva a destinazione: una scrittura lenta o ritentata non
+    // deve infilarsi DOPO la domanda successiva dell'Ingegnere.
+    const istanteRisposta = new Date().toISOString()
+    const scrittura = saveMessageOnly(conversationId, 'assistant', fullResponse, istanteRisposta)
+    const salvato = await conTetto(scrittura, ATTESA_MASSIMA_SCRITTURA_MS, 'in-corso' as const)
+    if (salvato === 'in-corso') {
+      // Lenta, non persa: waitUntil e' l'unico modo perche' la function non
+      // muoia prima che arrivi.
+      console.warn('[tg] scrittura della risposta lenta: prosegue in background')
+      waitUntil(scrittura)
+    } else if (salvato === false) {
+      console.error('[tg] RISPOSTA NON SALVATA in messages')
+    }
+    // L'embedding e' una seconda chiamata di rete, e stava DENTRO la stessa
+    // promessa non attesa: era il primo a morire. Va allo sfondo per conto suo,
+    // e solo se la riga e' entrata davvero — un embedding senza il suo
+    // messaggio resta recuperabile da searchMemory senza niente a cui
+    // appartenere.
+    if (!turnoNonConsegnato && salvato !== false) {
+      waitUntil(saveEmbeddingOnly(conversationId, 'assistant', fullResponse).catch(() => {}))
+    }
   }
 
   const FALLBACK_PREFIX = '⚠️ Non sono riuscito a sintetizzare'

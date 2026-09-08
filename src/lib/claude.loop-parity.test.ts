@@ -109,8 +109,18 @@ vi.mock('./memory', () => ({
   // Storia si', memoria semantica no: e' la via usata dai turni non consegnati.
   saveMessageOnly: async (_convId: string, role: string, text: string) => {
     savedMessages.push({ role, text, embeddato: false })
+    return true
+  },
+  // Dall'8 set 2026 il loop Telegram scrive la riga e POI, separatamente,
+  // manda l'embedding allo sfondo: prima stavano nella stessa promessa non
+  // attesa, e l'embedding era il primo a morire.
+  saveEmbeddingOnly: async (_convId: string, role: string, text: string) => {
+    embeddingGenerati.push({ role, text })
+    return true
   },
 }))
+/** Embedding chiesti separatamente dalla riga. */
+const embeddingGenerati: Array<{ role: string; text: string }> = []
 // Catena Supabase permissiva: getConfig usa .select().in(), gli helper billing
 // usano .select().eq().maybeSingle() e .upsert().
 /** Stato dell'allarme "crediti Anthropic esauriti" letto dagli helper billing. */
@@ -161,6 +171,7 @@ beforeEach(() => {
   executedTools.length = 0
   recordOutcomeCalls.length = 0
   savedMessages.length = 0
+  embeddingGenerati.length = 0
   consegne.length = 0
   chiamateTool.length = 0
   upsertEseguiti.length = 0
@@ -827,6 +838,7 @@ describe('budget: troncare una run non e la stessa cosa che concluderla', () => 
       ['budget', () => { scriptedTurns = [{ text: 'Comincio.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' }] }],
     ] as const) {
       savedMessages.length = 0
+      embeddingGenerati.length = 0
       turnIndex = 0
       prepara()
 
@@ -837,7 +849,12 @@ describe('budget: troncare una run non e la stessa cosa che concluderla', () => 
 
       const assistente = savedMessages.filter(m => m.role === 'assistant')
       expect(assistente, `motivo ${motivo}: la risposta deve restare nella storia`).toHaveLength(1)
-      expect(assistente[0].embeddato, `motivo ${motivo}: non deve finire in memoria`).toBe(false)
+      // L'embedding e' una chiamata separata dall'8 set 2026: si guarda li',
+      // non piu' il flag della riga.
+      expect(
+        embeddingGenerati.filter(e => e.role === 'assistant'),
+        `motivo ${motivo}: non deve finire in memoria`,
+      ).toHaveLength(0)
     }
   })
 
@@ -850,6 +867,6 @@ describe('budget: troncare una run non e la stessa cosa che concluderla', () => 
 
     const assistente = savedMessages.filter(m => m.role === 'assistant')
     expect(assistente).toHaveLength(1)
-    expect(assistente[0].embeddato).toBe(true)
+    expect(embeddingGenerati.filter(e => e.role === 'assistant')).toHaveLength(1)
   })
 })

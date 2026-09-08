@@ -10,6 +10,7 @@ import { societaAttivaPerDocumenti } from '@/lib/societa-documenti'
 import type Anthropic from '@anthropic-ai/sdk'
 import crypto from 'crypto'
 import { supabase } from '@/lib/supabase'
+import { saveMessageOnly, saveEmbeddingOnly } from '@/lib/memory'
 import { getSupabaseServer } from '@/lib/supabase-server'
 import { downloadTelegramFile, buildContentBlocks, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
 import { transcribeAudio } from '@/lib/trascrizione'
@@ -634,20 +635,44 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    /**
+     * Risponde a un comando E lo mette in storia.
+     *
+     * Prima i nove rami qui sotto facevano solo `sendTelegramMessage` + `return`:
+     * zero righe in `messages`. E nemmeno il comando dell'Ingegnere entrava,
+     * perche' il `return` sta a monte di `runAgentTurn`, l'unico punto che
+     * scrive la riga utente. Il caso peggiore e' `/condividi_ok_`, che risponde
+     * con un link FIRMATO: non e' ricostruibile da nessuna parte, e al turno
+     * dopo il modello non sa che quel documento e' gia' stato condiviso.
+     *
+     * Sul web la stessa cosa la fa `rispostaSemplice` (`api/chat/route.ts`).
+     */
+    const rispondiESalva = async (testoBot: string) => {
+      await sendTelegramMessage(chatId, testoBot)
+      const convId = chatIdToUuid(chatId)
+      const istante = new Date().toISOString()
+      const scritture = (async () => {
+        const okUser = await saveMessageOnly(convId, 'user', userText, istante)
+        const okBot = await saveMessageOnly(convId, 'assistant', testoBot, istante)
+        if (!okUser || !okBot) console.error('[telegram] risposta a comando NON salvata')
+        else await saveEmbeddingOnly(convId, 'assistant', testoBot).catch(() => {})
+      })()
+      waitUntil(scritture)
+      return NextResponse.json({ ok: true })
+    }
+
     // ─── /invia_<uuid> + /annulla_<uuid> — confirm flow mail subagent V19 ───
     const mInvia = userText.match(/^\/invia_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
     if (mInvia) {
       const { confirmPendingSend } = await import('@/v19/tools/email/telegram-confirm')
       const r = await confirmPendingSend(mInvia[1])
-      await sendTelegramMessage(chatId, r.message)
-      return NextResponse.json({ ok: true })
+      return await rispondiESalva(r.message)
     }
     const mAnnulla = userText.match(/^\/annulla_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
     if (mAnnulla) {
       const { cancelPendingSend } = await import('@/v19/tools/email/telegram-confirm')
       const r = await cancelPendingSend(mAnnulla[1])
-      await sendTelegramMessage(chatId, r.message)
-      return NextResponse.json({ ok: true })
+      return await rispondiESalva(r.message)
     }
     // ─── Conferma invio mail a LINGUAGGIO NATURALE: "invia pure mail" ───
     // Conferma l'ultimo pending non scaduto senza codice uuid. Match SOLO su
@@ -660,8 +685,7 @@ export async function POST(request: NextRequest) {
       if (eConfermaInvio(userText)) {
         const { confirmLatestPendingSend } = await import('@/v19/tools/email/telegram-confirm')
         const r = await confirmLatestPendingSend()
-        await sendTelegramMessage(chatId, r.message)
-        return NextResponse.json({ ok: true })
+        return await rispondiESalva(r.message)
       }
     }
 
@@ -673,8 +697,7 @@ export async function POST(request: NextRequest) {
       const r = mConferma
         ? await mod.confirmProposta(uuid)
         : await mod.ignoraProposta(uuid)
-      await sendTelegramMessage(chatId, r.message)
-      return NextResponse.json({ ok: true })
+      return await rispondiESalva(r.message)
     }
 
     // Governance accesso cartelle Drive — doppia conferma (parità con web)
@@ -689,8 +712,7 @@ export async function POST(request: NextRequest) {
         : mAccOk
           ? await mod.confirmStep1(uuid)
           : await mod.cancelPending(uuid)
-      await sendTelegramMessage(chatId, r.message)
-      return NextResponse.json({ ok: true })
+      return await rispondiESalva(r.message)
     }
 
     // ── Regole che il bot propone su se stesso: le conferma l'Ingegnere ──
@@ -700,8 +722,7 @@ export async function POST(request: NextRequest) {
     // digitato qui la porta dentro al prompt. Nessun testo letto da fuori ci arriva.
     if (userText.trim().toLowerCase() === '/regole') {
       const { formatRegoleList } = await import('@/lib/regole-proposte')
-      await sendTelegramMessage(chatId, await formatRegoleList())
-      return NextResponse.json({ ok: true })
+      return await rispondiESalva(await formatRegoleList())
     }
     // Doppia conferma, come per le cartelle Drive: /regola_ok_ mostra il testo
     // LETTO DAL DATABASE, /regola_ok2_ lo attiva. Cosi' cio' che l'Ingegnere
@@ -721,8 +742,7 @@ export async function POST(request: NextRequest) {
           : mRegNo
             ? await mod.rifiutaRegola(mRegNo[1])
             : await mod.rimuoviRegola(mRegVia![1])
-      await sendTelegramMessage(chatId, r.message)
-      return NextResponse.json({ ok: true })
+      return await rispondiESalva(r.message)
     }
 
     // ── Privacy doc: conferma condivisione → firma e invia il link a scadenza ──
@@ -733,8 +753,7 @@ export async function POST(request: NextRequest) {
       const msg = url
         ? `🔗 Link di condivisione (scade tra i giorni indicati):\n${url}\n\nChi ha il link vede il documento finché non scade.`
         : '⚠️ Proposta di condivisione non trovata, già usata o scaduta.'
-      await sendTelegramMessage(chatId, msg)
-      return NextResponse.json({ ok: true })
+      return await rispondiESalva(msg)
     }
 
     // ── /reset — sblocca manualmente il mutex se il bot è bloccato ──
@@ -758,8 +777,7 @@ export async function POST(request: NextRequest) {
       // insieme all'"anzi lascia stare" arrivato dopo sarebbe peggio del blocco.
       const { svuotaCoda } = await import('@/lib/telegram-coda')
       await svuotaCoda(chatId)
-      await sendTelegramMessage(chatId, '✅ Sbloccato. Puoi rimandare il messaggio.')
-      return NextResponse.json({ ok: true })
+      return await rispondiESalva('✅ Sbloccato. Puoi rimandare il messaggio.')
     }
 
     // ── Bug 1: mutex per chat ──
@@ -779,8 +797,7 @@ export async function POST(request: NextRequest) {
         : mFicOk
           ? await confirmFicStep1(uuid)
           : await cancelFic(uuid)
-      await sendTelegramMessage(chatId, message)
-      return NextResponse.json({ ok: true })
+      return await rispondiESalva(message)
     }
 
     const mSalOk2 = userText.match(/^\/sal_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
@@ -793,8 +810,7 @@ export async function POST(request: NextRequest) {
         : mSalOk
           ? await confirmSalStep1(uuid)
           : await cancelSal(uuid)
-      await sendTelegramMessage(chatId, message)
-      return NextResponse.json({ ok: true })
+      return await rispondiESalva(message)
     }
 
     // STALE_LOCK_MS = 150s con heartbeat 20s → buffer ~7 battiti. Su Fluid compute
@@ -1045,6 +1061,15 @@ export async function POST(request: NextRequest) {
         if (msg.includes('credit') || msg.includes('billing')) userMsg = '⚠️ Crediti API esauriti.'
         if (msg.includes('too large') || msg.includes('payload')) userMsg = '⚠️ File troppo pesante.'
         await sendTelegramMessage(chatId, userMsg).catch(() => {})
+        // Quello che l'Ingegnere ha LETTO deve stare in storia, come sul web.
+        // Qui esplode cio' che sta DOPO il loop — l'insert in `documents`, il
+        // validatore, l'edit finale, il debrief — e il motore quelli non li
+        // vede: senza questa riga, al turno dopo lui scrive "e allora rifallo"
+        // e il modello non trova nessuna traccia di cosa sia andato storto.
+        waitUntil(
+          saveMessageOnly(conversationId, 'assistant', userMsg, new Date().toISOString())
+            .then((ok) => { if (!ok) console.error('[telegram] errore post-turno NON salvato') }),
+        )
       } finally {
         if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null }
         if (typingInterval) clearInterval(typingInterval)
