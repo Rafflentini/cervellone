@@ -60,6 +60,14 @@ export async function saveMessageOnly(
   conversationId: string,
   role: string,
   content: string,
+  /**
+   * Istante da attribuire alla riga. Serve quando la scrittura arriva tardi
+   * rispetto al turno a cui appartiene: sulla chat web il server puo' finire
+   * molto dopo che la connessione dell'Ingegnere e' caduta, e senza questo la
+   * risposta si infilerebbe DOPO la domanda successiva — nella conversazione e
+   * nel contesto del modello. Omesso, decide il database.
+   */
+  creatoIl?: string,
 ): Promise<boolean> {
   const sanitized = sanitizeForStorage(content)
   try {
@@ -67,6 +75,7 @@ export async function saveMessageOnly(
       conversation_id: conversationId,
       role,
       content: sanitized,
+      ...(creatoIl ? { created_at: creatoIl } : {}),
     })
     if (error) {
       logWarn(`Messages insert error: ${error.message}`)

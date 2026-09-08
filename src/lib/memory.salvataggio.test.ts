@@ -38,3 +38,33 @@ describe('saveMessageOnly', () => {
     await expect(saveMessageOnly('conv-1', 'assistant', 'La risposta lunga.')).resolves.toBe(false)
   })
 })
+
+describe('saveMessageOnly — l ordine dei messaggi', () => {
+  beforeEach(() => { insertMock.mockReset(); insertMock.mockResolvedValue({ error: null }) })
+
+  // IL DIFETTO (8 set 2026): se la connessione dell'Ingegnere cade ma il server
+  // prosegue (puo' volerci fino a 800s), la risposta viene scritta DOPO la
+  // domanda successiva. Riaprendo la conversazione si trovava: domanda A,
+  // domanda B, risposta B, risposta A — e cosi' andava anche al modello.
+  //
+  // La riga deve portare l'istante del SUO turno, non quello in cui il server
+  // e' riuscito a scriverla.
+  test('scrive l istante indicato invece di quello della scrittura', async () => {
+    await saveMessageOnly('conv-1', 'assistant', 'La risposta.', '2026-09-08T10:00:00.000Z')
+
+    expect(insertMock).toHaveBeenCalledTimes(1)
+    expect(insertMock.mock.calls[0][0]).toMatchObject({
+      conversation_id: 'conv-1',
+      role: 'assistant',
+      created_at: '2026-09-08T10:00:00.000Z',
+    })
+  })
+
+  // CONTROLLO POSITIVO: senza questo, passare sempre un istante fisso (o
+  // sempre `undefined`) passerebbe il test qui sopra.
+  test('senza istante lascia decidere al database', async () => {
+    await saveMessageOnly('conv-1', 'assistant', 'La risposta.')
+
+    expect(insertMock.mock.calls[0][0]).not.toHaveProperty('created_at')
+  })
+})

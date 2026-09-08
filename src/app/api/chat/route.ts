@@ -16,7 +16,15 @@ import { buildTemplateContext } from '@/lib/template-context'
 import { buildArtifactsPointer, captureArtifact } from '@/lib/artifact-capture'
 import { captureImageExtraction, buildImagesPointer, type UploadedImageRef } from '@/lib/image-memory'
 import { saveMessageOnly, saveEmbeddingOnly } from '@/lib/memory'
+import { conTetto } from '@/lib/tetto-attesa'
 import { waitUntil } from '@vercel/functions'
+
+/**
+ * Quanto si aspetta la scrittura della risposta prima di chiudere comunque lo
+ * stream. Oltre, l'Ingegnere resterebbe col testo a schermo e lo spinner
+ * acceso: meglio chiudere e lasciare che la riga si scriva in background.
+ */
+const ATTESA_MASSIMA_SCRITTURA_MS = 5_000
 
 export const maxDuration = 800
 
@@ -45,6 +53,13 @@ export async function POST(request: NextRequest) {
   if (!rawMessages || !Array.isArray(rawMessages)) {
     return NextResponse.json({ error: '"messages" deve essere un array' }, { status: 400 })
   }
+
+  // L'istante del TURNO, preso adesso e non quando la riga viene scritta. Il
+  // messaggio dell'utente e' gia' a DB (lo scrive il client prima di partire),
+  // quindi questo istante gli sta subito dopo. Se la connessione cade e il
+  // server finisce molto piu' tardi, senza questo la risposta si infilerebbe
+  // dopo la domanda successiva.
+  const inizioTurno = new Date().toISOString()
 
   // BUG4 fix
   try {
@@ -161,9 +176,14 @@ export async function POST(request: NextRequest) {
             // Solo la RIGA nel percorso critico: aspettare anche l'embedding
             // terrebbe il comando appeso mezzo secondo a testo gia' a schermo,
             // col pulsante invio bloccato e i messaggi dirottati in coda.
-            const salvato = await saveMessageOnly(conversationId, 'assistant', testo)
-            if (!salvato) console.error('[chat] risposta a comando NON salvata')
-            if (salvato) {
+            const scrittura = saveMessageOnly(conversationId, 'assistant', testo, inizioTurno)
+            const salvato = await conTetto(scrittura, ATTESA_MASSIMA_SCRITTURA_MS, 'in-corso')
+            if (salvato === 'in-corso') {
+              console.warn('[chat] comando: scrittura lenta, prosegue in background')
+              waitUntil(scrittura)
+            } else if (!salvato) {
+              console.error('[chat] risposta a comando NON salvata')
+            } else {
               waitUntil(saveEmbeddingOnly(conversationId, 'assistant', testo).catch(() => {}))
             }
           }
@@ -405,7 +425,12 @@ export async function POST(request: NextRequest) {
         // sotto gli occhi.
         //
         // `await`, non fire-and-forget: su serverless quel che parte dopo la
-        // chiusura dello stream non e' garantito che arrivi in fondo.
+        // chiusura dello stream non e' garantito che arrivi in fondo. Ma con un
+        // TETTO: `controller.close()` sta dietro questa attesa, e un Supabase
+        // lento terrebbe lo stream aperto con il testo gia' a schermo — spinner
+        // acceso e pulsante invio bloccato — fino a `maxDuration`, 800 secondi.
+        // Scaduto il tetto si chiude comunque e la scrittura prosegue in
+        // background con `waitUntil`.
         const testoDaSalvare = fullResponse + docLinks.join('\n') + testoErrore
         if (conversationId && testoDaSalvare.trim()) {
           // Un turno non consegnato entra nella STORIA ma non nella memoria
@@ -414,8 +439,17 @@ export async function POST(request: NextRequest) {
           // Il criterio e' `turnoFallito` e SOLO quello. Non `testoErrore`: se
           // il modello ha risposto benissimo e poi e' esploso l'insert in
           // `documents`, la risposta e' valida e merita la memoria semantica.
-          const salvato = await saveMessageOnly(conversationId, 'assistant', testoDaSalvare)
-          if (!salvato) {
+          //
+          // `inizioTurno` e non l'istante della scrittura: se la connessione
+          // dell'Ingegnere e' caduta e il server ha finito molto dopo, la riga
+          // scritta adesso si infilerebbe DOPO la domanda successiva — nella
+          // conversazione e nel contesto del modello.
+          const scrittura = saveMessageOnly(conversationId, 'assistant', testoDaSalvare, inizioTurno)
+          const salvato = await conTetto(scrittura, ATTESA_MASSIMA_SCRITTURA_MS, 'in-corso')
+          if (salvato === 'in-corso') {
+            console.warn('[chat] scrittura lenta: stream chiuso, la riga prosegue in background')
+            waitUntil(scrittura)
+          } else if (!salvato) {
             console.error('[chat] RISPOSTA NON SALVATA: la riga non e\' finita in messages')
           }
           // L'embedding NON sta nel percorso critico: e' una chiamata di rete di
@@ -427,7 +461,7 @@ export async function POST(request: NextRequest) {
           // istante prima di `controller.close()` puo' essere congelato con la
           // function, e la risposta finirebbe in `messages` ma non in memoria —
           // in silenzio. E' come la memoria persistente rimasta vuota per mesi.
-          if (!turnoFallito && salvato) {
+          if (!turnoFallito && salvato === true) {
             waitUntil(saveEmbeddingOnly(conversationId, 'assistant', testoDaSalvare).catch(() => {}))
           }
         }

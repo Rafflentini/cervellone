@@ -127,19 +127,11 @@ describe('POST — difesa contro il doppio salvataggio', () => {
     saveEmbeddingOnlyMock.mockClear()
   })
 
-  it('scarta il salvataggio d emergenza se quel testo e gia stato salvato', async () => {
-    duplicatoEsistente = { id: 'msg-gia-salvato' }
-
-    const { POST } = await import('./route')
-    const res = await POST(
-      req({ role: 'assistant', content: 'Contenzioso Blasi: la controreplica poggia sull articolo 5.1.', emergenza: true }, getAuthToken()),
-      params
-    )
-
-    expect(res.status).toBe(200)
-    expect(righeInserite).toHaveLength(0)
-    expect(saveEmbeddingOnlyMock).not.toHaveBeenCalled()
-  })
+  // Il caso "scarta il salvataggio d'emergenza" non c'e' piu': dall'8 set 2026
+  // il browser non manda piu' beacon d'emergenza (la risposta la scrive il
+  // server), quindi la difesa era diventata codice morto ed e' stata tolta
+  // insieme a loro. Restano i test che contano davvero: che un messaggio
+  // legittimo ripetuto NON venga mai scartato.
 
   // Questo e il test che mancava, e la sua assenza nascondeva un difetto vero:
   // una difesa basata sul confronto del contenuto, applicata a TUTTI i messaggi,

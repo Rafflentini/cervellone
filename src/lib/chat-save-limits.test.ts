@@ -2,9 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   byteDi,
   staNelTettoKeepalive,
-  tagliaAiByte,
   TETTO_KEEPALIVE_BYTE,
-  TETTO_BEACON_BYTE,
 } from './chat-save-limits'
 
 describe('byteDi — pesa i byte, non i caratteri', () => {
@@ -44,30 +42,5 @@ describe('staNelTettoKeepalive', () => {
     const accentato = 'à'.repeat(Math.floor(TETTO_KEEPALIVE_BYTE / 2) + 10)
     expect(accentato.length).toBeLessThan(TETTO_KEEPALIVE_BYTE)
     expect(staNelTettoKeepalive(accentato)).toBe(false)
-  })
-})
-
-describe('tagliaAiByte', () => {
-  it('lascia intatto un testo che ci sta', () => {
-    expect(tagliaAiByte('breve', 100)).toBe('breve')
-  })
-
-  it('il risultato non supera MAI il tetto in byte', () => {
-    const testo = 'perché è così — €120,50 m²\n'.repeat(5000)
-    const tagliato = tagliaAiByte(testo, 1000)
-    expect(byteDi(tagliato)).toBeLessThanOrEqual(1000)
-    expect(tagliato.length).toBeGreaterThan(0)
-  })
-
-  it('conserva il piu possibile invece di tagliare a caso', () => {
-    const testo = 'a'.repeat(5000)
-    const tagliato = tagliaAiByte(testo, 1000)
-    expect(tagliato).toHaveLength(1000)
-  })
-
-  it('col tetto di default regge un documento lungo', () => {
-    const documento = 'Voce di computo 01.A01.001 — 120,50 m² a € 34,56\n'.repeat(4000)
-    const tagliato = tagliaAiByte(documento)
-    expect(byteDi(tagliato)).toBeLessThanOrEqual(TETTO_BEACON_BYTE)
   })
 })
