@@ -9,6 +9,15 @@
  * Su Vercel serverless Linux: puppeteer-core + @sparticuz/chromium.
  * In dev locale Windows: fallback `puppeteer` full (devDep) o Chrome di sistema.
  *
+ * 2026-09-08: aggiunto embedDriveImages() — le immagini Drive richiamate da
+ * <img src="https://drive.google.com/..."> o "...googleusercontent.com/..."
+ * uscivano vuote nel PDF perché Puppeteer headless server-side non ha la
+ * sessione Google dell'utente (il fetch della miniatura fallisce silenziosamente
+ * se il file non è condiviso "chiunque abbia il link"). Ora i byte vengono
+ * scaricati via Drive API (stesso service account di drive_*/rivedi_immagine)
+ * e incorporati come data URI PRIMA del rendering: nessuna dipendenza di rete
+ * esterna, funziona indipendentemente dai permessi di condivisione del file.
+ *
  * Spec: docs/superpowers/specs/2026-05-08-cervellone-pdf-puppeteer-design.md
  */
 import puppeteer from 'puppeteer-core'
@@ -58,6 +67,58 @@ h1, h2, h3 { color: #c8102e; }
 ${rawHtml}
 </body>
 </html>`
+}
+
+// ── Embed immagini Drive come data URI (fix PDF vuoto lato server) ──
+
+function extractDriveFileId(url: string): string | null {
+  const patterns = [
+    /[?&]id=([a-zA-Z0-9_-]{10,})/,   // drive.google.com/thumbnail?id=... oppure uc?id=...
+    /\/d\/([a-zA-Z0-9_-]{10,})/,      // drive.google.com/file/d/ID/view oppure lh3.googleusercontent.com/d/ID
+  ]
+  for (const re of patterns) {
+    const m = url.match(re)
+    if (m) return m[1]
+  }
+  return null
+}
+
+/**
+ * Scansiona l'HTML per <img src="..."> che puntano a Drive/googleusercontent,
+ * scarica i byte via Drive API e sostituisce il src con un data URI base64.
+ * Se il download di una singola immagine fallisce, logga e lascia l'URL
+ * originale (nessun blocco dell'intera generazione per un file problematico).
+ */
+async function embedDriveImages(html: string): Promise<string> {
+  const isDriveUrl = (u: string) => /drive\.google\.com|googleusercontent\.com/i.test(u)
+  const imgTagRe = /<img\b[^>]*\bsrc="([^"]+)"[^>]*>/gi
+  const matches = Array.from(html.matchAll(imgTagRe))
+  const driveMatches = matches.filter((m) => isDriveUrl(m[1]))
+  if (driveMatches.length === 0) return html
+
+  const { downloadFileBase64 } = await import('./drive')
+  let out = html
+  const cache = new Map<string, string>()
+
+  for (const m of driveMatches) {
+    const originalSrc = m[1]
+    if (cache.has(originalSrc)) continue // già sostituito (URL duplicata, replace precedente copre tutte le occorrenze)
+
+    const fileId = extractDriveFileId(originalSrc)
+    if (!fileId) continue
+
+    try {
+      const { base64, mimeType } = await downloadFileBase64(fileId)
+      const dataUri = `data:${mimeType};base64,${base64}`
+      cache.set(originalSrc, dataUri)
+      out = out.split(originalSrc).join(dataUri)
+    } catch (err) {
+      console.error(`[PDF] embed immagine Drive fallito per ${fileId}:`, err instanceof Error ? err.message : err)
+      // Lascia l'URL originale: un tentativo di fetch di rete (potrebbe funzionare
+      // per file pubblici) è preferibile a un errore bloccante sull'intero PDF.
+    }
+  }
+  return out
 }
 
 // Risolve il percorso del binario Chromium da usare. Sempre lanciato via puppeteer-core
@@ -113,7 +174,8 @@ async function getBrowser(): Promise<any> {
  * Mantiene la firma pubblica precedente — caller (`tools.ts:217`) non deve cambiare.
  */
 export async function generatePdfFromHtml(html: string, title: string): Promise<Buffer> {
-  const wrappedHtml = wrapForPrint(html, title)
+  const htmlWithEmbeddedImages = await embedDriveImages(html)
+  const wrappedHtml = wrapForPrint(htmlWithEmbeddedImages, title)
   // FIX #10 (report 13/08): Chromium serverless fallisce a intermittenza (cold start,
   // launch race). Retry con browser fresco + timeout su setContent per non appendere.
   const MAX_ATTEMPTS = 2
