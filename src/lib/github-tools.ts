@@ -14,6 +14,8 @@
 const GITHUB_API = 'https://api.github.com'
 const REPO_OWNER = 'Rafflentini'
 const REPO_NAME = 'cervellone'
+import { decidiSeMergiare, type StatoCheck } from './github-check-merge'
+
 const REPO_FULL = `${REPO_OWNER}/${REPO_NAME}`
 
 // Vercel project context per deploy status
@@ -347,7 +349,46 @@ async function deployStatus(commitSha: string): Promise<string> {
 
 // ── github_merge_pr ──
 
-async function mergePr(prNumber: string, mergeMethod: string = 'squash'): Promise<string> {
+/**
+ * Lo stato dei controlli automatici sull'ultimo commit di una PR.
+ *
+ * Si guardano le "check runs" (le GitHub Actions, fra cui la CI con typecheck e
+ * vitest). Se la chiamata fallisce si restituisce zero controlli, che
+ * `decidiSeMergiare` tratta come "non si mergia": su un dubbio si ferma, non si
+ * tira via.
+ */
+async function leggiCheckPr(sha: string, token: string): Promise<StatoCheck> {
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${REPO_FULL}/commits/${sha}/check-runs`,
+      { headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' } },
+    )
+    if (!res.ok) return { stato: 'pending', inCorso: 0, falliti: [], totali: 0 }
+    const dati = await res.json() as {
+      total_count: number
+      check_runs: Array<{ name: string; status: string; conclusion: string | null }>
+    }
+    const runs = dati.check_runs ?? []
+    const inCorso = runs.filter((r) => r.status !== 'completed').length
+    const falliti = runs
+      .filter((r) => r.status === 'completed' && !['success', 'neutral', 'skipped'].includes(r.conclusion ?? ''))
+      .map((r) => r.name)
+    return {
+      stato: falliti.length > 0 ? 'failure' : inCorso > 0 ? 'pending' : 'success',
+      inCorso,
+      falliti,
+      totali: runs.length,
+    }
+  } catch {
+    return { stato: 'pending', inCorso: 0, falliti: [], totali: 0 }
+  }
+}
+
+async function mergePr(
+  prNumber: string,
+  mergeMethod: string = 'squash',
+  forzato = false,
+): Promise<string> {
   const num = parseInt(prNumber, 10)
   if (!Number.isInteger(num) || num <= 0) {
     return `⛔ PR number invalido: "${prNumber}"`
@@ -372,7 +413,7 @@ async function mergePr(prNumber: string, mergeMethod: string = 'squash'): Promis
       mergeable: boolean | null
       mergeable_state: string
       user: { login: string }
-      head: { ref: string }
+      head: { ref: string; sha: string }
       base: { ref: string }
       title: string
     }
@@ -381,6 +422,17 @@ async function mergePr(prNumber: string, mergeMethod: string = 'squash'): Promis
     if (pr.base.ref !== 'main') return `⛔ PR #${num} ha base "${pr.base.ref}" diversa da "main" — rifiutato per safety.`
     if (pr.mergeable === false) return `⛔ PR #${num} ha conflitti (mergeable_state="${pr.mergeable_state}"). Risolvili prima.`
     // Note: mergeable può essere null se GitHub non ha ancora calcolato — accettiamo, GitHub bloccherà se conflict reale
+
+    // 1-bis. I CONTROLLI AUTOMATICI (8 set 2026).
+    // Prima non venivano guardati: il bot ha mergiato una PR che non compilava,
+    // il build di Vercel e' fallito, il deploy non e' partito e per ore tutti
+    // hanno ragionato su codice che non era in produzione.
+    const check = await leggiCheckPr(pr.head.sha, token)
+    const esito = decidiSeMergiare(check, { forzato })
+    if (!esito.mergia) {
+      return `⛔ PR #${num} NON mergiata. ${esito.motivo}\n\nSe l'Ingegnere vuole procedere lo stesso, deve dirlo esplicitamente: github_merge_pr(pr_number, merge_method, forza_senza_controlli=true).`
+    }
+    console.log(`[GH] mergePr #${num} check ok: ${esito.motivo}`)
 
     // 2. Esegui merge via API
     const mergeRes = await fetch(`https://api.github.com/repos/${REPO_FULL}/pulls/${num}/merge`, {
@@ -474,12 +526,13 @@ export const GITHUB_TOOLS = [
   },
   {
     name: 'github_merge_pr',
-    description: `Mergia una PR aperta nel repo ${REPO_FULL}. Safety: solo PR open verso main, no conflitti, autore qualunque (di solito te stesso). Default merge_method=squash (clean history). Cancella branch dopo merge. Usa SOLO per chiudere proprie PR già aperte via github_propose_fix quando l'Ingegnere è impedito (es. cantiere, mobile, no GitHub web). NON mergiare PR umane senza esplicita richiesta dell'Ingegnere.`,
+    description: `Mergia una PR aperta nel repo ${REPO_FULL}. Safety: solo PR open verso main, no conflitti, e i CONTROLLI AUTOMATICI (typecheck + test) devono essere VERDI — se sono rossi, ancora in corso, o non ne è girato nessuno, il merge viene rifiutato e ti viene detto perché. Default merge_method=squash. Cancella branch dopo merge. Usa SOLO per chiudere proprie PR già aperte via github_propose_fix quando l'Ingegnere è impedito (es. cantiere, mobile, no GitHub web). NON mergiare PR umane senza esplicita richiesta dell'Ingegnere. Se il merge viene rifiutato per i controlli, NON insistere: riferisci all'Ingegnere quale controllo è rosso.`,
     input_schema: {
       type: 'object' as const,
       properties: {
         pr_number: { type: 'string', description: 'Numero PR (es. "5", "12")' },
         merge_method: { type: 'string', description: 'OPZIONALE — squash (default) | merge | rebase. Squash crea 1 commit pulito su main.' },
+        forza_senza_controlli: { type: 'boolean', description: "OPZIONALE — mergia anche con i controlli rossi o assenti. Usalo SOLO se l'Ingegnere te lo chiede esplicitamente dopo che gli hai detto quale controllo è fallito. Mai di tua iniziativa: l'8 set 2026 una PR che non compilava è finita su main e per ore la produzione è rimasta ferma al commit precedente, senza che niente lo segnalasse." },
       },
       required: ['pr_number'],
     },
@@ -524,7 +577,7 @@ export async function executeGithubTool(
     case 'vercel_deploy_status':
       return deployStatus(input.commit_sha)
     case 'github_merge_pr':
-      return mergePr(input.pr_number, input.merge_method || 'squash')
+      return mergePr(input.pr_number, input.merge_method || 'squash', input.forza_senza_controlli === true)
     default:
       return `Tool GitHub "${name}" non riconosciuto.`
   }
