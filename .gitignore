@@ -63,6 +63,5 @@ next-env.d.ts
 # File di sonda degli audit: vivono il tempo di una verifica, non del repo.
 src/**/__sonda*.test.ts
 
-# script usa-e-getta del mutation testing
-.p*.mjs
-.patch*.mjs
+# script usa-e-getta del mutation testing e delle patch
+.[a-z][a-z0-9]*.mjs
