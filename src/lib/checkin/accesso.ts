@@ -12,6 +12,7 @@
 import crypto from 'crypto'
 import { verificaToken } from './token-prenotazione'
 import type { Livello } from './merge-pratica'
+import { confrontoCostante } from '../confronto-costante'
 
 export type EsitoAccesso =
   | { ok: true; livello: Livello; id: string | null }
@@ -21,8 +22,7 @@ export type EsitoAccesso =
 function tokenGenerale(ricevuto: string | null): boolean {
   const atteso = process.env.CHECKIN_TOKEN
   if (!atteso || !ricevuto) return false
-  if (ricevuto.length !== atteso.length) return false
-  return crypto.timingSafeEqual(Buffer.from(ricevuto), Buffer.from(atteso))
+  return confrontoCostante(ricevuto, atteso)
 }
 
 /**

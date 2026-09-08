@@ -18,12 +18,12 @@ import { normalizzaUnita } from '@/lib/checkin/unita-valida'
 import {
   inviaAvvisi, linkWhatsApp, messaggioOspite, messaggioConsegnaChiavi, chiConsegnaLeChiavi,
 } from '@/lib/checkin/avvisi'
+import { confrontoCostante } from '@/lib/confronto-costante'
 
 function tokenGenerale(ricevuto: string | null): boolean {
   const atteso = process.env.CHECKIN_TOKEN
   if (!atteso || !ricevuto) return false
-  if (ricevuto.length !== atteso.length) return false
-  return crypto.timingSafeEqual(Buffer.from(ricevuto), Buffer.from(atteso))
+  return confrontoCostante(ricevuto, atteso)
 }
 
 export async function POST(req: NextRequest) {

@@ -120,6 +120,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, errore: 'Troppi salvataggi in poco tempo.' }, { status: 429 })
   }
 
+  // ⭐ Il controllo sulla scadenza c'era solo nella GET: un collegamento
+  // dimenticato in una chat mesi prima non APRIVA piu' la pratica, ma se
+  // qualcuno mandava i dati direttamente quelli entravano lo stesso — e le
+  // foto dei documenti si caricavano ancora. Il commento di `linkScaduto` dice
+  // che non e' una difesa forte ma riduzione di superficie: applicata alla
+  // sola lettura non riduceva niente, perche' cio' che conta e' la scrittura.
+  //
+  // Il gestore resta fuori: a lui puo' servire riaprire una pratica.
+  if (accesso.livello.tipo !== 'gestore') {
+    const esistente = await leggiPratica(accesso.id)
+    if (esistente && linkScaduto(esistente.soggiorno['Check-out'] ?? '', new Date())) {
+      return NextResponse.json({ ok: false, errore: 'Collegamento scaduto.' }, { status: 410 })
+    }
+  }
+
   let corpo: {
     soggiorno?: Record<string, string>
     ospiti?: Array<Record<string, string>>

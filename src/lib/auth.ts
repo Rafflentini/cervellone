@@ -5,6 +5,7 @@
  */
 
 import crypto from 'crypto'
+import { confrontoCostante } from './confronto-costante'
 
 /**
  * Valida il cookie cervellone_auth.
@@ -53,12 +54,11 @@ export function validateAuth(cookieValue: string | undefined): boolean {
       .update('cervellone_v2')
       .digest('hex')
 
-    // timingSafeEqual previene timing attacks
-    if (cookieValue.length !== expected.length) return false
-    return crypto.timingSafeEqual(
-      Buffer.from(cookieValue),
-      Buffer.from(expected)
-    )
+    // timingSafeEqual previene timing attacks. La guardia sulla lunghezza
+    // sta dentro confrontoCostante e conta i BYTE: contare i caratteri, come
+    // si faceva qui, lasciava passare un cookie con un accento e faceva
+    // lanciare il confronto — 500 invece di "non autorizzato".
+    return confrontoCostante(cookieValue, expected)
   } catch {
     return false
   }
@@ -77,9 +77,5 @@ export function validateWebhookSecret(headerValue: string | null): boolean {
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET
   if (!expected || !headerValue) return false
 
-  if (headerValue.length !== expected.length) return false
-  return crypto.timingSafeEqual(
-    Buffer.from(headerValue),
-    Buffer.from(expected)
-  )
+  return confrontoCostante(headerValue, expected)
 }

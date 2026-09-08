@@ -21,6 +21,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rateLimit } from '@/lib/rate-limiter'
 import { risolviAccesso } from '@/lib/checkin/accesso'
 import { leggiPratica } from '@/lib/checkin/pratica'
+import { linkScaduto } from '@/lib/checkin/token-prenotazione'
 import { salvaDocumento, tipoAmmesso, MAX_BYTE, type Lato } from '@/lib/checkin/documenti'
 import { aggiornaRiga } from '@/lib/checkin/foglio-google'
 import { aRiga } from '@/lib/checkin/merge-pratica'
@@ -77,6 +78,16 @@ export async function POST(req: NextRequest) {
     const pratica = await leggiPratica(accesso.id)
     if (!pratica) {
       return NextResponse.json({ ok: false, errore: 'Prenotazione non trovata.' }, { status: 404 })
+    }
+
+    // ⭐ La scadenza si controllava solo in lettura: un collegamento
+    // dimenticato in una chat mesi prima non apriva piu' la pratica, ma
+    // caricava ancora documenti d'identita' su un Drive condiviso. La pratica
+    // qui e' gia' letta: la guardia non costa nessuna chiamata in piu'.
+    // Il gestore resta fuori: a lui puo' servire riaprire una pratica.
+    if (accesso.livello.tipo !== 'gestore'
+        && linkScaduto(pratica.soggiorno['Check-out'] ?? '', new Date())) {
+      return NextResponse.json({ ok: false, errore: 'Collegamento scaduto.' }, { status: 410 })
     }
 
     const scheda = pratica.ospiti.find((x) => Number(x.dati['Progressivo']) === progressivo)

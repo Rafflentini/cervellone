@@ -29,13 +29,13 @@ import {
 import {
   FOGLIO_CHECKIN_ID, SCHEDA_SOGGIORNI, SCHEDA_OSPITI,
 } from '@/lib/checkin/foglio-schema'
+import { confrontoCostante } from '@/lib/confronto-costante'
 
 /** Fail-closed: senza token configurato il form non si apre a nessuno. */
 export function tokenValido(ricevuto: string | null): boolean {
   const atteso = process.env.CHECKIN_TOKEN
   if (!atteso || !ricevuto) return false
-  if (ricevuto.length !== atteso.length) return false
-  return crypto.timingSafeEqual(Buffer.from(ricevuto), Buffer.from(atteso))
+  return confrontoCostante(ricevuto, atteso)
 }
 
 export async function POST(req: NextRequest) {

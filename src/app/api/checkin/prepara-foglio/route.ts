@@ -16,6 +16,7 @@ import crypto from 'crypto'
 import { inizializzaFoglioCheckin } from '@/lib/checkin/foglio-init'
 import { foglioGoogle } from '@/lib/checkin/foglio-google'
 import { FOGLIO_CHECKIN_ID } from '@/lib/checkin/foglio-schema'
+import { confrontoCostante } from '@/lib/confronto-costante'
 
 /** Confronto a tempo costante, e chiuso se il segreto non e' configurato. */
 function autorizzato(header: string | null): boolean {
@@ -26,8 +27,7 @@ function autorizzato(header: string | null): boolean {
   if (!header) return false
 
   const ricevuto = header.startsWith('Bearer ') ? header.slice(7) : ''
-  if (ricevuto.length !== atteso.length) return false
-  return crypto.timingSafeEqual(Buffer.from(ricevuto), Buffer.from(atteso))
+  return confrontoCostante(ricevuto, atteso)
 }
 
 export async function POST(req: NextRequest) {

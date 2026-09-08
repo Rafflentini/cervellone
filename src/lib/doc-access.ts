@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { validateAuth, segretoSessione } from './auth'
+import { confrontoCostante } from './confronto-costante'
 
 const SESSION_PAYLOAD = 'cervellone_v2'
 
@@ -20,12 +21,11 @@ export function getAuthToken(): string {
 }
 
 function safeEqualHex(a: string, b: string): boolean {
-  if (a.length !== b.length) return false
-  try {
-    return crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'))
-  } catch {
-    return false
-  }
+  // In esadecimale il rischio e' un altro ma la forma e' la stessa: Buffer.from
+  // SCARTA i caratteri non validi, quindi due stringhe della stessa lunghezza
+  // possono produrre byte di lunghezza diversa. Il try/catch lo copriva; ora
+  // la guardia e' sui byte, e il catch non serve piu' a nascondere niente.
+  return confrontoCostante(a, b, 'hex')
 }
 
 // Audit r2 (P2): unificato sul MEDESIMO check dei 9 endpoint hardened (validateAuth in ./auth):

@@ -19,13 +19,13 @@ import { leggiTutto } from '@/lib/checkin/foglio-google'
 import {
   FOGLIO_CHECKIN_ID, SCHEDA_TABELLE, COL_TABELLE,
 } from '@/lib/checkin/foglio-schema'
+import { confrontoCostante } from '@/lib/confronto-costante'
 
 function autorizzato(header: string | null): boolean {
   const atteso = process.env.SETUP_SECRET
   if (!atteso || !header) return false
   const ricevuto = header.startsWith('Bearer ') ? header.slice(7) : ''
-  if (ricevuto.length !== atteso.length) return false
-  return crypto.timingSafeEqual(Buffer.from(ricevuto), Buffer.from(atteso))
+  return confrontoCostante(ricevuto, atteso)
 }
 
 /** Le tabelle del Portale sono CSV: Codice, Descrizione, Provincia, DataFineVal. */

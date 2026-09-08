@@ -19,6 +19,7 @@
  */
 
 import crypto from 'crypto'
+import { confrontoCostante } from '../confronto-costante'
 
 /** Lunghezza del token nel link. 24 caratteri esadecimali = 96 bit. */
 const LUNGHEZZA = 24
@@ -49,8 +50,7 @@ export function generaToken(ambito: Ambito): string | null {
 export function verificaToken(ambito: Ambito, ricevuto: string | null | undefined): boolean {
   const atteso = generaToken(ambito)
   if (!atteso || !ricevuto) return false
-  if (ricevuto.length !== atteso.length) return false
-  return crypto.timingSafeEqual(Buffer.from(ricevuto), Buffer.from(atteso))
+  return confrontoCostante(ricevuto, atteso)
 }
 
 /**
