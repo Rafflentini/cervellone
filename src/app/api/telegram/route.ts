@@ -11,6 +11,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import crypto from 'crypto'
 import { supabase } from '@/lib/supabase'
 import { saveMessageOnly, saveEmbeddingOnly } from '@/lib/memory'
+import { comprimiDocumentiNellaStoria, type MessaggioStoria } from '@/lib/compressione-documenti'
 import { getSupabaseServer } from '@/lib/supabase-server'
 import { downloadTelegramFile, buildContentBlocks, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
 import { transcribeAudio } from '@/lib/trascrizione'
@@ -993,34 +994,11 @@ export async function POST(request: NextRequest) {
     }
     if (history.length > 0 && history[0].role !== 'user') history.shift()
 
-    // FIX BUG-DDT: compressione documenti stratificata.
-    {
-      let lastDocIdx = -1
-      for (let k = history.length - 1; k >= 0; k--) {
-        const m = history[k]
-        if (m.role === 'assistant' && typeof m.content === 'string' && m.content.includes('~~~document')) {
-          lastDocIdx = k
-          break
-        }
-      }
-
-      const compressDoc = (docBlock: string): string => {
-        const titleMatch = docBlock.match(/<h1[^>]*>([^<]+)<\/h1>/i)
-        const title = titleMatch ? titleMatch[1].trim().slice(0, 80) : 'senza titolo'
-        const TRUNCATE_AT = 3000
-        if (docBlock.length <= TRUNCATE_AT) return docBlock
-        const head = docBlock.slice(0, TRUNCATE_AT)
-        const remaining = docBlock.length - TRUNCATE_AT
-        return `${head}\n[...documento "${title}" troncato — ${remaining} char omessi per economia di contesto]\n~~~\n`
-      }
-
-      for (let k = 0; k < history.length; k++) {
-        const msg = history[k]
-        if (msg.role !== 'assistant' || typeof msg.content !== 'string') continue
-        if (k === lastDocIdx) continue
-        msg.content = msg.content.replace(/~~~document\n[\s\S]*?~~~(?:\n|$)/g, (match: string) => compressDoc(match))
-      }
-    }
+    // Compressione stratificata: i documenti vecchi si accorciano, l'ultimo
+    // no. La regola sta in src/lib/compressione-documenti.ts, una volta sola:
+    // il server della chat web faceva l'opposto e disfaceva la cura del suo
+    // stesso client.
+    comprimiDocumentiNellaStoria(history as unknown as MessaggioStoria[])
 
     // ── Claude (ASINCRONO) — risponde subito, elabora in background ──
     const bgProcess = async () => {

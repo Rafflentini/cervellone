@@ -18,6 +18,7 @@ import { captureImageExtraction, buildImagesPointer, type UploadedImageRef } fro
 import { saveMessageOnly, saveEmbeddingOnly } from '@/lib/memory'
 import { societaAttivaPerDocumenti } from '@/lib/societa-documenti'
 import { conTetto } from '@/lib/tetto-attesa'
+import { comprimiDocumentiNellaStoria, type MessaggioStoria } from '@/lib/compressione-documenti'
 import { waitUntil } from '@vercel/functions'
 
 /**
@@ -66,15 +67,12 @@ export async function POST(request: NextRequest) {
   try {
   const messages = filterEmptyMessages(rawMessages)
 
-  // V10: Comprimi blocchi ~~~document nei messaggi assistant (HTML enorme -> riferimento breve)
-  for (const msg of messages) {
-    if (msg.role === 'assistant' && typeof msg.content === 'string') {
-      msg.content = msg.content.replace(
-        /~~~document\n[\s\S]*?~~~(?:\n|$)/g,
-        '[Documento gia generato — visibile nel pannello anteprima]\n'
-      )
-    }
-  }
+  // I documenti gia' consegnati si accorciano, l'ULTIMO no: e' quello su cui
+  // l'Ingegnere sta lavorando. Prima qui si schiacciavano tutti, con uno stub
+  // che non conservava nemmeno il titolo — cioe' il server disfaceva la cura
+  // che il suo stesso client aveva applicato, e sul web il modello non vedeva
+  // mai il documento appena prodotto. Su Telegram lo vedeva.
+  comprimiDocumentiNellaStoria(messages as unknown as MessaggioStoria[])
 
   if (messages.length === 0) {
     return new Response('Non ho ricevuto messaggi validi.', {
