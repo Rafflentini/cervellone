@@ -16,6 +16,11 @@ import DocumentPreviewPanel from '@/components/DocumentPreviewPanel'
 import SplitPanel from '@/components/SplitPanel'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { staNelTettoKeepalive, tagliaAiByte } from '@/lib/chat-save-limits'
+import {
+  decidiDopoRiconoscimento,
+  componiTestoDettatura,
+  MAX_REGISTRAZIONE_MS,
+} from '@/lib/dettatura'
 
 type FileAttachment = {
   name: string
@@ -129,6 +134,19 @@ export default function ChatPage() {
   // quindi non compare testo mentre si parla e va detto all'utente.
   const [soloRegistrazione, setSoloRegistrazione] = useState(false)
   const timerRegistrazioneRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Chi comanda la fine della dettatura. Il riconoscimento del browser chiude da
+  // solo a ogni pausa di silenzio: se lasciassimo decidere lui, una dettatura
+  // lunga finirebbe a meta'. Questi tre ref dicono se l'Ingegnere vuole ancora
+  // registrare, da quando, e cosa ha gia' dettato prima dell'ultima pausa.
+  const vuoleRegistrareRef = useRef(false)
+  const inizioDettaturaRef = useRef<number>(0)
+  const testoFissatoRef = useRef('')
+  /** L'ultimo testo dato per definitivo dalla sessione di riconoscimento in corso. */
+  const ultimoFinaleRef = useRef('')
+  /** Quando e' partita la sessione di riconoscimento corrente (non la dettatura). */
+  const inizioSessioneRef = useRef<number>(0)
+  /** Sessioni chiuse subito, di fila, senza aver riconosciuto una sola parola. */
+  const riavviiRapidiRef = useRef(0)
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -322,9 +340,6 @@ export default function ChatPage() {
     }, 100)
   }, [messages])
 
-  /** Tetto alla registrazione senza riconoscimento del browser: nessuno la chiude. */
-  const MAX_REGISTRAZIONE_MS = 5 * 60 * 1000
-
   function stopAudioAnalysis() {
     if (timerRegistrazioneRef.current) {
       clearTimeout(timerRegistrazioneRef.current)
@@ -439,13 +454,36 @@ export default function ChatPage() {
     }).catch(() => {})
   }
 
+  /** Fa partire il tetto: oltre i 5 minuti la dettatura si chiude comunque. */
+  function armaTettoDettatura() {
+    if (timerRegistrazioneRef.current) clearTimeout(timerRegistrazioneRef.current)
+    timerRegistrazioneRef.current = setTimeout(() => {
+      vuoleRegistrareRef.current = false
+      recognitionRef.current?.stop()
+      stopAudioAnalysis()
+      setIsRecording(false)
+    }, MAX_REGISTRAZIONE_MS)
+  }
+
   function toggleVoice() {
     if (isRecording) {
+      // PRIMA si dichiara che non si vuole piu' registrare, poi si ferma il
+      // riconoscimento: altrimenti il suo `onend` lo farebbe ripartire.
+      vuoleRegistrareRef.current = false
       recognitionRef.current?.stop()
       stopAudioAnalysis()
       setIsRecording(false)
       return
     }
+
+    vuoleRegistrareRef.current = true
+    inizioDettaturaRef.current = Date.now()
+    testoFissatoRef.current = ''
+    // Va azzerato anche questo, non solo testoFissatoRef: altrimenti l'ultima
+    // frase della dettatura PRECEDENTE resta qui dentro e alla prima pausa di
+    // questa riaffiora nella casella ("manda il computo a Blasi buongiorno").
+    ultimoFinaleRef.current = ''
+    riavviiRapidiRef.current = 0
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!SpeechRecognition) {
@@ -462,11 +500,7 @@ export default function ChatPage() {
       // Nel modo normale e' il riconoscimento del browser a chiudere da solo sul
       // silenzio. Qui non c'e' nessuno a farlo: senza un tetto, un microfono
       // dimenticato aperto registra finche' la pagina resta viva.
-      if (timerRegistrazioneRef.current) clearTimeout(timerRegistrazioneRef.current)
-      timerRegistrazioneRef.current = setTimeout(() => {
-        stopAudioAnalysis()
-        setIsRecording(false)
-      }, MAX_REGISTRAZIONE_MS)
+      armaTettoDettatura()
       return
     }
 
@@ -487,27 +521,82 @@ export default function ChatPage() {
           interimText += result[0].transcript
         }
       }
-      setInput(finalText + interimText)
+      // `event.results` riparte da zero a ogni riavvio: quello detto prima
+      // dell'ultima pausa vive in testoFissatoRef.
+      ultimoFinaleRef.current = finalText
+      // Si e' sentita una parola: la catena di riavvii a vuoto e' spezzata.
+      riavviiRapidiRef.current = 0
+      setInput(componiTestoDettatura(testoFissatoRef.current, finalText, interimText))
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto'
         textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 160) + 'px'
       }
     }
 
-    recognition.onerror = () => {
-      stopAudioAnalysis()
-      setIsRecording(false)
+    /**
+     * Il riconoscimento del browser e' finito (pausa di silenzio, errore
+     * passeggero, oppure stop dell'Ingegnere). Decide `decidiDopoRiconoscimento`:
+     * la registrazione VERA non si ferma per una pausa.
+     */
+    const dopoRiconoscimento = (esito: Parameters<typeof decidiDopoRiconoscimento>[0]) => {
+      // Una sessione chiusa entro un secondo dall'avvio non ha ascoltato niente:
+      // e' un giro a vuoto. Se se ne accumulano troppi di fila si smette.
+      const durataSessione = Date.now() - inizioSessioneRef.current
+      riavviiRapidiRef.current = durataSessione < 1000 ? riavviiRapidiRef.current + 1 : 0
+
+      const azione = decidiDopoRiconoscimento(
+        esito,
+        {
+          utenteVuoleRegistrare: vuoleRegistrareRef.current,
+          msTrascorsi: Date.now() - inizioDettaturaRef.current,
+          // Doppio tap: questo evento puo' arrivare da una sessione gia'
+          // sostituita. Non deve toccare la dettatura nuova.
+          eLaSessioneCorrente: recognitionRef.current === recognition,
+          riavviiRapidiConsecutivi: riavviiRapidiRef.current,
+        },
+        MAX_REGISTRAZIONE_MS,
+      )
+      if (azione === 'ignora') return
+      if (azione === 'ferma') {
+        vuoleRegistrareRef.current = false
+        stopAudioAnalysis()
+        setIsRecording(false)
+        return
+      }
+      // Si riparte: il testo gia' riconosciuto diventa definitivo, perche' i
+      // results della sessione nuova ricominciano vuoti.
+      testoFissatoRef.current = componiTestoDettatura(
+        testoFissatoRef.current,
+        ultimoFinaleRef.current,
+        '',
+      )
+      ultimoFinaleRef.current = ''
+      try {
+        inizioSessioneRef.current = Date.now()
+        recognition.start()
+      } catch {
+        // Il browser non lo ha ancora rilasciato: la registrazione continua
+        // comunque, si perde solo il testo mostrato mentre si parla.
+      }
+    }
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      dopoRiconoscimento({ tipo: 'errore', codice: event.error })
     }
 
     recognition.onend = () => {
-      stopAudioAnalysis()
-      setIsRecording(false)
+      dopoRiconoscimento({ tipo: 'fine' })
     }
 
     recognitionRef.current = recognition
+    inizioSessioneRef.current = Date.now()
     recognition.start()
     startAudioAnalysis()
     setIsRecording(true)
+    // Il tetto vale anche qui. Prima stava SOLO nel ramo senza riconoscimento:
+    // sul browser "supportato" a chiudere era la pausa di silenzio, e una
+    // dettatura lunga non arrivava in fondo.
+    armaTettoDettatura()
   }
 
   function autoResize() {

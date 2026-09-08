@@ -18,12 +18,21 @@ interface SpeechRecognitionAlternative {
   confidence: number
 }
 
+/**
+ * `error` porta il motivo: 'no-speech' e 'aborted' sono la normalita' di una
+ * dettatura con pause, 'not-allowed' e 'audio-capture' sono guasti veri. Senza
+ * questo campo non si possono distinguere, e ogni pausa chiuderebbe la dettatura.
+ */
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string
+}
+
 interface SpeechRecognition extends EventTarget {
   lang: string
   continuous: boolean
   interimResults: boolean
   onresult: ((event: SpeechRecognitionEvent) => void) | null
-  onerror: ((event: Event) => void) | null
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null
   onend: (() => void) | null
   start(): void
   stop(): void
