@@ -1139,7 +1139,13 @@ export async function executeDriveTool(name: string, input: Record<string, strin
         const result = await saveDocumentToDrive(htmlContent, title, docType, userPromptHint, '')
         const fallback = result.isFallback ? '⚠️ FALLBACK ' : ''
         const registro = result.registroAppended ? ' (📊 registro aggiornato)' : ''
-        return `✅ ${fallback}Salvato su Drive in ${result.folderPath}${registro}\n👉 ${result.driveUrl}`
+        // Un Google Doc non puo' contenere le foto: se ce n'erano, si dice.
+        // Prima sparivano e basta, su un tool che il prompt raccomanda per POS,
+        // preventivi e perizie.
+        const foto = result.immaginiPerse.length > 0
+          ? `\n\n⚠️ **Il Google Doc non puo' contenere immagini**: ${result.immaginiPerse.length === 1 ? "1 foto e' rimasta fuori" : `${result.immaginiPerse.length} foto sono rimaste fuori`} (nel testo resta scritto dov'erano).\nPer consegnarlo CON le foto serve il PDF: me lo chieda e lo genero.`
+          : ''
+        return `✅ ${fallback}Salvato su Drive in ${result.folderPath}${registro}\n👉 ${result.driveUrl}${foto}`
       } catch (err) {
         return `Errore salvataggio Drive: ${err instanceof Error ? err.message : err}`
       }
@@ -1162,7 +1168,14 @@ export async function executeDriveTool(name: string, input: Record<string, strin
       // Auto-detect DOCX vs XLSX/ODS vs testo semplice da metadata
       try {
         const drive = await getDrive()
-        const meta = await drive.files.get({ fileId: input.file_id, fields: 'name, mimeType' })
+        // `supportsAllDrives` anche qui: questa get sta A MONTE di downloadFile,
+        // quindi su un file in un Drive condiviso faceva 404 prima ancora di
+        // arrivare al codice che scarica i byte.
+        const meta = await drive.files.get({
+          fileId: input.file_id,
+          fields: 'name, mimeType',
+          supportsAllDrives: true,
+        })
         const fname = (meta.data.name || '').toLowerCase()
         const fmime = meta.data.mimeType || ''
         if (fname.endsWith('.docx') || fmime.includes('wordprocessing')) {

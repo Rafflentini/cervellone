@@ -37,6 +37,12 @@ import {
   PageOrientation,
 } from 'docx'
 import ExcelJS from 'exceljs'
+import {
+  dimensioniImmagine,
+  estensioneDocx,
+  riquadroDocx,
+  pianificaAllegato,
+} from './immagine-dimensioni'
 
 const FOOTER_TEMPLATE = `<div style="font-size: 8pt; color: #888888; width: 100%; padding: 0 15mm; display: flex; justify-content: space-between; -webkit-print-color-adjust: exact;">
   <span>RESTRUKTURA S.r.l. — P.IVA 02087420762</span>
@@ -77,12 +83,16 @@ ${rawHtml}
 // ── Embed immagini Drive come data URI (fix PDF vuoto lato server) ──
 
 function extractDriveFileId(url: string): string | null {
+  // In un HTML corretto la `&` fra i parametri e' scritta `&amp;`: senza
+  // scioglierla, il carattere prima di `id=` e' un `;` e il riconoscitore non
+  // aggancia. Il modello scrive HTML valido, quindi capitava sul serio.
+  const pulito = url.replace(/&(?:amp|#38);/gi, '&')
   const patterns = [
     /[?&]id=([a-zA-Z0-9_-]{10,})/,   // drive.google.com/thumbnail?id=... oppure uc?id=...
     /\/d\/([a-zA-Z0-9_-]{10,})/,      // drive.google.com/file/d/ID/view oppure lh3.googleusercontent.com/d/ID
   ]
   for (const re of patterns) {
-    const m = url.match(re)
+    const m = pulito.match(re)
     if (m) return m[1]
   }
   return null
@@ -94,16 +104,25 @@ function extractDriveFileId(url: string): string | null {
  * Se il download di una singola immagine fallisce, logga e lascia l'URL
  * originale (nessun blocco dell'intera generazione per un file problematico).
  */
-const RE_TAG_IMG = /<img\b[^>]*\bsrc="([^"]+)"[^>]*>/gi
+/**
+ * Nei prompt non c'e' nessuna istruzione su COME scrivere il tag: il modello
+ * improvvisa il formato ogni volta. Vanno riconosciute anche le forme con apici
+ * singoli e senza apici, altrimenti l'immagine sparisce e nessuno se ne accorge.
+ */
+const RE_TAG_IMG = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/gi
+const sorgenteDi = (m: RegExpMatchArray): string => m[1] ?? m[2] ?? m[3] ?? ''
 const eUrlDrive = (u: string) => /drive\.google\.com|googleusercontent\.com/i.test(u)
 
-/** Gli id Drive di tutte le immagini richiamate da un HTML, senza ripetizioni. */
+/**
+ * Gli id Drive di tutte le immagini richiamate da un HTML, senza ripetizioni.
+ * Un URL Drive di cui non si riesce a estrarre l'id torna com'e': va comunque
+ * dichiarato, non fatto sparire.
+ */
 export function immaginiDriveNellHtml(html: string): string[] {
   const ids = Array.from(html.matchAll(RE_TAG_IMG))
-    .map((m) => m[1])
+    .map(sorgenteDi)
     .filter(eUrlDrive)
-    .map(extractDriveFileId)
-    .filter((id): id is string => id !== null)
+    .map((src) => extractDriveFileId(src) ?? src)
   return Array.from(new Set(ids))
 }
 
@@ -115,7 +134,7 @@ export type EsitoImmagini = {
 
 async function embedDriveImages(html: string): Promise<EsitoImmagini> {
   const matches = Array.from(html.matchAll(RE_TAG_IMG))
-  const driveMatches = matches.filter((m) => eUrlDrive(m[1]))
+  const driveMatches = matches.filter((m) => eUrlDrive(sorgenteDi(m)))
   if (driveMatches.length === 0) return { html, mancanti: [] }
 
   const { downloadFileBase64 } = await import('./drive')
@@ -124,11 +143,17 @@ async function embedDriveImages(html: string): Promise<EsitoImmagini> {
   const mancanti: string[] = []
 
   for (const m of driveMatches) {
-    const originalSrc = m[1]
+    const originalSrc = sorgenteDi(m)
     if (cache.has(originalSrc)) continue // già sostituito (URL duplicata, replace precedente copre tutte le occorrenze)
 
     const fileId = extractDriveFileId(originalSrc)
-    if (!fileId) continue
+    if (!fileId) {
+      // Un URL Drive da cui non si cava l'id va DICHIARATO, non saltato: prima
+      // spariva in silenzio, che e' lo stesso difetto che questo lavoro chiude.
+      console.error(`[PDF] URL Drive non riconosciuto: ${originalSrc}`)
+      if (!mancanti.includes(originalSrc)) mancanti.push(originalSrc)
+      continue
+    }
 
     try {
       const { base64, mimeType } = await downloadFileBase64(fileId)
@@ -325,16 +350,37 @@ export async function generateDocxFromHtml(
   // Le foto si scaricano PRIMA di comporre il documento: `docx` vuole i byte,
   // non un URL.
   const idImmagini = immaginiDriveNellHtml(html)
-  const immagini: Buffer[] = []
+  /**
+   * Una voce per OGNI immagine richiamata, nell'ordine del documento. Chi non
+   * ce l'ha fatta resta come `null` e occupa comunque il suo posto.
+   *
+   * Prima le immagini riuscite venivano semplicemente accodate: se la seconda
+   * di sei falliva, la terza scivolava al secondo posto e nella perizia
+   * consegnata al committente la foto del balcone finiva sotto la didascalia
+   * del cornicione. Un documento che attribuisce la foto sbagliata al degrado
+   * sbagliato e' peggio di un documento senza foto.
+   */
+  const immagini: Array<{ byte: Buffer; tipo: 'jpg' | 'png' | 'gif' | 'bmp' } | null> = []
   const mancanti: string[] = []
   if (idImmagini.length > 0) {
     const { downloadFileBase64 } = await import('./drive')
     for (const id of idImmagini) {
       try {
-        const { base64 } = await downloadFileBase64(id)
-        immagini.push(Buffer.from(base64, 'base64'))
+        const { base64, mimeType } = await downloadFileBase64(id)
+        // Il tipo VERO, non 'jpg' per tutto: byte WEBP o HEIC dentro una parte
+        // dichiarata JPEG diventano un riquadro rotto dentro Word, mentre il
+        // download e' andato a buon fine e quindi nessuno avvisa.
+        const tipo = estensioneDocx(mimeType)
+        if (!tipo) {
+          console.error(`[DOCX] formato non inseribile in un Word (${mimeType}) per ${id}`)
+          immagini.push(null)
+          mancanti.push(id)
+          continue
+        }
+        immagini.push({ byte: Buffer.from(base64, 'base64'), tipo })
       } catch (err) {
         console.error(`[DOCX] immagine Drive non scaricata (${id}):`, err instanceof Error ? err.message : err)
+        immagini.push(null)
         mancanti.push(id)
       }
     }
@@ -367,15 +413,35 @@ export async function generateDocxFromHtml(
   // Le foto, in fondo: l'allegato fotografico. Larghezza fissa a misura di A4
   // con i margini, altezza proporzionata a 4:3 — senza dimensioni `docx` non
   // sa che spazio darle e Word le mostra schiacciate.
-  for (const byte of immagini) {
+  for (const voce of pianificaAllegato(idImmagini, immagini)) {
+    if (voce.tipo === 'assente') {
+      // Il posto resta occupato, e dichiarato. Cosi' la foto dopo non slitta e
+      // chi legge sa che li' ne manca una, invece di guardare quella sbagliata.
+      children.push(
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          children: [
+            new TextRun({
+              text: `[Foto ${voce.indice + 1} non disponibile — id Drive ${voce.id}]`,
+              italics: true,
+              size: 18,
+            }),
+          ],
+        }),
+      )
+      continue
+    }
+    // Proporzioni VERE. Le foto di cantiere scattate col telefono sono in larga
+    // parte verticali: a 480x360 fissi uscivano tutte schiacciate.
+    const misura = riquadroDocx(dimensioniImmagine(voce.byte))
     children.push(
       new Paragraph({
         alignment: AlignmentType.CENTER,
         children: [
           new ImageRun({
-            type: 'jpg',
-            data: byte,
-            transformation: { width: 480, height: 360 },
+            type: voce.formato,
+            data: voce.byte,
+            transformation: { width: misura.larghezza, height: misura.altezza },
           }),
         ],
       }),

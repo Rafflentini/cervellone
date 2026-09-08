@@ -10,6 +10,7 @@ import {
 } from './document-templates'
 import { validateValues, applyDefaults, riempiHtml } from './template-fill-html'
 import { generatePdfFromHtml } from './pdf-generator'
+import { avvisoImmagini } from './avviso-immagini'
 import { uploadBinaryToDrive } from './drive'
 import { generaAllegato10Cigo } from '@/v19/tools/cigo'
 import type { Allegato10Input } from '@/v19/tools/cigo/types'
@@ -282,11 +283,14 @@ async function compila(input: Record<string, unknown>): Promise<string> {
   // metodo B_html
   if (!tpl.html_template) return `Il modello "${slug}" non ha un template HTML configurato.`
   const html = riempiHtml(tpl.html_template, valori)
-  const pdfBuffer = await generatePdfFromHtml(html, tpl.titolo)
+  let immaginiMancanti: string[] = []
+  const pdfBuffer = await generatePdfFromHtml(html, tpl.titolo, {
+    onImmaginiMancanti: (ids) => { immaginiMancanti = ids },
+  })
   const romeDate = todayTag()
   const fileName = `${slug}_${romeDate}.pdf`
   const { webViewLink } = await uploadBinaryToDrive(pdfBuffer, fileName, 'application/pdf', folderId)
-  return `Documento generato: ${fileName}\n${webViewLink}\n(Impaginazione del modello "${tpl.titolo}". Non ho inviato nulla.)`
+  return `Documento generato: ${fileName}\n${webViewLink}\n(Impaginazione del modello "${tpl.titolo}". Non ho inviato nulla.)${avvisoImmagini(immaginiMancanti)}`
 }
 
 export async function executeDocumentTemplateTool(

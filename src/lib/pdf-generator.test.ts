@@ -268,3 +268,100 @@ describe('immagini Drive nei DOCX', () => {
     expect(downloadFileBase64).not.toHaveBeenCalled()
   })
 })
+
+describe('DOCX — quando una foto non si scarica', () => {
+  const TRE_FOTO =
+    '<h1>Perizia</h1>' +
+    '<p>Foto 1 - Facciata Est</p><img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">' +
+    '<p>Foto 2 - Cornicione</p><img src="https://drive.google.com/thumbnail?id=BBBBBBBBBBBB">' +
+    '<p>Foto 3 - Balcone</p><img src="https://drive.google.com/thumbnail?id=CCCCCCCCCCCC">'
+
+  beforeEach(() => { vi.mocked(downloadFileBase64).mockReset() })
+
+  // IL DIFETTO, trovato dall'audit sul commit che aggiungeva le foto ai Word.
+  // Le foto venivano accodate in ordine, ma una che falliva NON lasciava il
+  // posto: le successive slittavano di una. Nella perizia consegnata al
+  // committente la foto del balcone finiva sotto la didascalia del cornicione.
+  // Un documento che attribuisce la foto sbagliata al degrado sbagliato e'
+  // PEGGIO di un documento senza foto.
+  it('non fa slittare le altre: chi manca lascia il posto', async () => {
+    vi.mocked(downloadFileBase64).mockImplementation(async (id: string) => {
+      if (id === 'BBBBBBBBBBBB') throw new Error('File not found')
+      return { base64: Buffer.from(`foto-${id}`).toString('base64'), mimeType: 'image/jpeg', name: `${id}.jpg` }
+    })
+    const mancanti: string[] = []
+
+    const buf = await generateDocxFromHtml(TRE_FOTO, 'Perizia', {
+      onImmaginiMancanti: (ids) => { mancanti.push(...ids) },
+    })
+
+    expect(mancanti).toEqual(['BBBBBBBBBBBB'])
+    // Che il posto resti occupato da un segnaposto e' provato su
+    // `pianificaAllegato` (immagine-dimensioni.test.ts): un .docx e' uno ZIP
+    // compresso, qui dentro il testo non e' ispezionabile.
+    expect(buf.subarray(0, 2).toString()).toBe('PK')
+  })
+
+  // Il download RIESCE ma il formato non e' infilabile in un Word: prima
+  // finiva dentro dichiarato 'jpg' e Word mostrava un riquadro rotto, mentre il
+  // tool rispondeva "salvato" senza avvisi.
+  it('un WEBP non viene spacciato per JPEG: si dichiara mancante', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: Buffer.from('byte-webp').toString('base64'),
+      mimeType: 'image/webp',
+      name: 'foto.webp',
+    })
+    const mancanti: string[] = []
+
+    await generateDocxFromHtml(
+      '<p>Foto</p><img src="https://drive.google.com/thumbnail?id=WWWWWWWWWWWW">',
+      'Perizia',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+
+    expect(mancanti).toEqual(['WWWWWWWWWWWW'])
+  })
+})
+
+describe('le forme di <img> che il modello puo scrivere', () => {
+  beforeEach(() => {
+    vi.mocked(downloadFileBase64).mockReset()
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: 'AAAA', mimeType: 'image/jpeg', name: 'f.jpg',
+    })
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser() as never)
+  })
+
+  // Nei prompt non c'e' nessuna istruzione su COME scrivere il tag: il modello
+  // improvvisa il formato ogni volta. Il fix dell'8 set riconosceva solo la
+  // forma canonica con apici doppi e `?id=`; tutte queste sono HTML valido, e
+  // sparivano senza nemmeno finire fra le mancanti.
+  it.each([
+    ['apici singoli', "<img src='https://drive.google.com/thumbnail?id=AAAAAAAAAAAA'>"],
+    ['&amp; escapato', '<img src="https://drive.google.com/thumbnail?sz=w600&amp;id=AAAAAAAAAAAA">'],
+    ['forma /d/', '<img src="https://drive.google.com/file/d/AAAAAAAAAAAA/view">'],
+  ])('riconosce e incorpora la forma con %s', async (_nome, tag) => {
+    const setContent = vi.fn(async (_html: string) => undefined)
+    vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser({ setContent }) as never)
+
+    await generatePdfFromHtml(`<p>Foto</p>${tag}`, 'Doc')
+
+    expect(setContent.mock.calls[0][0]).toContain('data:image/jpeg;base64,')
+  })
+
+  // Se proprio non si riesce a capire quale file sia, va DETTO. Prima un URL
+  // Drive da cui non si estraeva l'id veniva saltato in silenzio: nessuna
+  // immagine e nessun avviso, cioe' lo stesso difetto che il fix chiudeva.
+  it('un URL Drive di cui non capisce l id finisce comunque fra le mancanti', async () => {
+    const mancanti: string[] = []
+
+    await generatePdfFromHtml(
+      '<img src="https://lh3.googleusercontent.com/drive-viewer/AKxyz-senza-id">',
+      'Doc',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+
+    expect(mancanti).toHaveLength(1)
+    expect(mancanti[0]).toContain('drive-viewer')
+  })
+})

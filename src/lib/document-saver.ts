@@ -2,6 +2,7 @@ import { google } from 'googleapis'
 import type { GoogleAuth, OAuth2Client } from 'google-auth-library'
 import { DRIVE_FOLDERS, SHEETS, createDocument } from './drive'
 import { GoogleAuthDeadError } from './google-token-health'
+import { htmlInTestoPiatto } from './document-saver-testo'
 
 export type DocumentType =
   | 'pos'
@@ -27,6 +28,12 @@ interface SaveResult {
   fileName: string
   fileId: string
   registroAppended: boolean
+  /**
+   * Immagini che il Google Doc non puo' contenere. Un documento a cui mancano
+   * le foto del degrado non e' un documento con meno grafica: chi lo consegna
+   * deve saperlo.
+   */
+  immaginiPerse: string[]
 }
 
 // ── Inferenza tipo documento ──
@@ -233,18 +240,12 @@ export async function saveDocumentToDrive(
   // Strategia: convertiamo HTML → testo plain (strip tag), usiamo createDocument
   // esistente in drive.ts (testato in Task 1). Il Google Doc avrà testo flat,
   // non layout HTML rendered, ma è funzionale e affidabile.
-  const plainText = htmlContent
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(?:p|div|h[1-6]|li|tr)>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  // La conversione sta in `document-saver-testo.ts`, sotto test: qui la regex
+  // che toglieva i tag faceva SPARIRE le immagini — non le lasciava come URL
+  // rotto, le cancellava, e il documento consegnato non diceva che mancava
+  // qualcosa. Un Google Doc creato con insertText non puo' contenere foto: la
+  // cosa che si puo' fare e' non farle sparire in silenzio.
+  const { testo: plainText, immagini: immaginiPerse } = htmlInTestoPiatto(htmlContent)
 
   const result = await createDocument(fileName, plainText, target.folderId)
   console.log(`[DRIVE-SAVER] createDocument result: ${result.slice(0, 200)}`)
@@ -275,6 +276,7 @@ export async function saveDocumentToDrive(
     fileName,
     fileId,
     registroAppended,
+    immaginiPerse,
   }
 }
 
