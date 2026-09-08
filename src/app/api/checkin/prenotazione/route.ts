@@ -13,7 +13,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import crypto from 'crypto'
 import { creaPrenotazione, type DatiPrenotazione } from '@/lib/checkin/pratica'
 import { linkPrenotazione, linkOspite } from '@/lib/checkin/token-prenotazione'
-import { leggiConfig } from '@/lib/checkin/foglio-lettura'
+import { leggiConfig, unitaDaConfig } from '@/lib/checkin/foglio-lettura'
+import { normalizzaUnita } from '@/lib/checkin/unita-valida'
 import {
   inviaAvvisi, linkWhatsApp, messaggioOspite, messaggioConsegnaChiavi, chiConsegnaLeChiavi,
 } from '@/lib/checkin/avvisi'
@@ -38,7 +39,23 @@ export async function POST(req: NextRequest) {
   }
 
   const errori: string[] = []
-  if (!String(d.unita || '').trim()) errori.push("Indica l'unita.")
+  /*
+    L'appartamento dev'essere uno di quelli del Config, non un nome qualsiasi.
+    Era il rischio che teneva fermo il go-live del 7 settembre: un nome diverso
+    creava un appartamento FANTASMA, che si sdoppiava nell'elenco e produceva un
+    file Questura in piu'. La pagina ora offre una tendina; questo copre chi
+    arriva dall'API o con la tendina non caricata.
+    Se il Config non si legge non si blocca la prenotazione: registrarla resta
+    piu' importante che validarla.
+  */
+  try {
+    const unitaConfig = unitaDaConfig(await leggiConfig())
+    const esitoUnita = normalizzaUnita(String(d.unita || ''), unitaConfig)
+    if (!esitoUnita.ok) errori.push(esitoUnita.errore)
+    else d.unita = esitoUnita.unita
+  } catch {
+    if (!String(d.unita || '').trim()) errori.push("Indica l'unita.")
+  }
   if (!String(d.checkin || '').trim()) errori.push('Indica la data di check-in.')
   if (!String(d.checkout || '').trim()) errori.push('Indica la data di check-out.')
 

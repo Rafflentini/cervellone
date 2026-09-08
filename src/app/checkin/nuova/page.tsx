@@ -12,7 +12,7 @@
  * si ferma il bot non e' un flusso: e' una dipendenza.
  */
 
-import { useState, Suspense } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 
 interface LinkOspite { progressivo: number; link: string }
@@ -73,6 +73,24 @@ function NuovaPrenotazione() {
     pulsanti: senza il ripiego, una copia fallita li rende irrecuperabili.
   */
   const [linkScoperto, setLinkScoperto] = useState('')
+
+  /*
+    Gli appartamenti veri, letti dal Config del foglio.
+    Il campo era LIBERO: bastava scrivere "Unita 2" invece di "Unità 2" per
+    creare un appartamento fantasma, che si sdoppiava nell'elenco e produceva un
+    file Questura in piu'. Era il rischio che teneva fermo il go-live del 7
+    settembre, e con una tendina non e' piu' possibile commetterlo.
+    Se la lettura fallisce si torna al campo libero: meglio poter registrare una
+    prenotazione che restare bloccati davanti a una tendina vuota.
+  */
+  const [appartamenti, setAppartamenti] = useState<string[]>([])
+  useEffect(() => {
+    if (!k) return
+    fetch(`/api/checkin/dati?k=${encodeURIComponent(k)}`)
+      .then((r) => r.json())
+      .then((j) => { if (Array.isArray(j?.unita)) setAppartamenti(j.unita.filter(Boolean)) })
+      .catch(() => { /* si resta col campo libero */ })
+  }, [k])
 
   async function crea() {
     setInvio(true); setErrori([])
@@ -292,7 +310,14 @@ function NuovaPrenotazione() {
 
         <section>
           <label>Unità *</label>
-          <input value={d.unita} onChange={(e) => setD({ ...d, unita: e.target.value })} placeholder="Unità 1" />
+          {appartamenti.length > 0 ? (
+            <select value={d.unita} onChange={(e) => setD({ ...d, unita: e.target.value })}>
+              <option value="">— scegli l&apos;appartamento —</option>
+              {appartamenti.map((u) => <option key={u} value={u}>{u}</option>)}
+            </select>
+          ) : (
+            <input value={d.unita} onChange={(e) => setD({ ...d, unita: e.target.value })} placeholder="Unità 1" />
+          )}
 
           <div className="row">
             <div>
