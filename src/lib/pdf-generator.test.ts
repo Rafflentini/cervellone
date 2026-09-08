@@ -365,3 +365,44 @@ describe('le forme di <img> che il modello puo scrivere', () => {
     expect(mancanti[0]).toContain('drive-viewer')
   })
 })
+
+describe('immagini negli Excel', () => {
+  beforeEach(() => { vi.mocked(downloadFileBase64).mockReset() })
+
+  // Prima non c'era nessun canale per una foto in un XLSX, e la descrizione del
+  // tool non lo diceva: un registro fotografico di cantiere usciva con gli URL
+  // scritti in cella, o senza niente. ExcelJS le immagini le sa mettere.
+  it('mette le foto nel foglio quando gliele si passa', async () => {
+    vi.mocked(downloadFileBase64).mockResolvedValue({
+      base64: Buffer.from('pixel').toString('base64'), mimeType: 'image/jpeg', name: 'f.jpg',
+    })
+
+    const buf = await generateXlsxFromData(
+      [{ name: 'Foto', rows: [['Data', 'Descrizione'], ['08/09', 'Facciata Est']], immagini: ['AAAAAAAAAAAA'] }],
+      'Registro',
+    )
+
+    expect(downloadFileBase64).toHaveBeenCalledWith('AAAAAAAAAAAA')
+    expect(buf.subarray(0, 2).toString()).toBe('PK')
+    expect(buf.toString('latin1')).toContain('media/')
+  })
+
+  it('una foto che non si scarica viene DETTA, non ignorata', async () => {
+    vi.mocked(downloadFileBase64).mockRejectedValue(new Error('File not found'))
+    const mancanti: string[] = []
+
+    await generateXlsxFromData(
+      [{ name: 'Foto', rows: [['a']], immagini: ['BBBBBBBBBBBB'] }],
+      'Registro',
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+    )
+
+    expect(mancanti).toEqual(['BBBBBBBBBBBB'])
+  })
+
+  it('un Excel senza foto resta com era', async () => {
+    const buf = await generateXlsxFromData([{ name: 'Dati', rows: [['a', 1]] }], 'X')
+    expect(buf.subarray(0, 2).toString()).toBe('PK')
+    expect(downloadFileBase64).not.toHaveBeenCalled()
+  })
+})

@@ -44,10 +44,19 @@ import {
   pianificaAllegato,
 } from './immagine-dimensioni'
 
-const FOOTER_TEMPLATE = `<div style="font-size: 8pt; color: #888888; width: 100%; padding: 0 15mm; display: flex; justify-content: space-between; -webkit-print-color-adjust: exact;">
-  <span>RESTRUKTURA S.r.l. — P.IVA 02087420762</span>
+/**
+ * Il piede del PDF. La societa' NON e' cablata: le societa' sono due, e un
+ * documento de La Real Estate che porta in fondo "RESTRUKTURA S.r.l. — P.IVA
+ * 02087420762" espone un dato societario sbagliato a chi lo riceve.
+ */
+function piedePagina(societa: { denominazione: string; piva: string }): string {
+  return `<div style="font-size: 8pt; color: #888888; width: 100%; padding: 0 15mm; display: flex; justify-content: space-between; -webkit-print-color-adjust: exact;">
+  <span>${escapeHtml(societa.denominazione)} — P.IVA ${escapeHtml(societa.piva)}</span>
   <span>Pagina <span class="pageNumber"></span> di <span class="totalPages"></span></span>
 </div>`
+}
+
+const SOCIETA_PREDEFINITA = { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' }
 
 const HEADER_TEMPLATE = '<div></div>'
 
@@ -233,6 +242,12 @@ export type OpzioniDocumento = {
    * all'Ingegnere invece di dichiararlo a posto.
    */
   onImmaginiMancanti?: (idMancanti: string[]) => void
+  /**
+   * Chi firma il documento in fondo. Le societa' sono DUE: un documento de La
+   * Real Estate che porta il piede di Restruktura espone al destinatario una
+   * ragione sociale e una partita IVA che non sono le sue.
+   */
+  societa?: { denominazione: string; piva: string }
 }
 
 export async function generatePdfFromHtml(
@@ -260,7 +275,7 @@ export async function generatePdfFromHtml(
         margin: { top: '15mm', right: '15mm', bottom: '20mm', left: '15mm' },
         displayHeaderFooter: true,
         headerTemplate: HEADER_TEMPLATE,
-        footerTemplate: FOOTER_TEMPLATE,
+        footerTemplate: piedePagina(opzioni.societa ?? SOCIETA_PREDEFINITA),
       })
       return Buffer.from(pdfBytes)
     } catch (err) {
@@ -454,7 +469,7 @@ export async function generateDocxFromHtml(
       alignment: AlignmentType.CENTER,
       children: [
         new TextRun({
-          text: "RESTRUKTURA S.r.l. — P.IVA 02087420762 — Villa d'Agri (PZ)",
+          text: `${(opzioni.societa ?? SOCIETA_PREDEFINITA).denominazione} — P.IVA ${(opzioni.societa ?? SOCIETA_PREDEFINITA).piva}`,
           size: 18,
           italics: true,
         }),
@@ -484,6 +499,12 @@ export async function generateDocxFromHtml(
 export interface XlsxSheet {
   name: string
   rows: (string | number | null)[][]
+  /**
+   * Id Drive delle foto da mettere nel foglio, sotto la tabella. Prima non
+   * c'era nessun canale: un registro fotografico di cantiere usciva con gli URL
+   * scritti in cella, o senza niente, e la descrizione del tool non lo diceva.
+   */
+  immagini?: string[]
 }
 
 function safeSheetName(raw: string, fallback: string): string {
@@ -499,6 +520,7 @@ function safeSheetName(raw: string, fallback: string): string {
 export async function generateXlsxFromData(
   sheets: XlsxSheet[],
   title: string,
+  opzioni: OpzioniDocumento = {},
 ): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook()
   workbook.creator = 'Cervellone — Restruktura S.r.l.'
@@ -545,6 +567,46 @@ export async function generateXlsxFromData(
 
     sheet.views = [{ state: 'frozen', ySplit: 1 }]
   })
+
+  // Le foto, sotto la tabella di ogni foglio. Un registro fotografico di
+  // cantiere in Excel non aveva nessun modo di contenerle.
+  const mancanti: string[] = []
+  for (const [sheetIdx, sheetDef] of sheets.entries()) {
+    if (!sheetDef.immagini?.length) continue
+    const sheet = workbook.getWorksheet(safeSheetName(sheetDef.name, `Foglio${sheetIdx + 1}`))
+    if (!sheet) continue
+
+    const { downloadFileBase64 } = await import('./drive')
+    let riga = (sheetDef.rows?.length ?? 0) + 2
+    for (const id of sheetDef.immagini) {
+      try {
+        const { base64, mimeType } = await downloadFileBase64(id)
+        const estensione = estensioneDocx(mimeType)
+        if (!estensione || estensione === 'bmp') {
+          // ExcelJS accetta jpeg/png/gif: cio' che non sa mettere si dichiara,
+          // invece di infilarlo dentro col nome sbagliato.
+          console.error(`[XLSX] formato non inseribile (${mimeType}) per ${id}`)
+          mancanti.push(id)
+          continue
+        }
+        const misura = riquadroDocx(dimensioniImmagine(Buffer.from(base64, 'base64')))
+        const idImmagine = workbook.addImage({
+          buffer: Buffer.from(base64, 'base64') as unknown as ExcelJS.Buffer,
+          extension: estensione === 'jpg' ? 'jpeg' : estensione,
+        })
+        sheet.addImage(idImmagine, {
+          tl: { col: 0, row: riga },
+          ext: { width: misura.larghezza, height: misura.altezza },
+        })
+        // Righe di Excel occupate dalla foto, piu' una di respiro.
+        riga += Math.ceil(misura.altezza / 20) + 1
+      } catch (err) {
+        console.error(`[XLSX] immagine Drive non scaricata (${id}):`, err instanceof Error ? err.message : err)
+        mancanti.push(id)
+      }
+    }
+  }
+  if (mancanti.length > 0) opzioni.onImmaginiMancanti?.(mancanti)
 
   const arrayBuffer = await workbook.xlsx.writeBuffer()
   return Buffer.from(arrayBuffer as ArrayBuffer)

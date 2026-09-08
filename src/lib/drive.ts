@@ -198,6 +198,10 @@ export async function listFiles(folderId: string): Promise<string> {
       fields: 'files(id, name, mimeType, modifiedTime, size)',
       orderBy: 'name',
       pageSize: 100,
+      // Senza questi, su un Drive condiviso la lista torna VUOTA e il codice
+      // legge "non trovato" come "non esiste".
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
     })
 
     const files = res.data.files || []
@@ -230,6 +234,8 @@ export async function trashFilesByName(folderId: string, name: string): Promise<
     q: `name = '${escapeDriveQueryString(name)}' and '${folderId}' in parents and trashed = false`,
     fields: 'files(id)',
     pageSize: 50,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
   })
   const files = res.data.files || []
   for (const f of files) {
@@ -251,6 +257,8 @@ export async function searchFiles(query: string, folderId?: string): Promise<str
       fields: 'files(id, name, mimeType, parents, modifiedTime)',
       orderBy: 'modifiedTime desc',
       pageSize: 15, // FIX W1.3: ridotto da 20 per evitare prompt esplosi
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
     })
 
     const files = res.data.files || []
@@ -360,6 +368,8 @@ export async function searchFilesFullText(query: string, folderId?: string): Pro
       fields: 'files(id, name, mimeType, parents, modifiedTime)',
       orderBy: 'modifiedTime desc',
       pageSize: 15,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
     })
 
     const files = res.data.files || []
@@ -901,6 +911,8 @@ export async function getOrCreateBozzeFolder(): Promise<string> {
     q: `name = '📥 BOZZE_PDF' and mimeType = 'application/vnd.google-apps.folder' and '${DRIVE_FOLDERS.DOC_IMPRESA}' in parents and trashed = false`,
     fields: 'files(id)',
     pageSize: 1,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
   })
   if (existing.data.files?.length) {
     const id = existing.data.files[0].id!
@@ -937,6 +949,8 @@ export async function getTelegramInboxFolderId(): Promise<string> {
     q: `name = '📥 Telegram Inbox' and mimeType = 'application/vnd.google-apps.folder' and '${DRIVE_FOLDERS.DOC_IMPRESA}' in parents and trashed = false`,
     fields: 'files(id)',
     pageSize: 1,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
   })
   if (existing.data.files?.length) {
     const id = existing.data.files[0].id!
@@ -980,6 +994,10 @@ export async function getOrCreatePathFolders(baseFolderId: string, segments: str
       q: `name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`,
       fields: 'files(id)',
       pageSize: 1,
+      // Senza questi la cartella su un Drive condiviso non si trova, e qui
+      // sotto ne viene CREATA una seconda con lo stesso nome.
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
     })
     if (existing.data.files?.length) {
       const id = existing.data.files[0].id!

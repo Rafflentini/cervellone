@@ -11,6 +11,21 @@
 
 import { getSupabaseServer } from './supabase-server'
 import { avvisoImmagini } from './avviso-immagini'
+
+/**
+ * La societa' che firma un documento generato. Best-effort: se non si riesce a
+ * risolverla resta Restruktura, che e' il caso di gran lunga piu' frequente.
+ */
+async function societaAttivaPerDocumenti(conversationId?: string) {
+  try {
+    const { getSocietaAttiva } = await import('./societa-attiva')
+    const { getSocieta } = await import('./societa')
+    const s = getSocieta(await getSocietaAttiva(conversationId ?? ''))
+    return { denominazione: s.denominazione, piva: s.piva }
+  } catch {
+    return undefined
+  }
+}
 import type { ToolDefinition } from './tools/types'
 import type { CodiceSocieta } from './societa'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
@@ -102,6 +117,11 @@ const PDF_TOOLS: ToolDefinition[] = [
                 description: 'Righe della tabella. Prima riga = header (intestazioni colonne). Righe seguenti = dati. Tipo cella: string | number | null.',
                 items: { type: 'array' },
               },
+              immagini: {
+                type: 'array',
+                description: "OPZIONALE — id Drive delle foto da inserire nel foglio, sotto la tabella (registro fotografico di cantiere). Passa gli id nudi, quelli del blocco 'IMMAGINI/DOCUMENTI GIÀ CARICATI' campo [drive: ...], NON gli URL.",
+                items: { type: 'string' },
+              },
             },
             required: ['name', 'rows'],
           },
@@ -116,10 +136,18 @@ const PDF_TOOLS: ToolDefinition[] = [
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
-async function executePdfTools(name: string, input: Record<string, unknown>): Promise<string | null> {
+async function executePdfTools(
+  name: string,
+  input: Record<string, unknown>,
+  conversationId?: string,
+): Promise<string | null> {
   if (name !== 'genera_pdf' && name !== 'genera_docx' && name !== 'genera_xlsx') return null
 
   try {
+    // Il piede del documento porta la societa' ATTIVA, non Restruktura cablata:
+    // un documento de La Real Estate con la partita IVA di Restruktura espone al
+    // destinatario dati societari che non sono i suoi.
+    const societa = await societaAttivaPerDocumenti(conversationId)
     const title = ((input.title as string) || 'Documento').slice(0, 100)
     const folderId = input.folder_id as string | undefined
     const safeTitle = title.replace(/[/\\:*?"<>|]/g, '_')
@@ -159,10 +187,15 @@ async function executePdfTools(name: string, input: Record<string, unknown>): Pr
       return 'Errore: sheets è richiesto e deve essere un array non vuoto.'
     }
     const { generateXlsxFromData } = await import('./pdf-generator')
-    const buffer = await generateXlsxFromData(sheets as { name: string; rows: (string | number | null)[][] }[], title)
+    let xlsxMancanti: string[] = []
+    const buffer = await generateXlsxFromData(
+      sheets as { name: string; rows: (string | number | null)[][]; immagini?: string[] }[],
+      title,
+      { onImmaginiMancanti: (ids) => { xlsxMancanti = ids }, societa },
+    )
     const fileName = `${safeTitle}.xlsx`
     const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, XLSX_MIME, folderId)
-    return `📊 **${fileName}** salvato su Drive.\n👉 ${webViewLink}`
+    return `📊 **${fileName}** salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(xlsxMancanti)}`
   } catch (err) {
     return `Errore ${name}: ${err instanceof Error ? err.message : err}`
   }
