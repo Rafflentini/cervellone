@@ -108,11 +108,20 @@ A fine giornata un turno ancora aperto viene chiuso all'orario di fine lavoro e 
 
 Se si dimentica `RIENTRO`, vale il 3.8.
 
-### 3.10 Il cambio cantiere apre un **transito**, non il turno successivo
+### 3.10 Il transito è uno stato, e vale sia la mattina sia al cambio cantiere
 
-`CAMBIO CANTIERE` chiude il turno in corso e apre uno stato **`in_transito`** verso la commessa scelta. Il turno nuovo si apre solo quando l'operaio **conferma di essere arrivato**.
+Ci sono **due modi** di entrare in transito, e sono lo stesso meccanismo:
 
-Se dopo **30 minuti** non ha confermato:
+- **La mattina**, quando la squadra passa dal deposito e poi raggiunge il cantiere. L'entrata offre `ENTRA — sono in cantiere` oppure `PARTO DAL DEPOSITO →`.
+- **Al cambio cantiere**, che chiude il turno in corso e apre il transito verso la commessa scelta.
+
+In entrambi i casi il turno di lavoro si apre solo quando l'operaio **conferma di essere arrivato**.
+
+*Perché anche la mattina:* il carico al deposito e il viaggio sono tempo di lavoro, e vanno registrati come tali. Ma soprattutto, quando la geolocalizzazione sarà accesa, una timbratura fatta al deposito su un cantiere a 10 km risulterebbe `fuori_area` — un allarme falso al primo giorno di esercizio. Lo stato di transito è ciò che distingue *«sto andando»* da *«non sono dove dico di essere»*.
+
+Quando il GPS sarà acceso questa scelta **sparisce**: l'app vede da sé se l'operaio è già nell'area e sceglie, lui conferma. È il primo caso in cui la geolocalizzazione restituisce qualcosa invece di chiedere solo cautele.
+
+Se entro la **tolleranza di viaggio della commessa** (3.11) non ha confermato:
 1. parte una notifica sul telefono;
 2. **e in più**, al riaprire l'app compare in cima una fascia impossibile da ignorare — *«sei in transito verso La Colla da 47 minuti, sei arrivato?»*.
 
@@ -133,13 +142,21 @@ COSTO C2026-017 = 4h 30m  (di cui 40m di tragitto)
 
 Un transito mai confermato ricade nella regola 3.8: viene chiuso, marcato, e la mattina dopo si conferma o si corregge. **Non viene mai convertito in ore di lavoro in silenzio.**
 
-### 3.11 Credenziali personali per ogni operaio
+### 3.11 La tolleranza di viaggio è per cantiere, non una sola per tutti
+
+Ogni commessa porta la propria `tolleranza_viaggio_min`, con un predefinito di **30 minuti** che si alza dove serve. E come per il raggio, **la tolleranza in vigore si salva insieme al transito**.
+
+*Perché:* trenta minuti bastano per 10 km in Val d'Agri, ma da Marsicovetere a **Maratea** ci vogliono quasi due ore. Con una soglia unica ogni trasferta sulla costa farebbe partire una notifica falsa — e alla terza volta che il telefono suona per niente, l'operaio smette di guardarlo. È lo stesso guasto del raggio troppo stretto: **un avviso che sbaglia spesso non è un avviso, è rumore.**
+
+L'alternativa scartata era calcolare il tempo dalla distanza: in Basilicata la linea d'aria non dice quasi mai il tempo di strada, e senza un servizio di percorrenza esterno resterebbe una stima grossolana proprio dove serve precisione.
+
+### 3.12 Credenziali personali per ogni operaio
 
 Ogni operaio ha le proprie credenziali, resta connesso, e vede **solo la propria timbratura** — non fatture, non margini, non le ore degli altri.
 
 *Perché:* oggi la web app sta dietro **una sola password condivisa** (`APP_PASSWORD`, peraltro ancora da ruotare perché rimasta in chiaro in un repository pubblico). Dietro quella porta c'era solo Raffaele. Le presenze di quattro dipendenti sono dati personali di lavoratori: non possono stare dietro la stessa chiave che apre contabilità e fatture.
 
-### 3.12 Correggere non sovrascrive
+### 3.13 Correggere non sovrascrive
 
 Una correzione conserva il valore originale, il nuovo, **chi** l'ha fatta e **quando**. Validano sia Raffaele sia l'ingegnere, senza livelli di permesso diversi: con cinque persone un doppio livello è peso morto, sapere di chi è la mano no.
 
@@ -162,6 +179,7 @@ Una correzione conserva il valore originale, il nuovo, **chi** l'ha fatta e **qu
 | `preventivo_documento_id` | uuid FK → `documents` | base per lo scostamento; nullable |
 | `lat`, `lon` | double precision | posizione del cantiere; **non è un dato personale** |
 | `raggio_m` | integer | ≥ raggio minimo di sistema (vincolo applicato in scrittura) |
+| `tolleranza_viaggio_min` | integer | predefinito 30; si alza dove serve (3.11) |
 | `created_at`, `updated_at` | timestamptz | |
 
 Le colonne `cantiere` testuali già esistenti (`project_state`, `cervellone_foto_contesto`) **restano dove sono**: non le tocchiamo in questa fase. La migrazione di quei riferimenti è lavoro del pezzo 2.
@@ -187,6 +205,7 @@ Il costo di un turno = il record con `valido_dal` massimo **minore o uguale** al
 | `client_msg_id` | text | **chiave d'invio** per l'offline |
 | `posizione_esito` | text | `dentro_area` \| `fuori_area` \| `non_attendibile` \| NULL (non richiesta) |
 | `raggio_applicato_m` | integer | il metro, conservato con la misura |
+| `tolleranza_applicata_min` | integer | solo sui transiti: la soglia in vigore in quel momento |
 | `created_at` | timestamptz | |
 
 **Indice unico parziale** `uniq_timbrature_client_msg_id` su `(operaio_id, client_msg_id) WHERE client_msg_id IS NOT NULL`.
@@ -214,9 +233,12 @@ TURNO CHIUSO                      TURNO APERTO                     IN PAUSA
 │ │ C2026-017 La Colla │ │        │ [      E S C I       ] │       │ [   R I E N T R O    ] │
 │ │ C2026-006  Cesareo │ │        │ [  INIZIO PAUSA      ] │       │ [      E S C I       ] │
 │ └────────────────────┘ │        │ [ Cambio cantiere →  ] │       │                        │
-│ [     E N T R A      ] │        │                        │       │                        │
+│ [ ENTRA — sono qui   ] │        │                        │       │                        │
+│ [ PARTO DAL DEPOSITO→] │        │                        │       │                        │
 └────────────────────────┘        └────────────────────────┘       └────────────────────────┘
 ```
+
+Le due entrate della mattina sono lo stesso gesto con una destinazione diversa: *sono già sul posto* apre subito il turno, *parto dal deposito* apre il transito. **Quando il GPS sarà acceso questa scelta sparisce**: l'app sa da sé se l'operaio è nell'area.
 
 **Due tocchi per entrare, uno per uscire.** L'ultima commessa usata in cima.
 
@@ -307,6 +329,8 @@ TDD su tutto, secondo le regole del progetto. In particolare i test che devono e
 - **Chiave d'invio:** la stessa timbratura inviata due volte scrive una riga sola; **due timbrature diverse con lo stesso orario restano due**. Il mock deve far rispettare il vincolo vero (`23505`), non accettare tutto.
 - **Turno dimenticato:** la chiusura automatica marca `origine_fine = 'sistema'` e `stato = 'da_confermare'`. Mutazione da uccidere: la marcatura tolta.
 - **Transito:** il tempo di viaggio finisce nelle ore della commessa di **destinazione**, e resta distinguibile dal lavoro. Controllo positivo: senza transito, le ore della destinazione sono quelle del solo lavoro. Un transito mai confermato **non diventa mai ore di lavoro**: resta `transito` e `da_confermare`.
+- **Tolleranza di viaggio:** l'avviso scatta oltre la soglia **della commessa**, non oltre 30 minuti fissi. Il test che conta: un transito verso un cantiere con tolleranza 120 minuti **non deve** far scattare niente a 45 minuti. È il caso Maratea, ed è quello che trasformerebbe l'avviso in rumore.
+- **La soglia applicata si salva sul transito**, come il raggio. Mutazione da uccidere: la colonna riempita col valore corrente della commessa invece che con quello in vigore al momento.
 - **Un operaio non può avere due righe aperte insieme.** Il test va contro il vincolo del database (`23505`), non contro un controllo dell'app: l'app gira su un telefono che può essere offline e ritentare.
 - **Raggio:** un cantiere non può essere salvato con un raggio **inferiore** al minimo di sistema.
 - **Posizione:** con precisione dichiarata peggiore del raggio l'esito è `non_attendibile`, **mai** `fuori_area`.
