@@ -115,32 +115,28 @@ describe('POST /api/conversations/[id]/messages', () => {
 })
 
 /**
- * Il browser, quando la pagina muore a meta risposta, invia con sendBeacon il
- * testo gia ricevuto. Ma il salvataggio normale potrebbe essere gia partito:
- * senza una difesa qui si ricreerebbe il doppio salvataggio appena eliminato.
- * La difesa sta sul SERVER, perche e l'unico punto che vede tutte le scritture.
+ * ⚠️ Questo blocco si chiamava «difesa contro il doppio salvataggio» e la sua
+ * intestazione diceva «la difesa sta sul SERVER». Era falso: la difesa per
+ * CONTENUTO e' stata tolta insieme ai beacon d'emergenza (8 set 2026), e la
+ * rotta non interroga piu' nessun duplicato — `maybeSingle` non viene mai
+ * chiamato. Un blocco che collauda una difesa inesistente e' la forma esatta
+ * del test verde che non misura niente.
+ *
+ * Quello che questi test tengono fermo e' invece reale, ed e' un vincolo su
+ * qualunque difesa futura: **una ripetizione legittima non va mai scartata**.
+ * Un "ok" o un "procedi" scritti due volte in cinque minuti sono dati veri.
+ * Una dedup per contenuto li perderebbe in silenzio — dentro il lavoro che
+ * elimina le perdite mute. La dedup giusta e' sulla chiave d'invio, non sul
+ * testo.
  */
-describe('POST — difesa contro il doppio salvataggio', () => {
+describe('POST — una ripetizione legittima non va mai scartata', () => {
   beforeEach(() => {
     righeInserite = []
     duplicatoEsistente = null
     saveEmbeddingOnlyMock.mockClear()
   })
 
-  // Il caso "scarta il salvataggio d'emergenza" non c'e' piu': dall'8 set 2026
-  // il browser non manda piu' beacon d'emergenza (la risposta la scrive il
-  // server), quindi la difesa era diventata codice morto ed e' stata tolta
-  // insieme a loro. Restano i test che contano davvero: che un messaggio
-  // legittimo ripetuto NON venga mai scartato.
-
-  // Questo e il test che mancava, e la sua assenza nascondeva un difetto vero:
-  // una difesa basata sul confronto del contenuto, applicata a TUTTI i messaggi,
-  // scarterebbe un "ok" o un "procedi" scritti due volte in cinque minuti.
-  // Sarebbe una perdita muta di dati legittimi dentro il lavoro che elimina le
-  // perdite mute. La difesa vale SOLO per i salvataggi d emergenza.
   it('NON scarta un messaggio normale ripetuto, anche se identico e recente', async () => {
-    duplicatoEsistente = { id: 'msg-ok-precedente' }
-
     const { POST } = await import('./route')
     await POST(req({ role: 'user', content: 'ok' }, getAuthToken()), params)
     expect(righeInserite).toHaveLength(1)
@@ -150,8 +146,6 @@ describe('POST — difesa contro il doppio salvataggio', () => {
   })
 
   it('NON scarta un messaggio breve ripetuto su un altro argomento', async () => {
-    duplicatoEsistente = { id: 'msg-fatto-precedente' }
-
     const { POST } = await import('./route')
     await POST(req({ role: 'user', content: 'Fatto.' }, getAuthToken()), params)
 
