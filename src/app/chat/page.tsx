@@ -487,25 +487,44 @@ export default function ChatPage() {
     }).catch(() => {})
   }
 
+  /**
+   * Ferma la dettatura. In un posto solo.
+   *
+   * ⭐ Questa sequenza era ripetuta in TRE punti — il tetto dei 5 minuti, il
+   * pulsante del microfono, l'uscita dalla pagina — e per questo `sendMessage`
+   * non la chiamava: non c'era niente da chiamare. Risultato: si dettava, si
+   * inviava, e il microfono restava acceso a trascrivere tutto quello che
+   * l'Ingegnere diceva dopo.
+   *
+   * @param trascrivi se `false`, si zittisce `onstop` PRIMA di fermare il
+   *   registratore: altrimenti partirebbe una trascrizione a pagamento per un
+   *   messaggio gia' inviato, il cui risultato verrebbe poi scartato.
+   */
+  function fermaDettatura({ trascrivi = true }: { trascrivi?: boolean } = {}) {
+    // PRIMA si dichiara che non si vuole piu' registrare, poi si ferma il
+    // riconoscimento: altrimenti il suo `onend` lo farebbe ripartire.
+    vuoleRegistrareRef.current = false
+    try { recognitionRef.current?.stop() } catch { /* gia' fermo */ }
+    if (!trascrivi && recorderRef.current) recorderRef.current.onstop = null
+    stopAudioAnalysis()
+    setIsRecording(false)
+    // Il testo gia' riconosciuto non deve sopravvivere alla dettatura: senza
+    // questo, la successiva ripartirebbe con in pancia la frase precedente.
+    testoFissatoRef.current = ''
+    ultimoFinaleRef.current = ''
+  }
+
   /** Fa partire il tetto: oltre i 5 minuti la dettatura si chiude comunque. */
   function armaTettoDettatura() {
     if (timerRegistrazioneRef.current) clearTimeout(timerRegistrazioneRef.current)
     timerRegistrazioneRef.current = setTimeout(() => {
-      vuoleRegistrareRef.current = false
-      recognitionRef.current?.stop()
-      stopAudioAnalysis()
-      setIsRecording(false)
+      fermaDettatura()
     }, MAX_REGISTRAZIONE_MS)
   }
 
   function toggleVoice() {
     if (isRecording) {
-      // PRIMA si dichiara che non si vuole piu' registrare, poi si ferma il
-      // riconoscimento: altrimenti il suo `onend` lo farebbe ripartire.
-      vuoleRegistrareRef.current = false
-      recognitionRef.current?.stop()
-      stopAudioAnalysis()
-      setIsRecording(false)
+      fermaDettatura()
       return
     }
 
@@ -591,9 +610,11 @@ export default function ChatPage() {
       )
       if (azione === 'ignora') return
       if (azione === 'ferma') {
-        vuoleRegistrareRef.current = false
-        stopAudioAnalysis()
-        setIsRecording(false)
+        // Anche qui si passa dalla funzione unica: la sequenza scritta a mano in
+        // piu' posti e' esattamente il motivo per cui `sendMessage` non fermava
+        // il microfono. Il riconoscimento e' gia' chiuso — siamo nel suo
+        // `onend` — e chiuderlo di nuovo non fa nulla di male.
+        fermaDettatura()
         return
       }
       // Si riparte: il testo gia' riconosciuto diventa definitivo, perche' i
@@ -833,10 +854,19 @@ export default function ChatPage() {
       setCurrentConvId(convId)
     }
 
-    // L'invio SUPERA la dettatura: da qui in poi qualunque trascrizione ancora
-    // in volo appartiene a un messaggio gia' partito, e non deve tornare nella
-    // casella. `generazioneDettaturaRef` e' la stessa guardia che protegge il
-    // microfono — qui la usa anche `trascriviDalServer`.
+    // ⭐ L'invio CHIUDE la dettatura, non solo la trascrizione.
+    //
+    // Prima qui si faceva solo avanzare la generazione: bastava a impedire che
+    // la trascrizione del server tornasse nella casella, ma il MICROFONO
+    // restava acceso. Si dettava, si inviava, e da quel momento il
+    // riconoscimento continuava a scrivere nella casella tutto quello che
+    // l'Ingegnere diceva — anche parlando d'altro con qualcun altro.
+    //
+    // Era una correzione applicata a meta': fermato l'effetto, non la causa.
+    //
+    // `trascrivi: false` perche' il messaggio e' gia' partito: una trascrizione
+    // adesso si pagherebbe per poi scartarla.
+    if (isRecording) fermaDettatura({ trascrivi: false })
     generazioneDettaturaRef.current++
 
     const userMsg: DisplayMessage = { role: 'user', text, files: files.length > 0 ? [...files] : undefined }
