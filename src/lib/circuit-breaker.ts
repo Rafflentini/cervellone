@@ -10,6 +10,7 @@
 
 import { supabase } from './supabase'
 import { sendTelegramMessage } from './telegram-helpers'
+import { avvisaConversazioniWeb } from './avviso-web'
 
 // ── Types ──
 
@@ -329,25 +330,14 @@ async function notifyAdmin(text: string, force = false): Promise<void> {
     console.warn('[CB] notify Telegram skipped: né ADMIN_CHAT_ID né TELEGRAM_ALLOWED_IDS configurati')
   }
 
-  try {
-    const { data } = await supabase
-      .from('conversations')
-      .select('id')
-      .neq('title', '💬 Telegram')
-      .order('created_at', { ascending: false })
-      .limit(5)
-    if (data && data.length > 0) {
-      await supabase.from('messages').insert(
-        data.map((c: { id: string }) => ({
-          conversation_id: c.id,
-          role: 'assistant',
-          content: text,
-        }))
-      )
-    }
-  } catch (err) {
-    console.error('[CB] notify webchat failed:', err)
-  }
+  // L'avviso nelle ultime 5 conversazioni web, con la chiave d'invio.
+  //
+  // Il throttle qui sopra (`lastNotifyAt`) e' un `let` in memoria di modulo: su
+  // Vercel ogni istanza serverless ha il suo, e tutti i chiamanti lo scavalcano
+  // comunque con `force = true`. Due lambda che scattano sullo stesso guasto
+  // scrivevano quindi l'avviso due volte. La chiave lo impedisce nel database,
+  // che e' l'unico punto che le due istanze condividono.
+  await avvisaConversazioniWeb(text)
 }
 
 /**

@@ -2,6 +2,7 @@ import { supabase } from '../supabase'
 import { sendTelegramMessage } from '../telegram-helpers'
 import { promoteModel, assertModelloEsiste } from '../circuit-breaker'
 import { migliorePerFamiglia, formatModelliDisponibili, famigliaDi } from '../model-families'
+import { avvisaConversazioniWeb } from '../avviso-web'
 import type { ToolDefinition } from './types'
 
 /**
@@ -23,26 +24,13 @@ async function notifyModelChange(noticeText: string): Promise<void> {
     })
   }
 
-  // Webchat: insert assistant message in ultime 5 conv web
-  try {
-    const { data: webConvs } = await supabase
-      .from('conversations')
-      .select('id')
-      .neq('title', '💬 Telegram')
-      .order('created_at', { ascending: false })
-      .limit(5)
-
-    if (webConvs && webConvs.length > 0) {
-      const inserts = webConvs.map((c: { id: string }) => ({
-        conversation_id: c.id,
-        role: 'assistant',
-        content: noticeText,
-      }))
-      await supabase.from('messages').insert(inserts)
-    }
-  } catch (err) {
-    console.error('Notify webchat failed:', err)
-  }
+  // Webchat: l'avviso nelle ultime 5 conversazioni web.
+  //
+  // Passa da `avviso-web.ts`, che porta la chiave d'invio: questa funzione non
+  // ha throttle di nessun tipo, e due esecuzioni concorrenti scrivevano lo
+  // stesso avviso due volte nelle stesse conversazioni. La guardia 409 non
+  // arriva qui — vale per il browser, non per il codice del server.
+  await avvisaConversazioniWeb(noticeText)
 }
 
 /**
