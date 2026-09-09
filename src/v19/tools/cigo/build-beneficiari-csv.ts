@@ -41,8 +41,19 @@ export function buildBeneficiariCsv(beneficiari: Beneficiario[], periodo: Period
       escapeCsv(b.nome),
       escapeCsv(b.codice_fiscale),
       escapeCsv(b.data_assunzione ?? ''),
-      escapeCsv(b.tipo_contratto ?? 'CCNL Edilizia'),
-      String(b.ore_contrattuali_settimana ?? 40),
+      // ⭐ NIENTE valori inventati. Qui c'era `?? 'CCNL Edilizia'` e `?? 40`:
+      // poiche' `mapCigoInput` non scriveva mai quei due campi, OGNI operaio
+      // usciva dichiarato all'INPS come edile a tempo pieno, sempre, senza che
+      // nessuno l'avesse detto. Le ore contrattuali sono il denominatore
+      // dell'integrazione salariale: un part-time a 20 ore dichiarato a 40 e'
+      // una dichiarazione falsa su un modulo pubblico, e il segnaposto e'
+      // troppo plausibile perche' qualcuno se ne accorga.
+      //
+      // Una casella vuota l'INPS la rifiuta: e' visibile e si corregge. Un
+      // numero sbagliato l'INPS lo accetta. Un segnaposto non e' una
+      // dichiarazione — vedi il sesso predefinito «M» del check-in.
+      escapeCsv(b.tipo_contratto ?? ''),
+      b.ore_contrattuali_settimana === undefined ? '' : String(b.ore_contrattuali_settimana),
       'CIGO_EM', // CIGO Eventi Meteo
       escapeCsv(periodo.data_inizio),
       escapeCsv(periodo.data_fine),
@@ -63,4 +74,33 @@ function escapeCsv(value: string): string {
     return `"${value.replace(/"/g, '""')}"`
   }
   return value
+}
+
+/**
+ * Gli operai a cui manca un dato obbligatorio del tracciato INPS, detti per
+ * nome e cognome.
+ *
+ * Una casella vuota da sola non basta: se nessuno lo dice, il pacchetto parte
+ * lo stesso e il rifiuto dell'INPS arriva giorni dopo, senza spiegare quale
+ * operaio e quale campo. Questi avvisi finiscono nei `warnings` del pacchetto,
+ * che `compila_modello` riporta in chat.
+ */
+export function avvisiBeneficiariIncompleti(beneficiari: Beneficiario[]): string[] {
+  const avvisi: string[] = []
+
+  for (const b of beneficiari) {
+    const mancanti: string[] = []
+    if (!b.tipo_contratto) mancanti.push('tipo di contratto')
+    if (b.ore_contrattuali_settimana === undefined) mancanti.push('ore contrattuali settimanali')
+    if (!b.data_assunzione) mancanti.push('data di assunzione')
+
+    if (mancanti.length > 0) {
+      const nome = `${b.cognome} ${b.nome}`.trim() || b.codice_fiscale
+      avvisi.push(
+        `${nome}: manca ${mancanti.join(', ')}. La casella resta VUOTA nel CSV per l'INPS — vanno compilate prima di inviare la domanda.`,
+      )
+    }
+  }
+
+  return avvisi
 }

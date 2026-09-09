@@ -14,7 +14,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk'
 import { renderAllegato10 } from './build-allegato10'
-import { buildBeneficiariCsv } from './build-beneficiari-csv'
+import { buildBeneficiariCsv, avvisiBeneficiariIncompleti } from './build-beneficiari-csv'
 import { compilaSr41Placeholder } from './build-sr41'
 import { zipCigoFiles } from './zip'
 import {
@@ -59,7 +59,15 @@ export async function generaAllegato10Cigo(
   }
 
   // 2. Allegato 10 DOCX
-  const allegato10Buffer = await renderAllegato10(input)
+  //
+  // `bollettinoAllegato` dice al documento cosa c'e' DAVVERO nel pacchetto.
+  // Prima l'Allegato 10 dichiarava il bollettino in modo incondizionato, anche
+  // quando lo scaricamento era fallito: l'avvertenza finiva in chat, ma il
+  // foglio che il legale rappresentante timbra e firma — una dichiarazione
+  // sostitutiva ex art. 47 D.P.R. 445/2000 — attestava un allegato assente.
+  const allegato10Buffer = await renderAllegato10(input, {
+    bollettinoAllegato: bollettino !== null,
+  })
   files.push({
     name: 'Allegato10_RelazioneTecnica.docx',
     buffer: allegato10Buffer,
@@ -67,6 +75,12 @@ export async function generaAllegato10Cigo(
   })
 
   // 3. CSV beneficiari
+  //
+  // Gli operai a cui manca un dato del tracciato INPS vanno DETTI per nome: il
+  // CSV non inventa piu' niente, ma una casella vuota che nessuno segnala fa
+  // partire il pacchetto lo stesso, e il rifiuto dell'INPS arriva giorni dopo
+  // senza spiegare quale operaio.
+  warnings.push(...avvisiBeneficiariIncompleti(input.beneficiari))
   const csv = buildBeneficiariCsv(input.beneficiari, input.periodo)
   files.push({
     name: 'ElencoBeneficiari.csv',

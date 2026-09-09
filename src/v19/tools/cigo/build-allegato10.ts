@@ -19,7 +19,22 @@ import type { Allegato10Input } from './types'
 
 const GREY_BG = 'D9D9D9'
 
-export function buildAllegato10Doc(input: Allegato10Input): DocxDocument {
+export interface OpzioniAllegato10 {
+  /**
+   * Il PDF del bollettino e' DAVVERO dentro il pacchetto?
+   *
+   * Predefinito `false`, e non e' un dettaglio: questo documento e' una
+   * dichiarazione sostitutiva ex art. 47 D.P.R. 445/2000, che il legale
+   * rappresentante timbra e firma. Dichiarava un allegato in modo
+   * INCONDIZIONATO, anche quando lo scaricamento era fallito e il PDF non
+   * c'era. Nel dubbio non si attesta niente: chi non passa l'informazione non
+   * fa dichiarare il falso al firmatario.
+   */
+  bollettinoAllegato?: boolean
+}
+
+export function buildAllegato10Doc(input: Allegato10Input, opts: OpzioniAllegato10 = {}): DocxDocument {
+  const bollettinoAllegato = opts.bollettinoAllegato === true
   const sections: DocxSection[] = []
 
   // Header "All.10" a destra
@@ -139,11 +154,13 @@ export function buildAllegato10Doc(input: Allegato10Input): DocxDocument {
     style: { bold: true },
   })
   sections.push({ kind: 'paragraph', text: input.evento_meteo })
-  sections.push({
-    kind: 'paragraph',
-    text: 'Si allega bollettino meteo ufficiale del Centro Funzionale Decentrato (CFD) della Protezione Civile Regione Basilicata.',
-    style: { italics: true },
-  })
+  if (bollettinoAllegato) {
+    sections.push({
+      kind: 'paragraph',
+      text: 'Si allega bollettino meteo ufficiale del Centro Funzionale Decentrato (CFD) della Protezione Civile Regione Basilicata.',
+      style: { italics: true },
+    })
+  }
   sections.push({ kind: 'paragraph', text: ' ' })
 
   // Sezione 3 — conseguenze
@@ -208,7 +225,11 @@ export function buildAllegato10Doc(input: Allegato10Input): DocxDocument {
     kind: 'list',
     ordered: true,
     items: [
-      'Bollettino di criticità CFD Regione Basilicata della giornata evento',
+      // Si elenca solo cio' che il pacchetto contiene davvero: e' un elenco di
+      // ALLEGATI dentro una dichiarazione che si firma.
+      ...(bollettinoAllegato
+        ? ['Bollettino di criticità CFD Regione Basilicata della giornata evento']
+        : []),
       'Elenco beneficiari CSV (tracciato Msg INPS 3566/2018)',
       'Documento di riconoscimento del firmatario',
       ...(input.pagamento_diretto ? ['Modello SR41 per pagamento diretto'] : []),
@@ -237,8 +258,11 @@ export function buildAllegato10Doc(input: Allegato10Input): DocxDocument {
   }
 }
 
-export async function renderAllegato10(input: Allegato10Input): Promise<Buffer> {
-  return await renderDocx(buildAllegato10Doc(input))
+export async function renderAllegato10(
+  input: Allegato10Input,
+  opts: OpzioniAllegato10 = {},
+): Promise<Buffer> {
+  return await renderDocx(buildAllegato10Doc(input, opts))
 }
 
 function formatDateIt(isoDate: string): string {

@@ -151,12 +151,25 @@ export function mapCigoInput(valori: Record<string, unknown>): Allegato10Input {
     // Le ore di stop totali per operaio finiscono in OreCIG del CSV INPS
     // (build-beneficiari-csv somma ore_perse_settimana_1..4). Mettiamo il totale in settimana_1.
     const oreNum = Number(row.ore ?? 0)
+    // ⭐ Questi tre campi erano nello schema del tool (`cigo/index.ts:159-161`)
+    // ma qui non venivano letti: finivano nel nulla, e il CSV per l'INPS li
+    // rimpiazzava con «CCNL Edilizia» e «40 ore» per OGNI operaio. Quel
+    // segnaposto non l'aveva dichiarato nessuno, ed era abbastanza plausibile
+    // da non farsi notare. Ora passano; se mancano, restano mancanti e il
+    // pacchetto lo DICE (`avvisiBeneficiariIncompleti`).
+    const oreContrattuali = Number(row.ore_contrattuali_settimana)
     return {
       cognome: String(row.cognome ?? ''),
       nome: String(row.nome ?? ''),
       codice_fiscale: String(row.codice_fiscale ?? ''),
       qualifica: row.qualifica ? String(row.qualifica) : undefined,
       ore_perse_settimana_1: Number.isFinite(oreNum) ? oreNum : 0,
+      tipo_contratto: row.tipo_contratto ? String(row.tipo_contratto) : undefined,
+      ore_contrattuali_settimana:
+        row.ore_contrattuali_settimana !== undefined && Number.isFinite(oreContrattuali)
+          ? oreContrattuali
+          : undefined,
+      data_assunzione: row.data_assunzione ? String(row.data_assunzione) : undefined,
     }
   })
 
