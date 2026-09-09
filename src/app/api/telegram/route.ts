@@ -23,6 +23,7 @@ import { runAgentTask } from '@/workflows/agent-task'
 import { validateWebhookSecret } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { safeSupabase } from '@/lib/resilience'
+import { messaggioGiaVisto } from '@/lib/telegram-dedup'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
 import { confirmSalStep1, confirmSalStep2, cancelSal } from '@/lib/sal-tools'
 import { parseOpusCommand, computeOpusUntil, isOpusExpired, OPUS_MODEL, SONNET_MODEL } from '@/lib/opus-ttl'
@@ -94,16 +95,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    // REL-001: Dedup con fallback se Supabase è down
+    // REL-001: la riconsegna dello stesso messaggio non si lavora due volte.
+    //
+    // Qui c'era un LEGGI-POI-SCRIVI: fra la select e l'insert non c'era
+    // atomicita', e due consegne simultanee passavano entrambe. Peggio, la
+    // select usava `safeSupabase(..., [])`, e `[]` significa "non visto":
+    // col database in difficolta' la guardia non si limitava a non funzionare,
+    // diceva ATTIVAMENTE di procedere.
+    //
+    // `telegram_dedup` ha gia' PRIMARY KEY (chat_id, message_id): l'atomicita'
+    // stava li' dentro. Ora si scrive prima e si guarda l'esito.
     const msgId = message.message_id
-    if (msgId) {
-      const existing = await safeSupabase(
-        () => supabase.from('telegram_dedup').select('message_id')
-          .eq('chat_id', chatId).eq('message_id', msgId).limit(1),
-        []
-      )
-      if (Array.isArray(existing) && existing.length > 0) return NextResponse.json({ ok: true })
-      await safeSupabase(() => supabase.from('telegram_dedup').insert({ chat_id: chatId, message_id: msgId }))
+    if (msgId && (await messaggioGiaVisto(chatId, msgId))) {
+      return NextResponse.json({ ok: true })
     }
 
     let userText = message.text || message.caption || ''
