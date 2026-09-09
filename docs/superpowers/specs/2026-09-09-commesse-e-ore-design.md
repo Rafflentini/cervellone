@@ -66,9 +66,25 @@ Nessun filtro per operaio, nessuna assegnazione preventiva. L'app mostra tutte l
 
 *Perché:* la squadra si sposta. Un'assegnazione da mantenere è lavoro d'ufficio che si disallinea dalla realtà entro una settimana, e produce l'operaio che non trova il proprio cantiere nella lista — cioè la timbratura saltata.
 
-### 3.4 La geolocalizzazione esiste, ma nasce spenta
+### 3.4 La geolocalizzazione si costruisce ATTIVA, l'interruttore resta di Raffaele
 
-Vedi la sezione 7 per intero. In sintesi: il campo esiste nello schema e nel codice; finché l'interruttore è spento **l'app non chiede nemmeno il permesso di posizione al telefono**.
+Decisione dell'Ingegnere, 9 set 2026: *«devi farmela partire già con la geolocalizzazione»*, mentre in parallelo si muove col consulente del lavoro.
+
+Quindi la funzione si costruisce completa e funzionante. **L'interruttore resta suo** — lo accende quando il consulente dà l'ok — e fino a quel momento l'app **non chiede nemmeno il permesso di posizione**. Dettaglio completo alla sezione 7.
+
+### 3.4-bis La conferma d'arrivo passa dal QR del cantiere, non da un pulsante
+
+Un QR Code stampato e affisso **all'ingresso del cantiere**. L'operaio lo inquadra e in quel momento si registrano ora e posizione.
+
+*Perché è meglio di un pulsante:* **un QR non si scansiona da lontano.** Se il codice è al cancello di Moliterno, lo inquadri solo se sei a Moliterno. Questo dissolve il problema che nessun'altra soluzione risolve senza tracciamento continuo: *«è arrivato alle 07:20 e si è dimenticato di confermare, oppure si è fermato al bar fino alle 08:06?»*. Con il QR **la scansione È l'arrivo**, e l'ora è quella vera.
+
+In più il gesto è naturale: si entra in cantiere e si inquadra il cartello. Non è un adempimento in più, fa parte dell'arrivare.
+
+*Nota tecnica:* leggere un QR **si può fare da una web app** (la fotocamera è accessibile dal browser). Il geofence automatico no — richiederebbe un'app nativa e il permesso di posizione «Sempre», cioè il tracciamento continuo. Il QR tiene quindi in piedi sia la PWA sia la posizione legale più difendibile.
+
+*Ripiego dichiarato:* se il cartello è strappato, bagnato o illeggibile, l'operaio conferma **a mano** e quella riga resta marcata `confermato senza QR`. Non si blocca mai il lavoro di nessuno; si sa solo quali timbrature hanno la prova forte e quali no.
+
+Questa scelta è nata guardando **myAEDES**, che l'Ingegnere usa già (sezione 11).
 
 ### 3.5 Tre esiti di posizione, non due
 
@@ -149,6 +165,41 @@ Ogni commessa porta la propria `tolleranza_viaggio_min`, con un predefinito di *
 *Perché:* trenta minuti bastano per 10 km in Val d'Agri, ma da Marsicovetere a **Maratea** ci vogliono quasi due ore. Con una soglia unica ogni trasferta sulla costa farebbe partire una notifica falsa — e alla terza volta che il telefono suona per niente, l'operaio smette di guardarlo. È lo stesso guasto del raggio troppo stretto: **un avviso che sbaglia spesso non è un avviso, è rumore.**
 
 L'alternativa scartata era calcolare il tempo dalla distanza: in Basilicata la linea d'aria non dice quasi mai il tempo di strada, e senza un servizio di percorrenza esterno resterebbe una stima grossolana proprio dove serve precisione.
+
+### 3.11-bis Il cantiere «con trasferta»: si badgia all'arrivo, non si timbra il viaggio
+
+Una casella da spuntare quando si crea il cantiere. Per i cantieri lontani — Maratea è a quasi due ore da Marsicovetere — vale una regola diversa da 3.10:
+
+- la **tolleranza di viaggio** è quella lunga della commessa (3.11);
+- il viaggio **non si timbra**: al suo posto c'è l'**indennità di trasferta giornaliera**;
+- gli operai **badgiano quando arrivano e quando ripartono**.
+
+**L'indennità è un costo della commessa**, non un costo generale. Un cantiere lontano costa davvero di più, e quella differenza deve restare nel numero su cui si decide se accettare lavori sulla costa.
+
+L'importo si inserisce **a mano** quando si spunta la casella, resta salvato ed è modificabile. Alla modifica l'interfaccia chiede **una cosa sola**:
+
+- **«correggo tutti i giorni»** — era un errore di battitura, quei margini erano semplicemente sbagliati e vanno rifatti;
+- **«vale dal…»** — l'indennità è cambiata davvero, e i giorni precedenti restano com'erano.
+
+*Perché due bottoni e non uno:* con la sola correzione retroattiva, il giorno che l'indennità cambia davvero si riscrive tutto lo storico — lo stesso difetto che 3.2 evita per il costo orario. Con la sola datazione, non si può correggere un refuso senza inventare una finta variazione.
+
+In entrambi i casi la modifica è **tracciata**: chi, quando, da quanto a quanto, e quale delle due. Serve perché **un margine che cambia da solo, senza spiegazione, è la cosa peggiore che possa capitare a un cruscotto**: si guarda Maratea e non si sa se si è migliorati o se qualcuno ha toccato un numero. Col tracciamento la scheda dice: *«margine cambiato il 9 set: indennità corretta da 30 a 35»*.
+
+### 3.11-ter Il cantiere ha tre stati, e le transizioni si tracciano
+
+`attivo` → `archiviato` → di nuovo `attivo`.
+
+Gli operai vedono **solo gli attivi**, così la loro lista resta corta e non sbagliano cantiere. Dal gestionale si **archivia** quando il lavoro chiude: archiviare **non nasconde e non cancella niente** — margini, ore e documenti restano tutti leggibili. E si **riattiva** quando il cliente richiama, riprendendo a timbrarci sopra.
+
+**Chi archivia e chi riattiva, e quando, resta scritto.** Non è burocrazia: la resa di un cantiere chiuso a giugno e riaperto a settembre è la somma di due periodi diversi, e senza le date si confronterebbero mele con pere **proprio nel momento in cui quel dato serve per fare un prezzo**.
+
+⭐ Questa è la funzione che rende utile tutto il resto. Timbrare serve a sapere quanto costa un cantiere oggi; **poter tornare fra un anno su un lavoro simile e vedere com'è andata davvero** è ciò che fa fare preventivi tarati sulla squadra vera invece che sulla produttività teorica del prezzario.
+
+### 3.11-quater Il DDT fotografato è il ponte fra la fattura e il cantiere
+
+A ogni approvvigionamento gli operai **fotografano il documento di trasporto**. Il DDT viene archiviato e rinominato, legato alla commessa e alla giornata.
+
+*Perché sta in questa specifica e non nella Fase 2:* una fattura di un fornitore dice *cosa* è stato comprato, non *dove* è andato. **Il DDT firmato in cantiere è l'unica prova di quale materiale è arrivato su quale commessa** — è il dato che oggi manca e senza il quale l'imputazione delle fatture resta un'indovinello. Raccoglierlo da subito significa che quando arriverà la Fase 2 ci saranno già mesi di dati su cui lavorare.
 
 ### 3.12 Credenziali personali per ogni operaio
 
@@ -288,7 +339,7 @@ Il prospetto segnala esplicitamente: turni `da_confermare` non ancora confermati
 
 ---
 
-## 7. Geolocalizzazione: presente, e spenta
+## 7. Geolocalizzazione: si costruisce attiva, l'interruttore è di Raffaele
 
 La badgiatura geolocalizzata non si può attivare con la sola informativa privacy: l'art. 4 dello Statuto dei Lavoratori esenta la rilevazione presenze, ma la geolocalizzazione fa decadere l'esenzione. Serve accordo sindacale o autorizzazione dell'Ispettorato Territoriale del Lavoro di Potenza. Il consenso individuale del lavoratore **non è sufficiente**.
 
@@ -343,7 +394,95 @@ TDD su tutto, secondo le regole del progetto. In particolare i test che devono e
 
 ---
 
-## 10. Punti aperti
+## 10. Il rapportino, e dove si attacca
+
+Il rapportino dettato è la **Fase 3** e avrà la sua specifica. Ma **dove vive** è una decisione della Fase 1, perché è agganciato alla timbratura d'uscita:
+
+- lo compila **uno per squadra, il preposto** — o un sostituto quando manca;
+- si fa **prima di timbrare l'uscita**: si apre la sezione, si detta, si legge la trascrizione, si corregge;
+- si **allegano le foto delle lavorazioni** fatte in quelle ore su quel cantiere.
+
+Quello che la Fase 1 deve prevedere fin d'ora: il **ruolo di preposto** sull'operaio, e il fatto che la schermata d'uscita abbia un passaggio prima della timbratura. Il resto arriva dopo.
+
+⚠️ La dettatura di Cervellone è già in produzione e curata il 9 set (vocabolario dei nomi veri + `gpt-4o-transcribe`). **Resta aperto** un difetto noto: se si preme invia mentre la trascrizione del server è ancora in volo, parte quella del browser, meno accurata. Da chiudere prima che il rapportino ci si appoggi sopra.
+
+---
+
+## 11. Cosa fa davvero myAEDES — verificato nel prodotto il 9 set 2026
+
+L'Ingegnere usa già **myAEDES** (~€1.000/anno). L'ho esplorato con lui loggato, in sola lettura. Quello che segue è misurato, non letto sul sito del produttore.
+
+### Cosa fa bene, e che abbiamo copiato
+Linguette **Attivi / Archiviati** con archiviazione del cantiere · **due turni al giorno** con la pausa in mezzo (nei dati veri: 07:56→12:56 e 13:59→17:08, che conferma 3.9) · **«Registrata da: …»** su ogni riga, cioè la provenienza del dato · **app nativa** dagli store per gli operai.
+
+### Cosa NON fa, e sono le cose che servono qui
+
+| Manca | Conseguenza misurata |
+|---|---|
+| **Il costo orario del lavoratore** | Il profilo contiene solo email, ruolo e moduli abilitati. Le ore **non diventano mai soldi**. |
+| **Le fatture** | Stanno in Fatture in Cloud, che myAEDES non vede. |
+| **Il legame fattura ↔ cantiere** | Non esiste. |
+| **La posizione del cantiere** | La scheda cantiere ha nome, luogo (testo libero, **vuoto** su Moliterno), impresa, committente, DL, CSE, appaltatore, RUP, date. **Nessuna coordinata, nessun raggio, nessun geofence.** |
+| **La trasferta** | Il concetto non c'è: Maratea e Moliterno sono uguali. |
+| **Tolleranza di viaggio e avvisi** | Il caso «partito e mai arrivato» non esiste. |
+
+**Il Cruscotto esiste** — Ricavi, Costi, Utile per cantiere — **ed è piatto a zero**, perché manca il dato che lo alimenta.
+
+### La scoperta che conta
+
+myAEDES registra la posizione **dell'operaio** al momento della timbratura, riducendola a un **indirizzo col numero civico**. Ma non avendo la posizione del cantiere, **non ha niente con cui confrontarla**: nessuno verifica mai se l'operaio fosse davvero sul posto.
+
+Misurato sui dati veri del 9 set: quattro timbrature dello **stesso cantiere**, nello stesso giorno, risultano da **quattro vie diverse** (via Roma 1 · Via Enrico Fermi 3 · Via Galante Domenico 39 · via Parco del Seggio 17). È la dispersione del GPS in un paese, e nessuno se n'è accorto perché non c'era niente che dovesse accorgersene.
+
+⭐ Ne discendono due cose per noi. Primo: **un indirizzo col civico sembra preciso e non lo è** — conferma 3.5 e 3.6, il raggio largo con l'esito a tre valori è più onesto. Secondo: il flusso col QR che il produttore pubblicizza **non è attivo** (la sezione «Badge di Cantiere» è a zero), quindi gli operai timbrano da dove si trovano.
+
+---
+
+## 12. Le due regole di disciplina, valide per tutto il modulo
+
+**Un tool serve a rispondere a una domanda, non a registrare un fatto.**
+Cervellone ha già **43 tool**, che pesano ~6.200 token — **un quarto** dei 24.306 token che entrano a ogni turno. Timbrare, fotografare un DDT, archiviare un cantiere sono **moduli compilati** che scrivono dritti sulla tabella: zero token, zero tool. Il modello entra solo su una domanda (*«quanto mi è costato Blasi»*), e per quelle bastano tre o quattro strumenti. Con questa regola il modulo aggiunge il **+2,5%**; senza, il +12%.
+
+**Ogni numero dev'essere apribile.**
+Il margine di Moliterno non è «€ 4.572»: è *queste ore, di queste persone, a questo costo orario, più queste fatture, meno questa trasferta*. Questo modulo **calcola soldi**, e un margine sbagliato non si vede — sembra un numero e ci si fa un preventivo sopra. Se si può aprire, l'errore è visibile; se è solo un numero, è invisibile per sempre. È la stessa regola che ha smascherato le «40 ore» inventate della CIGO.
+
+---
+
+## 13. Costruire invece di comprare: decisione presa, e perché
+
+**Decisione dell'Ingegnere, 9 set 2026: si costruisce.** Le ore le raccoglie Cervellone. Qui sta il perché, così fra sei mesi nessuno riapre la questione per inerzia.
+
+**myAEDES non copre il bisogno, e non lo coprirà.** Non è una mancanza di configurazione: gli mancano strutturalmente le tre cose che trasformano le ore in soldi (sezione 11) — il costo orario, le fatture, il legame fattura↔cantiere. Il suo cruscotto è piatto a zero per questo.
+
+**Il conto economico.** €1.000 l'anno fanno **€6.000 in cinque anni**, per uno strumento che comunque non dà il controllo di gestione: servirebbe un secondo software, cioè due canoni e due database che non si parlano — le ore di qua, le fatture di là, e nessuno dei due che sa a quale cantiere appartiene una fattura. È il problema di oggi, moltiplicato per due.
+
+**Cervellone parte con l'80% fatto:** Fatture in Cloud collegato, i tre canali, il prezzario, i SAL, la memoria. Manca il perno — la commessa come dato — che è appunto ciò che costruisce questa specifica.
+
+**Cosa si sta scambiando, detto chiaro.** Un canone include qualcuno che ripara alle tre di notte. Costruendo, quei €6.000 restano in casa ma **quando si rompe, si rompe a Restruktura**. È il motivo per cui la sezione 12 (le due regole di disciplina) e la sezione 9 (come si verifica) non sono contorno: sono la contropartita.
+
+### 🚨 C'è una scadenza vera
+
+**La sospensione di myAEDES è già stata richiesta: non verrà rinnovato.** Non esiste quindi un periodo di sovrapposizione, e non c'è una rete sotto.
+
+Questo cambia l'ordine del lavoro. Alla data di scadenza deve essere in piedi **almeno la raccolta delle ore**, altrimenti c'è un buco in cui le ore non le registra nessuno — e le ore non raccolte non si recuperano.
+
+Ne discende una priorità netta dentro la Fase 1:
+
+1. **Anagrafica commesse + timbratura + gestionale minimo.** È il pezzo che deve esistere prima della scadenza. Senza, si torna alla ricostruzione a memoria a fine mese.
+2. **Costo orario e valorizzazione.** Può arrivare subito dopo: le ore raccolte restano lì e si valorizzano quando la tabella dei costi è pronta.
+3. **QR, geolocalizzazione, trasferta, notifiche, rapportino.** Tutto quello che *migliora* la raccolta viene dopo che la raccolta esiste.
+
+⭐ La regola: **prima si smette di perdere il dato, poi lo si rende più preciso.** Un'ora timbrata senza QR e senza GPS vale infinitamente più di un'ora mai timbrata.
+
+**Prima di scrivere il piano serve una data**: quando scade myAEDES.
+
+---
+
+## 14. Punti aperti
+
+- 🚨 **La data di scadenza di myAEDES.** Da questa dipende l'ordine di tutto il lavoro (sezione 13): alla scadenza deve esistere almeno la raccolta delle ore.
+- **Importo dell'indennità di trasferta** per i cantieri lontani.
+- **Chi è preposto** fra gli operai, e chi lo sostituisce quando manca (sezione 10).
 
 - **Ritenzione delle timbrature.** Da chiudere col consulente del lavoro; orientamento 24 mesi (quadratura col libro unico + eventuali contestazioni). Parametro **di sistema**.
 - **Orario di fine lavoro standard** per la chiusura dei turni dimenticati: da fissare.
