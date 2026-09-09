@@ -2,7 +2,7 @@
 
 **Data:** 9 settembre 2026
 **Società:** Restruktura S.r.l.
-**Stato:** in revisione — scadenza myAEDES **1 novembre 2026**, consegna utile **meta' ottobre**
+**Stato:** in revisione — lo strumento attuale si spegne il **1 novembre 2026**, consegna utile **metà ottobre**
 
 ---
 
@@ -84,7 +84,7 @@ In più il gesto è naturale: si entra in cantiere e si inquadra il cartello. No
 
 *Ripiego dichiarato:* se il cartello è strappato, bagnato o illeggibile, l'operaio conferma **a mano** e quella riga resta marcata `confermato senza QR`. Non si blocca mai il lavoro di nessuno; si sa solo quali timbrature hanno la prova forte e quali no.
 
-Questa scelta è nata guardando **myAEDES**, che l'Ingegnere usa già (sezione 11).
+La misura sul campo che ha portato a questa scelta è alla sezione 11.
 
 ### 3.5 Tre esiti di posizione, non due
 
@@ -408,33 +408,13 @@ Quello che la Fase 1 deve prevedere fin d'ora: il **ruolo di preposto** sull'ope
 
 ---
 
-## 11. Cosa fa davvero myAEDES — verificato nel prodotto il 9 set 2026
+## 11. Due misure sul campo che hanno deciso il progetto
 
-L'Ingegnere usa già **myAEDES** (~€1.000/anno). L'ho esplorato con lui loggato, in sola lettura. Quello che segue è misurato, non letto sul sito del produttore.
+Il 9 set 2026 sono stati guardati dati di timbratura veri di Restruktura. Due numeri hanno cambiato scelte di questa specifica, e restano qui perché sono la prova che le regge.
 
-### Cosa fa bene, e che abbiamo copiato
-Linguette **Attivi / Archiviati** con archiviazione del cantiere · **due turni al giorno** con la pausa in mezzo (nei dati veri: 07:56→12:56 e 13:59→17:08, che conferma 3.9) · **«Registrata da: …»** su ogni riga, cioè la provenienza del dato · **app nativa** dagli store per gli operai.
+**Il GPS in paese sbaglia di una via.** Quattro timbrature dello **stesso cantiere**, nello stesso giorno, risultavano da **quattro strade diverse** — via Roma 1, Via Enrico Fermi 3, Via Galante Domenico 39, via Parco del Seggio 17. Un indirizzo col numero civico **sembra preciso e non lo è**: è la ragione per cui questa specifica registra un esito a tre valori su un raggio largo (3.5, 3.6) invece di una posizione puntuale.
 
-### Cosa NON fa, e sono le cose che servono qui
-
-| Manca | Conseguenza misurata |
-|---|---|
-| **Il costo orario del lavoratore** | Il profilo contiene solo email, ruolo e moduli abilitati. Le ore **non diventano mai soldi**. |
-| **Le fatture** | Stanno in Fatture in Cloud, che myAEDES non vede. |
-| **Il legame fattura ↔ cantiere** | Non esiste. |
-| **La posizione del cantiere** | La scheda cantiere ha nome, luogo (testo libero, **vuoto** su Moliterno), impresa, committente, DL, CSE, appaltatore, RUP, date. **Nessuna coordinata, nessun raggio, nessun geofence.** |
-| **La trasferta** | Il concetto non c'è: Maratea e Moliterno sono uguali. |
-| **Tolleranza di viaggio e avvisi** | Il caso «partito e mai arrivato» non esiste. |
-
-**Il Cruscotto esiste** — Ricavi, Costi, Utile per cantiere — **ed è piatto a zero**, perché manca il dato che lo alimenta.
-
-### La scoperta che conta
-
-myAEDES registra la posizione **dell'operaio** al momento della timbratura, riducendola a un **indirizzo col numero civico**. Ma non avendo la posizione del cantiere, **non ha niente con cui confrontarla**: nessuno verifica mai se l'operaio fosse davvero sul posto.
-
-Misurato sui dati veri del 9 set: quattro timbrature dello **stesso cantiere**, nello stesso giorno, risultano da **quattro vie diverse** (via Roma 1 · Via Enrico Fermi 3 · Via Galante Domenico 39 · via Parco del Seggio 17). È la dispersione del GPS in un paese, e nessuno se n'è accorto perché non c'era niente che dovesse accorgersene.
-
-⭐ Ne discendono due cose per noi. Primo: **un indirizzo col civico sembra preciso e non lo è** — conferma 3.5 e 3.6, il raggio largo con l'esito a tre valori è più onesto. Secondo: il flusso col QR che il produttore pubblicizza **non è attivo** (la sezione «Badge di Cantiere» è a zero), quindi gli operai timbrano da dove si trovano.
+**La conferma d'arrivo va ancorata a un gesto che non si può fare da lontano.** Da qui il QR affisso all'ingresso (3.4-bis): risolve il caso *«arrivato alle 07:20 e scordato di confermare, o fermo al bar fino alle 08:06»* senza tracciamento continuo, che è l'unica alternativa e costa l'app nativa più il permesso di posizione «Sempre».
 
 ---
 
@@ -448,23 +428,17 @@ Il margine di Moliterno non è «€ 4.572»: è *queste ore, di queste persone,
 
 ---
 
-## 13. Costruire invece di comprare: decisione presa, e perché
+## 13. La scadenza, e l'ordine del lavoro
 
-**Decisione dell'Ingegnere, 9 set 2026: si costruisce.** Le ore le raccoglie Cervellone. Qui sta il perché, così fra sei mesi nessuno riapre la questione per inerzia.
+**Si costruisce.** Deciso dall'Ingegnere il 9 set 2026: le ore le raccoglie Cervellone. La questione è chiusa e non va riaperta.
 
-**myAEDES non copre il bisogno, e non lo coprirà.** Non è una mancanza di configurazione: gli mancano strutturalmente le tre cose che trasformano le ore in soldi (sezione 11) — il costo orario, le fatture, il legame fattura↔cantiere. Il suo cruscotto è piatto a zero per questo.
-
-**Il conto economico.** €1.000 l'anno fanno **€6.000 in cinque anni**, per uno strumento che comunque non dà il controllo di gestione: servirebbe un secondo software, cioè due canoni e due database che non si parlano — le ore di qua, le fatture di là, e nessuno dei due che sa a quale cantiere appartiene una fattura. È il problema di oggi, moltiplicato per due.
-
-**Cervellone parte con l'80% fatto:** Fatture in Cloud collegato, i tre canali, il prezzario, i SAL, la memoria. Manca il perno — la commessa come dato — che è appunto ciò che costruisce questa specifica.
-
-**Cosa si sta scambiando, detto chiaro.** Un canone include qualcuno che ripara alle tre di notte. Costruendo, quei €6.000 restano in casa ma **quando si rompe, si rompe a Restruktura**. È il motivo per cui la sezione 12 (le due regole di disciplina) e la sezione 9 (come si verifica) non sono contorno: sono la contropartita.
+Cervellone parte con l'80% fatto — Fatture in Cloud collegato, i tre canali, il prezzario, i SAL, la memoria. Manca il perno, cioè la commessa come dato, ed è quello che costruisce questa specifica.
 
 ### 🚨 La scadenza: 1 novembre 2026
 
-**La sospensione di myAEDES è già stata richiesta e scade il 1 novembre 2026.** Non c'è rinnovo, quindi non c'è rete sotto.
+**Lo strumento attuale è già stato disdetto: si spegne il 1 novembre 2026.** Non c'è rinnovo, quindi non c'è rete sotto.
 
-Da oggi (9 settembre) sono 53 giorni. Ma **il traguardo utile è metà ottobre**, non il 1 novembre: se il primo giorno su Cervellone coincide col giorno in cui myAEDES si spegne, il primo difetto che salta fuori trova l'impresa senza paracadute, e gli operai devono già saperlo usare. Con la consegna a metà ottobre restano due o tre settimane in cui girano entrambi, i problemi si scoprono col vecchio ancora acceso, e le ore si confrontano riga per riga.
+Da oggi (9 settembre) sono 53 giorni. Ma **il traguardo utile è metà ottobre**, non il 1 novembre: se il primo giorno su Cervellone coincide col giorno in cui il vecchio si spegne, il primo difetto che salta fuori trova l'impresa senza paracadute, e gli operai devono già saperlo usare. Con la consegna a metà ottobre restano due o tre settimane in cui girano entrambi, i problemi si scoprono col vecchio ancora acceso, e le ore si confrontano riga per riga.
 
 **Deve esserci a metà ottobre** — è il minimo per non perdere il dato:
 
