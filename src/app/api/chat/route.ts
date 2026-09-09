@@ -92,6 +92,15 @@ export async function POST(request: NextRequest) {
 
   const lastUserMsg = [...trimmedMessages].reverse().find(m => m.role === 'user')
   const userQuery = extractText(lastUserMsg)
+  // I messaggi precedenti dell'Ingegnere, dal piu' recente in giu'. Servono
+  // alle skill: senza, una skill si accendeva sul messaggio che la nomina e
+  // spariva alla domanda di approfondimento.
+  const domandePrecedenti = [...trimmedMessages]
+    .reverse()
+    .filter((m) => m.role === 'user')
+    .slice(1)
+    .map((m) => extractText(m))
+    .filter(Boolean)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hasFiles = trimmedMessages.some(m =>
     Array.isArray(m.content) && (m.content as any[]).some((b: any) =>
@@ -370,7 +379,7 @@ export async function POST(request: NextRequest) {
       let testoErrore = ''
       try {
         fullResponse = await callClaudeStream(
-          { messages: trimmedMessages, systemPrompt: await getChatSystemPrompt(userQuery), userQuery, conversationId, hasFiles, workingContext },
+          { messages: trimmedMessages, systemPrompt: await getChatSystemPrompt(userQuery, domandePrecedenti), userQuery, conversationId, hasFiles, workingContext },
           {
             onText: (text) => invia(text),
             onToolStart: () => invia('\n\n🔍 *Cerco informazioni...*\n\n'),

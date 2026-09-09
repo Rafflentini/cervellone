@@ -33,18 +33,46 @@ async function loadSkills(): Promise<Skill[]> {
 }
 
 /**
- * Dato il messaggio utente, trova le skill da iniettare.
- * Restituisce le istruzioni concatenate, o stringa vuota se nessuna skill matcha.
+ * Quanti messaggi dell'Ingegnere si guardano, oltre a quello corrente.
+ *
+ * ⭐ Prima si guardava SOLO l'ultimo, e una skill spariva alla domanda dopo:
+ * «quanto devo versare di imposta di soggiorno» la accendeva, «e a luglio?» la
+ * spegneva — e il bot rispondeva senza le regole, con la stessa sicurezza di
+ * prima. Non si vedeva: la risposta arrivava lo stesso, solo peggiore.
+ *
+ * La finestra e' CORTA apposta. Allargarla costa attivazioni sbagliate, e in
+ * questo progetto ce n'e' una nota: «maratea» e' un anti-segnale, quattro
+ * messaggi su cinque sono cantieri Restruktura. Tre turni bastano a coprire la
+ * domanda di approfondimento, che e' il caso vero.
  */
-export async function matchSkills(userQuery: string): Promise<string> {
+export const FINESTRA_SKILL = 3
+
+/**
+ * Date le ultime frasi dell'Ingegnere, trova le skill da iniettare.
+ * Restituisce le istruzioni concatenate, o stringa vuota se nessuna matcha.
+ *
+ * Accetta una stringa sola (il messaggio corrente) o l'elenco dei messaggi
+ * utente dal piu' recente in giu'.
+ */
+export async function matchSkills(userQuery: string | string[]): Promise<string> {
   const skills = await loadSkills()
-  const queryLower = userQuery.toLowerCase()
+  const finestra = (Array.isArray(userQuery) ? userQuery : [userQuery])
+    .filter((t) => typeof t === 'string' && t.trim())
+    .slice(0, FINESTRA_SKILL)
+  const queryLower = finestra.join(String.fromCharCode(10)).toLowerCase()
   const matched: Skill[] = []
 
   for (const skill of skills) {
-    if (!skill.keywords?.length) continue
-    const hasMatch = skill.keywords.some(kw => queryLower.includes(kw.toLowerCase()))
-    if (hasMatch) matched.push(skill)
+    // ⭐ Le parole chiave VUOTE si scartano, non solo l'elenco vuoto:
+    // `"".includes("")` e' vero, quindi una riga con un campo salvato a meta'
+    // — un errore di battitura nel Config — accenderebbe quella skill su OGNI
+    // messaggio, per sempre, senza che si veda. La guardia che c'era copriva
+    // l'elenco vuoto e non la stringa vuota dentro l'elenco.
+    //
+    // Nessuna guardia esplicita sull'elenco svuotato: `[].some()` e gia falso.
+    // Una guardia che non puo scattare somiglia a una difesa e non lo e.
+    const chiavi = (skill.keywords ?? []).map((k) => String(k).trim()).filter(Boolean)
+    if (chiavi.some((kw) => queryLower.includes(kw.toLowerCase()))) matched.push(skill)
   }
 
   if (matched.length === 0) return ''

@@ -379,9 +379,16 @@ CONDIVISIONE DOCUMENTI: i link /doc sono PRIVATI. Per dare un documento a un est
 
 Dai del Lei all'Ingegnere. Rispondi in italiano.`
 
-export async function getChatSystemPrompt(userQuery: string): Promise<string> {
+/**
+ * @param userQuery  il messaggio corrente dell'Ingegnere
+ * @param precedenti i suoi messaggi precedenti, dal piu' recente in giu'. Servono
+ *   alle skill: senza, una skill si accendeva sul messaggio che la nomina e
+ *   spariva alla domanda di approfondimento — che e' proprio quella in cui le
+ *   sue regole servono.
+ */
+export async function getChatSystemPrompt(userQuery: string, precedenti: string[] = []): Promise<string> {
   const [skillContext, promptExtra, regoleContext] = await Promise.all([
-    matchSkills(userQuery),
+    matchSkills([userQuery, ...precedenti]),
     getPromptExtra(),
     buildRegoleContext().catch(() => ''),
   ])
@@ -398,9 +405,16 @@ export async function getChatSystemPrompt(userQuery: string): Promise<string> {
   return BASE_PROMPT + SYSTEM_CACHE_SPLIT + variable
 }
 
-export async function getTelegramSystemPrompt(userQuery: string): Promise<string> {
+/**
+ * @param userQuery  il messaggio corrente dell'Ingegnere
+ * @param precedenti i suoi messaggi precedenti, dal piu' recente in giu'. Servono
+ *   alle skill: senza, una skill si accendeva sul messaggio che la nomina e
+ *   spariva alla domanda di approfondimento — che e' proprio quella in cui le
+ *   sue regole servono.
+ */
+export async function getTelegramSystemPrompt(userQuery: string, precedenti: string[] = []): Promise<string> {
   const [skillContext, promptExtra, regoleContext] = await Promise.all([
-    matchSkills(userQuery),
+    matchSkills([userQuery, ...precedenti]),
     getPromptExtra(),
     buildRegoleContext().catch(() => ''),
   ])

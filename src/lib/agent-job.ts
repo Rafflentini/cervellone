@@ -151,11 +151,23 @@ export async function runAgentJob(
   // L'istante a cui attribuire la risposta: l'inizio del turno, non la fine
   // della scrittura. Una scrittura lenta non deve infilarsi DOPO la domanda
   // successiva dell'Ingegnere.
+  // ⚠️ La storia Telegram contiene GIA il messaggio corrente: la route lo
+  // aggiunge prima di passarla. Senza saltarlo, la finestra si accorcia da
+  // sola, perche il primo posto sarebbe un doppione di userText.
+  // Le domande precedenti dell'Ingegnere, dal piu' recente in giu': senza,
+  // una skill spariva alla domanda di approfondimento.
+  const domandePrecedenti = [...history]
+    .reverse()
+    .filter((m) => m.role === 'user')
+    .slice(1)
+    .map((m) => (typeof m.content === 'string' ? m.content : ''))
+    .filter(Boolean)
+
   const inizioTurno = new Date().toISOString()
   const fullResponse = await callClaudeStreamTelegram(
     {
       messages: history,
-      systemPrompt: await getTelegramSystemPrompt(userText),
+      systemPrompt: await getTelegramSystemPrompt(userText, domandePrecedenti),
       userQuery: userText,
       conversationId,
       hasFiles: fileBlocks.length > 0,
