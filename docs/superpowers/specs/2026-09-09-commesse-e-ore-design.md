@@ -2,7 +2,7 @@
 
 **Data:** 9 settembre 2026
 **Società:** Restruktura S.r.l.
-**Stato:** in revisione — da approvare prima di implementare
+**Stato:** in revisione — scadenza myAEDES **1 novembre 2026**, consegna utile **meta' ottobre**
 
 ---
 
@@ -460,27 +460,27 @@ Il margine di Moliterno non è «€ 4.572»: è *queste ore, di queste persone,
 
 **Cosa si sta scambiando, detto chiaro.** Un canone include qualcuno che ripara alle tre di notte. Costruendo, quei €6.000 restano in casa ma **quando si rompe, si rompe a Restruktura**. È il motivo per cui la sezione 12 (le due regole di disciplina) e la sezione 9 (come si verifica) non sono contorno: sono la contropartita.
 
-### 🚨 C'è una scadenza vera
+### 🚨 La scadenza: 1 novembre 2026
 
-**La sospensione di myAEDES è già stata richiesta: non verrà rinnovato.** Non esiste quindi un periodo di sovrapposizione, e non c'è una rete sotto.
+**La sospensione di myAEDES è già stata richiesta e scade il 1 novembre 2026.** Non c'è rinnovo, quindi non c'è rete sotto.
 
-Questo cambia l'ordine del lavoro. Alla data di scadenza deve essere in piedi **almeno la raccolta delle ore**, altrimenti c'è un buco in cui le ore non le registra nessuno — e le ore non raccolte non si recuperano.
+Da oggi (9 settembre) sono 53 giorni. Ma **il traguardo utile è metà ottobre**, non il 1 novembre: se il primo giorno su Cervellone coincide col giorno in cui myAEDES si spegne, il primo difetto che salta fuori trova l'impresa senza paracadute, e gli operai devono già saperlo usare. Con la consegna a metà ottobre restano due o tre settimane in cui girano entrambi, i problemi si scoprono col vecchio ancora acceso, e le ore si confrontano riga per riga.
 
-Ne discende una priorità netta dentro la Fase 1:
+**Deve esserci a metà ottobre** — è il minimo per non perdere il dato:
 
-1. **Anagrafica commesse + timbratura + gestionale minimo.** È il pezzo che deve esistere prima della scadenza. Senza, si torna alla ricostruzione a memoria a fine mese.
-2. **Costo orario e valorizzazione.** Può arrivare subito dopo: le ore raccolte restano lì e si valorizzano quando la tabella dei costi è pronta.
-3. **QR, geolocalizzazione, trasferta, notifiche, rapportino.** Tutto quello che *migliora* la raccolta viene dopo che la raccolta esiste.
+1. il registro delle **commesse**, con archivia e riattiva;
+2. gli **operai** con le proprie credenziali;
+3. la **timbratura**: entra, esci, pausa, cambio cantiere, con la coda offline;
+4. il **gestionale**: la giornata di tutti, e la correzione tracciata.
 
-⭐ La regola: **prima si smette di perdere il dato, poi lo si rende più preciso.** Un'ora timbrata senza QR e senza GPS vale infinitamente più di un'ora mai timbrata.
+**Può arrivare dopo il 1 novembre**, senza perdere niente di ciò che nel frattempo si raccoglie: QR · geolocalizzazione (che aspetta comunque il consulente) · costo orario e valorizzazione (le ore restano e si valorizzano quando la tabella è pronta) · trasferta · transito e notifiche · rapportino · DDT.
 
-**Prima di scrivere il piano serve una data**: quando scade myAEDES.
+⭐ La regola d'ordine: **prima si smette di perdere il dato, poi lo si rende più preciso.** Un'ora timbrata senza QR e senza GPS vale infinitamente più di un'ora mai timbrata.
 
 ---
 
 ## 14. Punti aperti
 
-- 🚨 **La data di scadenza di myAEDES.** Da questa dipende l'ordine di tutto il lavoro (sezione 13): alla scadenza deve esistere almeno la raccolta delle ore.
 - **Importo dell'indennità di trasferta** per i cantieri lontani.
 - **Chi è preposto** fra gli operai, e chi lo sostituisce quando manca (sezione 10).
 
