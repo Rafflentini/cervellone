@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
-import { sendTelegramMessage } from '@/lib/telegram-helpers'
+import { sendTelegramMessageChecked } from '@/lib/telegram-helpers'
 import { estraiScadenzaDaAllegato } from '@/lib/scadenza-extract'
 import { confirmProposta } from '@/lib/doc-proposte-actions'
 import { ricorda } from '@/lib/memoria-tools'
@@ -170,8 +170,12 @@ async function insertProposal(
 
 async function notifyProposal(result: ProposalResult, adminChat: number): Promise<ProposalResult> {
   if (!adminChat) return result
-  await sendTelegramMessage(adminChat, buildNotification(result))
-  return { ...result, notified: true }
+  // `notified: true` era incondizionato: dichiarava consegnato un messaggio di
+  // cui nessuno aveva guardato l'esito. Da qui parte il conteggio dei solleciti,
+  // quindi una prima notifica mai arrivata avvicinava comunque la proposta
+  // all'auto-registrazione.
+  const consegnato = await sendTelegramMessageChecked(adminChat, buildNotification(result))
+  return { ...result, notified: consegnato }
 }
 
 function olderThan24h(): string {
@@ -199,7 +203,7 @@ async function updateReminderAttempt(proposal: PendingProposal): Promise<void> {
   if (error) throw new Error(`Errore update sollecito proposta ${proposal.id}: ${error.message}`)
 }
 
-async function remindPendingProposals(adminChat: number, errors: string[]): Promise<number> {
+export async function remindPendingProposals(adminChat: number, errors: string[]): Promise<number> {
   const { data, error } = await supabase
     .from('cervellone_doc_proposte')
     .select('id, attachment_filename, tipo_documento, soggetto, data_scadenza, attempts')
@@ -213,17 +217,34 @@ async function remindPendingProposals(adminChat: number, errors: string[]): Prom
 
   let riproposte = 0
   for (const proposal of (data ?? []) as PendingProposal[]) {
+    // ⭐ PRIMA si consegna, POI si conta.
+    //
+    // Qui il contatore avanzava per primo e l'esito dell'invio veniva buttato.
+    // `sendTelegramMessage` NON rigetta mai: senza token esce muta, e su 4xx/429
+    // la fetch risolve lo stesso — quel `.catch` era codice morto. Il danno non
+    // era teorico: a `attempts >= 3` scatta `autoMemorizePendingProposals`, che
+    // conferma la proposta DA SOLA con la motivazione «Nessuna risposta dopo 3
+    // solleciti». Tre solleciti mai arrivati facevano entrare una scadenza nel
+    // sistema senza che l'Ingegnere avesse visto un solo messaggio.
+    //
+    // Il cron delle scadenze lo faceva gia' giusto, e il suo commento descrive
+    // esattamente questo errore. Era una lezione scritta su un canale solo.
+    if (!adminChat) continue
+
+    const consegnato = await sendTelegramMessageChecked(adminChat, buildNotification(proposal))
+    if (!consegnato) {
+      errors.push(
+        `Sollecito non consegnato per ${proposal.attachment_filename}: Telegram non ha confermato (token mancante o invio rifiutato). Il contatore NON e' stato avanzato.`,
+      )
+      continue
+    }
+
     try {
       await updateReminderAttempt(proposal)
       riproposte += 1
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err))
       continue
-    }
-    if (adminChat) {
-      await sendTelegramMessage(adminChat, buildNotification(proposal)).catch((err) => {
-        console.error('[CRON mail-sentinella] reminder telegram failed:', err)
-      })
     }
   }
   return riproposte
@@ -279,12 +300,19 @@ async function autoMemorizePendingProposals(adminChat: number, errors: string[])
     if (adminChat) {
       const tipo = proposal.tipo_documento || 'documento'
       const soggetto = proposal.soggetto || 'soggetto non riconosciuto'
-      await sendTelegramMessage(
+      // Qui lo stato e' gia' scritto e non si torna indietro: la registrazione
+      // e' avvenuta. Ma se anche QUESTO annuncio si perde, l'Ingegnere si trova
+      // una scadenza in memoria che non ha mai visto nascere — quattro messaggi
+      // muti di fila. Almeno finisce fra gli errori del giro.
+      const annunciato = await sendTelegramMessageChecked(
         adminChat,
         `Nessuna risposta dopo 3 solleciti: ho archiviato e registrato comunque ${tipo} di ${soggetto} (scade ${proposal.data_scadenza}).`,
-      ).catch((err) => {
-        console.error('[CRON mail-sentinella] auto-memory telegram failed:', err)
-      })
+      )
+      if (!annunciato) {
+        errors.push(
+          `Auto-registrata la scadenza di ${proposal.attachment_filename}, ma l'annuncio su Telegram NON e' stato consegnato: l'Ingegnere non sa che esiste.`,
+        )
+      }
     }
 
     autoMemorizzate += 1

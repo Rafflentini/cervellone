@@ -171,7 +171,26 @@ export async function confirmLatestPendingSend(): Promise<{ ok: boolean; message
 export async function cancelPendingSend(uuid: string): Promise<{ ok: boolean; message: string }> {
   const p = await fetchPending(uuid)
   if (!p) return { ok: false, message: 'Pending non trovato (scaduto o già processato)' }
-  await markPendingCancelled(uuid)
+  // L'esito si guarda, come fa il gemello `markPendingSent` poche righe sopra.
+  // Buttarlo qui significava dire «annullato» anche quando la riga era rimasta
+  // `pending` per un errore del database: quella riga resta il latest pending
+  // valido, e la successiva conferma a voce «invia pure la mail» avrebbe
+  // spedito a un destinatario ESTERNO la mail appena annullata. Oppure la mail
+  // era gia' partita, e l'Ingegnere credeva di averla fermata.
+  const annullato = await markPendingCancelled(uuid)
+  if (!annullato.ok) {
+    if (annullato.reason === 'already_processed') {
+      return {
+        ok: false,
+        message: '⚠️ NON annullato: questo invio era gia\' stato processato — controlli se la mail e\' partita.',
+      }
+    }
+    return {
+      ok: false,
+      message: '⚠️ NON sono riuscito ad annullare: l\'invio resta in attesa. Riprovi fra poco.',
+    }
+  }
+
   await logEmail({
     account: p.from_account as AccountKey,
     action: 'pending_cancelled',
