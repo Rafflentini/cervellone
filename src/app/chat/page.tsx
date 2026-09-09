@@ -214,12 +214,25 @@ export default function ChatPage() {
     role: string,
     content: string,
     files?: FileAttachment[],
+    /**
+     * Chiave d'invio: un id coniato una volta sola per QUESTO invio. Se la
+     * stessa richiesta parte due volte — un ritentativo, un doppio click, una
+     * corsa fra due percorsi — la seconda porta la stessa chiave e l'indice
+     * unico parziale sul database la scarta. E' l'equipollente di
+     * `telegram_dedup`, che su Telegram tiene da sei mesi mentre qui non c'era
+     * niente: 85 domande scritte due volte fra aprile e agosto.
+     *
+     * Due invii DIVERSI hanno due chiavi, quindi un "ok" scritto davvero due
+     * volte passa. E' per questo che la dedup non puo' stare sul contenuto.
+     */
+    clientMsgId?: string,
   ) {
     try {
       const corpo = JSON.stringify({
         role,
         content,
         files: files ? files.map(f => ({ name: f.name, isImage: f.isImage, isPdf: f.isPdf, isWord: f.isWord })) : [],
+        ...(clientMsgId ? { clientMsgId } : {}),
       })
 
       // `keepalive` fa sopravvivere la richiesta alla chiusura della pagina, ma
@@ -814,8 +827,17 @@ export default function ChatPage() {
     setLoading(true)
     setMessages([...newMessages, { role: 'assistant', text: '' }])
 
-    // Salva messaggio utente
-    await saveMessage(convId, 'user', text, userMsg.files)
+    // Salva messaggio utente.
+    //
+    // La chiave si conia QUI, una volta per messaggio: identifica l'intenzione
+    // dell'Ingegnere, non la chiamata di funzione. Cosi' un ritentativo della
+    // stessa POST — la rete che ripete, `keepalive` che rispedisce — non scrive
+    // una seconda riga, mentre due messaggi davvero distinti restano distinti.
+    const chiaveInvio =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    await saveMessage(convId, 'user', text, userMsg.files, chiaveInvio)
 
     // Per file grandi (>3MB base64 = ~2MB reali): carica su Supabase Storage direttamente dal browser
     if (userMsg.files) {

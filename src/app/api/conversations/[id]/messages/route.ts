@@ -40,7 +40,7 @@ export async function POST(
   }
 
   const { id } = await params
-  const { role, content, files } = await request.json()
+  const { role, content, files, clientMsgId } = await request.json()
 
   // Dall'8 set 2026 questa NON e' piu' l'unica riga del turno web: la RISPOSTA
   // la scrive il server (`api/chat/route.ts`), qui passa il messaggio
@@ -93,6 +93,13 @@ export async function POST(
   // Nota per il futuro: non estenderla ai messaggi normali. Un confronto sul
   // contenuto scarterebbe un "ok" o un "procedi" scritti due volte in cinque
   // minuti — cioe' una perdita muta di dati legittimi.
+  //
+  // La dedup giusta e' invece sulla CHIAVE D'INVIO, ed e' arrivata il 9 set
+  // 2026: il client conia un id per ogni invio, l'indice unico parziale
+  // `uniq_messages_client_msg_id` lo fa valere nel database. Distingue per
+  // costruzione i due casi che il contenuto confonde — due invii veri hanno due
+  // chiavi, un ritentativo ha la stessa. E' l'equipollente di `telegram_dedup`,
+  // che su Telegram tiene da sei mesi mentre il web non aveva niente.
   const { data, error } = await supabase
     .from('messages')
     .insert({
@@ -100,11 +107,22 @@ export async function POST(
       role,
       content: sanitized,
       files: files || [],
+      // Assente per una scheda col bundle vecchio: l'indice e' parziale, quella
+      // scrive come prima. Nessuna modifica al client raggiunge una scheda gia'
+      // aperta — lezione dell'8 set 2026.
+      ...(typeof clientMsgId === 'string' && clientMsgId ? { client_msg_id: clientMsgId } : {}),
     })
     .select()
     .single()
 
   if (error) {
+    // 23505 = unique_violation. Non e' un guasto: e' lo stesso invio arrivato
+    // due volte, e la riga c'e' gia'. Rispondere 500 farebbe mostrare al
+    // browser un errore per una domanda che invece e' salvata.
+    if (error.code === '23505') {
+      console.warn(`[messages] invio ripetuto scartato dalla chiave: ${clientMsgId}`)
+      return NextResponse.json({ ok: true, duplicato: true })
+    }
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
