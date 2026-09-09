@@ -1,25 +1,10 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
+import { renderInline } from '@/lib/markdown-inline'
 
 function escapeHtml(text: string) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-
-function renderInline(text: string): string {
-  return text
-    // Bold
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    // Italic
-    .replace(/(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-    // Strikethrough
-    .replace(/~~(.*?)~~/g, '<del class="text-gray-400">$1</del>')
-    // Inline code
-    .replace(/`([^`]+)`/g, '<code class="mx-0.5 px-1.5 py-0.5 bg-gray-100 text-gray-800 rounded text-[13px] font-mono">$1</code>')
-    // Links
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">$1</a>')
-    // Superscript
-    .replace(/\^(.*?)\^/g, '<sup>$1</sup>')
 }
 
 function renderMarkdown(text: string): string {
