@@ -17,17 +17,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const righeEntita: Array<{ name: string; type: string }> = []
-vi.mock('./supabase', () => ({
-  supabase: {
-    from: () => ({
-      select: () => ({
-        order: () => ({
-          limit: async () => ({ data: righeEntita, error: null }),
-        }),
-      }),
-    }),
-  },
-}))
+// ⚠️ `order` in supabase-js e' CONCATENABILE: ritorna il builder, non un
+// oggetto con il solo `limit`. Il mock precedente ne ammetteva una sola, e
+// aggiungendo un secondo criterio di ordinamento faceva sparire tutti i nomi
+// invece di segnalare l'errore — cioe' collaudava un'API che non esiste.
+vi.mock('./supabase', () => {
+  const builder: Record<string, unknown> = {}
+  builder.select = () => builder
+  builder.order = () => builder
+  builder.limit = async () => ({ data: righeEntita, error: null })
+  return { supabase: { from: () => builder } }
+})
 
 import { trascrizioneDegenere, costruisciVocabolario, LESSICO_TECNICO } from './trascrizione'
 
@@ -148,5 +148,61 @@ describe('costruisciVocabolario — l orecchio impara i nomi che Cervellone gia 
 
     // Stima prudente: ~4 caratteri per token.
     expect(v.length).toBeLessThanOrEqual(224 * 4)
+  })
+})
+
+/**
+ * Misurato in produzione il 9 set 2026: `cervellone_entita_menzionate` ha 56
+ * nomi, che occupano **1.047 caratteri contro un tetto di 896**.
+ *
+ * Conseguenze, nessuna delle quali si vede:
+ * - il lessico tecnico NON arriva mai al trascrittore: sborda gia' prima;
+ * - anche gli ultimi nomi si perdono, e quali si salvano lo decide l'ORDINE
+ *   ALFABETICO — non l'importanza. Zaccagnino sparisce, Albini resta.
+ *
+ * ⭐ Il commento nel codice diceva la cosa giusta — «i nomi propri prima: se il
+ * troncamento morde, deve mangiare le parole comuni» — ma nessuno aveva
+ * misurato che il troncamento morde gia' DENTRO i nomi.
+ *
+ * ⭐ E il test che c'era prometteva «contiene SEMPRE il lessico tecnico»,
+ * misurando pero' il solo caso a database vuoto: un «sempre» che collaudava
+ * l'unica condizione in cui non poteva fallire.
+ */
+describe('il vocabolario regge anche coi nomi VERI, non solo col DB vuoto', () => {
+  it('col numero di nomi che c e in produzione, il lessico tecnico c e ancora', async () => {
+    // 56 nomi lunghi come quelli veri: e' lo scenario misurato in produzione.
+    for (let i = 0; i < 56; i++) {
+      righeEntita.push({ name: `Committente Numero ${String(i).padStart(2, '0')} S.r.l.`, type: 'cliente' })
+    }
+
+    const v = await costruisciVocabolario()
+
+    for (const parola of LESSICO_TECNICO) expect(v).toContain(parola)
+  })
+
+  it('quando lo spazio non basta si perdono i nomi in FONDO, non il lessico', async () => {
+    for (let i = 0; i < 56; i++) {
+      righeEntita.push({ name: `Committente Numero ${String(i).padStart(2, '0')} S.r.l.`, type: 'cliente' })
+    }
+
+    const v = await costruisciVocabolario()
+
+    // Il primo nome che il chiamante ha messo in cima sopravvive sempre:
+    // l'ordine lo decide chi interroga il database, non l'alfabeto.
+    expect(v).toContain('Committente Numero 00 S.r.l.')
+    expect(v.length).toBeLessThanOrEqual(224 * 4)
+  })
+
+  it('CONTROLLO POSITIVO: con pochi nomi non si perde niente', async () => {
+    // Senza questo, i test sopra passerebbero anche con un codice che scarta
+    // sempre tutti i nomi e tiene solo il lessico.
+    righeEntita.push({ name: 'La Colla Domenico', type: 'cliente' })
+    righeEntita.push({ name: 'Cond. San Biagio', type: 'cantiere' })
+
+    const v = await costruisciVocabolario()
+
+    expect(v).toContain('La Colla Domenico')
+    expect(v).toContain('Cond. San Biagio')
+    for (const parola of LESSICO_TECNICO) expect(v).toContain(parola)
   })
 })

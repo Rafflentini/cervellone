@@ -64,7 +64,12 @@ export async function costruisciVocabolario(): Promise<string> {
     const { data } = await supabase
       .from('cervellone_entita_menzionate')
       .select('name')
-      .order('name')
+      // ⭐ Per QUANTO SPESSO li dici, non per alfabeto. Con l'ordine alfabetico
+      // quali nomi sopravvivevano al troncamento lo decideva la lettera
+      // iniziale: un committente di cognome Zaccagnino spariva, uno di cognome
+      // Albini restava — indipendentemente da quale dei due nomini ogni giorno.
+      .order('mention_count', { ascending: false })
+      .order('last_seen_at', { ascending: false })
       .limit(150)
     nomi = (data ?? [])
       .map((r: { name?: unknown }) => String(r?.name ?? '').trim())
@@ -73,16 +78,32 @@ export async function costruisciVocabolario(): Promise<string> {
     // DB irraggiungibile: si va avanti col solo lessico tecnico.
   }
 
-  // I nomi propri PRIMA: se il troncamento dell'API morde, deve mangiare le
-  // parole comuni, non i nomi — che sono il motivo per cui il prompt esiste.
-  const parole = [...nomi, ...LESSICO_TECNICO]
-  let vocabolario = ''
-  for (const p of parole) {
-    const prossimo = vocabolario ? `${vocabolario}, ${p}` : p
-    if (prossimo.length > MAX_CARATTERI_VOCABOLARIO) break
-    vocabolario = prossimo
+  // ⭐ Il lessico tecnico si PRENOTA il suo spazio, prima che i nomi lo mangino.
+  //
+  // Qui c'era `[...nomi, ...LESSICO_TECNICO]` con un taglio unico in fondo, e
+  // il commento diceva la cosa giusta — «se il troncamento morde, deve mangiare
+  // le parole comuni, non i nomi». Nessuno pero' aveva MISURATO dove mordeva:
+  // il 9 set 2026 le 56 entita' vere occupavano 1.047 caratteri contro un tetto
+  // di 896, quindi il taglio arrivava gia' dentro i nomi e il lessico tecnico
+  // non raggiungeva MAI il trascrittore. Zero parole del mestiere, in silenzio.
+  //
+  // Le due cose servono a scopi diversi e non devono competere: i nomi propri
+  // curano «Laboda Luminico» al posto di «La Colla Domenico», il lessico cura
+  // «CILA», «DURC», «subalterno». Perdere del tutto il secondo per far posto al
+  // primo e' una scelta che nessuno aveva fatto.
+  const lessico = LESSICO_TECNICO.join(', ')
+  const spazioPerINomi = MAX_CARATTERI_VOCABOLARIO - lessico.length - 2
+
+  let parteNomi = ''
+  for (const n of nomi) {
+    const prossimo = parteNomi ? `${parteNomi}, ${n}` : n
+    if (prossimo.length > spazioPerINomi) break
+    parteNomi = prossimo
   }
-  return vocabolario
+
+  // I nomi restano comunque PRIMA: se l'API tronca oltre i 224 token, a cadere
+  // e' la coda del lessico, che e' la parte piu' facile da riconoscere da sola.
+  return parteNomi ? `${parteNomi}, ${lessico}` : lessico
 }
 
 /**
