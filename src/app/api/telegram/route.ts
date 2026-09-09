@@ -415,6 +415,32 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    /**
+     * Risponde a un comando E lo mette in storia.
+     *
+     * Prima i nove rami qui sotto facevano solo `sendTelegramMessage` + `return`:
+     * zero righe in `messages`. E nemmeno il comando dell'Ingegnere entrava,
+     * perche' il `return` sta a monte di `runAgentTurn`, l'unico punto che
+     * scrive la riga utente. Il caso peggiore e' `/condividi_ok_`, che risponde
+     * con un link FIRMATO: non e' ricostruibile da nessuna parte, e al turno
+     * dopo il modello non sa che quel documento e' gia' stato condiviso.
+     *
+     * Sul web la stessa cosa la fa `rispostaSemplice` (`api/chat/route.ts`).
+     */
+    const rispondiESalva = async (testoBot: string) => {
+      await sendTelegramMessage(chatId, testoBot)
+      const convId = chatIdToUuid(chatId)
+      const istante = new Date().toISOString()
+      const scritture = (async () => {
+        const okUser = await saveMessageOnly(convId, 'user', userText, istante)
+        const okBot = await saveMessageOnly(convId, 'assistant', testoBot, istante)
+        if (!okUser || !okBot) console.error('[telegram] risposta a comando NON salvata')
+        else await saveEmbeddingOnly(convId, 'assistant', testoBot).catch(() => {})
+      })()
+      waitUntil(scritture)
+      return NextResponse.json({ ok: true })
+    }
+
     // ── A: RAFFICA = cataloga SENZA analizzare (anti analisi-storm + mutex) ──
     // Se arrivano 4+ file NON processati in ~60s, NON avvio il turno LLM (niente analisi foto-per-foto):
     // i file sono già su Drive + registro, mando UN avviso (throttle) e attendo l'istruzione.
@@ -487,48 +513,20 @@ export async function POST(request: NextRequest) {
     }
     const opusMinutes = parseOpusCommand(userText)
     if (opusMinutes !== null) {
-      const until = computeOpusUntil(new Date(), opusMinutes)
-      await supabase.from('cervellone_config').update({ value: OPUS_MODEL, updated_by: 'telegram /opus' }).eq('key', 'model_default')
-      await supabase.from('cervellone_config').update({ value: OPUS_MODEL, updated_by: 'telegram /opus' }).eq('key', 'model_active')
-      await supabase.from('cervellone_config').upsert({ key: 'opus_until', value: until, updated_by: 'telegram /opus' }, { onConflict: 'key' })
-      const { invalidateConfigCache } = await import('@/lib/claude')
-      invalidateConfigCache()
-      const { invalidateCache } = await import('@/lib/circuit-breaker')
-      invalidateCache()
-      const hhmm = new Date(until).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' })
-      await sendTelegramMessage(chatId, `🧠 Modello: *Opus* (massima potenza) per ${opusMinutes} min — fino alle ${hhmm}, poi torno su Sonnet da solo.\n(Per estendere: /opus 120. Per tornare subito: /sonnet)`)
-      return NextResponse.json({ ok: true })
+      const { impostaModello } = await import('@/lib/modello-attivo')
+      const esito = await impostaModello('opus', opusMinutes)
+      return await rispondiESalva(`${esito}
+(Per estendere: /opus 120. Per tornare subito: /sonnet)`)
     }
     if (userText === '/sonnet') {
-      await supabase.from('cervellone_config').update({ value: SONNET_MODEL, updated_by: 'telegram /sonnet' }).eq('key', 'model_default')
-      await supabase.from('cervellone_config').update({ value: SONNET_MODEL, updated_by: 'telegram /sonnet' }).eq('key', 'model_active')
-      await supabase.from('cervellone_config').delete().eq('key', 'opus_until')
-      const { invalidateConfigCache } = await import('@/lib/claude')
-      invalidateConfigCache()
-      const { invalidateCache } = await import('@/lib/circuit-breaker')
-      invalidateCache()
-      await sendTelegramMessage(chatId, '⚡ Modello: *Sonnet* (veloce)')
-      return NextResponse.json({ ok: true })
+      const { impostaModello } = await import('@/lib/modello-attivo')
+      return await rispondiESalva(await impostaModello('sonnet'))
     }
     if (userText === '/modello') {
-      const { data: cfgRows } = await supabase.from('cervellone_config').select('key, value').in('key', ['model_default', 'opus_until'])
-      let model = 'sconosciuto'
-      let opusUntilVal: string | undefined
-      for (const row of cfgRows ?? []) {
-        const v = String(row.value).replace(/"/g, '')
-        if (row.key === 'model_default') model = v
-        else if (row.key === 'opus_until') opusUntilVal = v
-      }
-      let msg = `🧠 Modello attivo: *${model}*`
-      if (opusUntilVal && model.includes('opus')) {
-        const untilDate = new Date(opusUntilVal)
-        if (!isNaN(untilDate.getTime()) && untilDate > new Date()) {
-          const hhmm = untilDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' })
-          msg += ` (Opus fino alle ${hhmm})`
-        }
-      }
-      await sendTelegramMessage(chatId, msg)
-      return NextResponse.json({ ok: true })
+      // Stessa logica del tool `modello_attivo`, che vale anche sul web:
+      // il modello e' uno solo per tutto il sistema.
+      const { leggiModelloAttivo } = await import('@/lib/modello-attivo')
+      return await rispondiESalva(await leggiModelloAttivo())
     }
     if (userText === '/aggiorna') {
       const { executeTool } = await import('@/lib/tools')
@@ -636,31 +634,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    /**
-     * Risponde a un comando E lo mette in storia.
-     *
-     * Prima i nove rami qui sotto facevano solo `sendTelegramMessage` + `return`:
-     * zero righe in `messages`. E nemmeno il comando dell'Ingegnere entrava,
-     * perche' il `return` sta a monte di `runAgentTurn`, l'unico punto che
-     * scrive la riga utente. Il caso peggiore e' `/condividi_ok_`, che risponde
-     * con un link FIRMATO: non e' ricostruibile da nessuna parte, e al turno
-     * dopo il modello non sa che quel documento e' gia' stato condiviso.
-     *
-     * Sul web la stessa cosa la fa `rispostaSemplice` (`api/chat/route.ts`).
-     */
-    const rispondiESalva = async (testoBot: string) => {
-      await sendTelegramMessage(chatId, testoBot)
-      const convId = chatIdToUuid(chatId)
-      const istante = new Date().toISOString()
-      const scritture = (async () => {
-        const okUser = await saveMessageOnly(convId, 'user', userText, istante)
-        const okBot = await saveMessageOnly(convId, 'assistant', testoBot, istante)
-        if (!okUser || !okBot) console.error('[telegram] risposta a comando NON salvata')
-        else await saveEmbeddingOnly(convId, 'assistant', testoBot).catch(() => {})
-      })()
-      waitUntil(scritture)
-      return NextResponse.json({ ok: true })
-    }
 
     // ─── /invia_<uuid> + /annulla_<uuid> — confirm flow mail subagent V19 ───
     const mInvia = userText.match(/^\/invia_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)

@@ -593,6 +593,50 @@ async function executeProjectWrapper(
  * un comando: getToolDefinitions() non conosce i canali, quindi nasce
  * equipollente per costruzione.
  */
+/**
+ * 2026-09-09 — Il modello si vede e si cambia da tutti e due i canali.
+ *
+ * Il valore e' GLOBALE (`cervellone_config`), ma esistevano solo i comandi
+ * Telegram: dalla chat web l'Ingegnere subiva in silenzio il modello scelto
+ * sull'altro canale, senza sapere quale fosse.
+ */
+const MODELLO_TOOLS: ToolDefinition[] = [
+  {
+    name: 'modello_attivo',
+    description: "Dice quale modello AI sta usando il bot in questo momento, e fino a quando se e' in corso un'ora di Opus. Il modello e' unico per tutto il sistema: vale per Telegram e per la chat web insieme.",
+    input_schema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'imposta_modello',
+    description: "Cambia il modello AI per TUTTO il sistema (Telegram e chat web insieme). Usalo solo se l'Ingegnere lo chiede: \"opus\" per la massima potenza a tempo, \"sonnet\" per tornare subito al modello veloce. Opus costa molto di piu': scaduti i minuti il sistema torna su Sonnet da solo.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        modello: { type: 'string', description: '"opus" oppure "sonnet".' },
+        minuti: { type: 'number', description: 'Solo per Opus: per quanti minuti. Predefinito 60.' },
+      },
+      required: ['modello'],
+    },
+  },
+]
+
+async function executeModelloTool(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<string | null> {
+  if (name !== 'modello_attivo' && name !== 'imposta_modello') return null
+  try {
+    const { leggiModelloAttivo, impostaModello } = await import('./modello-attivo')
+    if (name === 'modello_attivo') return await leggiModelloAttivo()
+    const scelta = String(input.modello ?? '').trim().toLowerCase()
+    const grezzo = Number(input.minuti)
+    const minuti = Number.isFinite(grezzo) && grezzo > 0 ? Math.min(grezzo, 480) : 60
+    return await impostaModello(scelta as 'opus' | 'sonnet', minuti)
+  } catch (err) {
+    return `⚠️ Errore sul modello: ${err instanceof Error ? err.message : err}`
+  }
+}
+
 const SOCIETA_TOOLS: ToolDefinition[] = [
   {
     name: 'imposta_societa_attiva',
@@ -771,6 +815,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...WORKING_MEMORY_TOOLS, // 2026-06-04 FASE 1 Memoria procedurale: registra_apprendimento
   ...PROJECT_TOOLS, // 2026-06-04 FASE 2 Memoria di progetto: imposta/aggiorna/chiudi progetto attivo
   ...SOCIETA_TOOLS, // 2026-09-08: la societa attiva si sceglie anche dal web, non solo con /societa
+  ...MODELLO_TOOLS, // 2026-09-09: il modello si vede e si cambia da tutti e due i canali
   ...DRAFT_TOOLS, // 2026-06-04 FASE 2 Gestione bozze: lista/ritrova/aggiorna/salva_pdf documenti
   ...PDF_TOOLS, // 2026-05-07 Pipeline PDF: genera_pdf
   ...(DOCUMENT_TEMPLATE_TOOLS as unknown as ToolDefinition[]), // 2026-06-11 Modelli documento Fase 1: insegna/compila/lista/ritrova
@@ -837,7 +882,7 @@ const executeRiconciliazioneWrapper = contabile(executeRiconciliazioneTool, nomi
 const executePrimaNotaWrapper = contabile(executePrimaNotaTool, nomiDi(PRIMA_NOTA_TOOLS))
 const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI_TOOLS))
 
-const EXECUTORS = [executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
+const EXECUTORS = [executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeModelloTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions() {
   return [
