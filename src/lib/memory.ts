@@ -27,6 +27,23 @@ export async function saveMessageWithEmbedding(
   content: string,
   projectId?: string | null,
 ) {
+  // La conoscenza dei file non e' un messaggio della conversazione e non ha una
+  // riga in `messages`: il vincolo del database ammette solo `user` e
+  // `assistant` (`messages_role_check`), e un pezzo di file da 30.000 caratteri
+  // non va mostrato all'Ingegnere come se fosse una risposta. Per questo ruolo
+  // conta il SOLO embedding, che e' l'unica forma in cui la conoscenza serve.
+  //
+  // La regola sta qui, in un posto solo, perche' ci arrivano tutti e due i
+  // canali da punti diversi (`api/chat/route.ts` e `agent-job.ts`): scritta due
+  // volte, prima o poi diverge.
+  if (role === 'knowledge') {
+    await saveEmbeddingOnly(conversationId, role, content, projectId)
+    // `true` = "gestito". Il valore di ritorno dice al chiamante se la STORIA ha
+    // conservato il turno; per la conoscenza dei file non c'e' turno da
+    // conservare, e un `false` qui verrebbe letto come un guasto.
+    return true
+  }
+
   const salvato = await saveMessageOnly(conversationId, role, content)
   // Solo se la riga e' entrata davvero: un embedding senza il suo messaggio
   // resta recuperabile da `searchMemory` senza niente a cui appartenere.
@@ -266,6 +283,17 @@ export async function searchExplicitMemories(query: string): Promise<string> {
 
 /**
  * Salva conoscenza da file con chunk overlap (DAT-003 fix).
+ *
+ * ⚠️ La conoscenza dei file NON ha una riga in `messages`, e non deve averla:
+ * il vincolo del database ammette solo `user` e `assistant`
+ * (`messages_role_check`), e un pezzo di file da 30.000 caratteri non e' un
+ * messaggio della conversazione. Qui si scrive quindi il SOLO embedding.
+ *
+ * Passava da `saveMessageWithEmbedding`, che tentava una riga `role='knowledge'`
+ * rifiutata in silenzio da Postgres. Era innocuo finche' l'embedding si
+ * generava lo stesso; dall'8 set 2026 l'embedding e' subordinato all'esito
+ * della riga (`7af006b`), e la conoscenza dei file ha smesso di essere
+ * indicizzata senza che nessuno lo vedesse.
  */
 export async function saveFileKnowledge(
   conversationId: string,
