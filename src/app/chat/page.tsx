@@ -20,6 +20,7 @@ import {
   decidiDopoRiconoscimento,
   componiTestoDettatura,
   MAX_REGISTRAZIONE_MS,
+  esitoTrascrizioneTardiva,
 } from '@/lib/dettatura'
 import { messaggioErroreChat } from '@/lib/chat-errori'
 
@@ -387,6 +388,12 @@ export default function ChatPage() {
    */
   async function trascriviDalServer(blob: Blob, durataSec: number) {
     if (blob.size === 0) return
+    // A quale dettatura appartiene questa trascrizione. La risposta del server
+    // arriva DOPO, e nel frattempo l'Ingegnere puo' aver gia' premuto invia:
+    // senza questo, il testo tornava in una casella appena svuotata e andava
+    // cancellato a mano. La guardia esisteva gia' per il microfono e non era
+    // stata portata qui.
+    const generazione = generazioneDettaturaRef.current
     setTrascrizioneInCorso(true)
     try {
       const form = new FormData()
@@ -394,12 +401,19 @@ export default function ChatPage() {
       form.append('durata', String(durataSec))
       const res = await fetch('/api/trascrivi', { method: 'POST', body: form })
       const esito = await res.json().catch(() => null)
-      if (esito?.testo) {
-        setInput(esito.testo)
+      const daApplicare = esitoTrascrizioneTardiva({
+        testo: esito?.testo,
+        generazioneAllAvvio: generazione,
+        generazioneCorrente: generazioneDettaturaRef.current,
+      })
+      if (daApplicare.applica) {
+        setInput(daApplicare.testo)
         if (textareaRef.current) {
           textareaRef.current.style.height = 'auto'
           textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 160) + 'px'
         }
+      } else if (daApplicare.motivo === 'dettatura-superata') {
+        console.warn('[chat] trascrizione scartata: il messaggio era gia\' stato inviato')
       }
     } catch {
       // Il testo del browser resta: una trascrizione mancata non deve
@@ -818,6 +832,12 @@ export default function ChatPage() {
       }
       setCurrentConvId(convId)
     }
+
+    // L'invio SUPERA la dettatura: da qui in poi qualunque trascrizione ancora
+    // in volo appartiene a un messaggio gia' partito, e non deve tornare nella
+    // casella. `generazioneDettaturaRef` e' la stessa guardia che protegge il
+    // microfono — qui la usa anche `trascriviDalServer`.
+    generazioneDettaturaRef.current++
 
     const userMsg: DisplayMessage = { role: 'user', text, files: files.length > 0 ? [...files] : undefined }
     const newMessages = [...messages, userMsg]

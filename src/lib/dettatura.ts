@@ -92,3 +92,44 @@ export function componiTestoDettatura(
     .replace(/\s+/g, ' ')
     .trim()
 }
+
+/** Cosa fare della trascrizione del server quando torna. */
+export type EsitoTrascrizione =
+  | { applica: true; testo: string }
+  | { applica: false; motivo: 'dettatura-superata' | 'niente-da-applicare' }
+
+/**
+ * La trascrizione del server e' asincrona: torna DOPO la fine della dettatura,
+ * e puo' tornare dopo che l'Ingegnere ha gia' premuto invia. Prima, il testo
+ * veniva scritto nella casella in ogni caso — quindi ricompariva in una casella
+ * appena svuotata, e andava cancellato a mano.
+ *
+ * Il difetto visibile era il meno grave. Quello vero: il messaggio partiva col
+ * testo del BROWSER, il meno accurato, e la trascrizione buona del server
+ * finiva nella casella per essere cestinata. Il sistema aveva la risposta
+ * migliore e consegnava la peggiore.
+ *
+ * ⭐ La guardia esisteva gia': `generazioneDettatura` cresce a ogni avvio e a
+ * ogni stop, e il suo commento dice che serve «a riconoscere uno stream aperto
+ * da una dettatura ormai abbandonata». Era pero' cablata sul microfono e non
+ * sulla trascrizione — una difesa costruita per un percorso e non portata su
+ * quello accanto, che e' la forma di difetto piu' frequente in questo repo.
+ *
+ * Qui la regola sta scritta una volta sola, ed e' pura: chi la usa passa la
+ * generazione che aveva quando ha chiesto la trascrizione e quella corrente.
+ */
+export function esitoTrascrizioneTardiva(opzioni: {
+  testo: string | null | undefined
+  generazioneAllAvvio: number
+  generazioneCorrente: number
+}): EsitoTrascrizione {
+  if (opzioni.generazioneAllAvvio !== opzioni.generazioneCorrente) {
+    return { applica: false, motivo: 'dettatura-superata' }
+  }
+  // Se il server non ha capito niente si tiene quello che aveva scritto il
+  // browser: non si peggiora mai.
+  const testo = (opzioni.testo ?? '').trim()
+  if (!testo) return { applica: false, motivo: 'niente-da-applicare' }
+
+  return { applica: true, testo }
+}

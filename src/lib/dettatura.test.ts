@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest'
 import {
   decidiDopoRiconoscimento,
   componiTestoDettatura,
+  esitoTrascrizioneTardiva,
   MAX_REGISTRAZIONE_MS,
   MAX_RIAVVII_RAPIDI,
 } from './dettatura'
@@ -139,5 +140,72 @@ describe('l ordine delle guardie, che il docstring promette', () => {
       { ...registrando(MAX_REGISTRAZIONE_MS + 1), eLaSessioneCorrente: false },
       MAX_REGISTRAZIONE_MS,
     )).toBe('ignora')
+  })
+})
+
+/**
+ * La trascrizione del server torna DOPO la fine della dettatura: e' asincrona.
+ * Se nel frattempo l'Ingegnere ha gia' premuto invia, `setInput(esito.testo)`
+ * la rimetteva nella casella appena svuotata — e lui doveva cancellarla a mano.
+ *
+ * Il difetto visibile era il meno grave. Quello vero: il messaggio partiva col
+ * testo del BROWSER, cioe' il meno accurato, e la trascrizione buona del server
+ * finiva nella casella per essere cestinata. Il sistema aveva la risposta
+ * migliore e consegnava la peggiore.
+ *
+ * ⭐ La guardia esisteva gia' — `generazioneDettaturaRef`, il cui commento dice
+ * «serve a riconoscere uno stream aperto da una dettatura ormai abbandonata» —
+ * ma era cablata sul microfono e non sulla trascrizione. Una difesa costruita
+ * per un percorso e non portata su quello accanto.
+ */
+describe('la trascrizione del server non torna in una casella gia svuotata', () => {
+  test('se la dettatura e ancora quella, il testo si applica', () => {
+    expect(esitoTrascrizioneTardiva({
+      testo: 'Fammi il SAL della commessa C2026-008',
+      generazioneAllAvvio: 3,
+      generazioneCorrente: 3,
+    })).toEqual({ applica: true, testo: 'Fammi il SAL della commessa C2026-008' })
+  })
+
+  test('se nel frattempo il messaggio e stato inviato, il testo si SCARTA', () => {
+    // L'invio fa avanzare la generazione: quella trascrizione appartiene a una
+    // dettatura che non esiste piu'.
+    expect(esitoTrascrizioneTardiva({
+      testo: 'Fammi il SAL della commessa C2026-008',
+      generazioneAllAvvio: 3,
+      generazioneCorrente: 4,
+    })).toEqual({ applica: false, motivo: 'dettatura-superata' })
+  })
+
+  test('se il server non ha capito niente, si tiene quello che aveva scritto il browser', () => {
+    // Regola gia' documentata in `trascriviDalServer`: non si peggiora mai.
+    expect(esitoTrascrizioneTardiva({
+      testo: '',
+      generazioneAllAvvio: 3,
+      generazioneCorrente: 3,
+    })).toEqual({ applica: false, motivo: 'niente-da-applicare' })
+
+    expect(esitoTrascrizioneTardiva({
+      testo: null,
+      generazioneAllAvvio: 3,
+      generazioneCorrente: 3,
+    })).toEqual({ applica: false, motivo: 'niente-da-applicare' })
+  })
+
+  test('una trascrizione di soli spazi non e una trascrizione', () => {
+    expect(esitoTrascrizioneTardiva({
+      testo: '   \n  ',
+      generazioneAllAvvio: 3,
+      generazioneCorrente: 3,
+    })).toEqual({ applica: false, motivo: 'niente-da-applicare' })
+  })
+
+  test('CONTROLLO POSITIVO: la generazione superata vince anche su un testo valido', () => {
+    // Senza questo, il test dello scarto passerebbe anche con un codice che
+    // rifiuta tutto: qui il testo e' buono e viene scartato SOLO per la
+    // generazione.
+    const buono = { testo: 'testo perfettamente valido', generazioneAllAvvio: 7, generazioneCorrente: 7 }
+    expect(esitoTrascrizioneTardiva(buono).applica).toBe(true)
+    expect(esitoTrascrizioneTardiva({ ...buono, generazioneCorrente: 8 }).applica).toBe(false)
   })
 })
