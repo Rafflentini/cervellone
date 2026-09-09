@@ -563,6 +563,15 @@ export default function ChatPage() {
     recognition.interimResults = true
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
+      // ⭐ Difesa dall'altro lato. Un risultato puo' arrivare DOPO che la
+      // dettatura e' finita — il browser ne ha in coda quando lo si ferma, e
+      // l'invio la ferma. Senza questa riga quel risultato tornava a scrivere
+      // nella casella appena svuotata, che e' il difetto segnalato due volte.
+      //
+      // Si guarda il RIFERIMENTO, non lo stato di React: e' l'unico sempre
+      // aggiornato nell'istante in cui l'evento scatta.
+      if (!vuoleRegistrareRef.current) return
+
       let finalText = ''
       let interimText = ''
       for (let i = 0; i < event.results.length; i++) {
@@ -866,8 +875,18 @@ export default function ChatPage() {
     //
     // `trascrivi: false` perche' il messaggio e' gia' partito: una trascrizione
     // adesso si pagherebbe per poi scartarla.
-    if (isRecording) fermaDettatura({ trascrivi: false })
-    generazioneDettaturaRef.current++
+    //
+    // ⚠️ SENZA CONDIZIONE, e non e' pigrizia. La prima versione era legata a
+    // `isRecording`, che e' stato di React: il riconoscimento del browser si
+    // richiude e si riapre a ogni pausa di silenzio, quindi nell'istante
+    // dell'invio quello stato puo' essere indietro. Quando lo era, la riga non
+    // scattava, il riconoscimento restava vivo e tornava a scrivere nella
+    // casella. `fermaDettatura` e' idempotente — fermare cio' che e' gia' fermo
+    // non fa niente — quindi la si chiama e basta.
+    //
+    // `stopAudioAnalysis`, che sta dentro, fa gia' avanzare la generazione:
+    // e' cio' che fa scartare a `trascriviDalServer` una trascrizione tardiva.
+    fermaDettatura({ trascrivi: false })
 
     const userMsg: DisplayMessage = { role: 'user', text, files: files.length > 0 ? [...files] : undefined }
     const newMessages = [...messages, userMsg]
