@@ -268,7 +268,7 @@ export async function saveDraftPdfToDrive(
   try {
     const fileName = name.endsWith('.pdf') ? name : `${name}.pdf`
     const { webViewLink } = await uploadBinaryToDrive(pdf, fileName, 'application/pdf', folderId)
-    return `✅ PDF "${fileName}" salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(immaginiMancanti)}`
+    return `✅ PDF "${fileName}" salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(immaginiMancanti, 'pdf')}`
   } catch (err) {
     return `Errore caricando il PDF su Drive: ${err instanceof Error ? err.message : String(err)}`
   }

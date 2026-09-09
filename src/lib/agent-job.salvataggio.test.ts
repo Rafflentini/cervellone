@@ -18,15 +18,19 @@
  * Qui la scrittura risolve DOPO, apposta.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+
 import type Anthropic from '@anthropic-ai/sdk'
 
 const mockCallClaude = vi.fn()
 vi.mock('@/lib/claude', () => ({
   callClaudeStreamTelegram: (...args: unknown[]) => mockCallClaude(...args),
 }))
+const mockChecked = vi.fn((_chatId: number, _testo: string) => Promise.resolve(true))
 vi.mock('@/lib/telegram-helpers', () => ({
+  // Dal 9 set 2026 l'edit dichiara se ha consegnato: `true` = riuscito.
+  sendTelegramMessageChecked: (chatId: number, testo: string) => mockChecked(chatId, testo),
   sendTelegramMessageWithId: vi.fn(async () => 999),
-  editTelegramMessage: vi.fn(async () => undefined),
+  editTelegramMessage: vi.fn(async () => true),
   sendTelegramMessage: vi.fn(async () => undefined),
 }))
 vi.mock('@/lib/artifact-capture', () => ({ captureArtifact: async () => undefined, buildArtifactsPointer: async () => '' }))
@@ -149,5 +153,51 @@ describe('runAgentJob — la risposta in storia', () => {
     await runAgentJob(input())
     await Promise.all(sfondo)
     expect(embedding).toHaveLength(1)
+  })
+})
+
+/**
+ * Se l'edit finale fallisce, la risposta va mandata come messaggio NUOVO.
+ *
+ * Prima `editTelegramMessage` non tornava niente: un Markdown malformato con
+ * fallback fallito, un rate limit, una rete che cade — e l'Ingegnere restava
+ * col «Sto elaborando…» mentre in `messages` la risposta risultava consegnata.
+ * Al turno dopo scriveva «allora?» e il bot rispondeva come se avesse gia'
+ * detto tutto.
+ */
+describe('runAgentJob — la consegna su Telegram', () => {
+  it('se l edit fallisce, il testo parte come messaggio nuovo', async () => {
+    mockCallClaude.mockResolvedValue('Il preventivo e pronto.')
+    const helpers = await import('@/lib/telegram-helpers')
+    vi.mocked(helpers.editTelegramMessage).mockResolvedValueOnce(false)
+
+    await runAgentJob(input())
+
+    expect(mockChecked).toHaveBeenCalledWith(123456, expect.stringContaining('preventivo'))
+  })
+
+  // CONTROLLO POSITIVO: senza, un ripiego che parte SEMPRE passerebbe il test
+  // qui sopra e manderebbe ogni risposta due volte.
+  it('se l edit riesce, non si manda niente due volte', async () => {
+    mockCallClaude.mockResolvedValue('Il preventivo e pronto.')
+    const helpers = await import('@/lib/telegram-helpers')
+    vi.mocked(helpers.editTelegramMessage).mockResolvedValue(true)
+
+    await runAgentJob(input())
+
+    expect(mockChecked).not.toHaveBeenCalled()
+  })
+
+  it('se non riesce nemmeno il ripiego, resta scritto nei log', async () => {
+    mockCallClaude.mockResolvedValue('Il preventivo e pronto.')
+    const helpers = await import('@/lib/telegram-helpers')
+    vi.mocked(helpers.editTelegramMessage).mockResolvedValueOnce(false)
+    mockChecked.mockResolvedValueOnce(false)
+    const errori: string[] = []
+    vi.spyOn(console, 'error').mockImplementation((...a) => { errori.push(a.join(' ')) })
+
+    await runAgentJob(input())
+
+    expect(errori.join(' ')).toContain('NON CONSEGNATA')
   })
 })

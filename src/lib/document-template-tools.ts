@@ -296,7 +296,7 @@ async function compila(
   const romeDate = todayTag()
   const fileName = `${slug}_${romeDate}.pdf`
   const { webViewLink } = await uploadBinaryToDrive(pdfBuffer, fileName, 'application/pdf', folderId)
-  return `Documento generato: ${fileName}\n${webViewLink}\n(Impaginazione del modello "${tpl.titolo}". Non ho inviato nulla.)${avvisoImmagini(immaginiMancanti)}`
+  return `Documento generato: ${fileName}\n${webViewLink}\n(Impaginazione del modello "${tpl.titolo}". Non ho inviato nulla.)${avvisoImmagini(immaginiMancanti, 'pdf')}`
 }
 
 export async function executeDocumentTemplateTool(

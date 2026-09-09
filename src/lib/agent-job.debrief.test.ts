@@ -34,7 +34,10 @@ vi.mock('@/lib/claude', () => ({
 const mockSendWithId = vi.fn()
 const mockEdit = vi.fn()
 const mockSend = vi.fn()
+const mockChecked = vi.fn((_chatId: number, _testo: string) => Promise.resolve(true))
 vi.mock('@/lib/telegram-helpers', () => ({
+  // Dal 9 set 2026 l'edit dichiara se ha consegnato: `true` = riuscito.
+  sendTelegramMessageChecked: (chatId: number, testo: string) => mockChecked(chatId, testo),
   sendTelegramMessageWithId: (...args: unknown[]) => mockSendWithId(...args),
   editTelegramMessage: (...args: unknown[]) => mockEdit(...args),
   sendTelegramMessage: (...args: unknown[]) => mockSend(...args),

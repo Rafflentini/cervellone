@@ -153,7 +153,7 @@ async function executePdfTools(
       })
       const fileName = `${safeTitle}.pdf`
       const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, 'application/pdf', folderId)
-      return `📄 **${fileName}** salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(immaginiMancanti)}`
+      return `📄 **${fileName}** salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(immaginiMancanti, 'pdf')}`
     }
 
     if (name === 'genera_docx') {
@@ -167,7 +167,7 @@ async function executePdfTools(
       })
       const fileName = `${safeTitle}.docx`
       const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, DOCX_MIME, folderId)
-      return `📝 **${fileName}** salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(docxMancanti)}`
+      return `📝 **${fileName}** salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(docxMancanti, 'word')}`
     }
 
     // genera_xlsx
@@ -184,7 +184,7 @@ async function executePdfTools(
     )
     const fileName = `${safeTitle}.xlsx`
     const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, XLSX_MIME, folderId)
-    return `📊 **${fileName}** salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(xlsxMancanti)}`
+    return `📊 **${fileName}** salvato su Drive.\n👉 ${webViewLink}${avvisoImmagini(xlsxMancanti, 'excel')}`
   } catch (err) {
     return `Errore ${name}: ${err instanceof Error ? err.message : err}`
   }

@@ -202,6 +202,10 @@ export async function confirmSalStep2(
     const xlsx = await uploadBinaryToDrive(xlsxBuf, `${base}.xlsx`, XLSX_MIME, contabId)
     const pdf = await uploadBinaryToDrive(pdfBuf, `${base}.pdf`, PDF_MIME, contabId)
     await sb.from('cervellone_sal_pending').update({ stato: 'creato', updated_at: new Date().toISOString() }).eq('id', id).eq('conferme', 2)
+    // Senza tipo, di proposito: il SAL esce in DUE formati e le mancanti dei
+    // due sono in una lista sola. Consigliare i formati del PDF direbbe che
+    // un WebP va bene, e nell Excel non entrerebbe. Si resta sui quattro che
+    // vanno ovunque.
     return `✅ SAL n° ${payload.result.numero_sal} salvato in ${CONTAB_FOLDER}:\n📊 ${xlsx.webViewLink}\n📄 ${pdf.webViewLink}${avvisoImmagini(salMancanti)}`
   } catch (err) {
     await sb.from('cervellone_sal_pending').update({ conferme: 1, updated_at: new Date().toISOString() }).eq('id', id)

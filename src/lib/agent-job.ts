@@ -38,6 +38,7 @@ import {
   sendTelegramMessage,
   editTelegramMessage,
   sendTelegramMessageWithId,
+  sendTelegramMessageChecked,
 } from '@/lib/telegram-helpers'
 import { safeSupabase } from '@/lib/resilience'
 import { annotateHallucinatedLinks } from '@/lib/link-allucinati'
@@ -243,15 +244,28 @@ export async function runAgentJob(
     const outgoingText = await annotateHallucinatedLinks(finalText)
 
     if (placeholderMsgId) {
-      if (outgoingText.length <= 4000) {
-        await editTelegramMessage(chatId, placeholderMsgId, outgoingText)
-      } else {
-        await editTelegramMessage(chatId, placeholderMsgId, outgoingText.slice(0, 4000))
-        const remaining = outgoingText.slice(4000)
-        if (remaining.trim()) await sendTelegramMessage(chatId, remaining)
+      // ⭐ L'esito dell'edit ora si GUARDA. Prima non tornava niente: se
+      // l'edit finale falliva (Markdown malformato piu' fallback fallito,
+      // rate limit, rete), l'Ingegnere restava col «Sto elaborando…» mentre
+      // in `messages` la risposta risultava consegnata — e al turno dopo, a
+      // «allora?», il bot rispondeva come se avesse gia' detto tutto.
+      //
+      // Il ripiego e' un messaggio NUOVO: se non si riesce a modificare
+      // quello vecchio, se ne manda un altro. E `sendTelegramMessageChecked`,
+      // non `sendTelegramMessage`, che il booleano lo butta via.
+      const primaParte = outgoingText.slice(0, 4000)
+      let consegnato = await editTelegramMessage(chatId, placeholderMsgId, primaParte)
+      if (!consegnato) {
+        console.warn('[agent-job] edit finale fallito: mando un messaggio nuovo')
+        consegnato = await sendTelegramMessageChecked(chatId, primaParte)
       }
+      if (!consegnato) {
+        console.error('[agent-job] RISPOSTA NON CONSEGNATA su Telegram')
+      }
+      const resto = outgoingText.slice(4000)
+      if (resto.trim()) await sendTelegramMessageChecked(chatId, resto)
     } else {
-      await sendTelegramMessage(chatId, outgoingText)
+      await sendTelegramMessageChecked(chatId, outgoingText)
     }
 
     // Salva conoscenza file

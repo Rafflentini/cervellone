@@ -39,3 +39,42 @@ describe('l etichetta non deve mentire', () => {
     expect(righe).toHaveLength(2)
   })
 })
+
+describe('i formati consigliati dipendono dal documento', () => {
+  /**
+   * L'elenco era uno solo, quello del WORD, mostrato anche quando il documento
+   * e' un PDF. Cosi' l'Ingegnere si sentiva dire di riconvertire un WebP che
+   * nel PDF sarebbe entrato benissimo: Chromium lo mostra, e' il Word che non
+   * lo sa contenere.
+   */
+  test('per un PDF nomina anche WebP, AVIF e SVG', () => {
+    const testo = avvisoImmagini(['facciata.webp'], 'pdf')
+    expect(testo).toContain('WebP')
+    expect(testo).toContain('SVG')
+  })
+
+  test('per un Word NON li nomina: li' + ' dentro non entrano', () => {
+    const testo = avvisoImmagini(['facciata.webp'], 'word')
+    expect(testo).not.toContain('WebP')
+    expect(testo).toContain('JPEG')
+  })
+
+  test('per un Excel come per il Word', () => {
+    const testo = avvisoImmagini(['foto.avif'], 'excel')
+    expect(testo).not.toContain('AVIF')
+    expect(testo).toContain('JPEG')
+  })
+
+  // Chi non dichiara il tipo riceve l'elenco prudente: mai consigliare un
+  // formato che in quel documento non entrerebbe.
+  test('senza tipo si resta sui quattro che vanno ovunque', () => {
+    const testo = avvisoImmagini(['x.heic'])
+    expect(testo).toContain('JPEG')
+    expect(testo).not.toContain('WebP')
+  })
+
+  // CONTROLLO POSITIVO
+  test('senza mancanti non si dice niente, qualunque sia il tipo', () => {
+    expect(avvisoImmagini([], 'pdf')).toBe('')
+  })
+})
