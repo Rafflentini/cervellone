@@ -65,6 +65,25 @@ function parseNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+/**
+ * Le aliquote IVA di Fatture in Cloud arrivano come numero (10) oppure come
+ * stringa ("10", "10.0", "10,0", "10%"): questo parser NON tocca il punto
+ * decimale.
+ *
+ * `parseNumber` cancella i punti perche' serve agli importi in formato
+ * italiano ("1.234,56"), ma su "10.0" restituiva 100 e su "10.00" 1000: il
+ * confronto con 10 non riusciva MAI, e nessuna fattura di lavori edili era
+ * compilabile. Il 22% passava solo per il caso fortunato dell'intero.
+ */
+function parseAliquotaFic(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string') return null
+  const pulito = value.trim().replace('%', '').replace(',', '.')
+  if (!pulito) return null
+  const parsed = Number(pulito)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 function money(value: unknown): number {
   const parsed = parseNumber(value)
   return parsed === null ? 0 : Math.round(parsed * 100) / 100
@@ -78,26 +97,82 @@ function escapeFicQuery(value: string): string {
   return value.replace(/[\\']/g, '')
 }
 
-async function resolveVatId(aliquota: number, societa: CodiceSocieta): Promise<number | null> {
+/**
+ * Elenco COMPLETO delle aliquote IVA dell'azienda.
+ *
+ * Prima si leggeva una pagina sola: un'aliquota perfettamente esistente ma
+ * oltre la prima pagina risultava inesistente. Si prova il path con
+ * `/settings/` e in fallback quello precedente, cosi' il fix non dipende da
+ * quale dei due risponda.
+ */
+async function elencoAliquoteFic(
+  societa: CodiceSocieta,
+): Promise<{ ok: true; righe: Record<string, unknown>[] } | { ok: false; error: string }> {
+  const company = await getCompanyId(societa)
+  if (!company.ok) return { ok: false, error: company.error }
+
+  const righe: Record<string, unknown>[] = []
+  for (let page = 1; page <= 10; page++) {
+    const r = await ficGet(`/c/${company.id}/settings/vat_types`, { per_page: 100, page }, societa)
+    if (!r.ok) {
+      if (page > 1) break
+      const legacy = await ficGet(`/c/${company.id}/vat_types`, { per_page: 100 }, societa)
+      if (!legacy.ok) return { ok: false, error: legacy.error }
+      const lista = Array.isArray(legacy.data?.data) ? legacy.data.data as Record<string, unknown>[] : []
+      return { ok: true, righe: lista }
+    }
+    const lista = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
+    righe.push(...lista)
+    if (lista.length === 0) break
+    const meta = (r.data as unknown as Record<string, unknown> | undefined) ?? {}
+    const ultima = parseAliquotaFic(meta.last_page)
+    if (ultima !== null && page >= ultima) break
+  }
+  return { ok: true, righe }
+}
+
+async function resolveVatId(
+  aliquota: number,
+  societa: CodiceSocieta,
+): Promise<{ ok: true; id: number } | { ok: false; error: string }> {
   // La cache va indicizzata ANCHE per società: gli id delle aliquote IVA sono
   // per azienda, quindi una cache per sola aliquota restituirebbe l'id
   // dell'altra società — e la fattura uscirebbe con l'IVA sbagliata.
   const chiave = `${societa}:${aliquota}`
-  if (vatIdCache.has(chiave)) return vatIdCache.get(chiave) ?? null
+  const inCache = vatIdCache.get(chiave)
+  if (inCache !== undefined) return { ok: true, id: inCache }
 
-  const company = await getCompanyId(societa)
-  if (!company.ok) return null
+  const elenco = await elencoAliquoteFic(societa)
+  if (!elenco.ok) {
+    return { ok: false, error: `aliquote IVA non leggibili da Fatture in Cloud: ${elenco.error}` }
+  }
 
-  const r = await ficGet(`/c/${company.id}/vat_types`, undefined, societa)
-  if (!r.ok) return null
+  // Tolleranza invece di uguaglianza stretta: su un float 10 e 10.000000001
+  // sono la stessa aliquota, e un documento fiscale non deve fermarsi per un
+  // arrotondamento di serializzazione.
+  const match = elenco.righe.find((row) => {
+    const valore = parseAliquotaFic(row.value)
+    return valore !== null && Math.abs(valore - aliquota) < 0.001
+  })
+  const id = match ? parseAliquotaFic(match.id) : null
 
-  const list = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
-  const match = list.find(row => parseNumber(row.value) === aliquota)
-  const id = parseNumber(match?.id)
-  if (id === null) return null
+  if (id === null) {
+    // L'errore DICE cosa ha letto. Prima diceva solo "non trovata": dal
+    // messaggio era impossibile capire se il guasto fosse nella chiamata,
+    // nell'elenco o nel confronto, e sono serviti cinque tentativi piu' la
+    // lettura del sorgente per arrivare alla causa.
+    const viste = elenco.righe
+      .map((row) => parseAliquotaFic(row.value))
+      .filter((v): v is number => v !== null)
+      .map((v) => `${v}%`)
+    return {
+      ok: false,
+      error: `aliquota ${aliquota}% non trovata tra le ${elenco.righe.length} aliquote IVA di Fatture in Cloud (trovate: ${viste.join(', ') || 'nessuna'})`,
+    }
+  }
 
   vatIdCache.set(chiave, id)
-  return id
+  return { ok: true, id }
 }
 
 /**
@@ -254,13 +329,13 @@ async function compilaDocumento(
 
   const itemsList: RigaDocumentoPayload[] = []
   for (const riga of parsedRighe.righe) {
-    const vatId = await resolveVatId(riga.aliquota, societa)
-    if (vatId === null) return fail(`aliquota ${riga.aliquota}% non trovata tra le aliquote IVA di Fatture in Cloud`)
+    const vat = await resolveVatId(riga.aliquota, societa)
+    if (!vat.ok) return fail(vat.error)
     itemsList.push({
       name: riga.name,
       qty: riga.qty,
       net_price: riga.net_price,
-      vat: { id: vatId },
+      vat: { id: vat.id },
     })
   }
 
