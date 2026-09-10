@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const insert = vi.fn(() => Promise.resolve({ data: null, error: null }))
+type RigaRegistro = { nome: string; conversation_id: string | null; durata_ms: number; riconosciuto: boolean }
+
+const insert = vi.fn((_riga: RigaRegistro) => Promise.resolve({ data: null, error: null }))
 
 // Catena permissiva: ogni metodo di lettura torna la catena stessa, che e'
 // thenable. Serve perche' i tool-sonda fanno query vere (cervellone_info legge
@@ -51,7 +53,7 @@ describe('aggancio in executeTool', () => {
     expect(typeof out).toBe('string')
     expect(out).not.toContain('non riconosciuto')
     await new Promise((r) => setImmediate(r))
-    expect(insert.mock.calls.map((c) => (c[0] as { nome: string }).nome)).toContain('cervellone_info')
+    expect(insert.mock.calls.map((c) => c[0].nome)).toContain('cervellone_info')
   })
 
   // CONTROLLO POSITIVO: prova che il test sopra saprebbe accorgersi di un nome
@@ -62,7 +64,7 @@ describe('aggancio in executeTool', () => {
     const out = await executeTool('tool_che_non_esiste_xyz', {}, undefined)
     expect(out).toContain('non riconosciuto')
     await new Promise((r) => setImmediate(r))
-    const riga = insert.mock.calls.map((c) => c[0] as { nome: string; riconosciuto: boolean })
+    const riga = insert.mock.calls.map((c) => c[0])
       .find((r) => r.nome === 'tool_che_non_esiste_xyz')
     expect(riga?.riconosciuto).toBe(false)
   })
