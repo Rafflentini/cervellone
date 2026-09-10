@@ -13,7 +13,7 @@ import { getSupabaseServer } from './supabase-server'
 import { avvisoImmagini } from './avviso-immagini'
 import { societaAttivaPerDocumenti } from './societa-documenti'
 
-import type { ToolDefinition } from './tools/types'
+import type { ToolDefinition, OpzioniTool } from './tools/types'
 import type { CodiceSocieta } from './societa'
 import { DRIVE_TOOLS, executeDriveTool } from './drive'
 import { GITHUB_TOOLS, executeGithubTool } from './github-tools'
@@ -885,11 +885,20 @@ const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI
 
 const EXECUTORS = [executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeModelloTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
-export function getToolDefinitions() {
+export function getToolDefinitions(opzioni?: OpzioniTool) {
+  const nucleo = opzioni?.nucleo
+  const custom = ALL_TOOLS.map(({ name, description, input_schema }) =>
+    nucleo && !nucleo.has(name)
+      ? { name, description, input_schema, defer_loading: true as const }
+      : { name, description, input_schema },
+  )
   return [
+    // I tool server restano sempre caricati: sono due, pesano 124 byte in tutto,
+    // e l'API rifiuta con 400 una richiesta in cui TUTTI i tool sono differiti.
+    ...(opzioni?.ricerca ? [{ type: 'tool_search_tool_bm25_20251119' as const, name: 'tool_search_tool_bm25' }] : []),
     { type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 },
     { type: 'code_execution_20260120' as const, name: 'code_execution' },
-    ...ALL_TOOLS.map(({ name, description, input_schema }) => ({ name, description, input_schema })),
+    ...custom,
   ]
 }
 
