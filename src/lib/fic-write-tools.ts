@@ -28,6 +28,7 @@ interface RigaDocumento {
   qty: number
   net_price: number
   aliquota: number
+  categoria?: string
 }
 
 interface RigaDocumentoPayload {
@@ -35,6 +36,7 @@ interface RigaDocumentoPayload {
   qty: number
   net_price: number
   vat: { id: number }
+  category?: string
 }
 
 /** Chiave: `${societa}:${aliquota}` — gli id IVA sono per azienda. */
@@ -82,6 +84,18 @@ function parseAliquotaFic(value: unknown): number | null {
   if (!pulito) return null
   const parsed = Number(pulito)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+/**
+ * Percentuale di cassa/rivalsa: come `parseAliquotaFic`, NON cancella il punto
+ * decimale (una rivalsa "4.0" non deve diventare 40).
+ *
+ * Restituisce null solo se il valore e' assente o illeggibile: **lo zero e' un
+ * valore valido**, ed e' proprio quello che serve per azzerare una rivalsa
+ * impostata di default sul cliente.
+ */
+function parsePercentuale(value: unknown): number | null {
+  return parseAliquotaFic(value)
 }
 
 function money(value: unknown): number {
@@ -182,11 +196,15 @@ async function resolveVatId(
  * senza aliquota esplicita su una fattura La Real Estate usciva al 22%, cioè
  * con l'IVA sbagliata su un documento fiscale vero — mentre il registro
  * dichiarava 10 e il contesto lo annunciava pure al modello.
+ *
+ * `categoriaDefault` e' il centro di ricavo del documento: vale per tutte le
+ * righe, e la singola riga puo' sovrascriverlo con `categoria`.
  */
 function normalizeRighe(
   value: unknown,
   aliquotaDefault: number,
   fallbackDescrizione?: string,
+  categoriaDefault?: string,
 ): { righe?: RigaDocumento[]; error?: string } {
   const rawRows = Array.isArray(value) ? value : []
   if (rawRows.length === 0 && fallbackDescrizione) {
@@ -196,6 +214,7 @@ function normalizeRighe(
         qty: 1,
         net_price: 0,
         aliquota: aliquotaDefault,
+        categoria: categoriaDefault,
       }],
     }
   }
@@ -212,7 +231,8 @@ function normalizeRighe(
     const vat = money(row.aliquota ?? row.vat ?? aliquotaDefault)
     if (qty <= 0) return { error: `quantita non valida per riga "${name}"` }
     if (netPrice < 0) return { error: `prezzo_unitario non valido per riga "${name}"` }
-    righe.push({ name, qty, net_price: netPrice, aliquota: vat || aliquotaDefault })
+    const categoria = cleanString(row.categoria) ?? cleanString(row.category) ?? categoriaDefault
+    righe.push({ name, qty, net_price: netPrice, aliquota: vat || aliquotaDefault, categoria })
   }
   return { righe }
 }
@@ -244,19 +264,37 @@ function descriviDocumento(input: {
   note?: string
   id: string
   societa: CodiceSocieta
+  numerazione?: string
+  centroRicavi?: string
+  cassaPerc?: number | null
+  rivalsaPerc?: number | null
 }): string {
   const titolo = input.tipo === 'fattura_emessa' ? 'Bozza fattura emessa FIC' : 'Bozza rapporto intervento FIC'
   const righe = input.righe
-    .map(row => `- ${row.name}: ${row.qty} x ${row.net_price} + IVA ${row.aliquota}%`)
+    .map(row => `- ${row.name}: ${row.qty} x ${row.net_price} + IVA ${row.aliquota}%${row.categoria ? ` [${row.categoria}]` : ''}`)
     .join('\n')
   const totaleNetto = Math.round(input.righe.reduce((sum, row) => sum + row.qty * row.net_price, 0) * 100) / 100
   const s = getSocieta(input.societa)
+
+  // Sezionale, centro di ricavo e cassa vanno LETTI prima del /fic_ok2: sono
+  // esattamente i tre dati che, sbagliati, producono una fattura formalmente
+  // valida ma con numero, imputazione o importo errati.
+  const cassa = input.cassaPerc
+  const rivalsa = input.rivalsaPerc
   return [
     titolo,
     // Prima riga dopo il titolo: e il testo che l'Ingegnere legge davvero.
     `SOCIETA EMITTENTE: ${s.denominazione} (P.IVA ${s.piva})`,
     `Cliente: ${input.cliente}`,
     `Data: ${input.data}`,
+    input.numerazione ? `Sezionale: ${input.numerazione}` : null,
+    input.centroRicavi ? `Centro di ricavo: ${input.centroRicavi}` : null,
+    cassa !== undefined && cassa !== null
+      ? `Cassa: ${cassa}%${cassa === 0 ? ' (azzerata)' : ''}`
+      : null,
+    rivalsa !== undefined && rivalsa !== null
+      ? `Rivalsa: ${rivalsa}%${rivalsa === 0 ? ' (azzerata)' : ''}`
+      : null,
     `Righe:\n${righe}`,
     `Totale netto: ${totaleNetto}`,
     input.note ? `Note: ${input.note}` : null,
@@ -274,6 +312,10 @@ async function salvaPending(input: {
   righe: RigaDocumento[]
   note?: string
   societa: CodiceSocieta
+  numerazione?: string
+  centroRicavi?: string
+  cassaPerc?: number | null
+  rivalsaPerc?: number | null
 }): Promise<{ ok: true; row: Pick<PendingRow, 'id' | 'descrizione'> } | { ok: false; error: string }> {
   const { data, error } = await supabase
     .from('cervellone_fic_pending')
@@ -317,10 +359,17 @@ async function compilaDocumento(
   const data = cleanString(input.data) ?? todayISO()
   const descrizione = cleanString(input.descrizione)
   const note = cleanString(input.note) ?? (tipo === 'rapporto_intervento' ? descrizione : undefined)
+
+  const numerazione = cleanString(input.numerazione) ?? cleanString(input.sezionale)
+  const centroRicavi = cleanString(input.centro_ricavi) ?? cleanString(input.centro_costo)
+  const cassaPerc = parsePercentuale(input.cassa_perc)
+  const rivalsaPerc = parsePercentuale(input.rivalsa_perc)
+
   const parsedRighe = normalizeRighe(
     input.righe,
     getSocieta(societa).aliquotaIvaDefault,
     tipo === 'rapporto_intervento' ? descrizione : undefined,
+    centroRicavi,
   )
   if (parsedRighe.error || !parsedRighe.righe) return fail(parsedRighe.error ?? 'righe non valide')
 
@@ -331,12 +380,14 @@ async function compilaDocumento(
   for (const riga of parsedRighe.righe) {
     const vat = await resolveVatId(riga.aliquota, societa)
     if (!vat.ok) return fail(vat.error)
-    itemsList.push({
+    const item: RigaDocumentoPayload = {
       name: riga.name,
       qty: riga.qty,
       net_price: riga.net_price,
       vat: { id: vat.id },
-    })
+    }
+    if (riga.categoria) item.category = riga.categoria
+    itemsList.push(item)
   }
 
   const payload: Record<string, unknown> = {
@@ -347,8 +398,27 @@ async function compilaDocumento(
     e_invoice: false,
   }
   if (note) payload.notes = note
+  // Il sezionale NON e' cosmetico: sceglie la serie di numerazione, cioe' il
+  // numero che la fattura portera'.
+  if (numerazione) payload.numeration = numerazione
+  // `!== null` e non la verita' del numero: lo ZERO deve essere inviato, e'
+  // l'unico modo per azzerare una cassa/rivalsa che il cliente ha di default.
+  if (cassaPerc !== null) payload.cassa = cassaPerc
+  if (rivalsaPerc !== null) payload.rivalsa = rivalsaPerc
 
-  const pending = await salvaPending({ tipo, payload, cliente, data, righe: parsedRighe.righe, note, societa })
+  const pending = await salvaPending({
+    tipo,
+    payload,
+    cliente,
+    data,
+    righe: parsedRighe.righe,
+    note,
+    societa,
+    numerazione,
+    centroRicavi,
+    cassaPerc,
+    rivalsaPerc,
+  })
   if (!pending.ok) return fail(pending.error)
   const s = getSocieta(societa)
   return ok({
@@ -359,6 +429,10 @@ async function compilaDocumento(
     partita_iva: s.piva,
     id: pending.row.id,
     stato: 'in_attesa',
+    sezionale: numerazione ?? null,
+    centro_ricavi: centroRicavi ?? null,
+    cassa_perc: cassaPerc,
+    rivalsa_perc: rivalsaPerc,
     anteprima: pending.row.descrizione,
     conferma_1: `/fic_ok_${pending.row.id}`,
     annulla: `/fic_no_${pending.row.id}`,
@@ -521,7 +595,7 @@ export async function cancelFic(id: string): Promise<string> {
 export const FIC_WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'compila_fattura_emessa',
-    description: 'Compila una bozza di fattura emessa su Fatture in Cloud, senza trasmetterla. Richiede doppia conferma prima della creazione.',
+    description: 'Compila una bozza di fattura emessa su Fatture in Cloud, senza trasmetterla. Richiede doppia conferma prima della creazione. Supporta il sezionale di numerazione (es. "ED" per l\'edilizia), il centro di ricavo delle righe e l\'azzeramento della cassa previdenziale/rivalsa INARCASSA impostata di default sul cliente (passa cassa_perc: 0).',
     input_schema: {
       type: 'object',
       properties: {
@@ -535,10 +609,15 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
               quantita: { type: 'number' },
               prezzo_unitario: { type: 'number' },
               aliquota: { type: 'number' },
+              categoria: { type: 'string', description: 'Centro di ricavo della singola riga. Se assente vale centro_ricavi del documento.' },
             },
           },
         },
         data: { type: 'string', description: 'Data documento YYYY-MM-DD. Default oggi.' },
+        numerazione: { type: 'string', description: 'Sezionale/serie di numerazione FIC, es. "ED" per la serie edilizia. Se omesso usa la serie predefinita dell\'azienda (per Restruktura: ingegneria).' },
+        centro_ricavi: { type: 'string', description: 'Centro di ricavo applicato a tutte le righe, es. "Edilizia".' },
+        cassa_perc: { type: 'number', description: 'Percentuale cassa previdenziale. Passa 0 per AZZERARE una cassa/rivalsa INARCASSA impostata di default (tipico sulle fatture di soli lavori edili). Se omesso, FIC applica il default del cliente.' },
+        rivalsa_perc: { type: 'number', description: 'Percentuale rivalsa. Passa 0 per azzerarla. Se omesso, FIC applica il default del cliente.' },
         note: { type: 'string' },
       },
       required: ['cliente', 'righe'],
@@ -554,6 +633,10 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
         righe: { type: 'array', items: { type: 'object' } },
         descrizione: { type: 'string' },
         data: { type: 'string', description: 'Data documento YYYY-MM-DD. Default oggi.' },
+        numerazione: { type: 'string', description: 'Sezionale/serie di numerazione FIC.' },
+        centro_ricavi: { type: 'string', description: 'Centro di ricavo applicato alle righe.' },
+        cassa_perc: { type: 'number', description: 'Percentuale cassa previdenziale. 0 per azzerarla.' },
+        rivalsa_perc: { type: 'number', description: 'Percentuale rivalsa. 0 per azzerarla.' },
       },
       required: ['cliente'],
     },
