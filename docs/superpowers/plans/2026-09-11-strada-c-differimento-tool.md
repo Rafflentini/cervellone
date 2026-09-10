@@ -647,6 +647,83 @@ git commit -m "il censimento: 127 richieste vere per provare che nessuna capacit
 
 ---
 
+### Task 7: Il registro non deve poter tacere
+
+Il registro del Task 1 è **fire-and-forget**: se la scrittura fallisce, il turno non se ne accorge — ed è giusto così, un registro non deve poter rompere una conversazione. Ma oggi non se ne accorge **nemmeno nessun altro**. Se la migrazione non venisse applicata, o la tabella venisse rinominata, il registro tacerebbe e sembrerebbe funzionare. Sarebbe il dato su cui scegliamo il nucleo, muto e con l'aria di essere vivo.
+
+**Files:**
+- Modify: `src/lib/tool-call-log.ts`
+- Test: `src/lib/tool-call-log.test.ts`
+
+**Interfaces:**
+- Consumes: `registraChiamataTool` (Task 1). La firma **non cambia**: resta `void`, resta non-throwing.
+
+- [ ] **Step 1: Scrivere il test che fallisce**
+
+Aggiungere a `src/lib/tool-call-log.test.ts` un terzo `describe`:
+
+```typescript
+describe('il registro non tace se e rotto', () => {
+  beforeEach(() => { insert.mockClear() })
+
+  it('avvisa in console UNA volta sola quando la scrittura fallisce', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    insert.mockImplementation(() => Promise.reject(new Error('relation "cervellone_tool_calls" does not exist')))
+    registraChiamataTool('a', undefined, 1, true)
+    registraChiamataTool('b', undefined, 1, true)
+    registraChiamataTool('c', undefined, 1, true)
+    await new Promise((r) => setImmediate(r))
+    // Una sola volta: un avviso per ogni chiamata a tool inonderebbe i log di Vercel.
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toContain('tool_call_log')
+    warn.mockRestore()
+    insert.mockImplementation(() => Promise.resolve({ data: null, error: null }))
+  })
+})
+```
+
+- [ ] **Step 2: Eseguire il test e verificare che fallisca**
+
+Run: `npx vitest run src/lib/tool-call-log.test.ts`
+Expected: FAIL — `expected "warn" to be called 1 times, but got 0 times`
+
+- [ ] **Step 3: Scrivere l'implementazione minima**
+
+In `src/lib/tool-call-log.ts`, aggiungere sopra la funzione:
+
+```typescript
+// Un registro che fallisce in silenzio e' peggio di nessun registro: sembra
+// funzionare. Avvisiamo UNA volta per processo — abbastanza per vederlo nei log
+// di Vercel, non abbastanza da inondarli a ogni chiamata di tool.
+let giaAvvisato = false
+function avvisaUnaVolta(motivo: unknown): void {
+  if (giaAvvisato) return
+  giaAvvisato = true
+  console.warn(`tool_call_log: scrittura fallita, il registro non sta registrando — ${motivo}`)
+}
+```
+
+e sostituire il `.catch(() => {})` con `.catch(avvisaUnaVolta)`, e il `catch {}` sincrono con `catch (e) { avvisaUnaVolta(e) }`.
+
+- [ ] **Step 4: Eseguire i test e verificare che passino**
+
+Run: `npx vitest run src/lib/tool-call-log.test.ts`
+Expected: PASS. **Verificare anche che i test del Task 1 restino verdi**: in particolare quello che prova che `registraChiamataTool` non lancia quando il database è giù — l'avviso non deve trasformarsi in un'eccezione.
+
+- [ ] **Step 5: Suite intera e typecheck**
+
+Run: `npx vitest run && npx tsc --noEmit`
+Expected: verde, e typecheck **completamente pulito**.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/lib/tool-call-log.ts src/lib/tool-call-log.test.ts
+git commit -m "un registro che tace sembra funzionare: avvisa una volta"
+```
+
+---
+
 ### Task 6: L'audit avversariale, e la prova sui due canali
 
 **Files:**
