@@ -17,7 +17,8 @@
 - **`executeTool` (`src/lib/tools.ts:895-901`) non cambia comportamento.** Definizione ed esecuzione sono disaccoppiate: la catena `EXECUTORS` non consulta mai le definizioni.
 - **Il `BASE_PROMPT` non si tocca in questo piano.** È il Passo 2, ha un disegno suo.
 - **Il database non si tocca** nei suoi contenuti appresi (skill, regole, memorie, modelli). L'unica scrittura nuova è una tabella nuova.
-- **I 2.203 test di `main` restano verdi.** Linea di base misurata l'11 set: `npx vitest run` → 2203 passati, 4 saltati, 173 file, 41s.
+- **I 2.203 test di `main` restano verdi.** Linea di base misurata l'11 set: `npx vitest run` → 2203 passati, 4 saltati, 174 file totali (173 passati + 1 saltato), 41s.
+- **`npx tsc --noEmit` deve restare COMPLETAMENTE pulito, a ogni task.** Misurato su `90aadcc`: `main` è pulito, zero righe di output. ⚠️ Questo vincolo è stato aggiunto *dopo* il Task 1, che aveva lasciato 5 errori nel suo file di test senza che nessuno se ne accorgesse: la revisione guardava i test, non il typecheck.
 - **Il tipo `ToolDefinition`** (`src/lib/tools/types.ts`) è `{ name, description, input_schema }`. Il differimento aggiunge `defer_loading?: boolean`.
 - **Nessun merge su `main`.** Il ramo è `feat/strada-c-differimento-tool`; il merge lo decide Raffaele.
 - **I sorgenti sono CRLF.** Mai `Get-Content -Raw` + `Set-Content`; per le mutazioni `cp` + `perl -0pi` + `md5sum` di prova.
@@ -525,6 +526,31 @@ git commit -m "il differimento dietro un interruttore: spento finche' non lo acc
 
 Gira contro l'API vera, **non in CI**. È la prova della regola chirurgica n.2.
 
+**Due bracci, e servono a cose diverse.** Il braccio B (per-tool) prova che *ogni* tool resta
+raggiungibile, ma le sue richieste sono derivate dalle descrizioni dei tool, quindi è in parte
+circolare. Il braccio A (replay differenziale) usa **le parole vere dell'Ingegnere** prese dal
+database, ma copre solo i tool che il traffico reale tocca. Nessuno dei due basta da solo.
+
+**Braccio A — replay differenziale su traffico vero.** In `messages` ci sono 41 conversazioni; i
+**primi** messaggi utente sono auto-contenuti per definizione (non dipendono da un contesto
+precedente), e **22 di essi** hanno lunghezza fra 25 e 400 caratteri. La query per estrarli:
+
+```sql
+select distinct on (conversation_id) conversation_id, content
+from messages where role='user' and content is not null
+order by conversation_id, created_at asc;
+-- poi filtrare: length(content) between 25 and 400
+```
+
+Per ognuno dei 22: **la stessa richiesta, nelle due configurazioni** (oggi = tutti i tool caricati;
+differito = nucleo + ricerca), e si confronta **quali tool vengono chiamati**. Atteso: lo stesso
+insieme. Ogni divergenza va elencata per nome, con la richiesta che l'ha prodotta — **una divergenza
+non è automaticamente un difetto** (il modello non è deterministico), ma va guardata una per una.
+Costo ~0,70 dollari.
+
+⚠️ Limite dichiarato: 22 richieste non sono un campione, sono un assaggio. Non provano l'assenza di
+regressioni; provano che sul traffico reale disponibile non se ne vedono.
+
 **Files:**
 - Create: `scripts/censimento-tool.ts`
 - Create: `docs/superpowers/registri/2026-09-11-censimento-tool.md` (l'esito, scritto a mano dopo la corsa)
@@ -532,7 +558,7 @@ Gira contro l'API vera, **non in CI**. È la prova della regola chirurgica n.2.
 **Interfaces:**
 - Consumes: `getToolDefinitions` (Task 2), `NUCLEO_TOOL` (Task 3).
 
-- [ ] **Step 1: Scrivere lo script**
+- [ ] **Step 1: Scrivere lo script del braccio B (per-tool)**
 
 ```typescript
 /**
