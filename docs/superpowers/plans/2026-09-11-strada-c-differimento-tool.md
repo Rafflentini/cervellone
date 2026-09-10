@@ -393,15 +393,14 @@ Expected: FAIL — `Cannot find module './tool-nucleo'`
  * di `cervellone_tool_calls` dopo una settimana di uso vero.
  */
 export const NUCLEO_TOOL: ReadonlySet<string> = new Set([
-  'cerca_documenti',
-  'ricorda',
-  'cerca_memoria',
-  'working_memory_set',
-  'working_memory_get',
-  'lista_scadenze',
-  'cervellone_info',
-  'imposta_societa_attiva',
-  'lista_progetti',
+  'cerca_documenti',          // cosa e' gia' stato prodotto
+  'ricorda',                  // fissare un fatto
+  'richiama_memoria',         // cosa si e' gia' detto
+  'lista_entita',             // chi sono clienti, cantieri, fornitori
+  'lista_scadenze',           // cosa incombe (modalita' segretaria)
+  'cervellone_info',          // cosa so fare io
+  'imposta_societa_attiva',   // dentro quale delle due societa' siamo
+  'imposta_progetto_attivo',  // su quale lavoro siamo
 ])
 ```
 
