@@ -188,10 +188,30 @@ suo disegno.**
 | rischio | gravità | cosa si fa |
 |---|---|---|
 | **Il modello non trova un tool** e dice «non posso» | **alta** — violerebbe «mai limitare» | Il **censimento** (§6): 127 richieste vere, una per tool. Nessun merge finché non passa. |
-| **Descrizioni corte = ricerca peggiore.** Le descrizioni diventano **l'indice di ricerca**; il ramo FIC bloccato le accorcia del 77% | **alta**, e non era prevista | Va detto a chi riprende quel ramo: dimagrire le descrizioni ora ha un **costo nuovo**. I due lavori vanno riconciliati prima, non dopo. |
+| **Descrizioni corte = ricerca peggiore.** Le descrizioni diventano **l'indice di ricerca**; il ramo FIC bloccato le accorcia dell'81% | **media, e circoscritta** (misurato, vedi sotto) | Va detto a chi riprende quel ramo. Non è un veto: è un criterio nuovo — *una descrizione deve contenere le parole con cui la si cercherebbe*. |
 | Turno a freddo che cerca: **+22% token** | media | Misurabile dal passo 0. Se pesa, si allarga il nucleo. |
 | Il modello cerca **due volte** per un bisogno solo (visto) | bassa | Costa un passaggio cachato. Si guarda dopo il passo 0. |
 | La ricerca è BM25 su testo **italiano** | media | Il censimento la mette alla prova su tutti e 127. |
+
+### 5.1 — Il ramo FIC e le descrizioni corte, misurato
+
+Sul ramo bloccato `fix/fic-peso-e-conferma-voce` le descrizioni dei tool di scrittura FIC passano da
+**1.451 a 272 byte (−81%)**. Ma le parole con cui uno *cercherebbe* quei tool **restano**:
+
+| | main (338 byte) | ramo FIC (97 byte) |
+|---|---|---|
+| `compila_fattura_emessa` | «Compila una bozza di **fattura** emessa su **Fatture in Cloud**, senza trasmetterla. […] il **sezionale** di numerazione, il **centro di ricavo** […] la **cassa previdenziale/rivalsa INARCASSA**» | «Compila una bozza di **fattura** emessa su **Fatture in Cloud**. Il manuale sta nella skill «Segreteria».» |
+
+«fattura», «bozza», «Fatture in Cloud» ci sono ancora: la ricerca normale regge. **Quello che si perde
+sono le parole specialistiche** — una richiesta come *«azzerami la rivalsa INARCASSA su questa
+fattura»* non aggancerebbe più niente.
+
+**Il criterio che ne nasce, e che vale per tutti e 127 i tool:** una descrizione può dimagrire quanto
+si vuole **purché conservi le parole con cui l'Ingegnere la cercherebbe**. Non è un veto sul ramo FIC:
+è un vincolo nuovo che quel ramo non poteva conoscere, perché il differimento non esisteva.
+
+⚠️ Nota a margine, già nota: quella descrizione rimanda alla skill «Segreteria», che secondo l'audit
+del 10 settembre **sta in un file che nessun sorgente importa**. Il rimando è a vuoto.
 
 ---
 
