@@ -58,6 +58,7 @@ interface RigaPending {
   conferme: number
   descrizione: string | null
   created_at: string
+  societa: string | null
 }
 
 export interface EsitoConfermaFic {
@@ -77,33 +78,14 @@ function primaRiga(descrizione: string | null): string {
 }
 
 /**
- * Avanza di UN passo la bozza FIC in attesa della societa indicata.
+ * Avanza di UN passo una bozza FIC in attesa, date le righe candidate.
  *
  * Non decide niente al posto dell'Ingegnere: se le bozze in attesa sono piu'
  * di una NON si indovina quale documento fiscale creare — si elencano e si
  * chiede. E se non ce n'e' nessuna recente non si intercetta nulla, cosi' un
  * «ok» generico continua ad arrivare al modello come prima.
  */
-export async function confermaFicPiuRecente(societa: CodiceSocieta): Promise<EsitoConfermaFic> {
-  const dal = new Date(Date.now() - FINESTRA_MS).toISOString()
-
-  const { data, error } = await supabase
-    .from('cervellone_fic_pending')
-    .select('id, conferme, descrizione, created_at')
-    .eq('societa', societa)
-    .eq('stato', 'in_attesa')
-    .gte('created_at', dal)
-    .order('created_at', { ascending: false })
-    .limit(5)
-
-  if (error) {
-    // Il database non risponde: NON si intercetta. Meglio che la frase arrivi
-    // al modello che una conferma persa in silenzio.
-    console.error('[CONFERMA-FIC] lettura pending fallita:', error.message)
-    return NON_INTERCETTATO
-  }
-
-  const righe = (data ?? []) as RigaPending[]
+async function avanzaUnPasso(righe: RigaPending[]): Promise<EsitoConfermaFic> {
   if (righe.length === 0) return NON_INTERCETTATO
 
   if (righe.length > 1) {
@@ -120,7 +102,6 @@ export async function confermaFicPiuRecente(societa: CodiceSocieta): Promise<Esi
 
   const riga = righe[0]
   const conferme = Number(riga.conferme)
-  const s = getSocieta(societa)
 
   if (conferme >= 2) {
     return {
@@ -134,13 +115,65 @@ export async function confermaFicPiuRecente(societa: CodiceSocieta): Promise<Esi
     // Se il primo passaggio non e' andato a buon fine il testo va riportato
     // com'e': non si finge di aver registrato niente.
     if (!message.includes('/fic_ok2_')) return { intercettato: true, message }
+    // La denominazione si legge dalla riga, non da un default: una conferma
+    // che nomina l'azienda sbagliata e' peggio di una che non la nomina.
+    const codice = (riga.societa ?? '') as CodiceSocieta
+    let nome = 'Fatture in Cloud'
+    try {
+      if (riga.societa) nome = getSocieta(codice).denominazione
+    } catch {
+      // societa non riconosciuta: si resta generici, non si inventa.
+    }
     return {
       intercettato: true,
       message:
-        `${message}\n\n⚠️ *Conferma DEFINITIVA*: creo il documento su Fatture in Cloud per `
-        + `*${s.denominazione}*? Mi risponda «confermo» un'ultima volta.`,
+        `${message}\n\n⚠️ *Conferma DEFINITIVA*: creo il documento su ${nome}? `
+        + 'Mi risponda «confermo» un\'ultima volta.',
     }
   }
 
   return { intercettato: true, message: await confirmFicStep2(riga.id) }
+}
+
+async function leggiPending(societa?: CodiceSocieta): Promise<RigaPending[] | null> {
+  const dal = new Date(Date.now() - FINESTRA_MS).toISOString()
+
+  let q = supabase
+    .from('cervellone_fic_pending')
+    .select('id, conferme, descrizione, created_at, societa')
+    .eq('stato', 'in_attesa')
+    .gte('created_at', dal)
+
+  if (societa) q = q.eq('societa', societa)
+
+  const { data, error } = await q.order('created_at', { ascending: false }).limit(5)
+
+  if (error) {
+    // Il database non risponde: NON si intercetta. Meglio che la frase arrivi
+    // al modello che una conferma persa in silenzio.
+    console.error('[CONFERMA-FIC] lettura pending fallita:', error.message)
+    return null
+  }
+
+  return (data ?? []) as RigaPending[]
+}
+
+/** Avanza la bozza in attesa della societa indicata. */
+export async function confermaFicPiuRecente(societa: CodiceSocieta): Promise<EsitoConfermaFic> {
+  const righe = await leggiPending(societa)
+  if (righe === null) return NON_INTERCETTATO
+  return avanzaUnPasso(righe)
+}
+
+/**
+ * Come sopra, ma senza filtro societa: la societa la dice la riga.
+ *
+ * Serve dove il chiamante non ha il conversationId sotto mano — tipicamente il
+ * ramo della conferma a voce, che parte dal dispatch mail. Filtrare per una
+ * societa indovinata li' significava non trovare mai la bozza giusta.
+ */
+export async function confermaFicSenzaSocieta(): Promise<EsitoConfermaFic> {
+  const righe = await leggiPending()
+  if (righe === null) return NON_INTERCETTATO
+  return avanzaUnPasso(righe)
 }
