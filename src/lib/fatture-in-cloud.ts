@@ -111,6 +111,30 @@ function dataOggiRoma(): string {
 }
 
 /**
+ * Dilazione standard delle fatture emesse: pagamento a 30 giorni data fattura.
+ *
+ * Prima la scadenza del piano pagamenti era la data del documento stesso,
+ * cioe' una fattura scaduta il giorno in cui nasce. Su una fattura a un
+ * condominio non ha senso: i 30 giorni sono il termine con cui lo studio
+ * lavora davvero.
+ */
+export const GIORNI_SCADENZA_FIC = 30
+
+/**
+ * Somma giorni a una data ISO (YYYY-MM-DD) restando in UTC.
+ *
+ * In UTC di proposito: sommare millisecondi su una data costruita in ora
+ * locale sbaglia di un giorno attraverso il cambio dell'ora legale, e qui il
+ * risultato e' la scadenza di pagamento scritta su un documento fiscale.
+ */
+export function aggiungiGiorniISO(isoDate: string, giorni: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || '').trim())
+  if (!m) return isoDate
+  const t = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) + giorni * 86_400_000
+  return new Date(t).toISOString().slice(0, 10)
+}
+
+/**
  * Totale da pagare del documento, calcolato DA FATTURE IN CLOUD.
  *
  * Non si ricalcola a mano: cassa previdenziale, rivalsa, ritenuta d'acconto,
@@ -173,6 +197,9 @@ export async function creaDocumentoFIC(
   // confronta un piano da 0,00 con il totale reale. Succede quando
   // l'anagrafica cliente non ha termini di pagamento predefiniti, e per mesi
   // e' sembrato un errore dei dati mentre gli importi erano giusti.
+  //
+  // La scadenza e' a 30 giorni data fattura, non il giorno stesso: una fattura
+  // che nasce gia' scaduta e' un dato sbagliato su un documento fiscale.
   const pagamentiEsistenti = forcedPayload.payments_list
   const haPagamenti = Array.isArray(pagamentiEsistenti) && pagamentiEsistenti.length > 0
   if (!haPagamenti) {
@@ -181,7 +208,11 @@ export async function creaDocumentoFIC(
       const dataDoc = typeof forcedPayload.date === 'string' && forcedPayload.date
         ? forcedPayload.date
         : dataOggiRoma()
-      forcedPayload.payments_list = [{ due_date: dataDoc, amount: totale, status: 'not_paid' }]
+      forcedPayload.payments_list = [{
+        due_date: aggiungiGiorniISO(dataDoc, GIORNI_SCADENZA_FIC),
+        amount: totale,
+        status: 'not_paid',
+      }]
     }
   }
 
