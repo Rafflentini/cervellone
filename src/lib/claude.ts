@@ -7,6 +7,8 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { getToolDefinitions, executeTool } from './tools'
+import { NUCLEO_TOOL } from './tool-nucleo'
+import type { OpzioniTool } from './tools/types'
 import { searchMemory, saveMessageWithEmbedding, saveMessageOnly, saveEmbeddingOnly } from './memory'
 import { logError } from './sanitize'
 import { consumeStreamWithRetry } from './stream-retry'
@@ -502,6 +504,15 @@ export function messaggioErroreUtente(message: string, details: string): string 
   return '⚠️ Errore temporaneo del servizio AI. Riprovi tra qualche secondo.'
 }
 
+/**
+ * L'interruttore del differimento. Spento di default: acceso solo con
+ * TOOL_DEFER='1'. Serve a tornare indietro cambiando una variabile su Vercel,
+ * senza un deploy — questa e' una modifica al motore centrale del bot.
+ */
+export function opzioniToolDaAmbiente(): OpzioniTool | undefined {
+  return process.env.TOOL_DEFER === '1' ? { nucleo: NUCLEO_TOOL, ricerca: true } : undefined
+}
+
 export async function runAgentTurn(
   request: ClaudeRequest,
   sink: ChannelSink,
@@ -517,7 +528,7 @@ export async function runAgentTurn(
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tools: any[] = getToolDefinitions()
+  const tools: any[] = getToolDefinitions(opzioniToolDaAmbiente())
   let currentMessages = trimMessages([...request.messages])
   let fullResponse = ''
   let accUsage: UsageTokens = {}
