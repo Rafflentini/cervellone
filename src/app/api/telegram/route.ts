@@ -778,13 +778,38 @@ export async function POST(request: NextRequest) {
       return await rispondiESalva(message)
     }
 
+    // ─── Conferma bozza FIC a LINGUAGGIO NATURALE: «confermo», «procedi», «vai» ───
+    //
+    // Il 10 set 2026 l'Ingegnere, da cellulare, ha scritto «confermo», poi
+    // «Procedi», poi «Confermato a procedi compila»: tre volte. Ogni volta la
+    // riga e' rimasta a `conferme: 1` e la fattura non e' nata, perche' qui si
+    // leggeva SOLO `/fic_ok_<uuid>` — 36 caratteri da toccare al volo.
+    //
+    // La doppia conferma NON viene indebolita: restano DUE passaggi, e
+    // l'intercettazione avviene QUI, a monte del turno LLM, quindi la creazione
+    // di un documento contabile resta legata a cio' che l'Ingegnere ha davvero
+    // scritto o dettato — il modello non puo' confermare da se'.
+    //
+    // Se non c'e' nessuna bozza recente in attesa, `intercettato` e' false e la
+    // frase prosegue verso il modello esattamente come prima: un «ok» generico
+    // non cambia comportamento.
+    {
+      const { eConfermaFic, confermaFicPiuRecente } = await import('@/lib/conferma-fic')
+      if (eConfermaFic(userText)) {
+        const esito = await confermaFicPiuRecente(
+          await societaAttivaPerDocumenti(chatIdToUuid(chatId)),
+        )
+        if (esito.intercettato) return await rispondiESalva(esito.message)
+      }
+    }
+
     const mSalOk2 = userText.match(/^\/sal_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
     const mSalOk = userText.match(/^\/sal_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
     const mSalNo = userText.match(/^\/sal_no_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
     if (mSalOk2 || mSalOk || mSalNo) {
       const uuid = (mSalOk2 ?? mSalOk ?? mSalNo)![1]
       const message = mSalOk2
-? await confirmSalStep2(uuid, await societaAttivaPerDocumenti(chatIdToUuid(chatId)))
+        ? await confirmSalStep2(uuid, await societaAttivaPerDocumenti(chatIdToUuid(chatId)))
         : mSalOk
           ? await confirmSalStep1(uuid)
           : await cancelSal(uuid)
