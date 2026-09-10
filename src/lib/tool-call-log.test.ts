@@ -21,6 +21,7 @@ vi.mock('./supabase', () => ({ supabase: { from: () => catena() } }))
 vi.mock('@supabase/supabase-js', () => ({ createClient: () => ({ from: () => catena() }) }))
 
 import { registraChiamataTool } from './tool-call-log'
+import { executeTool } from './tools'
 
 describe('registro delle chiamate ai tool', () => {
   beforeEach(() => { insert.mockClear() })
@@ -48,7 +49,6 @@ describe('aggancio in executeTool', () => {
   beforeEach(() => { insert.mockClear() })
 
   it('registra il tool eseguito e restituisce il risultato invariato', async () => {
-    const { executeTool } = await import('./tools')
     const out = await executeTool('cervellone_info', {}, undefined)
     expect(typeof out).toBe('string')
     expect(out).not.toContain('non riconosciuto')
@@ -60,7 +60,6 @@ describe('aggancio in executeTool', () => {
   // sbagliato. Senza questo, "contiene cervellone_info" passerebbe anche se
   // registrassimo sempre la stessa stringa fissa.
   it('un tool inesistente viene registrato come NON riconosciuto', async () => {
-    const { executeTool } = await import('./tools')
     const out = await executeTool('tool_che_non_esiste_xyz', {}, undefined)
     expect(out).toContain('non riconosciuto')
     await new Promise((r) => setImmediate(r))
