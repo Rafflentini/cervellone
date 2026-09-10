@@ -237,6 +237,22 @@ function normalizeRighe(
   return { righe }
 }
 
+/**
+ * Cliente del documento, risolto sull'anagrafica di Fatture in Cloud.
+ *
+ * Si passa SEMPRE anche `name`, non solo l'id: Fatture in Cloud rifiuta il
+ * documento con 422 `entity.name: The entity.name field must not be empty`
+ * anche quando `entity.id` e valorizzato e corretto.
+ *
+ * Il difetto era latente: fino a quando mancava il piano pagamenti la
+ * validazione FIC si fermava prima, sul totale dei pagamenti, e questo secondo
+ * errore non si vedeva mai. Il 10/09/2026, sul saldo SAL n.1 del Condominio
+ * Fermi, e emerso alla seconda conferma e la fattura non e nata.
+ *
+ * Il nome si prende dall'ANAGRAFICA e non dalla stringa cercata: quella puo
+ * essere una forma parziale usata solo per la ricerca, e finirebbe scritta sul
+ * documento fiscale al posto della denominazione vera.
+ */
 async function resolveClientEntity(
   cliente: string,
   societa: CodiceSocieta,
@@ -252,7 +268,9 @@ async function resolveClientEntity(
 
   const list = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
   const first = list.find(row => row?.id)
-  if (first?.id) return { ok: true, entity: { id: first.id } }
+  if (first?.id) {
+    return { ok: true, entity: { id: first.id, name: cleanString(first.name) ?? cliente } }
+  }
   return { ok: true, entity: { name: cliente } }
 }
 
