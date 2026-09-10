@@ -106,6 +106,53 @@ export async function getCompanyId(
   return { ok: false, error: `nessuna azienda trovata su Fatture in Cloud per ${s.denominazione}.` }
 }
 
+function dataOggiRoma(): string {
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Rome' })
+}
+
+/**
+ * Totale da pagare del documento, calcolato DA FATTURE IN CLOUD.
+ *
+ * Non si ricalcola a mano: cassa previdenziale, rivalsa, ritenuta d'acconto,
+ * ritenuta del condominio, bollo e split payment li conosce solo FIC (in parte
+ * arrivano dai default dell'anagrafica cliente, che noi non leggiamo). Un
+ * totale calcolato qui sarebbe una seconda verità su un documento fiscale.
+ *
+ * Restituisce null se l'endpoint non risponde: in quel caso il chiamante
+ * procede come prima, senza piano pagamenti.
+ */
+async function calcolaTotaliFIC(
+  payload: Record<string, unknown>,
+  companyId: string,
+  token: string,
+): Promise<number | null> {
+  try {
+    const res = await fetch(`${FIC_BASE}/c/${companyId}/issued_documents/totals`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ data: payload }),
+    })
+    if (!res.ok) {
+      console.log(`[FIC] totals non disponibili (${res.status})`)
+      return null
+    }
+    const json = await res.json()
+    const d = json?.data ?? json
+    const due = Number(d?.amount_due)
+    if (Number.isFinite(due) && due > 0) return Math.round(due * 100) / 100
+    const gross = Number(d?.amount_gross)
+    if (Number.isFinite(gross) && gross > 0) return Math.round(gross * 100) / 100
+    return null
+  } catch (err) {
+    console.log(`[FIC] totals errore: ${err instanceof Error ? err.message : String(err)}`)
+    return null
+  }
+}
+
 export async function creaDocumentoFIC(
   payload: Record<string, unknown>,
   societa: CodiceSocieta,
@@ -119,7 +166,25 @@ export async function creaDocumentoFIC(
 
   const { number: _number, ...payloadWithoutNumber } = payload
   void _number
-  const forcedPayload = { ...payloadWithoutNumber, e_invoice: false }
+  const forcedPayload: Record<string, unknown> = { ...payloadWithoutNumber, e_invoice: false }
+
+  // PIANO PAGAMENTI — senza questo, FIC rifiuta il documento con
+  // "Il totale dei pagamenti non corrisponde al totale da pagare" (422):
+  // confronta un piano da 0,00 con il totale reale. Succede quando
+  // l'anagrafica cliente non ha termini di pagamento predefiniti, e per mesi
+  // e' sembrato un errore dei dati mentre gli importi erano giusti.
+  const pagamentiEsistenti = forcedPayload.payments_list
+  const haPagamenti = Array.isArray(pagamentiEsistenti) && pagamentiEsistenti.length > 0
+  if (!haPagamenti) {
+    const totale = await calcolaTotaliFIC(forcedPayload, company.id, token)
+    if (totale !== null) {
+      const dataDoc = typeof forcedPayload.date === 'string' && forcedPayload.date
+        ? forcedPayload.date
+        : dataOggiRoma()
+      forcedPayload.payments_list = [{ due_date: dataDoc, amount: totale, status: 'not_paid' }]
+    }
+  }
+
   const path = `/c/${company.id}/issued_documents`
   console.log('[FIC] POST issued_documents') // audit (mai loggare il token)
 
@@ -135,7 +200,9 @@ export async function creaDocumentoFIC(
     })
     if (res.status === 401) return { ok: false, error: 'Token FIC non valido/revocato: rigeneralo nelle Applicazioni collegate.' }
     if (res.status === 429) return { ok: false, error: 'Troppe richieste a Fatture in Cloud, riprova tra poco.' }
-    if (!res.ok) return { ok: false, error: `Errore creazione bozza FIC ${res.status}: ${(await res.text()).slice(0, 300)}` }
+    // 600 char e non 300: il testo di FIC veniva troncato esattamente dove
+    // spiegava quale campo era in errore.
+    if (!res.ok) return { ok: false, error: `Errore creazione bozza FIC ${res.status}: ${(await res.text()).slice(0, 600)}` }
 
     const json = await res.json()
     const data = json?.data ?? json
