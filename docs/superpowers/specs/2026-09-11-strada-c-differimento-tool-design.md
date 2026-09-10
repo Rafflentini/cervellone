@@ -233,6 +233,35 @@ del 10 settembre **sta in un file che nessun sorgente importa**. Il rimando è a
 
 ---
 
+## 6.1 — Come si accende, e cosa sorvegliare
+
+**L'ordine conta, e non è quello che sembra.**
+
+1. **Prima la migrazione, poi il merge.** `cervellone_tool_calls` va creata *prima* che il codice del
+   registro arrivi in produzione. Al contrario, il registro scriverebbe a vuoto — e siccome è
+   fire-and-forget, **in silenzio**. (Il Task 7 aggiunge un avviso una-volta-per-processo proprio
+   perché quel silenzio non sia totale, ma la migrazione resta la cosa da fare per prima.)
+2. **Poi si lascia girare qualche giorno con `TOOL_DEFER` spento.** Serve a raccogliere il dato su
+   *quali tool vengono chiamati davvero*, che è quello che rende il nucleo una scelta invece di
+   un'ipotesi.
+3. **Solo dopo si accende.** `TOOL_DEFER=1` su Vercel, **più un redeploy**: su Vercel le variabili
+   d'ambiente sono legate al *deployment*, non al progetto — cambiarla in dashboard non tocca quello
+   in esecuzione. `npx vercel redeploy <url>`.
+
+**Le tre cose da guardare il primo giorno con l'interruttore acceso:**
+
+| cosa | perché | come si vede |
+|---|---|---|
+| 🚨 **Turni che si chiudono a metà** | `claude.ts:728` considera concluso un turno senza blocchi `tool_use`, e **i tool server non ne producono**. Se l'API rispondesse `stop_reason: 'pause_turn'` durante una ricerca, il turno verrebbe letto come finito. È un difetto **preesistente** (`web_search` c'è da sempre), ma il differimento fa passare *ogni* scoperta di tool da un tool server: da raro diventa frequente. | una risposta che si interrompe senza spiegazione |
+| **Il risparmio si realizza davvero?** | Le misure di questo documento vengono da una configurazione costruita a mano. Che i 28.671 token si risparmino **con il codice vero** è una previsione finché non la si legge su un turno vero. | `usage.input_tokens` nei log |
+| **Il registro registra?** | Se la tabella non c'è, o RLS blocca, il registro tace. | l'avviso `tool_call_log:` nei log di Vercel |
+
+**Per tornare indietro:** `TOOL_DEFER` a qualunque valore diverso da `'1'` (o rimossa) più un
+redeploy. Non si tocca il codice, e la garanzia è misurata: senza opzioni `getToolDefinitions()`
+produce **esattamente** l'output di `main`, md5 identico, ordine compreso.
+
+---
+
 ## 7. Cosa questo NON risolve
 
 Vale ancora, parola per parola, quanto scritto il 10 settembre: **non risolve gli errori del 10
