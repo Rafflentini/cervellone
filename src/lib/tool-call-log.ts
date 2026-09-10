@@ -1,6 +1,16 @@
 // src/lib/tool-call-log.ts
 import { supabase } from './supabase'
 
+// Un registro che fallisce in silenzio e' peggio di nessun registro: sembra
+// funzionare. Avvisiamo UNA volta per processo — abbastanza per vederlo nei log
+// di Vercel, non abbastanza da inondarli a ogni chiamata di tool.
+let giaAvvisato = false
+function avvisaUnaVolta(motivo: unknown): void {
+  if (giaAvvisato) return
+  giaAvvisato = true
+  console.warn(`tool_call_log: scrittura fallita, il registro non sta registrando — ${motivo}`)
+}
+
 /**
  * Registra UNA chiamata a un tool. Fire-and-forget deliberato: il registro serve
  * a osservare, non a funzionare. Se Supabase e giu il turno dell'Ingegnere non
@@ -19,8 +29,8 @@ export function registraChiamataTool(
       durata_ms: durataMs,
       riconosciuto,
     })
-    void Promise.resolve(p).catch(() => {})
-  } catch {
-    // volutamente muto
+    void Promise.resolve(p).catch(avvisaUnaVolta)
+  } catch (e) {
+    avvisaUnaVolta(e)
   }
 }

@@ -68,3 +68,34 @@ describe('aggancio in executeTool', () => {
     expect(riga?.riconosciuto).toBe(false)
   })
 })
+
+describe('il registro non tace se e rotto', () => {
+  // `giaAvvisato` e' un guard in-memory DENTRO il modulo tool-call-log: il test
+  // 'NON lancia...' qui sopra fa gia' scattare un rifiuto, quindi arrivando qui
+  // il guard e' gia' true e il test sotto vedrebbe 0 avvisi invece di 1 — non
+  // perche' il codice sia sbagliato, ma perche' il flag e' condiviso da tutto il
+  // file. Si reimporta SOLO tool-call-log (leggero: importa solo ./supabase) per
+  // ripartire dal guard azzerato — './tools' resta l'import statico in cima al
+  // file, la correzione appena fatta contro il timeout non si tocca.
+  let registraChiamataToolFresco: typeof registraChiamataTool
+
+  beforeEach(async () => {
+    insert.mockClear()
+    vi.resetModules()
+    ;({ registraChiamataTool: registraChiamataToolFresco } = await import('./tool-call-log'))
+  })
+
+  it('avvisa in console UNA volta sola quando la scrittura fallisce', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    insert.mockImplementation(() => Promise.reject(new Error('relation "cervellone_tool_calls" does not exist')))
+    registraChiamataToolFresco('a', undefined, 1, true)
+    registraChiamataToolFresco('b', undefined, 1, true)
+    registraChiamataToolFresco('c', undefined, 1, true)
+    await new Promise((r) => setImmediate(r))
+    // Una sola volta: un avviso per ogni chiamata a tool inonderebbe i log di Vercel.
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toContain('tool_call_log')
+    warn.mockRestore()
+    insert.mockImplementation(() => Promise.resolve({ data: null, error: null }))
+  })
+})
