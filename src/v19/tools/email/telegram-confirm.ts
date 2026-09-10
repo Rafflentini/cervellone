@@ -22,6 +22,7 @@ import type { SendEmailResult } from './types'
 import { logEmail } from './audit'
 import type { AccountKey } from './config'
 import { recordSentMail } from '@/lib/sent-mail'
+import { confermaFicSenzaSocieta } from '@/lib/conferma-fic'
 
 export async function buildPendingTelegramMessage(uuid: string): Promise<string | null> {
   const p = await fetchPending(uuid)
@@ -143,6 +144,13 @@ export async function confirmLatestPendingSend(): Promise<{ ok: boolean; message
   // in quel caso NON inviamo e chiediamo il codice esplicito /invia_<uuid>.
   const count = await countValidPendingSends()
   if (count === 0) {
+    // Nessuna mail da inviare: la stessa frase-conferma puo' riguardare una
+    // BOZZA FIC in attesa. Questo ramo sta a monte di quello FIC nel dispatch
+    // Telegram, quindi senza questa delega «confermo» moriva qui con «non ho
+    // una mail pronta» e la fattura non nasceva mai — accaduto il 10 set 2026
+    // sul saldo SAL n.1 del Condominio Fermi, tre volte di fila.
+    const fic = await confermaFicSenzaSocieta()
+    if (fic.intercettato) return { ok: true, message: fic.message }
     return { ok: false, message: '📭 Non ho una mail pronta da inviare in questo momento.' }
   }
   if (count > 1) {
