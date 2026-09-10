@@ -2,9 +2,15 @@
  * I tool che restano SEMPRE caricati nel contesto. Tutti gli altri vengono
  * differiti: il modello li trova cercandoli.
  *
- * CRITERIO DICHIARATO: e' di nucleo un tool che serve a CAPIRE la richiesta,
- * non a FARE il lavoro. Orientarsi (chi e' il cliente, che progetto e', cosa
- * si e' detto prima) deve essere possibile senza cercare niente.
+ * CRITERIO DICHIARATO: e' di nucleo un tool che serve a ORIENTARSI nel contesto
+ * o a CONSERVARLO — chi e' il cliente, che lavoro e', dentro quale societa'
+ * siamo, cosa ci si e' gia' detti — non a produrre un risultato per l'Ingegnere.
+ * `ricorda` e' una scrittura, ma conserva contesto: senza, il bot dovrebbe
+ * cercare uno strumento prima di poter fissare un fatto da se', e
+ * l'apprendimento implicito smetterebbe di essere implicito.
+ * UNICA ECCEZIONE DICHIARATA: `lista_scadenze` produce un risultato, e sta nel
+ * nucleo lo stesso perche' la modalita' segretaria e' PROATTIVA — deve poter
+ * accorgersi di una scadenza senza che nessuno gliela chieda.
  *
  * ⚠️ Questa e' un'IPOTESI, non una scelta su prove: l'11 settembre 2026 non
  * esisteva ancora nessun registro delle chiamate ai tool. Va rivista sui dati

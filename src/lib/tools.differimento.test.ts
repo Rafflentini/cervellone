@@ -17,6 +17,9 @@ describe('differimento delle definizioni dei tool', () => {
     const defs = getToolDefinitions() as Def[]
     expect(defs.some((d) => d.defer_loading !== undefined)).toBe(false)
     expect(defs.some((d) => d.type?.startsWith('tool_search'))).toBe(false)
+    // L'ordine e' parte della garanzia: `tools` e' il primo blocco del prefisso
+    // della cache, un riordino la invaliderebbe a ogni turno senza dirlo.
+    expect(defs.slice(0, 2).map((d) => d.name)).toEqual(['web_search', 'code_execution'])
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
@@ -45,6 +48,7 @@ describe('differimento delle definizioni dei tool', () => {
   // vuoto piu ricerca deve restare legale grazie ai due tool server.
   it('non differisce mai tutto: resta sempre almeno un tool caricato', () => {
     const defs = getToolDefinitions({ nucleo: new Set<string>(), ricerca: true }) as Def[]
-    expect(defs.filter((d) => !d.defer_loading).length).toBeGreaterThanOrEqual(2)
+    expect(defs.filter((d) => !d.defer_loading).map((d) => d.name))
+      .toEqual(['tool_search_tool_bm25', 'web_search', 'code_execution'])
   })
 })

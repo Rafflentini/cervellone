@@ -506,8 +506,9 @@ export function messaggioErroreUtente(message: string, details: string): string 
 
 /**
  * L'interruttore del differimento. Spento di default: acceso solo con
- * TOOL_DEFER='1'. Serve a tornare indietro cambiando una variabile su Vercel,
- * senza un deploy — questa e' una modifica al motore centrale del bot.
+ * TOOL_DEFER='1'. Serve a tornare indietro cambiando una variabile su Vercel: non si tocca il
+ * codice, ma il deployment va rifatto (`npx vercel redeploy <url>`) — su Vercel
+ * le variabili d'ambiente sono legate al deployment, non al progetto.
  */
 export function opzioniToolDaAmbiente(): OpzioniTool | undefined {
   return process.env.TOOL_DEFER === '1' ? { nucleo: NUCLEO_TOOL, ricerca: true } : undefined
