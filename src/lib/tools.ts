@@ -36,6 +36,7 @@ import { GMAIL_TOOLS, executeGmailWrapper, executeMailWrapper } from './tools/ma
 import { SELF_TOOLS, executeSelfTools } from './tools/self'
 import { AUTOMAZIONI_TOOLS, executeAutomazioniTools } from './tools/automazioni'
 import { CHECKIN_TOOLS, executeCheckinTool } from './checkin/tools'
+import { registraChiamataTool } from './tool-call-log'
 
 
 // ── IMAGE TOOLS (ri-aggancio pixel immagini caricate) ──
@@ -893,9 +894,14 @@ export function getToolDefinitions() {
 }
 
 export async function executeTool(name: string, input: Record<string, unknown>, conversationId?: string): Promise<string> {
+  const inizio = Date.now()
   for (const executor of EXECUTORS) {
     const result = await executor(name, input, conversationId)
-    if (result !== null) return result
+    if (result !== null) {
+      registraChiamataTool(name, conversationId, Date.now() - inizio, true)
+      return result
+    }
   }
+  registraChiamataTool(name, conversationId, Date.now() - inizio, false)
   return `Tool "${name}" non riconosciuto.`
 }
