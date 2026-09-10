@@ -2,6 +2,7 @@
 -- 1) scegliere il nucleo dei tool su dati veri invece che a intuito;
 -- 2) accorgersi se un tool smette di essere raggiunto dopo il differimento.
 -- Senza, un guasto si travestirebbe da colpa dell'utente.
+-- RLS: solo service_role (coerente con hardening RLS — nessuna policy permissiva).
 create table if not exists cervellone_tool_calls (
   id bigserial primary key,
   nome text not null,
@@ -12,3 +13,6 @@ create table if not exists cervellone_tool_calls (
 );
 create index if not exists idx_tool_calls_created on cervellone_tool_calls (created_at desc);
 create index if not exists idx_tool_calls_nome on cervellone_tool_calls (nome, created_at desc);
+
+alter table cervellone_tool_calls enable row level security;
+-- Nessuna policy permissiva: accesso solo via service_role (server-side).

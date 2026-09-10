@@ -43,10 +43,13 @@ describe('registro delle chiamate ai tool', () => {
 })
 
 describe('aggancio in executeTool', () => {
+  beforeEach(() => { insert.mockClear() })
+
   it('registra il tool eseguito e restituisce il risultato invariato', async () => {
     const { executeTool } = await import('./tools')
     const out = await executeTool('cervellone_info', {}, undefined)
     expect(typeof out).toBe('string')
+    expect(out).not.toContain('non riconosciuto')
     await new Promise((r) => setImmediate(r))
     expect(insert.mock.calls.map((c) => (c[0] as { nome: string }).nome)).toContain('cervellone_info')
   })
