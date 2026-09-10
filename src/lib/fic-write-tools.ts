@@ -592,6 +592,132 @@ export async function cancelFic(id: string): Promise<string> {
   return 'Bozza FIC annullata.'
 }
 
+/**
+ * Oltre questa finestra una bozza non e' piu' «quella di cui stiamo parlando»:
+ * serve contro un «ok» detto domani, a proposito d'altro, che risveglia la
+ * bozza dimenticata di oggi e fa nascere una fattura. Con un id esplicito la
+ * finestra non si applica: li' l'Ingegnere ha detto QUALE documento.
+ */
+const FINESTRA_CONFERMA_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Distanza minima fra prima e seconda conferma.
+ *
+ * La doppia conferma vale solo se sono DUE risposte distinte dell'Ingegnere.
+ * Senza questa guardia il modello potrebbe chiamare il tool due volte dentro
+ * lo stesso turno e creare da se' un documento fiscale: cinque secondi non
+ * disturbano una persona che legge e risponde, ma fermano il doppio scatto.
+ */
+const DISTANZA_MINIMA_CONFERME_MS = 5 * 1000
+
+/**
+ * Avanza di UN passo la doppia conferma di una bozza FIC gia' compilata,
+ * quando l'Ingegnere conferma A PAROLE.
+ *
+ * Il 10 set 2026 era in auto e doveva emettere il saldo SAL n.1 del Condominio
+ * Fermi: la bozza si sbloccava solo con `/fic_ok_<uuid>` e `/fic_ok2_<uuid>`,
+ * 45 caratteri da copiare a mano — e nemmeno tappabili, perche' Telegram
+ * tronca il command link al primo trattino dell'uuid. Ha scritto «confermo»
+ * sei volte in un'ora e la riga e' rimasta a `conferme: 1`.
+ *
+ * Qui la conferma la puo' eseguire il modello, ma la doppia conferma NON viene
+ * indebolita: restano due passaggi, ognuno legato a una risposta affermativa
+ * NUOVA, e con piu' di una bozza in attesa non si indovina — si chiede.
+ */
+async function confermaBozzaFic(
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string> {
+  const id = cleanString(input.id)
+
+  let query = supabase
+    .from('cervellone_fic_pending')
+    .select('id, conferme, descrizione, created_at, updated_at')
+    .eq('stato', 'in_attesa')
+    // Filtro societa: da un contesto Restruktura non si conferma — ne' si crea
+    // su Fatture in Cloud — un documento de La Real Estate.
+    .eq('societa', societa)
+    .order('created_at', { ascending: false })
+    .limit(5)
+
+  if (id) query = query.eq('id', id)
+  else query = query.gte('created_at', new Date(Date.now() - FINESTRA_CONFERMA_MS).toISOString())
+
+  const { data, error } = await query
+  if (error) return fail(error.message)
+
+  const righe = (data ?? []) as Array<{
+    id: string
+    conferme: number
+    descrizione: string | null
+    created_at: string
+    updated_at: string | null
+  }>
+
+  if (righe.length === 0) {
+    return fail('nessuna bozza FIC in attesa di conferma', {
+      societa: getSocieta(societa).denominazione,
+      nota: 'Non e stato creato nessun documento. Se serve, ricompila la bozza.',
+    })
+  }
+
+  if (righe.length > 1) {
+    // Non si sceglie al posto suo quale documento fiscale far nascere.
+    return ok({
+      need: 'disambigua',
+      messaggio: 'Ci sono piu bozze in attesa: chiedi all Ingegnere quale, poi richiama il tool con l id.',
+      bozze: righe.map((r) => ({ id: r.id, conferme: r.conferme, descrizione: r.descrizione })),
+    })
+  }
+
+  const riga = righe[0]
+  const conferme = Number(riga.conferme)
+
+  if (conferme >= 2) {
+    return ok({
+      id: riga.id,
+      stato: 'in_elaborazione',
+      messaggio: 'Bozza gia in elaborazione su Fatture in Cloud: attendi l esito, non ritentare.',
+    })
+  }
+
+  if (conferme === 0) {
+    const messaggio = await confirmFicStep1(riga.id)
+    // Se il primo passaggio non e' andato a buon fine il testo va riportato
+    // com'e': non si finge di aver registrato niente.
+    const registrata = messaggio.includes('/fic_ok2_')
+    return ok({
+      id: riga.id,
+      passo: registrata ? 1 : 0,
+      conferma_registrata: registrata,
+      messaggio,
+      prossimo_passo: registrata
+        ? 'Chiedi ORA la conferma DEFINITIVA e fermati. Richiama questo tool solo dopo una NUOVA risposta affermativa dell Ingegnere, in un messaggio successivo.'
+        : 'La conferma NON e stata registrata: riporta il messaggio testualmente.',
+    })
+  }
+
+  const ultimoTocco = riga.updated_at ? Date.parse(riga.updated_at) : 0
+  if (ultimoTocco && Date.now() - ultimoTocco < DISTANZA_MINIMA_CONFERME_MS) {
+    return fail(
+      'la prima conferma e appena stata registrata: la seconda deve arrivare da una NUOVA risposta dell Ingegnere, non dallo stesso turno',
+      { id: riga.id, passo: 1, documento_creato: false },
+    )
+  }
+
+  const messaggio = await confirmFicStep2(riga.id)
+  const creata = messaggio.startsWith('BOZZA creata su FIC')
+  return ok({
+    id: riga.id,
+    passo: 2,
+    documento_creato: creata,
+    messaggio,
+    avviso: creata
+      ? null
+      : 'La creazione NON e riuscita: riporta il messaggio TESTUALMENTE e non dire che la fattura esiste.',
+  })
+}
+
 export const FIC_WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'compila_fattura_emessa',
@@ -642,6 +768,16 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'conferma_bozza_fic',
+    description: 'Avanza di UN SOLO passo la doppia conferma di una bozza FIC gia compilata, quando l Ingegnere conferma A PAROLE ("confermo", "procedi", "vai", "si", "va bene"). Serve quando e da cellulare e non puo copiare i codici /fic_ok_. REGOLE FERREE: (1) chiamalo SOLO se in QUESTO messaggio l Ingegnere ha detto di procedere — mai di tua iniziativa; (2) MAI due volte nello stesso turno: dopo il passo 1 devi CHIEDERGLI la conferma definitiva e fermarti, e richiamarlo solo dopo una sua NUOVA risposta affermativa (il tool rifiuta comunque il doppio scatto ravvicinato); (3) leggi l esito: se "documento_creato" e false la fattura NON esiste, riporta il campo "messaggio" testualmente e non dire che e stata creata; (4) se torna need "disambigua" ci sono piu bozze in attesa: elenca e chiedi quale, non sceglierne una.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'ID della bozza da confermare. Omettilo se ce n e una sola in attesa nelle ultime 24 ore.' },
+      },
+    },
+  },
+  {
     name: 'lista_bozze_fic',
     description: 'Lista le bozze FIC pending, create o annullate registrate in cervellone_fic_pending.',
     input_schema: {
@@ -668,6 +804,7 @@ export async function executeFicWriteTool(
   try {
     if (name === 'compila_fattura_emessa') return compilaDocumento(input, 'fattura_emessa', societa)
     if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento', societa)
+    if (name === 'conferma_bozza_fic') return confermaBozzaFic(input, societa)
     if (name === 'lista_bozze_fic') return listaBozzeFic(input, societa)
     if (name === 'elimina_bozza_fic') return eliminaBozzaFic(input, societa)
     return null
