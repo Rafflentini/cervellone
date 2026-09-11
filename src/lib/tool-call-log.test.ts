@@ -1,8 +1,16 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 type RigaRegistro = { nome: string; conversation_id: string | null; durata_ms: number; riconosciuto: boolean }
 
-const insert = vi.fn((_riga: RigaRegistro) => Promise.resolve({ data: null, error: null }))
+/**
+ * La forma VERA di cio' che torna il builder PostgREST: una promessa RISOLTA,
+ * con l'errore dentro il campo `error`. Con `shouldThrowOnError` spento (il
+ * default, quello in uso) il builder non rigetta mai — tabella mancante, RLS
+ * negata e Supabase giu' risolvono tutti e tre.
+ */
+type RispostaInsert = { data: null; error: { code?: string; message?: string } | null }
+
+const insert = vi.fn((_riga: RigaRegistro): Promise<RispostaInsert> => Promise.resolve({ data: null, error: null }))
 
 // Catena permissiva: ogni metodo di lettura torna la catena stessa, che e'
 // thenable. Serve perche' i tool-sonda fanno query vere (cervellone_info legge
@@ -85,9 +93,22 @@ describe('il registro non tace se e rotto', () => {
     ;({ registraChiamataTool: registraChiamataToolFresco } = await import('./tool-call-log'))
   })
 
-  it('avvisa in console UNA volta sola quando la scrittura fallisce', async () => {
+  afterEach(() => {
+    insert.mockImplementation(() => Promise.resolve({ data: null, error: null }))
+  })
+
+  // IL CASO VERO. Il client Supabase con `shouldThrowOnError` spento — il
+  // default, e quello in uso qui — NON rigetta mai: PostgrestBuilder lancia solo
+  // se quel flag e' acceso, e intercetta perfino gli errori di rete
+  // convertendoli in una promessa RISOLTA `{ data: null, error: {...} }`.
+  // Tabella mancante, RLS negata, Supabase giu': tutti e tre risolvono. Un
+  // avviso agganciato al solo `.catch` e' codice irraggiungibile in produzione.
+  it('avvisa quando la risposta RISOLVE con un error (tabella mancante)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    insert.mockImplementation(() => Promise.reject(new Error('relation "cervellone_tool_calls" does not exist')))
+    insert.mockImplementation(() => Promise.resolve({
+      data: null,
+      error: { code: '42P01', message: 'relation "cervellone_tool_calls" does not exist' },
+    }))
     registraChiamataToolFresco('a', undefined, 1, true)
     registraChiamataToolFresco('b', undefined, 1, true)
     registraChiamataToolFresco('c', undefined, 1, true)
@@ -95,7 +116,33 @@ describe('il registro non tace se e rotto', () => {
     // Una sola volta: un avviso per ogni chiamata a tool inonderebbe i log di Vercel.
     expect(warn).toHaveBeenCalledTimes(1)
     expect(String(warn.mock.calls[0][0])).toContain('tool_call_log')
+    expect(String(warn.mock.calls[0][0])).toContain('does not exist')
     warn.mockRestore()
-    insert.mockImplementation(() => Promise.resolve({ data: null, error: null }))
+  })
+
+  // L'ALTRO percorso, che resta reale: con `shouldThrowOnError` acceso — o se
+  // qualcosa lancia prima ancora di produrre la risposta — la promessa rigetta
+  // davvero. Il `.catch` non si toglie: si affianca.
+  it('avvisa in console UNA volta sola anche quando la promessa RIGETTA', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    insert.mockImplementation(() => Promise.reject(new Error('relation "cervellone_tool_calls" does not exist')))
+    registraChiamataToolFresco('a', undefined, 1, true)
+    registraChiamataToolFresco('b', undefined, 1, true)
+    registraChiamataToolFresco('c', undefined, 1, true)
+    await new Promise((r) => setImmediate(r))
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toContain('tool_call_log')
+    warn.mockRestore()
+  })
+
+  // CONTROLLO POSITIVO: prova che i due test qui sopra saprebbero accorgersi di
+  // un avviso che parte SEMPRE. Con la scrittura andata a buon fine
+  // (`error: null`) la console deve restare muta.
+  it('una scrittura riuscita non avvisa nessuno', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    registraChiamataToolFresco('a', undefined, 1, true)
+    await new Promise((r) => setImmediate(r))
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
   })
 })

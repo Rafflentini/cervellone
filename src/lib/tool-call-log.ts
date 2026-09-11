@@ -29,7 +29,19 @@ export function registraChiamataTool(
       durata_ms: durataMs,
       riconosciuto,
     })
-    void Promise.resolve(p).catch(avvisaUnaVolta)
+    // Il `.catch` da solo era codice IRRAGGIUNGIBILE: il builder PostgREST con
+    // `shouldThrowOnError` spento — il default, e quello in uso qui — non
+    // rigetta MAI. Lancia solo col flag acceso, e intercetta perfino gli errori
+    // di rete convertendoli in una promessa RISOLTA `{ data: null, error }`.
+    // Tabella mancante, RLS negata, Supabase giu': tutti e tre risolvono, e
+    // l'avviso non poteva scattare. Si guarda il campo `error`; il `.catch`
+    // resta per i rigetti veri (flag acceso, o un errore prima della risposta).
+    void Promise.resolve(p)
+      .then((r) => {
+        const e = (r as { error?: { message?: string } } | null)?.error
+        if (e) avvisaUnaVolta(e.message ?? e)
+      })
+      .catch(avvisaUnaVolta)
   } catch (e) {
     avvisaUnaVolta(e)
   }
