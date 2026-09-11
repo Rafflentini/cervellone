@@ -647,6 +647,90 @@ git commit -m "il censimento: 127 richieste vere per provare che nessuna capacit
 
 ---
 
+### Task 8: Dirgli che la cassetta degli attrezzi è cercabile
+
+**Misurato, non supposto.** Con il differimento acceso e il prompt di produzione, su 9 tool dichiarati irraggiungibili il modello **non ha nemmeno cercato in 6 casi**: rispondeva con i tool del nucleo (`richiama_memoria`, `cervellone_info`) perché sono gli unici che vede. Il `BASE_PROMPT` non gli dice **da nessuna parte** che esistono altri strumenti e che si trovano cercandoli. Aggiungendo una riga che glielo dice, le ricerche sono passate **da 3 a 7 su 9**.
+
+Non è un router e non è una regola procedurale: è **dire al modello la verità sulla sua situazione**. Ed è l'unica riga che si aggiunge — quando il differimento è spento, non compare.
+
+**Files:**
+- Modify: `src/lib/tool-nucleo.ts` (esporta il testo)
+- Modify: `src/lib/claude.ts` (lo aggiunge al prompt solo quando il differimento è acceso)
+- Test: `src/lib/claude.differimento.test.ts`
+
+**Interfaces:**
+- Consumes: `opzioniToolDaAmbiente()` (Task 4), `NUCLEO_TOOL` (Task 3).
+- Produces: `AVVISO_STRUMENTI_CERCABILI: string`.
+
+- [ ] **Step 1: Scrivere il test che fallisce**
+
+Aggiungere a `src/lib/claude.differimento.test.ts`, dentro il describe del cavo:
+
+```typescript
+it('acceso: il prompt dice al modello che gli strumenti sono cercabili', async () => {
+  process.env.TOOL_DEFER = '1'
+  const inviato = await catturaSystemPrompt()   // stessa via gia' usata per catturare i tool
+  expect(inviato).toContain('tool_search_tool_bm25')
+  expect(inviato).toContain('non ti sono stati caricati')
+})
+
+// CONTROLLO POSITIVO: spento, l'avviso NON deve comparire — sarebbe una bugia,
+// perche' con l'interruttore spento il modello vede davvero tutti i suoi tool.
+it('spento: l avviso non compare', async () => {
+  delete process.env.TOOL_DEFER
+  const inviato = await catturaSystemPrompt()
+  expect(inviato).not.toContain('tool_search_tool_bm25')
+})
+```
+
+- [ ] **Step 2: Eseguire il test e verificare che fallisca**
+
+Run: `npx vitest run src/lib/claude.differimento.test.ts`
+Expected: FAIL sul primo test — l'avviso non c'è.
+
+- [ ] **Step 3: Scrivere l'implementazione minima**
+
+In `src/lib/tool-nucleo.ts`:
+
+```typescript
+/**
+ * Con il differimento acceso il modello vede ~11 tool su 130. Se nessuno gli dice
+ * che gli altri esistono, NON li cerca: risponde con quelli che vede, e sembra che
+ * abbia perso delle capacita'. Misurato l'11 set 2026: senza questa riga cercava in
+ * 3 casi su 9, con questa riga in 7 su 9.
+ *
+ * Non e' un router e non e' una regola procedurale: e' dirgli la verita' sulla sua
+ * situazione. Per questo compare SOLO quando il differimento e' acceso — a
+ * interruttore spento sarebbe una bugia.
+ */
+export const AVVISO_STRUMENTI_CERCABILI =
+  '\n\nI TUOI STRUMENTI: ne vedi solo una parte. Gli altri esistono ma non ti sono stati ' +
+  'caricati. Per trovarli usa tool_search_tool_bm25 con una query in italiano che descriva ' +
+  'cosa ti serve. Se ti sembra di non avere lo strumento adatto, CERCALO prima di rispondere ' +
+  'che non puoi.'
+```
+
+In `src/lib/claude.ts`, dove il system prompt viene composto, aggiungere l'avviso **alla parte statica** (quella cachata) quando `opzioniToolDaAmbiente()` non è `undefined`. Va nella parte statica perché è costante quanto l'interruttore: metterlo nella parte variabile lo farebbe pagare a prezzo pieno a ogni giro del ciclo.
+
+- [ ] **Step 4: Eseguire i test e verificare che passino**
+
+Run: `npx vitest run src/lib/claude.differimento.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Suite intera e typecheck**
+
+Run: `npx vitest run && npx tsc --noEmit`
+Expected: verde, typecheck completamente pulito.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/lib/tool-nucleo.ts src/lib/claude.ts src/lib/claude.differimento.test.ts
+git commit -m "il differimento non funziona se non glielo dici: da 3 a 7 ricerche su 9"
+```
+
+---
+
 ### Task 7: Il registro non deve poter tacere
 
 Il registro del Task 1 è **fire-and-forget**: se la scrittura fallisce, il turno non se ne accorge — ed è giusto così, un registro non deve poter rompere una conversazione. Ma oggi non se ne accorge **nemmeno nessun altro**. Se la migrazione non venisse applicata, o la tabella venisse rinominata, il registro tacerebbe e sembrerebbe funzionare. Sarebbe il dato su cui scegliamo il nucleo, muto e con l'aria di essere vivo.
