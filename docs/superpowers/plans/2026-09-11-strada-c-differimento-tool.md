@@ -647,6 +647,88 @@ git commit -m "il censimento: 127 richieste vere per provare che nessuna capacit
 
 ---
 
+### Task 9: Il nucleo si allarga a 14, e sei di quei quattordici sono un debito
+
+**Misurato con frasi vere**, scritte come le direbbe l'Ingegnere invece che derivate dalle descrizioni: su 9 tool sospetti, **5 si perdono davvero** col differimento — `riconcilia_automatico` (la ricerca lo **trova**, ma il modello sceglie `lista_movimenti`), `modello_attivo`, `checkin_prepara_foglio`, `cervellone_check_aggiornamenti`, `affitti_imposta_soggiorno` (col differimento **non chiama niente**, risponde a parole). Un sesto, `affitti_situazione`, si perde 2 volte su 3.
+
+Costo misurato di metterli nel nucleo: **3.602 byte, ~1.200 token**. Il pavimento dei soli tool passa da 5.785 a **6.985 token**, contro i **33.635** di oggi: resta **−79%**.
+
+⚠️ **Ma non entrano per lo stesso motivo degli altri otto.** Gli otto ci sono per disegno (servono a orientarsi). Questi sei ci sono perché **la ricerca non li ritrova**: sono un **debito**, e vanno scritti come tale. Quando la loro descrizione conterrà le parole con cui li si cerca, **escono dal nucleo** — costruire in modo da poter cancellare.
+
+**Files:**
+- Modify: `src/lib/tool-nucleo.ts`
+- Test: `src/lib/tool-nucleo.test.ts`
+
+- [ ] **Step 1: Aggiornare il test prima del codice**
+
+In `src/lib/tool-nucleo.test.ts`, il test «resta piccolo» ha oggi il tetto a 15. Portarlo a 16 e aggiungere:
+
+```typescript
+it('i sei del debito sono separati dagli otto di disegno, e insieme fanno il nucleo', () => {
+  expect(NUCLEO_DISEGNO.size).toBe(8)
+  expect(NUCLEO_DEBITO_RICERCA.size).toBe(6)
+  expect(NUCLEO_TOOL.size).toBe(14)
+  // Nessun tool sta in tutte e due: se succedesse, toglierlo dal debito non
+  // basterebbe a farlo uscire dal nucleo, e il debito diventerebbe non pagabile.
+  for (const n of NUCLEO_DEBITO_RICERCA) expect(NUCLEO_DISEGNO.has(n)).toBe(false)
+})
+```
+
+- [ ] **Step 2: Eseguire e verificare che fallisca**
+
+Run: `npx vitest run src/lib/tool-nucleo.test.ts`
+Expected: FAIL — `NUCLEO_DISEGNO` non è esportato.
+
+- [ ] **Step 3: Riscrivere `src/lib/tool-nucleo.ts`**
+
+```typescript
+/** Gli otto che stanno nel nucleo PER DISEGNO. */
+export const NUCLEO_DISEGNO: ReadonlySet<string> = new Set([
+  'cerca_documenti', 'ricorda', 'richiama_memoria', 'lista_entita',
+  'lista_scadenze', 'cervellone_info', 'imposta_societa_attiva', 'imposta_progetto_attivo',
+])
+
+/**
+ * ⚠️ QUESTI SEI SONO UN DEBITO, NON UNA SCELTA.
+ * Stanno nel nucleo solo perche' la ricerca NON LI RITROVA: misurato l'11 set 2026 con frasi
+ * vere, col differimento acceso il modello chiamava altro (o niente). Costano ~1.200 token.
+ * Ognuno esce da qui il giorno in cui la sua descrizione conterra' le parole con cui lo si
+ * cerca — vedi il criterio in 2026-09-11-strada-c-differimento-tool-design.md §5.1.
+ * Se questo insieme non si svuota mai, il debito e' diventato un costo fisso.
+ */
+export const NUCLEO_DEBITO_RICERCA: ReadonlySet<string> = new Set([
+  'riconcilia_automatico',          // la ricerca LO TROVA, il modello sceglie lista_movimenti
+  'modello_attivo',                 // chiamava richiama_memoria
+  'checkin_prepara_foglio',         // chiamava richiama_memoria
+  'cervellone_check_aggiornamenti', // chiamava cervellone_info
+  'affitti_imposta_soggiorno',      // non chiamava NIENTE: rispondeva a parole
+  'affitti_situazione',             // perso 2 volte su 3
+])
+
+export const NUCLEO_TOOL: ReadonlySet<string> = new Set([...NUCLEO_DISEGNO, ...NUCLEO_DEBITO_RICERCA])
+```
+
+⚠️ Mantenere sopra `NUCLEO_DISEGNO` il criterio già scritto (orientarsi/conservare contesto, con `ricorda` spiegato e `lista_scadenze` come eccezione dichiarata): **non cancellarlo**, riguarda quegli otto.
+
+- [ ] **Step 4: Eseguire e verificare che passi**
+
+Run: `npx vitest run src/lib/tool-nucleo.test.ts src/lib/tools.differimento.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Suite intera e typecheck**
+
+Run: `npx vitest run && npx tsc --noEmit`
+Expected: verde, typecheck completamente pulito.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/lib/tool-nucleo.ts src/lib/tool-nucleo.test.ts
+git commit -m "sei tool nel nucleo non perche' lo meritano, ma perche' la ricerca non li trova"
+```
+
+---
+
 ### Task 8: Dirgli che la cassetta degli attrezzi è cercabile
 
 **Misurato, non supposto.** Con il differimento acceso e il prompt di produzione, su 9 tool dichiarati irraggiungibili il modello **non ha nemmeno cercato in 6 casi**: rispondeva con i tool del nucleo (`richiama_memoria`, `cervellone_info`) perché sono gli unici che vede. Il `BASE_PROMPT` non gli dice **da nessuna parte** che esistono altri strumenti e che si trovano cercandoli. Aggiungendo una riga che glielo dice, le ricerche sono passate **da 3 a 7 su 9**.
