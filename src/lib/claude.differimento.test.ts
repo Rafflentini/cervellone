@@ -9,6 +9,7 @@ vi.mock('@supabase/supabase-js', () => {
 })
 
 import { opzioniToolDaAmbiente } from './claude'
+import { NUCLEO_DEBITO_RICERCA } from './tool-nucleo'
 
 type Def = { name: string; defer_loading?: boolean; type?: string }
 
@@ -130,6 +131,31 @@ describe('il cavo: opzioniToolDaAmbiente arriva a getToolDefinitions dentro runA
     expect(arg?.nucleo?.has('cervellone_info')).toBe(true)
   })
 
+  // I SEI DEL DEBITO, PRESIDIATI DOVE CONTA: a runtime, non sulla costante.
+  //
+  // `tool-nucleo.test.ts` verifica `NUCLEO_TOOL.size`, cioe' la COSTANTE.
+  // Mutazione sopravvissuta alla suite intera (2.231 verdi):
+  //   import { NUCLEO_DISEGNO as NUCLEO_TOOL } from './tool-nucleo'
+  // in claude.ts. La costante resta a 14, i test sul nucleo restano verdi, ma
+  // all'API arrivano otto tool invece di quattordici.
+  //
+  // Quei sei esistono per recuperare CINQUE capacita' misurate come perse l'11
+  // set 2026 (affitti_imposta_soggiorno non chiamava niente: rispondeva a
+  // parole). Senza questo test un refactor le rimette in produzione col verde.
+  // I nomi si IMPORTANO: copiarli a mano renderebbe il test cieco al giorno in
+  // cui uno di loro esce dal debito.
+  it('acceso: tutti e sei i tool del debito arrivano davvero a getToolDefinitions', async () => {
+    process.env.TOOL_DEFER = '1'
+    const { callClaudeStream } = await import('./claude')
+    await callClaudeStream(richiesta, { onText: () => {} })
+
+    const nucleo = mockGetToolDefinitions.mock.calls[0][0]?.nucleo
+    expect(NUCLEO_DEBITO_RICERCA.size).toBe(6)
+    for (const nome of NUCLEO_DEBITO_RICERCA) {
+      expect(nucleo?.has(nome), `il nucleo spedito all API non contiene ${nome}`).toBe(true)
+    }
+  })
+
   it('spento (default): getToolDefinitions riceve undefined', async () => {
     const { callClaudeStream } = await import('./claude')
     await callClaudeStream(richiesta, { onText: () => {} })
@@ -156,6 +182,12 @@ describe('il cavo: opzioniToolDaAmbiente arriva a getToolDefinitions dentro runA
     const inviato = await catturaSystemPrompt()
     expect(inviato).toContain('tool_search_tool_bm25')
     expect(inviato).toContain('non ti sono stati caricati')
+    // LA PARTE OPERATIVA, non quella descrittiva. Le due asserzioni qui sopra
+    // stanno entrambe nella parte che DESCRIVE la situazione: cancellare la
+    // frase che dice cosa FARE le lasciava verdi (mutazione sopravvissuta alla
+    // suite intera). Ed e' proprio questa frase quella a cui la misura dell'11
+    // set 2026 attribuisce il salto da 3/9 a 7/9 ricerche.
+    expect(inviato).toContain('CERCALO prima di rispondere che non puoi')
   })
 
   // CONTROLLO POSITIVO: spento, l'avviso NON deve comparire — sarebbe una bugia,

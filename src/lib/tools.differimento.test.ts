@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { createHash } from 'crypto'
 
 vi.mock('@supabase/supabase-js', () => {
   const chain: Record<string, unknown> = {}
@@ -20,6 +21,29 @@ describe('differimento delle definizioni dei tool', () => {
     // L'ordine e' parte della garanzia: `tools` e' il primo blocco del prefisso
     // della cache, un riordino la invaliderebbe a ogni turno senza dirlo.
     expect(defs.slice(0, 2).map((d) => d.name)).toEqual(['web_search', 'code_execution'])
+  })
+
+  // LA GARANZIA DEL RAMO, PRESIDIATA.
+  //
+  // "Senza opzioni l'output e' identico a main" e' la frase piu' citata di
+  // questo lavoro, ma era una misura fatta A MANO una volta sola: nessun test
+  // la difendeva. Mutazione sopravvissuta alla suite INTERA (2.231 verdi):
+  //   ALL_TOOLS.filter(t => t.name !== 'gmail_summary_inbox'
+  //                      && t.name !== 'estrai_movimenti'
+  //                      && t.name !== 'affitti_incassi')
+  // cioe' tre tool spariti dalle definizioni spedite all'API senza che nulla
+  // se ne accorgesse.
+  //
+  // ⚠️ L'md5 e' quello di `main`: md5(JSON.stringify(getToolDefinitions())),
+  // 129 definizioni = 2 tool server + 127 custom, ordine compreso. Se questa
+  // asserzione cade, NON si aggiorna il numero: o la parita' con `main` si e'
+  // rotta per sbaglio, o si e' DECISO di cambiarla — e allora va scritta la
+  // decisione, non il nuovo md5.
+  it('senza opzioni: 129 definizioni e la stessa impronta di main', () => {
+    const defs = getToolDefinitions()
+    expect(defs).toHaveLength(129)
+    expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
+      .toBe('5fe48792af88c5f89beaf66c53366b1c')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
