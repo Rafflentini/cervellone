@@ -45,10 +45,16 @@ export function chiaveAvviso(testo: string, adesso: Date = new Date()): string {
 
 /**
  * Scrive `testo` come messaggio dell'assistente nelle ultime 5 conversazioni
- * web. Non lancia mai: un avviso e' un di piu', e non deve poter far cadere il
+ * web. Non lancia MAI: un avviso e' un di piu', e non deve poter far cadere il
  * lavoro che lo ha generato.
+ *
+ * Ritorna `true` se l'avviso risulta scritto (o c'era gia' — 23505 e' successo,
+ * non guasto), `false` se non c'erano conversazioni a cui scriverlo o se la
+ * scrittura e' fallita per un motivo diverso. Un chiamante che deve dichiarare
+ * l'esito della consegna (self-audit, circuit breaker) altrimenti non avrebbe
+ * modo di distinguere "arrivato" da "ingoiato in silenzio".
  */
-export async function avvisaConversazioniWeb(testo: string, adesso?: Date): Promise<void> {
+export async function avvisaConversazioniWeb(testo: string, adesso?: Date): Promise<boolean> {
   try {
     const { data } = await supabase
       .from('conversations')
@@ -57,7 +63,7 @@ export async function avvisaConversazioniWeb(testo: string, adesso?: Date): Prom
       .order('created_at', { ascending: false })
       .limit(5)
 
-    if (!data || data.length === 0) return
+    if (!data || data.length === 0) return false
 
     const chiave = chiaveAvviso(testo, adesso)
     const { error } = await supabase.from('messages').insert(
@@ -73,8 +79,11 @@ export async function avvisaConversazioniWeb(testo: string, adesso?: Date): Prom
     // che questo modulo deve fare.
     if (error && error.code !== '23505') {
       console.error('[avviso-web] scrittura fallita:', error.message)
+      return false
     }
+    return true
   } catch (err) {
     console.error('[avviso-web] scrittura fallita:', err)
+    return false
   }
 }

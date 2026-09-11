@@ -65,14 +65,6 @@ vi.mock('./audit-collector', () => ({
   collectScadenzeScadute: mockCollectScadenzeScadute,
 }))
 
-// ── Mock telegram-helpers ─────────────────────────────────────────────────────
-
-const mockSendTelegramMessage = vi.fn()
-
-vi.mock('./telegram-helpers', () => ({
-  sendTelegramMessage: mockSendTelegramMessage,
-}))
-
 // ── Default mock values ───────────────────────────────────────────────────────
 
 function setCleanCollectors() {
@@ -144,9 +136,6 @@ beforeEach(() => {
     usage: { input_tokens: 200, output_tokens: 50 },
   })
 
-  // Telegram ok
-  mockSendTelegramMessage.mockResolvedValue(undefined)
-
   // Collectors puliti di default
   setCleanCollectors()
 
@@ -157,15 +146,13 @@ beforeEach(() => {
 // ── Happy path: 0 anomalie ────────────────────────────────────────────────────
 
 describe('runAudit — happy path 0 anomalie', () => {
-  it('ritorna ok + run_id, Telegram inviato con "Nessuna anomalia"', async () => {
+  it('ritorna ok + run_id + report_text con "Nessuna anomalia" — la consegna e responsabilita del chiamante', async () => {
     const { runAudit } = await import('./audit-runner')
     const result = await runAudit()
     expect(result.ok).toBe(true)
     expect(result.run_id).toBe('test-run-uuid')
     expect(result.anomalies_count).toBe(0)
-    expect(mockSendTelegramMessage).toHaveBeenCalledOnce()
-    const msg = mockSendTelegramMessage.mock.calls[0][1] as string
-    expect(msg).toContain('Nessuna anomalia rilevata')
+    expect(result.report_text).toContain('Nessuna anomalia rilevata')
   })
 })
 
@@ -183,8 +170,7 @@ describe('runAudit — 2 anomalie', () => {
     const result = await runAudit()
     expect(result.ok).toBe(true)
     expect(result.anomalies_count).toBeGreaterThanOrEqual(2)
-    const msg = mockSendTelegramMessage.mock.calls[0][1] as string
-    expect(msg).toContain('MODEL_ERROR_HIGH')
+    expect(result.report_text).toContain('MODEL_ERROR_HIGH')
   })
 })
 
@@ -197,10 +183,8 @@ describe('runAudit — LLM down → fallback narrative', () => {
     const { runAudit } = await import('./audit-runner')
     const result = await runAudit()
     expect(result.ok).toBe(true)
-    expect(mockSendTelegramMessage).toHaveBeenCalledOnce()
-    const msg = mockSendTelegramMessage.mock.calls[0][1] as string
     // Fallback narrative per 0 anomalie
-    expect(msg).toContain('Settimana stabile')
+    expect(result.report_text).toContain('Settimana stabile')
   })
 })
 
@@ -214,7 +198,7 @@ describe('runAudit — 1 collector fallisce', () => {
     const result = await runAudit()
     // Non abortisce
     expect(result.ok).toBe(true)
-    expect(mockSendTelegramMessage).toHaveBeenCalledOnce()
+    expect(result.report_text).toBeTruthy()
   })
 })
 

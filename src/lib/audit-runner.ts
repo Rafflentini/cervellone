@@ -14,7 +14,6 @@ import {
 } from './audit-collector'
 import { analyze, formatReport } from './audit-analyzer'
 import type { AnalysisInput } from './audit-analyzer'
-import { sendTelegramMessage } from './telegram-helpers'
 import { logApiUsage } from './api-usage'
 
 // ── Helper: ISO Week string ───────────────────────────────────────────────────
@@ -46,6 +45,15 @@ export interface RunAuditResult {
   run_id?: string
   anomalies_count?: number
   iso_week?: string
+  /**
+   * Il rapporto Markdown gia' pronto per Telegram, cosi' com'e' stato salvato
+   * in `cervellone_audit_runs.report_text`. runAudit() NON lo consegna a
+   * nessuno: e' il dato. La consegna (Telegram + chat web, entrambi, sempre —
+   * anche a zero anomalie) e' un problema separato e sta nel chiamante
+   * (`route.ts`), cosi' un canale che fallisce non puo' far perdere il
+   * rapporto ne' far fallire l'audit gia' salvato.
+   */
+  report_text?: string
   error?: string
 }
 
@@ -59,8 +67,11 @@ export interface RunAuditResult {
  * 4. analyze → AnalysisResult
  * 5. Sonnet narrative (try/catch → fallback statico)
  * 6. formatReport
- * 7. sendTelegramMessage
- * 8. UPDATE audit_runs status='ok'
+ * 7. UPDATE audit_runs status='ok' (il dato e' salvato)
+ *
+ * La consegna (Telegram + web) NON e' compito di questa funzione: e' compito
+ * del chiamante, dopo che il dato e' gia' al sicuro nel database. Vedi
+ * `RunAuditResult.report_text`.
  */
 export async function runAudit(): Promise<RunAuditResult> {
   const isoWeek = getISOWeek(new Date())
@@ -186,11 +197,9 @@ Output: solo testo markdown-safe, no JSON, no code block.`,
     // Step 6: formatReport
     const reportText = formatReport(analysisResult, isoWeek, narrative, runId)
 
-    // Step 7: sendTelegramMessage
-    const chatId = parseInt(process.env.TELEGRAM_ALLOWED_IDS!.split(',')[0], 10)
-    await sendTelegramMessage(chatId, reportText)
-
-    // Step 8: UPDATE audit_runs status='ok'
+    // Step 7: UPDATE audit_runs status='ok' — il dato va salvato PRIMA di
+    // qualunque tentativo di consegna: la consegna non deve poter far perdere
+    // il rapporto (vedi RunAuditResult.report_text e route.ts).
     await supabase
       .from('cervellone_audit_runs')
       .update({
@@ -216,6 +225,7 @@ Output: solo testo markdown-safe, no JSON, no code block.`,
       run_id: runId,
       anomalies_count: anomalies.length,
       iso_week: isoWeek,
+      report_text: reportText,
     }
 
   } catch (err) {
