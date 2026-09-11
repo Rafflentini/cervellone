@@ -163,8 +163,38 @@ raccogliere qualche giorno prima del passo 1.
 `lista_progetti`, più i due tool server già presenti. **Nove più due — e sono un'ipotesi, non una
 scelta: si rivede sui dati del passo 0 dopo una settimana.**
 
-**Effetto collaterale buono:** i 3 tool di check-in de La Real Estate oggi partono a **ogni** turno,
-anche in una conversazione Restruktura. Differiti, compaiono solo se cercati.
+### 🚨 Le due società: il rischio **peggiora**, e la decisione resta a Raffaele
+
+Questa sezione diceva, fino al censimento: *«Effetto collaterale buono: i 3 tool di check-in de La
+Real Estate oggi partono a ogni turno anche in una conversazione Restruktura. Differiti, compaiono
+solo se cercati.»* **Era vero quando è stato scritto. È falso adesso.** Il censimento ha misurato che
+quei tre si perdevano, il Task 9 li ha messi nel nucleo, e l'effetto si è **invertito**.
+
+Misurato eseguendo `getToolDefinitions`:
+
+| | tool de La Real Estate visibili | su quanti | quota |
+|---|---:|---:|---:|
+| oggi | 3 | 129 | **2,3%** |
+| col differimento | 3 | 17 | **17,6%** |
+
+E c'è dell'altro: `CHECKIN_TOOLS` è il **primo** blocco di `ALL_TOOLS` (`tools.ts:795`), quindi quei
+tre occupano le **posizioni 4-6** della cassetta visibile. In una conversazione Restruktura il
+modello vedrebbe una cassetta in cui **un attrezzo su sei è dell'altra società, in testa all'elenco**.
+
+Con «maratea» che è un **anti-segnale** documentato — 4 messaggi su 5 che la nominano sono cantieri
+Restruktura — la direzione è quella sbagliata. `imposta_societa_attiva` resta nel nucleo e il
+riconoscitore dal testo resta timido apposta, ma **non compensano la salienza**.
+
+> **Questa è l'unica decisione che resta a Raffaele, e non gliela prendo io**: scambia «il check-in
+> funziona» con «rischio di confondere le due società», e l'esito di una confusione è un documento
+> fiscale sbagliato. Le tre strade:
+>
+> 1. **tenerli nel nucleo** e accettare la salienza — è com'è adesso;
+> 2. **toglierli**, e accettare che il check-in non si raggiunga finché la loro descrizione non
+>    conterrà le parole con cui lo si cerca (§5.1);
+> 3. **tenerli, ma in fondo all'elenco** invece che in testa: mitiga la salienza senza togliere
+>    niente. Costa una riga, e **non è stato fatto** perché sposta l'ordine dei tool, che è il primo
+>    blocco del prefisso della cache — va misurato, non improvvisato.
 
 ### 4.3 — Passo 2: il prompt. *Progettato a parte, non stanotte.*
 
@@ -219,10 +249,19 @@ del 10 settembre **sta in un file che nessun sorgente importa**. Il rimando è a
 
 1. **I 2.203 test di `main` restano verdi.** (Linea di base presa stanotte: 2203 passati, 4 saltati,
    173 file, 41s.)
-2. **Il censimento delle capacità** — il pezzo che conta. Per **ognuno** dei 127 tool, una richiesta
-   realistica in italiano, e si verifica che il tool **venga raggiunto**. È la prova della regola
-   n.2 («nessuna capacità viene tolta»), resa misurabile. Gira contro l'API vera: **non in CI**, ma
-   una volta prima del merge e poi a ogni cambio del nucleo. Costo stimato ~2 dollari.
+2. **Il censimento delle capacità** — il pezzo che conta. ⚠️ **Il cancello scritto qui sopra non è
+   stato soddisfatto come formulato, ed è giusto dirlo.** Prometteva *«per ognuno dei 127 tool una
+   richiesta realistica in italiano»*. Quello che è stato fatto è diverso, e il registro
+   `2026-09-11-censimento-tool.md` lo racconta per esteso:
+   - un differenziale su **119 richieste derivate dalle descrizioni** — circolari: il numero «90 già
+     irraggiungibili oggi» **non è significativo**, dice che quelle richieste sono scritte male;
+   - **9 richieste realistiche vere**, scritte a mano, sui tool sospetti: 5 capacità perse trovate e
+     recuperate, poi **9 su 9 verificate** dopo la cura;
+   - una **corsa di controllo negativo** (12 su 12 non raggiunti a strumenti vietati), che è l'unica
+     ragione per cui questi numeri valgono qualcosa.
+
+   **Le 119 richieste realistiche a mano non esistono.** Scriverle è il lavoro che manca perché il
+   cancello sia davvero quello promesso.
 3. **Un controllo positivo**: un test che, rimettendo `defer_loading: false` ovunque, **fallisce** —
    altrimenti il censimento non sta misurando niente ([[feedback_controllo_positivo]]).
 4. **Audit avversariale** da un agente che non ha scritto il codice e **non confronta col piano**
