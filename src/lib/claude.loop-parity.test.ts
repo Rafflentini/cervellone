@@ -407,9 +407,10 @@ describe.each(CANALI)('loop %s', (_canale, esegui, entryPoint, lettoDallUtente) 
   //
   // `pause_turn` arriva quando il modello mette in pausa un turno lungo (tool
   // server-side): la risposta va rimandata indietro COSI' COM'E' perche' il
-  // modello possa continuare. Il loop v19 lo faceva (src/v19/agent/loop.ts:154:
-  // `if (stopReason === 'pause_turn') continue`), il loop unificato l'aveva
-  // perso: `toolBlocks.length === 0` lo faceva cadere nel break naturale.
+  // modello possa continuare. Il loop v19 lo faceva (`if (stopReason ===
+  // 'pause_turn') continue`) — quel loop non fu mai collegato in produzione
+  // ed e' stato cancellato — e il loop unificato l'aveva perso:
+  // `toolBlocks.length === 0` lo faceva cadere nel break naturale.
   // Il testo qui sotto e' deliberatamente NON una promessa, altrimenti il
   // force-action darebbe da solo un secondo giro e il test misurerebbe quello.
   const IN_PAUSA = 'Sto consultando la normativa vigente.'

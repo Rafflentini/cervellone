@@ -10,8 +10,9 @@
  *
  * Il checker di default interroga DAVVERO Google Drive (`files.get`): prima era
  * uno stub `return true`, quindi il validatore non invalidava mai nulla.
- * Chiamanti: `src/v19/agent/loop.ts` e — path di produzione Telegram —
- * `src/lib/agent-job.ts`, che invece di rilanciare appende un avviso all'utente.
+ * Chiamante in produzione: `src/lib/link-allucinati.ts`, usato sia da
+ * Telegram (`agent-job.ts`) sia dalla chat web (`route.ts`), che invece di
+ * rilanciare appende un avviso all'utente.
  *
  * Spec: docs/superpowers/specs/2026-05-09-cervellone-v19-rifondazione.md sez. 5.3
  */

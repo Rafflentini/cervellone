@@ -1,8 +1,8 @@
 /**
  * Cablaggio del validatore anti-allucinazione nel path di PRODUZIONE.
  *
- * Telegram non passa da `src/v19/agent/loop.ts` ma da `runAgentJob`: finché la
- * validazione non vive qui, non protegge nessuno. Questi test pinnano il
+ * Telegram passa da `runAgentJob`: finché la validazione non vive qui, non
+ * protegge nessuno. Questi test pinnano il
  * cablaggio, non la logica del validatore (quella sta in
  * src/v19/__tests__/hallucination-validator.spec.ts).
  *

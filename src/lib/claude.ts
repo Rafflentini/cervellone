@@ -782,8 +782,9 @@ export async function runAgentTurn(
       // come finita e registrata 'success'; e se quel testo era una promessa, il
       // force-action rimandava al modello un'accusa FALSA ("NON hai chiamato
       // nessuno strumento") mentre lo strumento era stato chiamato eccome.
-      // La cura era gia' nel loop v19 (src/v19/agent/loop.ts:154) e il loop
-      // unificato l'aveva persa. Il tetto resta MAX_ITERATIONS: niente ciclo
+      // La cura veniva da un loop v19 mai collegato in produzione (poi
+      // cancellato) e il loop unificato l'aveva persa; ora vive qui. Il tetto
+      // resta MAX_ITERATIONS: niente ciclo
       // infinito, e un turno che resta in pausa fino al tetto viene registrato
       // 'run_aborted', non 'success'.
       if (inPausa && toolBlocks.length === 0) {

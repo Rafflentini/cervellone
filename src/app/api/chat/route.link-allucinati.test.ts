@@ -1,9 +1,10 @@
 /**
  * Il validatore anti-link-inventati girava solo su Telegram.
  *
- * `agent-job.ts` diceva che il validatore era cablato solo in
- * `v19/agent/loop.ts`, «che non e' il path di produzione». La correzione lo
- * cablo' su Telegram e lascio' fuori l'ALTRO path di produzione: questa route.
+ * `agent-job.ts` diceva che il validatore era cablato solo su un percorso che
+ * la produzione non usava (il loop v19, mai collegato e poi cancellato). La
+ * correzione lo cablo' su Telegram e lascio' fuori l'ALTRO path di
+ * produzione: questa route.
  *
  * Dalla chat web il bot poteva rispondere «ho salvato il POS qui:
  * drive.google.com/file/d/...» con un id inventato; l'Ingegnere cliccava,

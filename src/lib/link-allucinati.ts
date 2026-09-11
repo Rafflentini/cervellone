@@ -8,9 +8,10 @@
  * cliccava, prendeva un 404, e non aveva modo di sapere se il file c'e' con un
  * altro nome o non c'e' affatto.
  *
- * ⭐ Il commento originale diceva che il validatore era cablato solo in
- * `v19/agent/loop.ts`, «che non e' il path di produzione». La correzione lo
- * cablo' su Telegram e lascio' fuori l'ALTRO path di produzione: la route web.
+ * ⭐ Il commento originale diceva che il validatore era cablato solo su un
+ * percorso che la produzione non usava (il loop v19, mai collegato e poi
+ * cancellato). La correzione lo cablo' su Telegram e lascio' fuori l'ALTRO
+ * path di produzione: la route web.
  */
 import { runHallucinationValidator, extractDriveUrls } from '@/v19/agent/hallucination-validator'
 import { HallucinationError } from '@/v19/agent/types'
