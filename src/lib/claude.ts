@@ -893,6 +893,17 @@ export async function runAgentTurn(
         break
       }
     }
+    // Il ciclo e' finito con il modello ancora in pausa: il tetto di iterazioni
+    // ha troncato un lavoro non finito. `run_aborted` lo dice al circuit
+    // breaker, non all'Ingegnere: senza questa riga legge una risposta a meta'
+    // che sembra finita. Il budget esaurito si annuncia da sempre (poco sopra),
+    // la pausa troncata taceva — stessa perdita, mezzo annuncio.
+    // `!runAbortedBudget` perche' il guard rail di budget ha gia' scritto la
+    // sua riga: due avvisi di fila per la stessa fermata confondono e basta.
+    if (turnoTroncatoInPausa && !runAbortedBudget) {
+      console.warn(`STREAM(${policy.tag}) run_troncata_in_pausa: ${iterations} iter, il modello non ha ripreso`)
+      await emit('\n\n⚠️ _Mi fermo qui: il lavoro si è interrotto a metà e quello che ha letto sopra non è completo. Me lo richieda pure e riprendo da dove ero rimasto._')
+    }
   } catch (err) {
     // Errori API (404 model not found, 529 overloaded, timeout): (a) l'outcome
     // va tracciato sul circuit breaker e (b) l'utente deve leggere una frase

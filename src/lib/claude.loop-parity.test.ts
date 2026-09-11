@@ -427,6 +427,31 @@ describe.each(CANALI)('loop %s', (_canale, esegui, entryPoint, lettoDallUtente) 
     expect(mockStream.mock.calls.length).toBeGreaterThanOrEqual(2)
     expect(out).toContain('81/2008')
     expect(lettoDallUtente()).toContain('81/2008')
+    // E il turno e' RIUSCITO: essere passati per una pausa non lo sporca. Con la
+    // bandiera della pausa resa appiccicosa (`turnoTroncatoInPausa || inPausa`)
+    // questo turno finirebbe in telemetria come troncato — falsi troncamenti,
+    // cioe' rumore proprio in cio' che serve a vedere i guasti veri.
+    expect(recordOutcomeCalls[0].outcome).toBe('success')
+    // E all'utente non si annuncia nessuna interruzione: non c'e' stata.
+    expect(lettoDallUtente()).not.toContain('riprendo da dove ero rimasto')
+  })
+
+  it('una pausa che si ripete NON scavalca il guard rail di budget', async () => {
+    // `modelloHaChiuso` esclude la pausa apposta. Un turno in pausa e' lavoro a
+    // meta' per definizione: senza `!inPausa` il guard rail lo scambierebbe per
+    // un lavoro CONCLUSO — "nessun tool richiesto" — e lo lascerebbe proseguire
+    // oltre il tetto di token, cioe' proprio il runaway che deve fermare.
+    scriptedTurns = [
+      { text: IN_PAUSA, toolUses: [], serverTools: ['web_search'], stopReason: 'pause_turn' },
+    ]
+
+    // Lo stream finto conta 20 token a iterazione (10 in + 10 out): col tetto a
+    // 5 il budget e' gia' sforato alla PRIMA, e il ciclo deve fermarsi li'.
+    await esegui({ ...richiestaBase(entryPoint), maxRunTokens: 5 })
+
+    expect(mockStream.mock.calls.length).toBe(1)
+    expect(lettoDallUtente()).toContain('superato il budget')
+    expect(recordOutcomeCalls[0].outcome).toBe('run_aborted')
   })
 
   it('un turno lasciato in pausa dal tetto di iterazioni NON e un successo', async () => {
@@ -443,6 +468,10 @@ describe.each(CANALI)('loop %s', (_canale, esegui, entryPoint, lettoDallUtente) 
     expect(mockStream.mock.calls.length).toBe(10) // MAX_ITERATIONS
     expect(recordOutcomeCalls[0].outcome).not.toBe('success')
     expect(recordOutcomeCalls[0].outcome).toBe('run_aborted')
+    // E LO DEVE DIRE ALL'UTENTE. 'run_aborted' lo dice al circuit breaker, non
+    // all'Ingegnere: senza una riga, riceve un lavoro a meta' che sembra finito.
+    // Il budget esaurito lo annuncia da sempre; la pausa troncata taceva.
+    expect(lettoDallUtente()).toContain('riprendo da dove ero rimasto')
   })
 
   it('un turno che ha dovuto forzare la sintesi non e un successo', async () => {
