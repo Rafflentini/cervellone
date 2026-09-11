@@ -22,10 +22,12 @@ export type ModelOutcome =
   | 'api_error'
   | 'timeout'
   /**
-   * Run troncata dal guard rail di costo. NON e' un guasto del modello — e' la
-   * richiesta a essere grossa — quindi non conta per il rollback; ma non e'
-   * nemmeno un successo, e registrarla come tale farebbe sparire dalla
-   * telemetria un runaway da 200K token. Vedi ESITI_NON_IMPUTABILI.
+   * Run troncata: dal guard rail di costo, oppure dal tetto di iterazioni con il
+   * modello ancora in `pause_turn`. NON e' un guasto del modello — e' la
+   * richiesta a essere grossa, o il lavoro a essere lungo — quindi non conta
+   * per il rollback; ma non e' nemmeno un successo, e registrarla come tale
+   * farebbe sparire dalla telemetria un runaway da 200K token o un turno
+   * consegnato a meta'. Vedi ESITI_NON_IMPUTABILI.
    */
   | 'run_aborted'
 

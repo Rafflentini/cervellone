@@ -403,6 +403,48 @@ describe.each(CANALI)('loop %s', (_canale, esegui, entryPoint, lettoDallUtente) 
     expect(await esitoCon('web_search')).toBe('success')
   })
 
+  // ── pause_turn: il turno non e' finito, e' in pausa ──
+  //
+  // `pause_turn` arriva quando il modello mette in pausa un turno lungo (tool
+  // server-side): la risposta va rimandata indietro COSI' COM'E' perche' il
+  // modello possa continuare. Il loop v19 lo faceva (src/v19/agent/loop.ts:154:
+  // `if (stopReason === 'pause_turn') continue`), il loop unificato l'aveva
+  // perso: `toolBlocks.length === 0` lo faceva cadere nel break naturale.
+  // Il testo qui sotto e' deliberatamente NON una promessa, altrimenti il
+  // force-action darebbe da solo un secondo giro e il test misurerebbe quello.
+  const IN_PAUSA = 'Sto consultando la normativa vigente.'
+
+  it('pause_turn non chiude il turno: il modello riprende e finisce il lavoro', async () => {
+    scriptedTurns = [
+      { text: IN_PAUSA, toolUses: [], serverTools: ['web_search'], stopReason: 'pause_turn' },
+      { text: ' Ecco il riferimento: D.Lgs. 81/2008, allegato XVIII.', toolUses: [], stopReason: 'end_turn' },
+    ]
+
+    const out = await run()
+
+    // Prima della correzione il ciclo si chiudeva dopo UNA iterazione e
+    // consegnava la risposta a meta' spacciandola per finita.
+    expect(mockStream.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(out).toContain('81/2008')
+    expect(lettoDallUtente()).toContain('81/2008')
+  })
+
+  it('un turno lasciato in pausa dal tetto di iterazioni NON e un successo', async () => {
+    // Il fake stream ripete l'ultimo turno: la pausa non finisce mai. Il tetto
+    // resta MAX_ITERATIONS — niente ciclo infinito — ma cio' che si consegna e'
+    // un lavoro troncato, e registrarlo 'success' lo farebbe sparire dalla
+    // telemetria esattamente come un runaway di budget.
+    scriptedTurns = [
+      { text: IN_PAUSA, toolUses: [], serverTools: ['web_search'], stopReason: 'pause_turn' },
+    ]
+
+    await run()
+
+    expect(mockStream.mock.calls.length).toBe(10) // MAX_ITERATIONS
+    expect(recordOutcomeCalls[0].outcome).not.toBe('success')
+    expect(recordOutcomeCalls[0].outcome).toBe('run_aborted')
+  })
+
   it('un turno che ha dovuto forzare la sintesi non e un successo', async () => {
     // Classificarlo 'success' inietta successi nei turni degradati, rendendo il
     // breaker piu' difficile da far scattare invece che piu' facile.

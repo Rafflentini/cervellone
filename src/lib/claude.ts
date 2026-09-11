@@ -569,6 +569,12 @@ export async function runAgentTurn(
   let apiErrorOccurred = false
   let apiErrorRecordDetails = ''
   let runAbortedBudget = false
+  /**
+   * True se l'ULTIMA iterazione si e' chiusa con `pause_turn`: il modello aveva
+   * messo in pausa un turno lungo e non ha mai ripreso. Quello che si consegna
+   * e' un lavoro troncato, non un turno riuscito.
+   */
+  let turnoTroncatoInPausa = false
   /** True appena il loop scrive al posto del modello: il turno non e' lavoro compiuto. */
   let turnoNonConsegnato = false
 
@@ -730,10 +736,16 @@ export async function runAgentTurn(
       totalToolCalls += serverToolsIter
       accUsage = addUsage(accUsage, final.usage as unknown as UsageTokens)
       const toolBlocks = final.content.filter(b => b.type === 'tool_use')
+      // `pause_turn` NON e' una chiusura: il modello ha messo in pausa un turno
+      // lungo (tool server-side) e chiede di poter continuare.
+      const inPausa = final.stop_reason === 'pause_turn'
+      turnoTroncatoInPausa = inPausa
       // Il modello ha chiuso da solo: non ha chiesto altri tool, il turno e' suo
       // e finito. Serve al guard rail qui sotto per distinguere "tronco un lavoro
-      // a meta'" da "il lavoro era gia' finito".
-      const modelloHaChiuso = toolBlocks.length === 0 || final.stop_reason === 'end_turn'
+      // a meta'" da "il lavoro era gia' finito". Un turno in pausa e' lavoro a
+      // meta' per definizione: senza `!inPausa` il guard rail di budget lo
+      // lascerebbe proseguire oltre il tetto.
+      const modelloHaChiuso = !inPausa && (toolBlocks.length === 0 || final.stop_reason === 'end_turn')
       // Guard rail cost-control: il budget serve a fermare una run che sta
       // scappando, non a bocciare un lavoro CONCLUSO che per sua natura costava
       // tanto. Senza `&& !modelloHaChiuso`, un turno completo — documento chiuso,
@@ -761,6 +773,28 @@ export async function runAgentTurn(
         .map(b => b.name)
         .join(',')
       console.log(`STREAM(${policy.tag}) iter=${i} stop=${final.stop_reason} tools=${toolBlocks.length} toolNames=[${toolNames}] texts=${textBlocks.length} fullLen=${fullResponse.length} thinkingChars=${thinkingChars} consNoText=${consecutiveNoText}`)
+
+      // PAUSE_TURN: il turno non e' finito, e' in pausa. Il modello ha sospeso
+      // un lavoro lungo (tool server-side) e la risposta va rimandata indietro
+      // COSI' COM'E' perche' possa riprendere. Senza questo ramo, `pause_turn`
+      // senza blocchi tool_use cadeva nel break naturale qui sotto: il ciclo si
+      // chiudeva dopo una sola iterazione, la risposta a meta' veniva consegnata
+      // come finita e registrata 'success'; e se quel testo era una promessa, il
+      // force-action rimandava al modello un'accusa FALSA ("NON hai chiamato
+      // nessuno strumento") mentre lo strumento era stato chiamato eccome.
+      // La cura era gia' nel loop v19 (src/v19/agent/loop.ts:154) e il loop
+      // unificato l'aveva persa. Il tetto resta MAX_ITERATIONS: niente ciclo
+      // infinito, e un turno che resta in pausa fino al tetto viene registrato
+      // 'run_aborted', non 'success'.
+      if (inPausa && toolBlocks.length === 0) {
+        console.log(`STREAM(${policy.tag}) pause_turn: il turno e' in pausa, non finito — continuo`)
+        currentMessages = [
+          ...currentMessages,
+          { role: 'assistant' as const, content: final.content },
+        ]
+        applyIncrementalCacheBreakpoint(currentMessages)
+        continue
+      }
 
       // Break naturale: modello soddisfatto (nessun tool richiesto, turno finito)
       if (toolBlocks.length === 0 || final.stop_reason === 'end_turn') {
@@ -938,6 +972,13 @@ export async function runAgentTurn(
       // rollback immotivato) chiuso oggi su web_search e sulle promesse
       // mantenute. `run_aborted` e' escluso dal conteggio in circuit-breaker.
       : runAbortedBudget
+        ? 'run_aborted'
+      // Stessa ragione, altra causa: il ciclo e' finito con il modello ancora in
+      // pausa (tetto di iterazioni raggiunto). Quello che si consegna e' un
+      // lavoro troncato — non un guasto del modello, quindi non conta per il
+      // rollback, ma nemmeno un successo: registrarlo tale lo farebbe sparire
+      // dalla telemetria.
+      : turnoTroncatoInPausa
         ? 'run_aborted'
       // Un turno che ha dovuto forzare la sintesi e' degradato, non riuscito.
       // Classificarlo 'success' INIETTA successi proprio nei turni andati male,
