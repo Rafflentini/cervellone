@@ -442,6 +442,20 @@ const MAX_ITERATIONS = 10
 const NO_TEXT_LIMIT = 5
 
 /**
+ * Un tool server-side FA un lavoro (web_search cerca una risposta,
+ * code_execution esegue) oppure rende soltanto VISIBILE uno strumento
+ * (`tool_search_tool_bm25`, e qualunque altra ricerca di strumenti).
+ *
+ * Solo i primi contano come tool chiamati: una ricerca di strumenti non
+ * risolve niente — il modello puo' cercare e poi non chiamare nulla. Contarla
+ * spegnerebbe il rilevatore di promesse a vuoto su ogni turno che cerca, cioe'
+ * su quasi tutti i turni quando il differimento e' acceso.
+ */
+export function fannoLavoro(nomeToolServer: string): boolean {
+  return !nomeToolServer.startsWith('tool_search')
+}
+
+/**
  * Perche' il turno non e' arrivato a destinazione:
  * - `api_error`: l'API ha smesso di rispondere (404, 529, timeout, credito)
  * - `empty`: il modello non ha mai prodotto testo, l'utente riceve una scusa
@@ -696,7 +710,19 @@ export async function runAgentTurn(
             // Anthropic e non passano da executeToolBlocks, quindi un turno
             // risolto solo con una ricerca ("Verifico la normativa...") avrebbe
             // totalToolCalls a zero e sarebbe giudicato una promessa a vuoto.
-            serverToolsIter += 1
+            //
+            // MA vale solo per i tool server che FANNO un lavoro. La ricerca di
+            // STRUMENTI (`tool_search_*`) non risolve niente: rende soltanto
+            // visibile uno strumento, che il modello puo' benissimo non
+            // chiamare. Col differimento acceso ogni scoperta emette un
+            // server_tool_use, quindi contarla spegnerebbe detectHallucination
+            // (`if (toolCount > 0) return false`) per costruzione su OGNI turno
+            // che cerca — cioe' proprio i turni in cui il rilevatore serve.
+            if (!fannoLavoro(serverToolName)) {
+              console.log(`STREAM(${policy.tag}) server_tool ${serverToolName}: ricerca di strumenti, non conta come lavoro`)
+            } else {
+              serverToolsIter += 1
+            }
             await sink.onServerTool?.(serverToolName)
           }
         },

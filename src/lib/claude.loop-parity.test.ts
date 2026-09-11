@@ -377,6 +377,32 @@ describe.each(CANALI)('loop %s', (_canale, esegui, entryPoint, lettoDallUtente) 
     expect(recordOutcomeCalls[0].outcome).toBe('success')
   })
 
+  it('una ricerca di STRUMENTI non e lavoro: non deve spegnere il rilevatore', async () => {
+    // CONTROLLO POSITIVO, sullo schema dell'audit: lo STESSO IDENTICO testo di
+    // promessa, e l'unica differenza e' QUALE tool server e' stato emesso.
+    //
+    // web_search e code_execution FANNO un lavoro: il turno e' risolto da loro,
+    // e contarli evita che "Verifico la normativa..." sia giudicato una promessa
+    // a vuoto. `tool_search_tool_bm25` no: non risolve niente, rende solo
+    // VISIBILE uno strumento — che il modello puo' benissimo non chiamare.
+    // Col differimento acceso ogni scoperta di tool emette un server_tool_use,
+    // quindi contarlo disattiverebbe detectHallucination per costruzione su
+    // OGNI turno che cerca. Un solo caso non misurerebbe niente: servono i due.
+    const PROMESSA = 'Verifico la normativa sui ponteggi e le riporto il riferimento.'
+
+    const esitoCon = async (serverTool: string) => {
+      turnIndex = 0
+      recordOutcomeCalls.length = 0
+      consegne.length = 0
+      scriptedTurns = [{ text: PROMESSA, toolUses: [], serverTools: [serverTool], stopReason: 'end_turn' }]
+      await run()
+      return recordOutcomeCalls[0].outcome
+    }
+
+    expect(await esitoCon('tool_search_tool_bm25')).toBe('hallucination')
+    expect(await esitoCon('web_search')).toBe('success')
+  })
+
   it('un turno che ha dovuto forzare la sintesi non e un successo', async () => {
     // Classificarlo 'success' inietta successi nei turni degradati, rendendo il
     // breaker piu' difficile da far scattare invece che piu' facile.
