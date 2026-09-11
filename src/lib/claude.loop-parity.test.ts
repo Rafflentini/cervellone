@@ -274,9 +274,9 @@ describe.each(CANALI)('loop %s', (_canale, esegui, entryPoint, lettoDallUtente) 
 
     await run()
 
-    // 1 con testo + NO_TEXT_LIMIT (5) muti, poi scatta tool_choice=none.
+    // 1 con testo + NO_TEXT_LIMIT (8, dall'11 set 2026) muti, poi scatta tool_choice=none.
     // Il numero e' volutamente esatto: se qualcuno alza il tetto, questo test cade.
-    expect(executedTools).toHaveLength(6)
+    expect(executedTools).toHaveLength(9)
     expect(new Set(executedTools)).toEqual(new Set(['scrivi_riga_registro']))
   })
 
@@ -486,6 +486,106 @@ describe.each(CANALI)('loop %s', (_canale, esegui, entryPoint, lettoDallUtente) 
     await run()
 
     expect(recordOutcomeCalls[0].outcome).toBe('force_text')
+  })
+
+  // ── La sintesi forzata deve DIRE che cosa fare, non solo togliere gli strumenti ──
+  //
+  // Incidente 11 set 2026: `tool_choice: 'none'` da solo toglie gli strumenti
+  // ma non implica "scriva un resoconto" — il modello può legittimamente non
+  // produrre testo, ed è successo due turni su tre dopo 13-17 operazioni
+  // riuscite (un'archiviazione UNILAV completata, poi "riformuli la richiesta").
+
+  it('la sintesi forzata riceve l istruzione di riferire, non solo tool_choice=none', async () => {
+    scriptedTurns = [
+      { text: 'Comincio ad archiviare.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+      { text: '', toolUses: [{ id: 't1', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+    ]
+
+    await run()
+
+    // L'ultima chiamata all'SDK è quella di sintesi (tool_choice=none).
+    const ultimaChiamata = mockStream.mock.calls[mockStream.mock.calls.length - 1] as unknown as [
+      { tool_choice?: { type: string }, messages: Array<{ role: string, content: Array<{ type: string, text?: string }> }> },
+    ]
+    const [params] = ultimaChiamata
+    expect(params.tool_choice).toEqual({ type: 'none' })
+    const ultimoMessaggio = params.messages[params.messages.length - 1]
+    expect(ultimoMessaggio.role).toBe('user')
+    const testoIstruzione = ultimoMessaggio.content
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
+      .join(' ')
+    // Assert sul CONTENUTO spedito, non sulla costante: prova che il modello
+    // riceve davvero un'istruzione, non solo la rimozione degli strumenti.
+    expect(testoIstruzione.length).toBeGreaterThan(0)
+    expect(testoIstruzione).toContain('Riferisca')
+    // Niente gergo tecnico verso l'Ingegnere.
+    const testoMinuscolo = testoIstruzione.toLowerCase()
+    expect(testoMinuscolo).not.toContain('tool')
+    expect(testoMinuscolo).not.toContain('iterazione')
+    expect(testoMinuscolo).not.toContain('force-text')
+    // Non deve suggerire di rifare il lavoro.
+    expect(testoMinuscolo).not.toContain('ripeta')
+    expect(testoMinuscolo).not.toContain('riprovi')
+  })
+
+  it('quando ha lavorato ma non riesce a riferirlo, dice che il lavoro è stato fatto — non chiede di riformulare', async () => {
+    // Nessuna sintesi forzata qui (consecutiveNoText resta sotto soglia): il
+    // turno finisce muto per la via naturale, con un tool già eseguito prima.
+    // Isola la B2 dalla B1: anche senza force-text, un fallback con lavoro
+    // svolto non deve mai suggerire di ripetere.
+    scriptedTurns = [
+      { text: '', toolUses: [{ id: 't1', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+      { text: '', toolUses: [], stopReason: 'end_turn' },
+    ]
+
+    const out = await run()
+
+    expect(executedTools).toEqual(['scrivi_riga_registro'])
+    expect(out).toContain('eseguito le operazioni')
+    expect(out.toLowerCase()).not.toContain('riformuli')
+    expect(recordOutcomeCalls[0].outcome).toBe('empty')
+  })
+
+  it('quando NON ha lavorato, la scusa resta quella originale', async () => {
+    scriptedTurns = [{ text: '', toolUses: [], stopReason: 'end_turn' }]
+
+    const out = await run()
+
+    expect(executedTools).toEqual([])
+    expect(out).toContain('⚠️ Non sono riuscito a sintetizzare una risposta. Riformuli la richiesta o specifichi il file/contesto, per favore.')
+  })
+
+  it('7 giri consecutivi senza testo non forzano la sintesi, 8 sì (soglia NO_TEXT_LIMIT)', async () => {
+    const giriMuti = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ text: '', toolUses: [{ id: `m${i}`, name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' }))
+    const usaSintesiForzata = () => mockStream.mock.calls.some((c) => {
+      const [params] = c as unknown as [{ tool_choice?: { type: string } }]
+      return params.tool_choice?.type === 'none'
+    })
+
+    // 7 giri muti: il turno si chiude da solo, MAI passato da tool_choice=none.
+    scriptedTurns = [
+      { text: 'Comincio.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+      ...giriMuti(7),
+      { text: 'Fatto.', toolUses: [], stopReason: 'end_turn' },
+    ]
+    await run()
+    expect(usaSintesiForzata()).toBe(false)
+    expect(lettoDallUtente()).toContain('Fatto')
+
+    // 8 giri muti: deve scattare.
+    turnIndex = 0
+    recordOutcomeCalls.length = 0
+    consegne.length = 0
+    executedTools.length = 0
+    mockStream.mockClear()
+    scriptedTurns = [
+      { text: 'Comincio.', toolUses: [{ id: 't0', name: 'scrivi_riga_registro', input: {} }], stopReason: 'tool_use' },
+      ...giriMuti(8),
+    ]
+    await run()
+    expect(usaSintesiForzata()).toBe(true)
   })
 
   it('non restituisce mai una risposta muta: se il modello non scrive mai, lo dice', async () => {

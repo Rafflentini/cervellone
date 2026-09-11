@@ -438,8 +438,37 @@ const MAX_ITERATIONS = 10
  * Giri consecutivi senza testo dopo i quali si forza la sintesi con
  * tool_choice=none. Sotto questo valore i flussi legittimi a piu' tool si
  * romperebbero (il self-heal ne usa fino a 5: read_file + propose_fix + status).
+ *
+ * Era 5 fino all'11 set 2026. Misurato in produzione lo stesso giorno:
+ * archiviare un documento (cerca mail, prende il PDF, rinomina, crea cartella,
+ * sposta, carica) costa 13-18 chiamate a strumenti, e per tutta la durata non
+ * c'e' NESSUNA ragione di scrivere testo — il bot ha finito il lavoro due
+ * volte su tre PRIMA di arrivare a 5 giri muti, e la sintesi forzata scattava
+ * a meta' di un'archiviazione ancora in corso. A 8 la sintesi scatta dopo che
+ * un'archiviazione tipica e' verosimilmente conclusa. MAX_ITERATIONS resta 10:
+ * il tetto vero non cambia, cambia solo quando si tenta la sintesi prima del tetto.
  */
-const NO_TEXT_LIMIT = 5
+const NO_TEXT_LIMIT = 8
+
+/**
+ * Istruzione accodata alla chiamata di sintesi forzata (v. sotto, dove si
+ * usa). Senza, togliere gli strumenti (`tool_choice: 'none'`) non dice al
+ * modello che cosa fare, ed e' legittimo che non scriva niente — misurato
+ * l'11 set 2026: due turni su tre restavano muti anche dopo 13-17 operazioni
+ * riuscite. Vincoli: breve, del Lei, senza gergo tecnico, e non deve
+ * suggerire di ripetere il lavoro (rifarlo su un'archiviazione fa doppioni).
+ */
+const ISTRUZIONE_SINTESI_FORZATA = 'Non può più utilizzare strumenti. Riferisca ora all\'Ingegnere, in breve, che cosa ha fatto finora: che cosa è riuscito a portare a termine, che cosa no, e che cosa resta eventualmente da fare. Non proponga di ripetere quanto già fatto.'
+
+/** Turno muto e nessuna operazione tentata: qui non c'e' niente da salvare, la scusa va bene così com'era. */
+const MESSAGGIO_VUOTO_SENZA_LAVORO = '⚠️ Non sono riuscito a sintetizzare una risposta. Riformuli la richiesta o specifichi il file/contesto, per favore.'
+/**
+ * Turno muto ma con operazioni davvero eseguite (`totalToolCalls > 0`): dire
+ * "riformuli" qui è la bugia misurata l'11 set 2026, perché il lavoro può
+ * essere già stato fatto e ripeterlo crea doppioni (foto/righe/archivi
+ * duplicati). Si dice la verità e si chiede di verificare, mai di ripetere.
+ */
+const MESSAGGIO_VUOTO_CON_LAVORO_FATTO = '⚠️ Ho eseguito le operazioni richieste, ma non sono riuscito a scriverne il resoconto. Il lavoro potrebbe essere già stato completato: prima di ripetere la richiesta, mi chieda di verificare — rifarla potrebbe creare doppioni.'
 
 /**
  * Un tool server-side FA un lavoro (web_search cerca una risposta,
@@ -577,6 +606,13 @@ export async function runAgentTurn(
   let turnoTroncatoInPausa = false
   /** True appena il loop scrive al posto del modello: il turno non e' lavoro compiuto. */
   let turnoNonConsegnato = false
+  /**
+   * True se il loop ha dovuto applicare il fallback per risposta vuota (v.
+   * `MESSAGGIO_VUOTO_*` piu' sotto). Serve alla classificazione dell'esito: un
+   * confronto su PREFISSO di stringa si romperebbe appena i due testi del
+   * fallback (con/senza lavoro svolto) smettono di condividere le prime parole.
+   */
+  let rispostaVuotaFallback = false
 
   /**
    * Avvisa il canale che il turno non e' lavoro compiuto. Va chiamato in TUTTI
@@ -861,12 +897,29 @@ export async function runAgentTurn(
         console.log(`STREAM(${policy.tag}) force-text: ${consecutiveNoText} iter consecutive senza testo, forzo tool_choice=none`)
         try {
           const synthStartLen = fullResponse.length
+          // Togliere gli strumenti non basta: "non puo' piu' usarli" non
+          // implica "scriva un resoconto", ed e' per questo che il 11 set 2026
+          // il modello e' rimasto muto anche qui, due turni su tre, dopo aver
+          // gia' fatto 13-17 chiamate reali. Serve l'istruzione ESPLICITA.
+          //
+          // Array NUOVO, non si tocca `currentMessages`: serve intatto al resto
+          // del ciclo (e al prossimo giro, se questo tentativo fallisse). A
+          // questo punto `currentMessages` finisce SEMPRE con uno `user` — i
+          // tool_result appena scritti qualche riga sopra, incondizionatamente,
+          // prima di arrivare qui — quindi qui sotto si accoda un secondo
+          // `user`. L'SDK ammette ruoli uguali consecutivi (li unisce in un
+          // solo turno), quindi non serve incollare il testo dentro il
+          // `content` del messaggio precedente.
+          const messaggiSintesiForzata: Anthropic.MessageParam[] = [
+            ...currentMessages,
+            { role: 'user' as const, content: [{ type: 'text' as const, text: ISTRUZIONE_SINTESI_FORZATA }] },
+          ]
           const synthFinal = await consumeStreamWithRetry({
             createStream: () => client.messages.stream({
               model: modelConfig.model,
               max_tokens: modelConfig.maxTokens,
               system: systemBlocks,
-              messages: currentMessages,
+              messages: messaggiSintesiForzata,
               tools,
               tool_choice: { type: 'none' as const },
               ...modelOpts,
@@ -939,10 +992,19 @@ export async function runAgentTurn(
   // Se per qualunque motivo il loop finisce senza che il modello abbia mai
   // prodotto testo, l'utente riceverebbe ZERO caratteri — indistinguibile da un
   // bot che ignora. Meglio dirlo.
+  //
+  // MA "non ho fatto niente" e "ho fatto tutto e non sono riuscito a
+  // raccontarlo" sono due guasti diversi. Misurato l'11 set 2026: il bot aveva
+  // eseguito 13 e 17 operazioni — un'archiviazione andata a buon fine — e ha
+  // comunque chiesto di riformulare la richiesta. Su un archivio, rifare una
+  // cosa gia' fatta crea doppioni. Con `totalToolCalls > 0` si dice la verita'
+  // e si chiede di verificare, mai di ripetere; a zero chiamate la frase
+  // originale resta giusta.
   if (fullResponse.length === 0) {
-    console.warn(`STREAM(${policy.tag}) EMPTY: fullResponse vuoto dopo ${iterations} iter, applicato fallback`)
+    console.warn(`STREAM(${policy.tag}) EMPTY: fullResponse vuoto dopo ${iterations} iter (totalToolCalls=${totalToolCalls}), applicato fallback`)
     segnalaFallimento('empty')
-    await emit('⚠️ Non sono riuscito a sintetizzare una risposta. Riformuli la richiesta o specifichi il file/contesto, per favore.')
+    rispostaVuotaFallback = true
+    await emit(totalToolCalls > 0 ? MESSAGGIO_VUOTO_CON_LAVORO_FATTO : MESSAGGIO_VUOTO_SENZA_LAVORO)
   }
   console.log(`STREAM(${policy.tag}) done fullLen=${fullResponse.length} apiError=${apiErrorOccurred}`)
   // Stessa ragione di `emit`: la consegna finale non deve poter impedire la
@@ -971,10 +1033,13 @@ export async function runAgentTurn(
   // modello tendeva a RIGENERARE il documento — l'errore che il system prompt
   // gli vieta. La regola sta in src/lib/salva-risposta.ts, una volta sola.
 
-  const FALLBACK_PREFIX = '⚠️ Non sono riuscito a sintetizzare'
+  // `rispostaVuotaFallback`, non un confronto di stringa: da quando il
+  // fallback per risposta vuota ha DUE testi (v. sopra), un prefisso comune
+  // non e' piu' garantito, e un confronto sul testo si romperebbe in silenzio
+  // appena uno dei due cambiasse.
   const outcome: ModelOutcome = apiErrorOccurred
     ? 'api_error'
-    : fullResponse.startsWith(FALLBACK_PREFIX)
+    : rispostaVuotaFallback
       ? 'empty'
       // Troncato dal guard rail di costo. NON e' 'success' — un runaway da 200K
       // token non e' un turno riuscito e sparirebbe dalla telemetria — ma non e'
