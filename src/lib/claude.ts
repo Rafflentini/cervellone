@@ -7,7 +7,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { getToolDefinitions, executeTool } from './tools'
-import { NUCLEO_TOOL } from './tool-nucleo'
+import { NUCLEO_TOOL, AVVISO_STRUMENTI_CERCABILI } from './tool-nucleo'
 import type { OpzioniTool } from './tools/types'
 import { searchMemory, saveMessageWithEmbedding, saveMessageOnly, saveEmbeddingOnly } from './memory'
 import { logError } from './sanitize'
@@ -367,7 +367,12 @@ function extractLatestFileBlocks(messages: Anthropic.MessageParam[]): unknown[] 
 // messaggio) va in un blocco separato NON cachato dopo il breakpoint, così non invalida la cache.
 // Il breakpoint sul system cacha l'intera catena tools→system. Hit garantiti nei giri del tool-loop
 // e tra messaggi ravvicinati (TTL 5 min) → input ~‑80/90% sul prefisso fisso (~4-5K token).
-function buildCachedSystem(systemPrompt: string, memoryContext: string, workingContext?: string): Anthropic.TextBlockParam[] {
+function buildCachedSystem(
+  systemPrompt: string,
+  memoryContext: string,
+  workingContext?: string,
+  differimentoAcceso?: boolean,
+): Anthropic.TextBlockParam[] {
   // Split STATICO (cachato 1h) / VARIABILE (non cachato). I builder (prompts.ts) inseriscono
   // SYSTEM_CACHE_SPLIT tra il BASE_PROMPT immutabile e data/ora/skill/prompt_extra.
   // Audit 10 giu: prima data+ora-al-minuto+skill stavano nel blocco cachato → si bustava
@@ -375,8 +380,13 @@ function buildCachedSystem(systemPrompt: string, memoryContext: string, workingC
   // Fallback retrocompat: se il marker manca, tutto come statico.
   const { staticPart, variablePart } = splitSystemPrompt(systemPrompt)
 
+  // L'avviso "i tuoi strumenti sono cercabili" va nella parte STATICA (cachata):
+  // e' costante quanto l'interruttore stesso. Nella parte variabile si pagherebbe
+  // a prezzo pieno a ogni giro del ciclo, fino a 10 volte per turno.
+  const staticConAvviso = differimentoAcceso ? staticPart + AVVISO_STRUMENTI_CERCABILI : staticPart
+
   const blocks: Anthropic.TextBlockParam[] = [
-    { type: 'text', text: staticPart, cache_control: { type: 'ephemeral', ttl: '1h' } },
+    { type: 'text', text: staticConAvviso, cache_control: { type: 'ephemeral', ttl: '1h' } },
   ]
   // Parte VARIABILE (data/ora/skill/prompt_extra): NON cachata, subito dopo il breakpoint.
   if (variablePart && variablePart.trim()) blocks.push({ type: 'text', text: variablePart })
@@ -521,15 +531,16 @@ export async function runAgentTurn(
 ): Promise<string> {
   const { systemPrompt, userQuery, conversationId } = request
 
+  const opzioniTool = opzioniToolDaAmbiente()
   const memoryContext = await searchMemory(userQuery).catch(() => '')
-  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext, request.workingContext)
+  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext, request.workingContext, opzioniTool !== undefined)
 
   if (policy.persistUserMessage && conversationId && userQuery) {
     saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tools: any[] = getToolDefinitions(opzioniToolDaAmbiente())
+  const tools: any[] = getToolDefinitions(opzioniTool)
   let currentMessages = trimMessages([...request.messages])
   let fullResponse = ''
   let accUsage: UsageTokens = {}

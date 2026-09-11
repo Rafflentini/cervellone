@@ -49,3 +49,19 @@ export const NUCLEO_DEBITO_RICERCA: ReadonlySet<string> = new Set([
 ])
 
 export const NUCLEO_TOOL: ReadonlySet<string> = new Set([...NUCLEO_DISEGNO, ...NUCLEO_DEBITO_RICERCA])
+
+/**
+ * Con il differimento acceso il modello vede ~11 tool su 130. Se nessuno gli dice
+ * che gli altri esistono, NON li cerca: risponde con quelli che vede, e sembra che
+ * abbia perso delle capacita'. Misurato l'11 set 2026: senza questa riga cercava in
+ * 3 casi su 9, con questa riga in 7 su 9.
+ *
+ * Non e' un router e non e' una regola procedurale: e' dirgli la verita' sulla sua
+ * situazione. Per questo compare SOLO quando il differimento e' acceso — a
+ * interruttore spento sarebbe una bugia.
+ */
+export const AVVISO_STRUMENTI_CERCABILI =
+  '\n\nI TUOI STRUMENTI: ne vedi solo una parte. Gli altri esistono ma non ti sono stati ' +
+  'caricati. Per trovarli usa tool_search_tool_bm25 con una query in italiano che descriva ' +
+  'cosa ti serve. Se ti sembra di non avere lo strumento adatto, CERCALO prima di rispondere ' +
+  'che non puoi.'

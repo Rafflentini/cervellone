@@ -108,6 +108,7 @@ vi.mock('./circuit-breaker', async (orig) => {
 describe('il cavo: opzioniToolDaAmbiente arriva a getToolDefinitions dentro runAgentTurn', () => {
   beforeEach(() => {
     mockGetToolDefinitions.mockClear()
+    mockStream.mockClear()
   })
   afterEach(() => { delete process.env.TOOL_DEFER })
 
@@ -135,5 +136,33 @@ describe('il cavo: opzioniToolDaAmbiente arriva a getToolDefinitions dentro runA
 
     expect(mockGetToolDefinitions).toHaveBeenCalledTimes(1)
     expect(mockGetToolDefinitions.mock.calls[0][0]).toBeUndefined()
+  })
+
+  // Stessa via del cavo sopra, ma si spia la chiamata all'SDK Anthropic
+  // (mockStream) invece di getToolDefinitions: e' li' che arriva davvero il
+  // system prompt spedito all'API, blocchi compresi.
+  type SystemBlock = { type: string; text?: string }
+  async function catturaSystemPrompt(): Promise<string> {
+    const { callClaudeStream } = await import('./claude')
+    await callClaudeStream(richiesta, { onText: () => {} })
+    expect(mockStream).toHaveBeenCalled()
+    const chiamata = mockStream.mock.calls[0] as unknown as unknown[]
+    const arg = chiamata[0] as { system?: SystemBlock[] }
+    return (arg.system ?? []).map((b) => b.text ?? '').join('\n')
+  }
+
+  it('acceso: il prompt dice al modello che gli strumenti sono cercabili', async () => {
+    process.env.TOOL_DEFER = '1'
+    const inviato = await catturaSystemPrompt()
+    expect(inviato).toContain('tool_search_tool_bm25')
+    expect(inviato).toContain('non ti sono stati caricati')
+  })
+
+  // CONTROLLO POSITIVO: spento, l'avviso NON deve comparire — sarebbe una bugia,
+  // perche' con l'interruttore spento il modello vede davvero tutti i suoi tool.
+  it('spento: l avviso non compare', async () => {
+    delete process.env.TOOL_DEFER
+    const inviato = await catturaSystemPrompt()
+    expect(inviato).not.toContain('tool_search_tool_bm25')
   })
 })
