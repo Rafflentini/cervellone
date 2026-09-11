@@ -185,16 +185,32 @@ Con «maratea» che è un **anti-segnale** documentato — 4 messaggi su 5 che l
 Restruktura — la direzione è quella sbagliata. `imposta_societa_attiva` resta nel nucleo e il
 riconoscitore dal testo resta timido apposta, ma **non compensano la salienza**.
 
-> **Questa è l'unica decisione che resta a Raffaele, e non gliela prendo io**: scambia «il check-in
-> funziona» con «rischio di confondere le due società», e l'esito di una confusione è un documento
-> fiscale sbagliato. Le tre strade:
->
-> 1. **tenerli nel nucleo** e accettare la salienza — è com'è adesso;
-> 2. **toglierli**, e accettare che il check-in non si raggiunga finché la loro descrizione non
->    conterrà le parole con cui lo si cerca (§5.1);
-> 3. **tenerli, ma in fondo all'elenco** invece che in testa: mitiga la salienza senza togliere
->    niente. Costa una riga, e **non è stato fatto** perché sposta l'ordine dei tool, che è il primo
->    blocco del prefisso della cache — va misurato, non improvvisato.
+### ✅ Misurato: il rischio non si realizza. Non c'è nessuna decisione da prendere
+
+Quanto sopra misura **la visibilità**, non **il comportamento** — ed erano state presentate a
+Raffaele come tre strade fra cui scegliere. Era prematuro: *quanto sono visibili* e *se fanno
+sbagliare* sono due domande diverse, e l'unica che conta è la seconda.
+
+Misurata (`scripts/tmp-due-societa.ts`, usa-e-getta): **dieci richieste Restruktura inequivocabili**
+— preventivo, scadenze mezzi, foto cantiere, prezzario, DURC, posta, computo metrico, SAL, meteo
+squadra, revisione Ducato — nelle due configurazioni.
+
+| | oggi | col differimento |
+|---|---:|---:|
+| richieste Restruktura che tirano fuori strumenti de La Real Estate | **0 / 10** | **0 / 10** |
+
+⭐ **Con il controllo positivo**, senza il quale quello zero non varrebbe niente: due richieste
+*davvero* de La Real Estate devono farli scattare, e li fanno scattare — `affitti_imposta_soggiorno`
+e `affitti_situazione`, **2 su 2, in entrambe le configurazioni**. Lo zero è uno zero vero, non
+cecità del rilevatore.
+
+**Quindi i tre tool restano nel nucleo e non si tocca niente.** La salienza cresce, il comportamento
+no: `imposta_societa_attiva` resta nel nucleo, la società è **stato salvato per conversazione** (non
+un'inferenza dal testo), e il riconoscitore dal testo resta timido apposta.
+
+⚠️ **Limite dichiarato:** dieci richieste, una esecuzione ciascuna. Non provano l'impossibilità di
+una confusione; provano che su dieci casi netti non se ne vede l'ombra, e che il differimento **non
+peggiora** rispetto a oggi — che è la domanda che era stata posta.
 
 ### 4.3 — Passo 2: il prompt. *Progettato a parte, non stanotte.*
 
