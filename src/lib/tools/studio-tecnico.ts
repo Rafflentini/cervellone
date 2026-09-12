@@ -1,6 +1,13 @@
 import { supabase } from '../supabase'
-import { salvaDocumento } from '../salva-documento'
+import { salvaDocumento, verificaSalvabile } from '../salva-documento'
 import type { ToolDefinition } from './types'
+
+/** Nome leggibile di ogni doc_type, per i messaggi all'Ingegnere. */
+const NOME_DOC_TYPE: Record<string, string> = {
+  preventivo: 'il preventivo',
+  cme: 'il CME',
+  quadro_economico: 'il quadro economico',
+}
 
 // ── LOOKUP PREZZIARI — URL diretti ODS/XLS/CSV per auto-import ──
 const PREZZIARI_LEENO: Record<string, { url: string; anno: number; formato: string }> = {
@@ -983,13 +990,28 @@ export async function executeStudioTecnico(name: string, input: Record<string, u
           { name: `CME - ${committente}`, content: cmeHtml, doc_type: 'cme' },
           { name: `Quadro Economico - ${committente}`, content: qeHtml, doc_type: 'quadro_economico' },
         ]
+
         // ⭐ Prima un fallimento qui finiva in console.error e la funzione
         // proseguiva comunque, restituendo "GENERATI CON SUCCESSO": la guardia
         // sui dati societari sarebbe finita in un log che nessuno legge mentre
-        // all'Ingegnere si dichiarava un successo che non c'era stato. Un
-        // blocco (o un guasto) qui ferma la generazione: nessuno dei tre
-        // documenti esce se anche uno solo non si salva — non un successo
-        // parziale, non un ~~~document silenzioso di quello bloccato.
+        // all'Ingegnere si dichiarava un successo che non c'era stato.
+        //
+        // FASE 1 — verifica TUTTI e tre PRIMA di scriverne anche uno solo.
+        // Se una verifica fallisce qui nessuna scrittura e' avvenuta: "nessuno
+        // dei tre e' stato consegnato" e' vero, perche' a quel punto non c'e'
+        // ancora niente da consegnare.
+        for (const doc of docsToSave) {
+          const verifica = await verificaSalvabile(doc.content, conversationId)
+          if (!verifica.ok) {
+            return `PREVENTIVO NON SALVATO (${doc.doc_type}).\n\n${verifica.esito.messaggio}\n\nNessuno dei tre documenti (preventivo, CME, quadro economico) e' stato consegnato: si fermano insieme, per non lasciarne fuori uno con la partita IVA sbagliata.`
+          }
+        }
+
+        // FASE 2 — le verifiche sono passate, ora si scrive per davvero. Un
+        // fallimento qui e' un guasto (es. database), non un blocco sui dati:
+        // quello che e' gia' stato scritto RESTA scritto, e il messaggio deve
+        // dirlo — non "nessuno dei tre", che a questo punto sarebbe falso.
+        const salvati: string[] = []
         for (const doc of docsToSave) {
           const esito = await salvaDocumento({
             nome: doc.name,
@@ -999,8 +1021,21 @@ export async function executeStudioTecnico(name: string, input: Record<string, u
             metadata: { source: 'genera_preventivo_completo', doc_type: doc.doc_type, committente, comune, numero },
           })
           if (!esito.ok) {
-            return `PREVENTIVO NON SALVATO (${doc.doc_type}).\n\n${esito.messaggio}\n\nNessuno dei tre documenti (preventivo, CME, quadro economico) e' stato consegnato: si fermano insieme, per non lasciarne fuori uno con la partita IVA sbagliata.`
+            const nonTentati = docsToSave
+              .map((d) => d.doc_type)
+              .filter((t) => t !== doc.doc_type && !salvati.includes(t))
+            const righe = [
+              salvati.length > 0
+                ? `Gia' salvati: ${salvati.map((t) => NOME_DOC_TYPE[t]).join(', ')}.`
+                : `Non era ancora stato salvato nessuno dei tre.`,
+              `NON salvato: ${NOME_DOC_TYPE[doc.doc_type]} — ${esito.messaggio}`,
+              nonTentati.length > 0
+                ? `Non tentati: ${nonTentati.map((t) => NOME_DOC_TYPE[t]).join(', ')}.`
+                : '',
+            ].filter(Boolean)
+            return righe.join('\n')
           }
+          salvati.push(doc.doc_type)
         }
       }
 

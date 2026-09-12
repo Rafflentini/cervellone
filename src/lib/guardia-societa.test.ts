@@ -59,4 +59,16 @@ describe('verificaDatiSocietari — CONTROLLO POSITIVO: il caso vero deve morder
     expect(msg).toContain('02232730768')
     expect(msg).toContain('LA REAL ESTATE SRLS')
   })
+
+  // Su Telegram i messaggi partono con parse_mode: 'Markdown' (telegram-helpers.ts:37),
+  // dove `_` delimita il corsivo: due underscore in un nome vengono RIMOSSI, non
+  // mostrati. `imposta_societa_attiva` arrivava all'Ingegnere come
+  // `impostasocietaattiva`, un comando che non esiste. Questo test prova
+  // l'INVARIANTE (nessun underscore), non il testo: regge anche se la frase
+  // cambia, e vale per qualunque messaggio che spediamo, non solo per questo.
+  it('il messaggio non contiene underscore: su Telegram il Markdown li mangia', () => {
+    const esito = verificaDatiSocietari('<p>02087420762</p>', LAREALESTATE)
+    if (esito.ok) throw new Error('atteso blocco')
+    expect(messaggioBlocco(esito)).not.toMatch(/_/)
+  })
 })

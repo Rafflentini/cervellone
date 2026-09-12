@@ -29,8 +29,16 @@ export type EsitoSalvataggio =
  * (`societa_ignota`, un guasto da riferire) o un'incoerenza nei dati stessi
  * (`dati_societari`, un blocco che l'Ingegnere puo' sciogliere). Nessuno dei
  * due indovina: se non sappiamo, non scriviamo.
+ *
+ * Esportata (non piu' privata) per chi deve salvare PIU' documenti insieme,
+ * come `genera_preventivo_completo`: verificarli TUTTI prima di scriverne
+ * anche uno solo e' l'unico modo per cui "nessuno dei tre e' stato scritto"
+ * resti vero quando lo si dichiara. Verificare un documento alla volta
+ * dentro `salvaDocumento`, mescolato alla scrittura, e' quello che permetteva
+ * al primo documento di essere gia' salvato mentre il messaggio su un
+ * fallimento del secondo o terzo diceva "nessuno".
  */
-async function controlla(
+export async function verificaSalvabile(
   contenuto: string,
   conversationId: string,
 ): Promise<{ ok: true } | { ok: false; esito: Extract<EsitoSalvataggio, { ok: false }> }> {
@@ -68,7 +76,7 @@ export async function salvaDocumento(d: {
   tipo: string
   metadata?: Record<string, unknown>
 }): Promise<EsitoSalvataggio> {
-  const controllo = await controlla(d.contenuto, d.conversationId)
+  const controllo = await verificaSalvabile(d.contenuto, d.conversationId)
   if (!controllo.ok) return controllo.esito
 
   try {
@@ -109,7 +117,7 @@ export async function aggiornaContenutoDocumento(
   contenuto: string,
   conversationId: string,
 ): Promise<EsitoSalvataggio> {
-  const controllo = await controlla(contenuto, conversationId)
+  const controllo = await verificaSalvabile(contenuto, conversationId)
   if (!controllo.ok) return controllo.esito
 
   try {

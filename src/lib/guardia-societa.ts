@@ -72,7 +72,7 @@ export function messaggioBlocco(esito: Extract<EsitoGuardia, { ok: false }>): st
     `mandato, non si richiama piu'.`,
     ``,
     `Se e' voluto (per esempio l'altra societa' e' il committente), dimmelo e`,
-    `lo genero comunque. Se non e' voluto, controlla con imposta_societa_attiva`,
-    `quale societa' e' in uso.`,
+    `lo genero comunque.`,
+    `Se non e' voluto, dimmi su quale societa' stiamo lavorando e la sistemo.`,
   ].join('\n')
 }
