@@ -713,7 +713,35 @@ it('IL DIFETTO, riprodotto: con La Real Estate attiva il preventivo porta la P.I
 
 - [ ] **Step 2: eseguire e verificare che PASSI** — il difetto è vivo. Se non passa, il difetto non è dove credevo: **fermarsi e riferirlo** invece di aggiustare il test.
 - [ ] **Step 3: intestazione e piede dalla società attiva** nei quattro punti HTML/Word; su `ok:false` il preventivo **non si genera** e lo dichiara
-- [ ] **Step 4: `prompts.ts:134`** — la riga `Intestazione:` si costruisce dalla società attiva. Se il prompt suggerisce Restruktura mentre la guardia blocca, il bot combatte contro se stesso e l'Ingegnere vede solo un rifiuto senza capire perché
+- [ ] **Step 4: `prompts.ts:134` si CANCELLA, e l'informazione va in `bloccoSocietaAttiva`**
+
+La riga di oggi è `Intestazione: RESTRUKTURA S.r.l. — P.IVA 02087420762, Villa d'Agri (PZ), Ing. Raffaele Lentini.`
+e sta in un prompt **statico**, che non conosce la conversazione e quindi non può sapere
+quale società è attiva. Renderla condizionale lì vorrebbe dire passarle il `conversationId`:
+lavoro inutile, perché il posto giusto **esiste già**.
+
+`bloccoSocietaAttiva(s: Societa)` (`src/lib/societa-attiva.ts:70`) riceve la società attiva
+ed è iniettato **simmetricamente sui due canali** (`chat/route.ts:391`, `agent-job.ts:127`).
+L'intestazione va lì, costruita da `s`, accanto alla partita IVA e all'aliquota che quel
+blocco già dichiara. Così l'equipollenza è **strutturale**, non da ricostruire — ed è la
+ragione per cui questo Step non ha bisogno di un test per canale suo: il blocco è uno.
+
+Aggiungere al blocco una riga di questa forma (template literal, `s` è la società attiva):
+
+    Intestazione dei documenti: ${s.denominazione} — P.IVA ${s.piva}, ${s.sede}.
+
+⚠️ **`Societa` non ha oggi un campo `sede`.** La sede di Restruktura è scritta in due forme
+diverse in due file — `src/v19/prompts/identita.ts` dice *Villa d'Agri (PZ), Italia*, la
+memoria del progetto dice *Via Roma 60, 85050 Marsicovetere (PZ)* — e **nessuna delle due
+è nel registro**. Sono lo stesso luogo (Villa d'Agri è frazione di Marsicovetere) ma non la
+stessa stringa.
+
+**Non inventarne una terza e non scegliere fra le due di tua iniziativa.** Aggiungi al
+registro il campo `sede`, con per Restruktura **esattamente** il valore già presente in
+`identita.ts` (`sedeLegale`) e per La Real Estate `Via Civita 8, Maratea (PZ)`; poi
+**dichiara nel rapporto** che la forma definitiva la deve decidere Raffaele. Un dato
+societario scelto da noi al posto suo è esattamente il difetto che questo lavoro chiude.
+
 - [ ] **Step 5: invertire la riproduzione nella forma definitiva**
 
 ```ts
