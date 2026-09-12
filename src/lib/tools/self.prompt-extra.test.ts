@@ -76,7 +76,15 @@ describe('cervellone_modifica su prompt_extra', () => {
     expect(out).not.toContain('attiva dalla prossima richiesta')
     expect(out).toContain('NON ANCORA ATTIVA')
     // Deve consegnare al modello il comando esatto da riferire all'utente.
-    expect(out).toContain('/regola_ok_11111111-2222-3333-4444-555555555555')
+    //
+    // Dal 12 set 2026 il codice esce SENZA trattini: Telegram rende cliccabile
+    // un comando solo se e' fatto di [A-Za-z0-9_], e coi trattini si fermava al
+    // primo `-` mandando un comando troncato. L'Ingegnere lavora dal telefono.
+    expect(out).toContain('/regola_ok_11111111222233334444555555555555')
+    // L'invariante che conta, non la stringa: il comando e' toccabile.
+    const comando = String(out ?? '').match(/\/regola_ok_[^\s)]+/)?.[0] ?? ''
+    expect(comando).not.toBe('')
+    expect(comando.slice(1)).toMatch(/^[A-Za-z0-9_]+$/)
 
     // Non tocca prompt_extra in cervellone_config: un valore li' dentro
     // verrebbe riletto da cervellone_info come se fosse attivo.

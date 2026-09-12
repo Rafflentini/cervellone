@@ -6,6 +6,7 @@
 //   /accesso_no_<id>      → annulla
 // La recinzione vera (assertWriteAllowed) vive in drive.ts; qui si modifica solo la tabella.
 
+import { comandoDaMostrare } from '@/lib/comandi-uuid'
 import { supabase } from '@/lib/supabase'
 import { findFoldersByName, invalidateDrivePolicyCache } from '@/lib/drive'
 
@@ -98,8 +99,8 @@ export async function proposeConsenti(folderQuery: string, folderId?: string, fo
       message:
         `🔐 Richiesta: DARE a Cervellone accesso in SCRITTURA a «${name}» (e tutte le sue sottocartelle).\n` +
         `Serve la doppia conferma.\n` +
-        `1ª conferma → /accesso_ok_${data.id}\n` +
-        `Per annullare → /accesso_no_${data.id}`,
+        `1ª conferma → ${comandoDaMostrare('accesso_ok', data.id)}\n` +
+        `Per annullare → ${comandoDaMostrare('accesso_no', data.id)}`,
     }
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) }
@@ -140,8 +141,8 @@ export async function proposeRevoca(folderQuery: string, folderId?: string): Pro
       message:
         `🔓 Richiesta: REVOCARE a Cervellone l'accesso in scrittura a «${name}».\n` +
         `Serve la doppia conferma.\n` +
-        `1ª conferma → /accesso_ok_${data.id}\n` +
-        `Per annullare → /accesso_no_${data.id}`,
+        `1ª conferma → ${comandoDaMostrare('accesso_ok', data.id)}\n` +
+        `Per annullare → ${comandoDaMostrare('accesso_no', data.id)}`,
     }
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) }
@@ -156,7 +157,7 @@ export async function confirmStep1(id: string): Promise<ActionResult> {
     if (!p) return { ok: false, message: 'Richiesta di accesso non trovata.' }
     if (p.stato !== 'pending') return pendingStatusMessage(p.stato)
     if (p.conferme >= 1) {
-      return { ok: true, message: `Prima conferma già data. Conferma DEFINITIVA → /accesso_ok2_${id}` }
+      return { ok: true, message: `Prima conferma già data. Conferma DEFINITIVA → ${comandoDaMostrare('accesso_ok2', id)}` }
     }
     const { data, error } = await supabase
       .from('cervellone_drive_policy_pending')
@@ -172,8 +173,8 @@ export async function confirmStep1(id: string): Promise<ActionResult> {
       ok: true,
       message:
         `✅ Prima conferma registrata (${azione} «${p.folder_name}»).\n` +
-        `Conferma DEFINITIVA → /accesso_ok2_${id}\n` +
-        `Annulla → /accesso_no_${id}`,
+        `Conferma DEFINITIVA → ${comandoDaMostrare('accesso_ok2', id)}\n` +
+        `Annulla → ${comandoDaMostrare('accesso_no', id)}`,
     }
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) }
@@ -185,7 +186,7 @@ export async function confirmStep2(id: string): Promise<ActionResult> {
     const p = await loadPending(id)
     if (!p) return { ok: false, message: 'Richiesta di accesso non trovata.' }
     if (p.stato !== 'pending') return pendingStatusMessage(p.stato)
-    if (p.conferme < 1) return { ok: false, message: `Manca la prima conferma → /accesso_ok_${id}` }
+    if (p.conferme < 1) return { ok: false, message: `Manca la prima conferma → ${comandoDaMostrare('accesso_ok', id)}` }
     if (!p.folder_id) return { ok: false, message: 'Richiesta senza folder_id: impossibile applicare.' }
 
     // Applica la modifica alla policy

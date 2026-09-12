@@ -9,6 +9,7 @@
  * - NEW: cerca_documenti (preventivi/relazioni passate)
  */
 
+import { comandoDaMostrare } from '@/lib/comandi-uuid'
 import { getSupabaseServer } from './supabase-server'
 import { avvisoImmagini } from './avviso-immagini'
 import { societaAttivaPerDocumenti } from './societa-documenti'
@@ -760,7 +761,7 @@ async function executeDraftWrapper(
       const propResult = await createShareProposal(docId, giorni)
       if (propResult && typeof propResult === 'object') return propResult.error
       if (!propResult) return 'Non sono riuscito a preparare la condivisione (documento non trovato o errore).'
-      return `Sto per creare un link CONDIVISIBILE valido ${Math.min(30, Math.max(1, Math.round(giorni)))} giorni per questo documento. Chi avrà il link potrà vederlo. Confermi rispondendo: /condividi_ok_${propResult}`
+      return `Sto per creare un link CONDIVISIBILE valido ${Math.min(30, Math.max(1, Math.round(giorni)))} giorni per questo documento. Chi avrà il link potrà vederlo. Confermi rispondendo: ${comandoDaMostrare('condividi_ok', propResult)}`
     }
 
     const { listRecentDrafts, getDraft, updateDraft, saveDraftPdfToDrive } = await import('./draft-tools')

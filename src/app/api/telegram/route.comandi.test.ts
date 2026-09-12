@@ -143,3 +143,46 @@ describe('Telegram — la risposta a un comando finisce in messages', () => {
     expect(mockRunAgentJob).toHaveBeenCalled()
   })
 })
+
+/**
+ * Il codice dei comandi, cliccabile con UN tocco — su TELEGRAM.
+ *
+ * Il gemello sta in `src/app/api/chat/route.comandi.test.ts`. Due test, uno per
+ * canale: il modulo `comandi-uuid` e' condiviso, ma un motore condiviso NON
+ * rende equipollenti i canali, e su questo repo il web e Telegram sono
+ * divergiti piu' volte proprio dandolo per scontato.
+ *
+ * Il difetto che chiudono: Telegram rende cliccabile un comando solo se e'
+ * fatto di [A-Za-z0-9_]. Coi trattini il client si fermava al primo `-` e
+ * toccando il comando mandava `/condividi_ok_11111111` — troncato e inutile.
+ */
+describe('Telegram — il codice accettato in ENTRAMBE le forme', () => {
+  const SENZA = '11111111222233334444555555555555'
+
+  it('la forma NUOVA senza trattini arriva alla funzione giusta', async () => {
+    const { POST } = await import('./route')
+    await POST(richiesta(`/condividi_ok_${SENZA}`))
+    await Promise.all(sfondo)
+
+    // e ci arriva l'uuid CANONICO: il formato del comando cambia, quello del
+    // database no.
+    expect(mockShare).toHaveBeenCalledWith(UUID)
+    expect(mockRunAgentJob).not.toHaveBeenCalled()
+  })
+
+  it('la forma VECCHIA coi trattini continua a funzionare', async () => {
+    const { POST } = await import('./route')
+    await POST(richiesta(`/condividi_ok_${UUID}`))
+    await Promise.all(sfondo)
+
+    expect(mockShare).toHaveBeenCalledWith(UUID)
+  })
+
+  it('un codice TRONCATO non viene intercettato al posto di un altro', async () => {
+    const { POST } = await import('./route')
+    await POST(richiesta('/condividi_ok_11111111'))
+    await Promise.all(sfondo)
+
+    expect(mockShare).not.toHaveBeenCalled()
+  })
+})

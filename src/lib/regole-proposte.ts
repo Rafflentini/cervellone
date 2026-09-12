@@ -19,6 +19,7 @@
  * rimpiazzano. Era il difetto di prompt_extra e di modifica_skill — replace
  * totale, un solo slot di backup, e una skill gia' persa il 1 agosto.
  */
+import { comandoDaMostrare } from '@/lib/comandi-uuid'
 import { supabase } from './supabase'
 
 /** Oltre questo, una proposta non confermata non e' piu' confermabile. */
@@ -98,7 +99,7 @@ export async function anteprimaRegola(id: string): Promise<{ ok: boolean; messag
 
   return {
     ok: true,
-    message: `📋 *Legga il testo esatto prima di attivarlo.* Da qui in poi varrà in ogni conversazione:\n\n"${r.testo}"${r.motivo ? `\n\n_Motivo:_ ${r.motivo}` : ''}\n\nSe è d'accordo: /regola_ok2_${r.id}\nAltrimenti: /regola_no_${r.id}`,
+    message: `📋 *Legga il testo esatto prima di attivarlo.* Da qui in poi varrà in ogni conversazione:\n\n"${r.testo}"${r.motivo ? `\n\n_Motivo:_ ${r.motivo}` : ''}\n\nSe è d'accordo: ${comandoDaMostrare('regola_ok2', r.id)}\nAltrimenti: ${comandoDaMostrare('regola_no', r.id)}`,
   }
 }
 
@@ -128,7 +129,7 @@ export async function confermaRegola(id: string): Promise<{ ok: boolean; message
   if (attive.length >= REGOLE_MAX_ATTIVE) {
     return {
       ok: false,
-      message: `⚠️ Ho già ${attive.length} regole attive, il massimo. Questa NON è stata attivata: ne rimuova una con /regole e poi riconfermi /regola_ok_${id}`,
+      message: `⚠️ Ho già ${attive.length} regole attive, il massimo. Questa NON è stata attivata: ne rimuova una con /regole e poi riconfermi ${comandoDaMostrare('regola_ok', id)}`,
     }
   }
 
@@ -279,7 +280,7 @@ export async function formatRegoleList(): Promise<string> {
   if (dentro.length === 0 && fuori.length === 0) {
     return 'Nessuna regola attiva. Quando ne propongo una, la confermi con /regola_ok_<id> e da lì vale sempre.'
   }
-  const fmt = (r: Regola) => `• ${r.testo}\n  rimuovi: /regola_via_${r.id}`
+  const fmt = (r: Regola) => `• ${r.testo}\n  rimuovi: ${comandoDaMostrare('regola_via', r.id)}`
   let out = `🧭 *Regole attive* (${dentro.length})\n\n${dentro.map(fmt).join('\n\n')}`
   if (fuori.length > 0) {
     out += `\n\n⚠️ *${fuori.length} NON entrano nel prompt* — superato il limite di spazio. Ne rimuova qualcuna per farle valere:\n\n${fuori.map(fmt).join('\n\n')}`

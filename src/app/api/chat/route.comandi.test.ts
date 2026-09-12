@@ -189,3 +189,43 @@ describe('POST /api/chat — il dispatcher non mangia le conversazioni normali',
     expect(mockCallClaude).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * Il codice dei comandi, cliccabile con UN tocco — sulla CHAT WEB.
+ *
+ * Il gemello di questo blocco sta in `src/app/api/telegram/route.comandi.test.ts`.
+ * Sono due, uno per canale, perche' l'equipollenza si prova sugli ADATTATORI:
+ * il modulo condiviso `comandi-uuid` e' lo stesso, ma «lo stesso motore» non
+ * rende equipollenti i canali — e' proprio l'errore per cui su questo repo il
+ * web e Telegram sono divergiti piu' volte.
+ */
+describe('POST /api/chat — il codice accettato in ENTRAMBE le forme', () => {
+  const SENZA = '11111111222233334444555555555555'
+
+  it('la forma NUOVA senza trattini arriva alla funzione giusta', async () => {
+    await invia(`/sal_ok_${SENZA}`)
+    // e ci arriva l'uuid CANONICO, coi trattini: il database non cambia formato
+    expect(mockSalStep1).toHaveBeenCalledWith(UUID)
+  })
+
+  it('la forma VECCHIA coi trattini continua a funzionare', async () => {
+    // I comandi gia' mandati in chat devono restare validi: una bozza in attesa
+    // non si annulla perche' abbiamo cambiato il formato del codice.
+    await invia(`/sal_ok_${UUID}`)
+    expect(mockSalStep1).toHaveBeenCalledWith(UUID)
+  })
+
+  it('le due forme portano allo STESSO uuid', async () => {
+    await invia(`/regola_ok_${SENZA}`)
+    await invia(`/regola_ok_${UUID}`)
+    const chiamate = mockRegolaAnteprima.mock.calls.map((c) => c[0])
+    expect(chiamate).toEqual([UUID, UUID])
+  })
+
+  it('un codice TRONCATO non viene intercettato al posto di un altro', async () => {
+    // Il troncamento di Telegram (`/sal_ok_11111111`) non deve diventare un
+    // uuid plausibile che punta a un'altra pratica.
+    await invia('/sal_ok_11111111')
+    expect(mockSalStep1).not.toHaveBeenCalled()
+  })
+})

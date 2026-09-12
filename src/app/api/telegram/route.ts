@@ -28,6 +28,10 @@ import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-too
 import { confirmSalStep1, confirmSalStep2, cancelSal } from '@/lib/sal-tools'
 import { parseOpusCommand, computeOpusUntil, isOpusExpired, OPUS_MODEL, SONNET_MODEL } from '@/lib/opus-ttl'
 import { MAX_DURABLE_RUN_TOKENS } from '@/lib/run-budget'
+// Il codice dei comandi, una volta sola per i due canali: accetta la forma CON
+// e SENZA trattini e ritorna l'uuid canonico. Prima erano 18 regex in fila qui
+// e un helper gemello su `api/chat/route.ts`.
+import { comandoUuid } from '@/lib/comandi-uuid'
 // Trigger.dev imports temporaneamente non usati (Task #10 backlog)
 // import { tasks } from '@trigger.dev/sdk/v3'
 // import type { cervelloneLongTask } from '../../../../trigger/cervellone-long-task'
@@ -640,16 +644,16 @@ export async function POST(request: NextRequest) {
 
 
     // ─── /invia_<uuid> + /annulla_<uuid> — confirm flow mail subagent V19 ───
-    const mInvia = userText.match(/^\/invia_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    const mInvia = comandoUuid(userText, 'invia')
     if (mInvia) {
       const { confirmPendingSend } = await import('@/v19/tools/email/telegram-confirm')
-      const r = await confirmPendingSend(mInvia[1])
+      const r = await confirmPendingSend(mInvia)
       return await rispondiESalva(r.message)
     }
-    const mAnnulla = userText.match(/^\/annulla_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    const mAnnulla = comandoUuid(userText, 'annulla')
     if (mAnnulla) {
       const { cancelPendingSend } = await import('@/v19/tools/email/telegram-confirm')
-      const r = await cancelPendingSend(mAnnulla[1])
+      const r = await cancelPendingSend(mAnnulla)
       return await rispondiESalva(r.message)
     }
     // ─── Conferma invio mail a LINGUAGGIO NATURALE: "invia pure mail" ───
@@ -667,10 +671,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const mConferma = userText.match(/^\/conferma_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-    const mIgnora = userText.match(/^\/ignora_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    const mConferma = comandoUuid(userText, 'conferma')
+    const mIgnora = comandoUuid(userText, 'ignora')
     if (mConferma || mIgnora) {
-      const uuid = (mConferma ?? mIgnora)![1]
+      const uuid = (mConferma ?? mIgnora)!
       const mod = await import('@/lib/doc-proposte-actions')
       const r = mConferma
         ? await mod.confirmProposta(uuid)
@@ -679,11 +683,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Governance accesso cartelle Drive — doppia conferma (parità con web)
-    const mAccOk2 = userText.match(/^\/accesso_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-    const mAccOk = userText.match(/^\/accesso_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-    const mAccNo = userText.match(/^\/accesso_no_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    const mAccOk2 = comandoUuid(userText, 'accesso_ok2')
+    const mAccOk = comandoUuid(userText, 'accesso_ok')
+    const mAccNo = comandoUuid(userText, 'accesso_no')
     if (mAccOk2 || mAccOk || mAccNo) {
-      const uuid = (mAccOk2 ?? mAccOk ?? mAccNo)![1]
+      const uuid = (mAccOk2 ?? mAccOk ?? mAccNo)!
       const mod = await import('@/lib/drive-policy-actions')
       const r = mAccOk2
         ? await mod.confirmStep2(uuid)
@@ -706,28 +710,27 @@ export async function POST(request: NextRequest) {
     // LETTO DAL DATABASE, /regola_ok2_ lo attiva. Cosi' cio' che l'Ingegnere
     // approva lo scrive la route, non il modello — che potrebbe parafrasarlo.
     // ok2 va testato PRIMA di ok, altrimenti il prefisso piu' corto lo mangia.
-    const UUID_RE = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
-    const mRegOk2 = userText.match(new RegExp(`^/regola_ok2_${UUID_RE}\\b`, 'i'))
-    const mRegOk = userText.match(new RegExp(`^/regola_ok_${UUID_RE}\\b`, 'i'))
-    const mRegNo = userText.match(new RegExp(`^/regola_no_${UUID_RE}\\b`, 'i'))
-    const mRegVia = userText.match(new RegExp(`^/regola_via_${UUID_RE}\\b`, 'i'))
+    const mRegOk2 = comandoUuid(userText, 'regola_ok2')
+    const mRegOk = comandoUuid(userText, 'regola_ok')
+    const mRegNo = comandoUuid(userText, 'regola_no')
+    const mRegVia = comandoUuid(userText, 'regola_via')
     if (mRegOk2 || mRegOk || mRegNo || mRegVia) {
       const mod = await import('@/lib/regole-proposte')
       const r = mRegOk2
-        ? await mod.confermaRegola(mRegOk2[1])
+        ? await mod.confermaRegola(mRegOk2)
         : mRegOk
-          ? await mod.anteprimaRegola(mRegOk[1])
+          ? await mod.anteprimaRegola(mRegOk)
           : mRegNo
-            ? await mod.rifiutaRegola(mRegNo[1])
-            : await mod.rimuoviRegola(mRegVia![1])
+            ? await mod.rifiutaRegola(mRegNo)
+            : await mod.rimuoviRegola(mRegVia!)
       return await rispondiESalva(r.message)
     }
 
     // ── Privacy doc: conferma condivisione → firma e invia il link a scadenza ──
-    const mShareOk = userText.match(/^\/condividi_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    const mShareOk = comandoUuid(userText, 'condividi_ok')
     if (mShareOk) {
       const { confirmShareProposal } = await import('@/lib/share-proposte')
-      const url = await confirmShareProposal(mShareOk[1])
+      const url = await confirmShareProposal(mShareOk)
       const msg = url
         ? `🔗 Link di condivisione (scade tra i giorni indicati):\n${url}\n\nChi ha il link vede il documento finché non scade.`
         : '⚠️ Proposta di condivisione non trovata, già usata o scaduta.'
@@ -765,11 +768,11 @@ export async function POST(request: NextRequest) {
     // Stale lock cleanup a 90s (heartbeat-based): task live aggiorna started_at ogni 20s.
     // Se Supabase down → fallback degradato (lockClaimed=true), lascia passare.
     // FIC bozze documenti - doppia conferma (parita con web)
-    const mFicOk2 = userText.match(/^\/fic_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-    const mFicOk = userText.match(/^\/fic_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-    const mFicNo = userText.match(/^\/fic_no_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    const mFicOk2 = comandoUuid(userText, 'fic_ok2')
+    const mFicOk = comandoUuid(userText, 'fic_ok')
+    const mFicNo = comandoUuid(userText, 'fic_no')
     if (mFicOk2 || mFicOk || mFicNo) {
-      const uuid = (mFicOk2 ?? mFicOk ?? mFicNo)![1]
+      const uuid = (mFicOk2 ?? mFicOk ?? mFicNo)!
       const message = mFicOk2
         ? await confirmFicStep2(uuid)
         : mFicOk
@@ -778,11 +781,11 @@ export async function POST(request: NextRequest) {
       return await rispondiESalva(message)
     }
 
-    const mSalOk2 = userText.match(/^\/sal_ok2_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-    const mSalOk = userText.match(/^\/sal_ok_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
-    const mSalNo = userText.match(/^\/sal_no_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)
+    const mSalOk2 = comandoUuid(userText, 'sal_ok2')
+    const mSalOk = comandoUuid(userText, 'sal_ok')
+    const mSalNo = comandoUuid(userText, 'sal_no')
     if (mSalOk2 || mSalOk || mSalNo) {
-      const uuid = (mSalOk2 ?? mSalOk ?? mSalNo)![1]
+      const uuid = (mSalOk2 ?? mSalOk ?? mSalNo)!
       const message = mSalOk2
 ? await confirmSalStep2(uuid, await societaAttivaPerDocumenti(chatIdToUuid(chatId)))
         : mSalOk

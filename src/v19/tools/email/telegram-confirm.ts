@@ -8,6 +8,7 @@
  * confirmPendingSend() che bypassa la policy e invia. /annulla_<uuid>
  * chiama cancelPendingSend().
  */
+import { comandoDaMostrare } from '@/lib/comandi-uuid'
 import type { EsitoLetturaPending } from './pending'
 import {
   fetchPending,
@@ -88,8 +89,8 @@ export async function buildPendingTelegramMessage(uuid: string): Promise<string 
     '─────────────────',
     attachmentsLine,
     '',
-    `✅ Per inviare: scrivi o di’ "invia pure mail"  (oppure /invia_${uuid})`,
-    `❌ Per annullare: /annulla_${uuid}`,
+    `✅ Per inviare: scrivi o di’ "invia pure mail"  (oppure ${comandoDaMostrare('invia', uuid)})`,
+    `❌ Per annullare: ${comandoDaMostrare('annulla', uuid)}`,
   ]
     .filter((line) => line !== '')
     .join('\n')
@@ -249,7 +250,7 @@ export async function confirmLatestPendingSend(): Promise<{ ok: boolean; message
       }
     }
     const lines = elenco.pendings.map(
-      (p) => `• A: ${p.to_addrs.join(', ')} — Oggetto: ${p.subject}\n  /invia_${p.uuid}`,
+      (p) => `• A: ${p.to_addrs.join(', ')} — Oggetto: ${p.subject}\n  ${comandoDaMostrare('invia', p.uuid)}`,
     )
     return {
       ok: false,

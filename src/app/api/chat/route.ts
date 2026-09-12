@@ -22,6 +22,7 @@ import { comprimiDocumentiNellaStoria, type MessaggioStoria } from '@/lib/compre
 import { salvaRispostaTurno } from '@/lib/salva-risposta'
 import { saveMessageWithEmbedding } from '@/lib/memory'
 import { annotateHallucinatedLinks } from '@/lib/link-allucinati'
+import { comandoUuid } from '@/lib/comandi-uuid'
 import { waitUntil } from '@vercel/functions'
 
 /**
@@ -171,8 +172,11 @@ export async function POST(request: NextRequest) {
   // sono gli stessi su entrambi i canali, quindi il modello puo' proporre un SAL
   // o una regola dalla chat web, e li' quel comando era solo testo. Il flusso si
   // apriva e non si poteva chiudere. Vedi [[feedback_due_canali_equipollenti]].
-  const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
-  const comando = (nome: string) => userQuery.match(new RegExp(`^/${nome}_${UUID}\\b`, 'i'))
+  // La regola sta in `src/lib/comandi-uuid.ts`, una volta sola per i due
+  // canali: accetta il codice CON e SENZA trattini e ritorna l'uuid canonico.
+  // Prima era una regex qui e altre 14 in fila su Telegram: quindici copie
+  // sono quindici occasioni di correggerne quattordici.
+  const comando = (nome: string) => comandoUuid(userQuery, nome)
 
   // I quattro blocchi che c'erano prima ripetevano queste otto righe una per
   // famiglia di comandi: aggiungerne altre tre a copia-incolla e' esattamente il
@@ -218,7 +222,7 @@ export async function POST(request: NextRequest) {
   const mInvia = comando('invia')
   const mAnnulla = comando('annulla')
   if (mInvia || mAnnulla) {
-    const uuid = (mInvia ?? mAnnulla)![1]
+    const uuid = (mInvia ?? mAnnulla)!
     const mod = await import('@/v19/tools/email/telegram-confirm')
     const r = mInvia ? await mod.confirmPendingSend(uuid) : await mod.cancelPendingSend(uuid)
     return rispostaSemplice(r.message)
@@ -236,7 +240,7 @@ export async function POST(request: NextRequest) {
   const mConferma = comando('conferma')
   const mIgnora = comando('ignora')
   if (mConferma || mIgnora) {
-    const uuid = (mConferma ?? mIgnora)![1]
+    const uuid = (mConferma ?? mIgnora)!
     const mod = await import('@/lib/doc-proposte-actions')
     const r = mConferma ? await mod.confirmProposta(uuid) : await mod.ignoraProposta(uuid)
     return rispostaSemplice(r.message)
@@ -247,7 +251,7 @@ export async function POST(request: NextRequest) {
   const mAccOk = comando('accesso_ok')
   const mAccNo = comando('accesso_no')
   if (mAccOk2 || mAccOk || mAccNo) {
-    const uuid = (mAccOk2 ?? mAccOk ?? mAccNo)![1]
+    const uuid = (mAccOk2 ?? mAccOk ?? mAccNo)!
     const mod = await import('@/lib/drive-policy-actions')
     const r = mAccOk2
       ? await mod.confirmStep2(uuid)
@@ -262,7 +266,7 @@ export async function POST(request: NextRequest) {
   const mFicOk = comando('fic_ok')
   const mFicNo = comando('fic_no')
   if (mFicOk2 || mFicOk || mFicNo) {
-    const uuid = (mFicOk2 ?? mFicOk ?? mFicNo)![1]
+    const uuid = (mFicOk2 ?? mFicOk ?? mFicNo)!
     const message = mFicOk2
       ? await confirmFicStep2(uuid)
       : mFicOk
@@ -277,7 +281,7 @@ export async function POST(request: NextRequest) {
   const mSalOk = comando('sal_ok')
   const mSalNo = comando('sal_no')
   if (mSalOk2 || mSalOk || mSalNo) {
-    const uuid = (mSalOk2 ?? mSalOk ?? mSalNo)![1]
+    const uuid = (mSalOk2 ?? mSalOk ?? mSalNo)!
     const message = mSalOk2
 ? await confirmSalStep2(uuid, await societaAttivaPerDocumenti(conversationId))
       : mSalOk
@@ -300,12 +304,12 @@ export async function POST(request: NextRequest) {
   if (mRegOk2 || mRegOk || mRegNo || mRegVia) {
     const mod = await import('@/lib/regole-proposte')
     const r = mRegOk2
-      ? await mod.confermaRegola(mRegOk2[1])
+      ? await mod.confermaRegola(mRegOk2)
       : mRegOk
-        ? await mod.anteprimaRegola(mRegOk[1])
+        ? await mod.anteprimaRegola(mRegOk)
         : mRegNo
-          ? await mod.rifiutaRegola(mRegNo[1])
-          : await mod.rimuoviRegola(mRegVia![1])
+          ? await mod.rifiutaRegola(mRegNo)
+          : await mod.rimuoviRegola(mRegVia!)
     return rispostaSemplice(r.message)
   }
 
@@ -313,7 +317,7 @@ export async function POST(request: NextRequest) {
   const mShareOk = comando('condividi_ok')
   if (mShareOk) {
     const { confirmShareProposal } = await import('@/lib/share-proposte')
-    const url = await confirmShareProposal(mShareOk[1])
+    const url = await confirmShareProposal(mShareOk)
     return rispostaSemplice(
       url
         ? `🔗 Link di condivisione (scade tra i giorni indicati):\n${url}\n\nChi ha il link vede il documento finché non scade.`

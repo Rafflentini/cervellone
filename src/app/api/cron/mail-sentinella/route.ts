@@ -1,3 +1,4 @@
+import { comandoDaMostrare } from '@/lib/comandi-uuid'
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { sendTelegramMessageChecked } from '@/lib/telegram-helpers'
@@ -95,8 +96,8 @@ function buildNotification(result: NotificationProposal): string {
   return [
     `Documento personale rilevato: ${tipo} di ${soggetto}, scade ${result.data_scadenza}.`,
     `Allegato: ${result.attachment_filename}`,
-    `Per archiviare e registrare: \`/conferma_${result.id}\``,
-    `Per ignorare: \`/ignora_${result.id}\``,
+    `Per archiviare e registrare: \`${comandoDaMostrare('conferma', result.id)}\``,
+    `Per ignorare: \`${comandoDaMostrare('ignora', result.id)}\``,
   ].join('\n')
 }
 

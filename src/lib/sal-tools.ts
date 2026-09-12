@@ -1,3 +1,4 @@
+import { comandoDaMostrare } from '@/lib/comandi-uuid'
 import { calcolaSal, SalReconcileError, type SalCalcInput, type SalResult } from './sal-calc'
 import { buildSalHtml, buildSalSheets, type SalMeta } from './sal-render'
 import { getOrCreatePathFolders, searchFilesFullText, readPdfFromDrive, readXlsxFromDrive, readOdsFromDrive, readDocxFromDrive, uploadBinaryToDrive, trashFilesByName } from './drive'
@@ -132,7 +133,7 @@ export async function executeSalTool(name: string, input: Record<string, unknown
       (result.ritenuta_periodo ? `− Ritenuta garanzia: € ${eur(result.ritenuta_periodo)}\n` : '') +
       (result.recupero_anticipazione ? `− Recupero anticipazione: € ${eur(result.recupero_anticipazione)}\n` : '') +
       `Imponibile: € ${eur(result.imponibile_certificato)} + IVA € ${eur(result.iva)} = *€ ${eur(result.totale_certificato)}*\n\n` +
-      `Per salvare in ${CONTAB_FOLDER}: /sal_ok_${data.id}\nPer annullare: /sal_no_${data.id}`
+      `Per salvare in ${CONTAB_FOLDER}: ${comandoDaMostrare('sal_ok', data.id)}\nPer annullare: ${comandoDaMostrare('sal_no', data.id)}`
     )
   }
 
@@ -146,7 +147,7 @@ export async function confirmSalStep1(id: string): Promise<string> {
     .eq('id', id).eq('stato', 'in_attesa').eq('conferme', 0)
     .select('id')
   if (!data || data.length === 0) return 'SAL non trovato o già confermato/annullato.'
-  return `Confermi il salvataggio del SAL? Conferma definitiva con /sal_ok2_${id} (oppure /sal_no_${id} per annullare).`
+  return `Confermi il salvataggio del SAL? Conferma definitiva con ${comandoDaMostrare('sal_ok2', id)} (oppure ${comandoDaMostrare('sal_no', id)} per annullare).`
 }
 
 export async function cancelSal(id: string): Promise<string> {
@@ -209,6 +210,6 @@ export async function confirmSalStep2(
     return `✅ SAL n° ${payload.result.numero_sal} salvato in ${CONTAB_FOLDER}:\n📊 ${xlsx.webViewLink}\n📄 ${pdf.webViewLink}${avvisoImmagini(salMancanti)}`
   } catch (err) {
     await sb.from('cervellone_sal_pending').update({ conferme: 1, updated_at: new Date().toISOString() }).eq('id', id)
-    return `Errore in generazione/salvataggio SAL: ${err instanceof Error ? err.message : String(err)}. Riprova con /sal_ok2_${id}.`
+    return `Errore in generazione/salvataggio SAL: ${err instanceof Error ? err.message : String(err)}. Riprova con ${comandoDaMostrare('sal_ok2', id)}.`
   }
 }
