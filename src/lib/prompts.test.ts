@@ -267,3 +267,26 @@ describe('regola: riferire un blocco sui dati societari (equipollenza)', () => {
     expect(prompt).not.toMatch(/Intestazione: RESTRUKTURA/i)
   })
 })
+
+// ─── Task 16 — i comandi vanno mostrati NUDI, senza backtick ────────────────
+//
+// Segnalazione di Raffaele, 12 set 2026: lavora dal telefono e i comandi
+// dentro i backtick arrivano con i backtick VISIBILI e non si toccano. La
+// regola sta nel prompt VIVO di entrambi i canali (non in un file senza
+// importatori, vedi [[cervellone-principio-fondamentale-e-codice-morto]]).
+
+const FRASE_REGOLA_BACKTICK_COMANDI = 'scrivilo NUDO'
+
+describe('regola: i comandi si mostrano NUDI, senza backtick (equipollenza)', () => {
+  it('getChatSystemPrompt la contiene', async () => {
+    const prompt = await getChatSystemPrompt('ciao')
+    expect(prompt).toContain(FRASE_REGOLA_BACKTICK_COMANDI)
+    expect(prompt).toMatch(/backtick/i)
+  })
+
+  it('getTelegramSystemPrompt la contiene (stesso testo, non solo lo stesso motore)', async () => {
+    const prompt = await getTelegramSystemPrompt('ciao')
+    expect(prompt).toContain(FRASE_REGOLA_BACKTICK_COMANDI)
+    expect(prompt).toMatch(/backtick/i)
+  })
+})

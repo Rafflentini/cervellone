@@ -107,9 +107,15 @@ export type ComandoConCodice = (typeof COMANDI_CON_CODICE)[number]
  * `codiceDaEmettere` accorcia il codice **solo** per le famiglie elencate qui:
  * una famiglia che non si sa risolvere continua a ricevere il codice LUNGO, e
  * non puo' quindi ritrovarsi con un codice corto che nessuno sa espandere.
- * Le tre famiglie `fic_*` sono fuori di proposito: quel flusso scrive i suoi
- * comandi a mano in `fic-write-tools.ts` senza passare da qui, e non va
- * toccato ([[cervellone-fic-ramo-non-mergiare]]).
+ *
+ * Fino al 12 set 2026 le tre famiglie `fic_*` erano fuori apposta: scrivevano
+ * i comandi a mano in `fic-write-tools.ts`, con l'uuid intero e i trattini —
+ * 39 caratteri, oltre i 32 che Telegram riconosce come comando, e troncati al
+ * primo `-`. L'Ingegnere lavora dal telefono: quei comandi non erano
+ * toccabili, ed e' proprio quello di cui si e' lamentato lo stesso giorno.
+ * Ora `fic_ok2`/`fic_ok`/`fic_no` stanno qui come tutte le altre famiglie, e
+ * `fic-write-tools.ts` e `conferma-fic.ts` usano `comandoDaMostrare` come il
+ * resto del repo.
  */
 export const ORIGINE_CODICE: Partial<
   Record<ComandoConCodice, { tabella: string; colonna: string }>
@@ -124,6 +130,11 @@ export const ORIGINE_CODICE: Partial<
   accesso_ok: { tabella: 'cervellone_drive_policy_pending', colonna: 'id' },
   accesso_no: { tabella: 'cervellone_drive_policy_pending', colonna: 'id' },
   condividi_ok: { tabella: 'cervellone_share_proposte', colonna: 'id' },
+  // ⚠️ Verificato su `information_schema.columns` in produzione, non dedotto
+  // dal codice: `cervellone_fic_pending.id` e' di tipo `uuid`, NOT NULL.
+  fic_ok2: { tabella: 'cervellone_fic_pending', colonna: 'id' },
+  fic_ok: { tabella: 'cervellone_fic_pending', colonna: 'id' },
+  fic_no: { tabella: 'cervellone_fic_pending', colonna: 'id' },
   sal_ok2: { tabella: 'cervellone_sal_pending', colonna: 'id' },
   sal_ok: { tabella: 'cervellone_sal_pending', colonna: 'id' },
   sal_no: { tabella: 'cervellone_sal_pending', colonna: 'id' },

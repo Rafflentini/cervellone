@@ -19,6 +19,7 @@
 import { supabase } from './supabase'
 import { getSocieta, type CodiceSocieta } from './societa'
 import { confirmFicStep1, confirmFicStep2 } from './fic-write-tools'
+import { comandoDaMostrare } from './comandi-uuid'
 
 /**
  * Oltre questa finestra una bozza non e' piu' «quella di cui stiamo
@@ -90,7 +91,7 @@ async function avanzaUnPasso(righe: RigaPending[]): Promise<EsitoConfermaFic> {
 
   if (righe.length > 1) {
     const elenco = righe
-      .map((r) => `• ${primaRiga(r.descrizione)}\n  → /fic_ok_${r.id}`)
+      .map((r) => `• ${primaRiga(r.descrizione)}\n  → ${comandoDaMostrare('fic_ok', r.id)}`)
       .join('\n')
     return {
       intercettato: true,

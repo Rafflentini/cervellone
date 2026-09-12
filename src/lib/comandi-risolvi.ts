@@ -85,7 +85,7 @@ function messaggioErrore(dettaglio: string): string {
 export async function espandiCodiceBreve(testo: string): Promise<EsitoEspansione> {
   for (const nome of COMANDI_CON_CODICE) {
     const origine = ORIGINE_CODICE[nome]
-    if (!origine) continue // famiglia non risolvibile (i `fic_*`): non emette codici corti
+    if (!origine) continue // guardia per una futura famiglia senza voce in ORIGINE_CODICE: oggi, dopo il 12 set, non ce n'e' nessuna (fic_* incluso)
     const prefisso = comandoPrefisso(testo, nome)
     if (!prefisso) continue
 

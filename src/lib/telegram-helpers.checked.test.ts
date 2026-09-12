@@ -86,4 +86,26 @@ describe('sendTelegramMessageChecked', () => {
     const long = `${'a'.repeat(4200)}\n\n${'b'.repeat(100)}`
     await expect(sendTelegramMessageChecked(1, long)).resolves.toBe(false)
   })
+
+  // Task 16: un messaggio che porta un comando /fic_ok_<codice> parte SENZA
+  // parse_mode — lo decide `contieneComandoConCodice` dal contenuto, non chi
+  // chiama. Prima del 12 set i comandi FIC erano scritti a mano e non
+  // passavano da `comandoDaMostrare`/`ORIGINE_CODICE`, ma la decisione sul
+  // parse_mode già copriva `fic_ok` (la famiglia sta in `COMANDI_CON_CODICE`
+  // da prima): qui si prova che continua a valere col codice CORTO che il bot
+  // emette ora.
+  it('un messaggio con /fic_ok_<codice corto> parte SENZA parse_mode', async () => {
+    mockFetch.mockResolvedValue(jsonResponse(200, { ok: true }))
+    const { sendTelegramMessageChecked } = await import('./telegram-helpers')
+    const { comandoDaMostrare } = await import('./comandi-uuid')
+    const uuid = '3f3fc82f-4daa-408e-9308-78effecc338e'
+    const testo = `Prima conferma registrata.\nConferma DEFINITIVA -> ${comandoDaMostrare('fic_ok2', uuid)}`
+
+    await expect(sendTelegramMessageChecked(1, testo)).resolves.toBe(true)
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    const body = JSON.parse((mockFetch.mock.calls[0][1] as { body: string }).body) as Record<string, unknown>
+    expect(body.parse_mode).toBeUndefined()
+    expect(body.text).toBe(testo)
+  })
 })

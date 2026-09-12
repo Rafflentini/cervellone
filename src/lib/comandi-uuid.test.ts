@@ -37,7 +37,11 @@ const UUID = 'd8f8ad16-29db-4bc2-b2d9-bf386f2b861c'
 const SENZA = 'd8f8ad1629db4bc2b2d9bf386f2b861c'
 const BREVE = 'd8f8ad1629db4bc2' // le prime 16 cifre: la forma che il bot EMETTE
 
-/** Le famiglie che un codice corto sa risolvere (tutte tranne i tre `fic_*`). */
+/**
+ * Le famiglie che un codice corto sa risolvere. Fino al 12 set erano tutte
+ * tranne i tre `fic_*`; da oggi coincide con `COMANDI_CON_CODICE` per intero
+ * (vedi il test che lo prova, più sotto).
+ */
 const RISOLVIBILI = COMANDI_CON_CODICE.filter((n) => ORIGINE_CODICE[n] !== undefined)
 
 describe('codiceDaEmettere — quello che il bot EMETTE', () => {
@@ -59,16 +63,16 @@ describe('codiceDaEmettere — quello che il bot EMETTE', () => {
     }
   })
 
-  it('⚠️ MISURATO: i tre `fic_*` restano FUORI dal limite, e resta un difetto aperto', () => {
-    // Non è un dettaglio da nascondere: `fic_ok2_` + 32 cifre fa 40 caratteri
-    // dopo la barra, quindi su Telegram quei comandi NON sono cliccabili. Qui
-    // non si accorciano perché nessuno saprebbe riespanderli — quel flusso
-    // scrive i comandi a mano in `fic-write-tools.ts` e non va toccato in
-    // questo commit ([[cervellone-fic-ramo-non-mergiare]]).
-    // Il test esiste per non dimenticarlo: quando il flusso FIC si potrà
-    // toccare, si aggiunge la sua riga in `ORIGINE_CODICE` e questo test cambia.
+  it('✅ CHIUSO IL 12 SET: i tre `fic_*` ora stanno DENTRO il limite', () => {
+    // Fino al 12 set fic_ok2/fic_ok/fic_no erano le uniche tre famiglie SENZA
+    // voce in `ORIGINE_CODICE`: emettevano le 32 cifre intere, `fic_ok2_` + 32
+    // fa 40 caratteri dopo la barra — oltre il limite, e i comandi arrivavano
+    // scritti a mano coi trattini (troncati al primo `-`). Ora sono qui come
+    // tutte le altre, e il test generico qui sopra (su RISOLVIBILI) le copre
+    // già — questo resta per nominare esplicitamente il difetto chiuso.
     for (const nome of ['fic_ok', 'fic_ok2', 'fic_no'] as const) {
-      expect(comandoDaMostrare(nome, UUID).slice(1).length).toBeGreaterThan(32)
+      expect(ORIGINE_CODICE[nome]).toBeDefined()
+      expect(comandoDaMostrare(nome, UUID).slice(1).length).toBeLessThanOrEqual(32)
     }
   })
 
@@ -91,18 +95,19 @@ describe('codiceDaEmettere — quello che il bot EMETTE', () => {
   })
 
   it('🚨 una famiglia che NON si sa risolvere riceve il codice LUNGO', () => {
-    // La guardia strutturale: un codice corto vale solo se qualcuno sa
-    // riespanderlo. I tre `fic_*` non stanno in `ORIGINE_CODICE` — quel flusso
-    // scrive i suoi comandi a mano e non va toccato — quindi qui continuano a
-    // ricevere 32 cifre. Senza questa regola avrebbero un codice corto che
-    // nessun ramo sa risolvere: peggio del difetto che stiamo chiudendo.
-    for (const nome of ['fic_ok', 'fic_ok2', 'fic_no'] as const) {
-      expect(ORIGINE_CODICE[nome]).toBeUndefined()
-      expect(codiceDaEmettere(nome, UUID)).toBe(SENZA)
-    }
+    // La guardia strutturale, provata con una famiglia SINTETICA (non sta in
+    // `COMANDI_CON_CODICE`, quindi non può diventare risolvibile domani come è
+    // successo ai `fic_*` il 12 set): un codice corto vale solo se qualcuno sa
+    // riespanderlo, e senza questa regola una famiglia ignota avrebbe un
+    // codice corto che nessun ramo sa risolvere — peggio del difetto chiuso
+    // oggi.
+    expect(codiceDaEmettere('una_famiglia_che_non_esiste', UUID)).toBe(SENZA)
     for (const nome of RISOLVIBILI) {
       expect(codiceDaEmettere(nome, UUID)).toBe(BREVE)
     }
+    // ⭐ Chiude il difetto del 12 set: oggi TUTTE le famiglie reali di
+    // `COMANDI_CON_CODICE` sono risolvibili, `fic_*` compresi.
+    expect(RISOLVIBILI).toEqual(COMANDI_CON_CODICE)
   })
 
   it('ogni famiglia risolvibile dice tabella E colonna', () => {
@@ -113,6 +118,11 @@ describe('codiceDaEmettere — quello che il bot EMETTE', () => {
       tabella: 'cervellone_email_pending_send',
       colonna: 'uuid',
     })
+    // ⚠️ Verificato su `information_schema.columns` in produzione, non
+    // dedotto: `cervellone_fic_pending.id` è di tipo `uuid`, NOT NULL.
+    expect(ORIGINE_CODICE.fic_ok2).toEqual({ tabella: 'cervellone_fic_pending', colonna: 'id' })
+    expect(ORIGINE_CODICE.fic_ok).toEqual({ tabella: 'cervellone_fic_pending', colonna: 'id' })
+    expect(ORIGINE_CODICE.fic_no).toEqual({ tabella: 'cervellone_fic_pending', colonna: 'id' })
     for (const nome of RISOLVIBILI) {
       expect(ORIGINE_CODICE[nome]!.tabella).toMatch(/^[a-z_]+$/)
       expect(ORIGINE_CODICE[nome]!.colonna).toMatch(/^[a-z_]+$/)
@@ -349,7 +359,8 @@ describe('contieneComandoConCodice — quali messaggi NON portano il Markdown', 
     expect(contieneComandoConCodice(`Per inviare: /invia_${BREVE}`)).toBe(true)
     expect(contieneComandoConCodice(`Per inviare: /invia_${SENZA}`)).toBe(true)
     expect(contieneComandoConCodice(`Per inviare: /invia_${UUID}`)).toBe(true)
-    // anche i comandi FIC, scritti a mano altrove e con lo stesso problema
+    // anche i comandi FIC, che fino al 12 set erano scritti a mano altrove
+    // con lo stesso problema di trattini e lunghezza
     expect(contieneComandoConCodice(`1a conferma -> /fic_ok_${UUID}`)).toBe(true)
     // e anche gli identificativi che non sono uuid
     expect(contieneComandoConCodice('Confermi: /condividi_ok_id-1')).toBe(true)
@@ -408,10 +419,15 @@ describe('comandoDalCodiceRotto — un codice illeggibile va DETTO, non ignorato
     }
   })
 
-  it('un codice corto di una famiglia NON risolvibile resta «rotto»', () => {
-    // I `fic_*` non emettono codici corti: 16 cifre lì non sarebbero
-    // risolvibili da nessuno, quindi vanno dichiarate — non ingoiate.
-    expect(comandoDalCodiceRotto(`/fic_ok_${BREVE}`)).toBe('fic_ok')
+  it('un codice corto di una famiglia NON risolvibile resta «rotto» (guardia generica)', () => {
+    // Dal 12 set non resta più, fra le famiglie REALI, nessun esempio di
+    // "non risolvibile" (fic_* compresi): il test qui sopra su RISOLVIBILI
+    // copre ormai TUTTE le famiglie di `COMANDI_CON_CODICE`. La guardia in
+    // `comandoDalCodiceRotto` resta comunque per una famiglia futura che
+    // venga aggiunta a `COMANDI_CON_CODICE` senza una voce in
+    // `ORIGINE_CODICE`: qui lo si prova indirettamente, verificando che oggi
+    // non c'è nessuna famiglia in quello stato.
+    expect(RISOLVIBILI).toEqual(COMANDI_CON_CODICE)
   })
 
   it('un messaggio normale non è un comando rotto', () => {

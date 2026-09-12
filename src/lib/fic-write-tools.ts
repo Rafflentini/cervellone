@@ -1,6 +1,7 @@
 import { supabase } from './supabase'
 import { ficGet, getCompanyId, creaDocumentoFIC, eliminaDocumentoFIC } from './fatture-in-cloud'
 import { getSocieta, type CodiceSocieta } from './societa'
+import { comandoDaMostrare } from './comandi-uuid'
 import {
   cercaFattureRicevute,
   classificaFatturaRicevuta,
@@ -329,8 +330,8 @@ function descriviDocumento(input: {
     `Totale netto: ${totaleNetto}`,
     input.note ? `Note: ${input.note}` : null,
     'Sara creata come BOZZA FIC non trasmessa allo SdI.',
-    `1a conferma -> /fic_ok_${input.id}`,
-    `annulla -> /fic_no_${input.id}`,
+    `1a conferma -> ${comandoDaMostrare('fic_ok', input.id)}`,
+    `annulla -> ${comandoDaMostrare('fic_no', input.id)}`,
   ].filter(Boolean).join('\n')
 }
 
@@ -464,8 +465,8 @@ async function compilaDocumento(
     cassa_perc: cassaPerc,
     rivalsa_perc: rivalsaPerc,
     anteprima: pending.row.descrizione,
-    conferma_1: `/fic_ok_${pending.row.id}`,
-    annulla: `/fic_no_${pending.row.id}`,
+    conferma_1: comandoDaMostrare('fic_ok', pending.row.id),
+    annulla: comandoDaMostrare('fic_no', pending.row.id),
   })
 }
 
@@ -621,8 +622,8 @@ function descriviPagamenti(input: {
     input.escluse.length > 0 ? `ESCLUSE, non verranno toccate: ${input.escluse.length}` : null,
     ...(input.escluse.length > 0 ? elencoTagliato(input.escluse, rigaEsclusa, 'escluse') : []),
     'Non si emette e non si trasmette niente: si scrive solo il pagamento sulle fatture di spesa.',
-    `1a conferma -> /fic_ok_${input.id}`,
-    `annulla -> /fic_no_${input.id}`,
+    `1a conferma -> ${comandoDaMostrare('fic_ok', input.id)}`,
+    `annulla -> ${comandoDaMostrare('fic_no', input.id)}`,
   ].filter(Boolean).join('\n')
 }
 
@@ -787,8 +788,8 @@ async function segnaFatturePagate(
     da_scrivere: daScrivere.length,
     escluse: escluse.map((f) => ({ id: f.id, fornitore: f.fornitore, numero: f.numero, motivo: f.motivo })),
     anteprima: pending.descrizione,
-    conferma_1: `/fic_ok_${pending.id}`,
-    annulla: `/fic_no_${pending.id}`,
+    conferma_1: comandoDaMostrare('fic_ok', pending.id),
+    annulla: comandoDaMostrare('fic_no', pending.id),
     nota: 'Mostra l anteprima COM E, comprese le escluse col motivo: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte.',
   })
 }
@@ -917,7 +918,7 @@ export async function confirmFicStep1(id: string): Promise<string> {
   // creazione: e l'ultima occasione in cui l'Ingegnere puo accorgersi che la
   // fattura sta per nascere dalla societa sbagliata.
   const s = getSocieta((data[0] as { societa: CodiceSocieta }).societa)
-  return `Prima conferma registrata per *${s.denominazione}* (P.IVA ${s.piva}).\nConferma DEFINITIVA -> /fic_ok2_${cleanId}`
+  return `Prima conferma registrata per *${s.denominazione}* (P.IVA ${s.piva}).\nConferma DEFINITIVA -> ${comandoDaMostrare('fic_ok2', cleanId)}`
 }
 
 export async function confirmFicStep2(id: string): Promise<string> {
@@ -935,7 +936,7 @@ export async function confirmFicStep2(id: string): Promise<string> {
 
   const row = data as Pick<PendingRow, 'id' | 'tipo' | 'payload' | 'conferme' | 'stato'> & { societa: CodiceSocieta }
   if (row.stato !== 'in_attesa') return 'Bozza FIC gia elaborata.'
-  if (Number(row.conferme) < 1) return `Serve prima la prima conferma -> /fic_ok_${cleanId}`
+  if (Number(row.conferme) < 1) return `Serve prima la prima conferma -> ${comandoDaMostrare('fic_ok', cleanId)}`
 
   const claim = await supabase
     .from('cervellone_fic_pending')

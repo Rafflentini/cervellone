@@ -45,8 +45,13 @@ vi.mock('@/lib/regole-proposte', () => ({
 vi.mock('@/lib/share-proposte', () => ({ confirmShareProposal: (u: string) => mockShare(u) }))
 
 // Contorno: serve solo che non faccia rete.
+const mockFicStep1 = vi.fn()
+const mockFicStep2 = vi.fn()
+const mockFicCancel = vi.fn()
 vi.mock('@/lib/fic-write-tools', () => ({
-  confirmFicStep1: async () => 'fic1', confirmFicStep2: async () => 'fic2', cancelFic: async () => 'ficno',
+  confirmFicStep1: (u: string) => mockFicStep1(u),
+  confirmFicStep2: (u: string) => mockFicStep2(u),
+  cancelFic: (u: string) => mockFicCancel(u),
 }))
 vi.mock('@/lib/prompts', () => ({ getChatSystemPrompt: async () => 'system' }))
 vi.mock('@/lib/artifact-capture', () => ({ buildArtifactsPointer: async () => '', captureArtifact: async () => undefined }))
@@ -129,8 +134,27 @@ Object.assign(catenaSal, {
   then: (resolve: (v: unknown) => unknown) =>
     Promise.resolve(resolve({ data: erroreLetturaSal ? null : salInAttesa, error: erroreLetturaSal })),
 })
+/**
+ * Le pratiche FIC in attesa, viste dalla risoluzione del codice CORTO (Task
+ * 16). Stub dedicato per lo stesso motivo di `catenaSal`: la colonna è `id`,
+ * verificata sul database vero, non dedotta.
+ */
+let ficInAttesa: string[] = []
+const catenaFic: Record<string, unknown> = {}
+Object.assign(catenaFic, {
+  select: () => catenaFic,
+  eq: () => catenaFic,
+  gte: () => catenaFic,
+  lte: () => catenaFic,
+  order: () => catenaFic,
+  limit: () => catenaFic,
+  then: (resolve: (v: unknown) => unknown) =>
+    Promise.resolve(resolve({ data: ficInAttesa.map((id) => ({ id })), error: null })),
+})
 const instrada = (tabella: string) =>
-  tabella === 'cervellone_sal_pending' ? catenaSal : catenaPending
+  tabella === 'cervellone_sal_pending' ? catenaSal
+    : tabella === 'cervellone_fic_pending' ? catenaFic
+      : catenaPending
 vi.mock('@/lib/supabase-server', () => ({
   getSupabaseServer: () => ({ from: (t: string) => instrada(t) }),
 }))
@@ -166,6 +190,10 @@ beforeEach(() => {
   bozzeInAttesa = []
   salInAttesa = []
   erroreLetturaSal = null
+  ficInAttesa = []
+  mockFicStep1.mockResolvedValue('fic1')
+  mockFicStep2.mockResolvedValue('fic2')
+  mockFicCancel.mockResolvedValue('ficno')
 })
 
 describe('POST /api/chat — comandi SAL (mancavano sul web)', () => {
@@ -382,5 +410,37 @@ describe('POST /api/chat — con una bozza in attesa, il silenzio e\' vietato', 
 
     expect(out).toMatch(/senza il codice completo/i)
     expect(mockCallClaude).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * Task 16 — sulla CHAT WEB, i comandi di conferma FIC diventano toccabili.
+ *
+ * Gemello di `src/app/api/telegram/route.comandi.test.ts`. Fino al 12 set
+ * `fic_ok`/`fic_ok2`/`fic_no` erano le uniche famiglie scritte a mano, con
+ * l'uuid intero: 39 caratteri, oltre il limite di Telegram, e comunque
+ * troncati al primo trattino — un difetto che sul web non tronca (niente
+ * limite di comando), ma che rendeva i due canali diversi senza motivo.
+ */
+describe('POST /api/chat — comandi FIC via codice CORTO (il buco del 12 set)', () => {
+  const UUID_FIC = '3f3fc82f-4daa-408e-9308-78effecc338e'
+  const CORTO = UUID_FIC.replace(/-/g, '').slice(0, 16)
+
+  it('un fic_ok corto si espande, trova il pending e procede', async () => {
+    ficInAttesa = [UUID_FIC]
+    const out = await invia(`/fic_ok_${CORTO}`)
+
+    expect(mockFicStep1).toHaveBeenCalledWith(UUID_FIC)
+    expect(out).toContain('fic1')
+    expect(mockCallClaude).not.toHaveBeenCalled()
+  })
+
+  it('CONTROLLO POSITIVO: un prefisso ambiguo NON viene risolto a caso', async () => {
+    const GEMELLO = '3f3fc82f-4daa-408e-0000-000000000001'
+    ficInAttesa = [UUID_FIC, GEMELLO]
+    const out = await invia(`/fic_ok_${CORTO}`)
+
+    expect(mockFicStep1).not.toHaveBeenCalled()
+    expect(out).toMatch(/NON ho fatto niente/)
   })
 })

@@ -55,8 +55,13 @@ vi.mock('@/lib/regole-proposte', () => ({
 // Contorno: non deve fare rete, e non deve arrivare al modello.
 const mockRunAgentJob = vi.fn()
 vi.mock('@/lib/agent-job', () => ({ runAgentJob: (...a: unknown[]) => mockRunAgentJob(...a) }))
+const mockFicStep1 = vi.fn()
+const mockFicStep2 = vi.fn()
+const mockFicCancel = vi.fn()
 vi.mock('@/lib/fic-write-tools', () => ({
-  confirmFicStep1: async () => 'fic1', confirmFicStep2: async () => 'fic2', cancelFic: async () => 'ficno',
+  confirmFicStep1: (u: string) => mockFicStep1(u),
+  confirmFicStep2: (u: string) => mockFicStep2(u),
+  cancelFic: (u: string) => mockFicCancel(u),
 }))
 vi.mock('@/lib/sal-tools', () => ({
   confirmSalStep1: async () => 'sal1', confirmSalStep2: async () => 'sal2', cancelSal: async () => 'salno',
@@ -97,8 +102,28 @@ Object.assign(catenaPending, {
   then: (resolve: (v: unknown) => unknown) =>
     Promise.resolve(resolve({ data: bozzeInAttesa, error: null })),
 })
+/**
+ * Le bozze FIC in attesa, viste dalla risoluzione del codice CORTO
+ * (`espandiCodiceBreve`, chiamata prima di leggere qualunque comando).
+ *
+ * Sta in uno stub dedicato e non dentro `catena`: quella torna sempre righe
+ * vuote per `limit`, e la risoluzione del prefisso ha bisogno di righe VERE
+ * con la colonna `id` per decidere se risolve, è ambigua o è assente.
+ */
+let ficPendingIds: string[] = []
+const catenaFic: Record<string, unknown> = {}
+Object.assign(catenaFic, {
+  select: () => catenaFic,
+  gte: () => catenaFic,
+  lte: () => catenaFic,
+  limit: () => catenaFic,
+  then: (resolve: (v: unknown) => unknown) =>
+    Promise.resolve(resolve({ data: ficPendingIds.map((id) => ({ id })), error: null })),
+})
 const instrada = (tabella: string) =>
-  tabella === 'cervellone_email_pending_send' ? catenaPending : catena
+  tabella === 'cervellone_email_pending_send' ? catenaPending
+    : tabella === 'cervellone_fic_pending' ? catenaFic
+      : catena
 
 vi.mock('@/lib/supabase', () => ({ supabase: { from: (t: string) => instrada(t) } }))
 vi.mock('@/lib/supabase-server', () => ({
@@ -123,6 +148,10 @@ beforeEach(() => {
   mockShare.mockResolvedValue('🔗 Ecco il link: https://esempio.it/doc/abc?firma=xyz')
   mockRegoleList.mockResolvedValue('nessuna regola')
   bozzeInAttesa = []
+  ficPendingIds = []
+  mockFicStep1.mockResolvedValue('fic1')
+  mockFicStep2.mockResolvedValue('fic2')
+  mockFicCancel.mockResolvedValue('ficno')
 })
 
 const UUID = '11111111-2222-3333-4444-555555555555'
@@ -289,5 +318,40 @@ describe('Telegram — con una bozza in attesa, il silenzio e\' vietato', () => 
     expect(detto).toMatch(/senza il codice completo/i)
     expect(detto).toMatch(/NON ho fatto niente/i)
     expect(mockRunAgentJob).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * Task 16 — su TELEGRAM, i comandi di conferma FIC diventano toccabili.
+ *
+ * Fino al 12 set `fic_ok`/`fic_ok2`/`fic_no` erano le uniche famiglie scritte
+ * a mano, con l'uuid intero: 39 caratteri, oltre il limite di Telegram, e
+ * comunque troncati al primo trattino. Il gemello sta in
+ * `src/app/api/chat/route.comandi.test.ts`.
+ */
+describe('Telegram — comandi FIC via codice CORTO (il buco del 12 set)', () => {
+  const UUID_FIC = '3f3fc82f-4daa-408e-9308-78effecc338e'
+  const CORTO = UUID_FIC.replace(/-/g, '').slice(0, 16)
+
+  it('un fic_ok corto si espande, trova il pending e procede', async () => {
+    ficPendingIds = [UUID_FIC]
+    const { POST } = await import('./route')
+    await POST(richiesta(`/fic_ok_${CORTO}`))
+    await Promise.all(sfondo)
+
+    expect(mockFicStep1).toHaveBeenCalledWith(UUID_FIC)
+    expect(inviati.map((i) => i.testo).join(' ')).toContain('fic1')
+    expect(mockRunAgentJob).not.toHaveBeenCalled()
+  })
+
+  it('CONTROLLO POSITIVO: un prefisso ambiguo NON viene risolto a caso', async () => {
+    const GEMELLO = '3f3fc82f-4daa-408e-0000-000000000001'
+    ficPendingIds = [UUID_FIC, GEMELLO]
+    const { POST } = await import('./route')
+    await POST(richiesta(`/fic_ok_${CORTO}`))
+    await Promise.all(sfondo)
+
+    expect(mockFicStep1).not.toHaveBeenCalled()
+    expect(inviati.map((i) => i.testo).join(' ')).toMatch(/NON ho fatto niente/)
   })
 })
