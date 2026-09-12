@@ -1534,3 +1534,134 @@ originale o un PDF di cortesia. Non è verificabile senza un token FIC vero, che
 non c'è (le variabili sono *Sensitive* su Vercel e tornano vuote). Il codice va scritto per
 gestire **entrambi** i casi e per **dire quale ha trovato**; la prima chiamata vera in
 produzione lo dirà. **Non scrivere nel messaggio all'Ingegnere una promessa sul formato.**
+
+---
+
+### Task 15: scremare un gruppo di fatture per la modalità che ha scritto il fornitore
+
+**Le parole di Raffaele, il 12 set 2026 (dopo aver mandato lo screenshot della fattura
+2/1144 che riporta `MP01 Contanti`):**
+
+> *«Ovviamente può mettere o contanti, o bonifico, può mettere l'IBAN, può mettere assegno,
+> può mettere carta di pagamento, oppure può anche dimenticarsi e non mettere nulla. Però se
+> io ti dico di controllare, se c'è, tu devi saperlo fare e dirmelo, in modo da scremare le
+> fatture — tipo in quel caso di prima dovevo scremare le fatture che avevano il contante
+> perché significa che erano state pagate al momento del ritiro.»*
+
+**Perché il Task 14 non basta.** Il Task 14 dà
+`leggiAllegatoFatturaRicevuta(id, societa)`: **una** fattura per chiamata. Per sei fatture
+servono sei chiamate, e nulla garantisce che il modello le faccia **tutte** — è esattamente
+il tipo di lavoro sistematico che un modello salta quando si annoia, e il difetto sarebbe
+peggiore di prima: un elenco **parziale** che sembra completo.
+
+Il verbo che Raffaele usa è **«scremare»**: si parte da un gruppo e si divide in due. È
+un'operazione sull'insieme, non sul singolo.
+
+**Files:**
+- Modify: `src/lib/fic-allegato.ts` — la funzione sull'insieme
+- Modify: `src/lib/fatture-in-cloud.ts` — il tool nuovo
+- Modify: `src/lib/fic-write-tools.ts` — il filtro nel tool di marcatura massiva
+- Test: `src/lib/fic-allegato.insieme.test.ts`
+
+**Interfaces:**
+```ts
+/** Una riga del prospetto: cosa ha scritto il fornitore su QUELLA fattura. */
+export type ModalitaPerFattura = {
+  id: number
+  numero: string | null
+  data: string | null
+  importo: number | null
+  /** Il codice SDI grezzo, quando c'e'. */
+  codice_sdi: string | null
+  /** L'etichetta leggibile, quando il codice e' in tabella. */
+  modalita: string | null
+  /**
+   * TRE esiti distinti, mai schiacciati in uno:
+   *  - 'dichiarata'      → il fornitore l'ha scritta, ed e' in `modalita`
+   *  - 'non_dichiarata'  → l'abbiamo letta e il fornitore NON l'ha messa
+   *  - 'non_leggibile'   → non siamo riusciti a leggere l'allegato (e `perche` lo dice)
+   */
+  esito: 'dichiarata' | 'non_dichiarata' | 'non_leggibile'
+  perche?: string
+}
+
+export async function modalitaDichiarateDalFornitore(
+  filtri: FiltriRicerca,
+  societa: CodiceSocieta,
+): Promise<EsitoFic<{ righe: ModalitaPerFattura[]; elenco_troncato: boolean; non_leggibili: number }>>
+```
+
+⭐ **`non_dichiarata` e `non_leggibile` sono due cose diverse, e tenerle separate è il punto
+di tutto questo task.** «Il fornitore non l'ha scritta» è un **dato** su cui Raffaele
+decide; «non sono riuscito a leggere l'allegato» è un **guasto** che deve sapere. Averle
+confuse è precisamente ciò che gli è costato tre ore: il bot diceva «non c'è» quando il
+significato vero era «non l'ho guardato». Un tool che restituisce `null` per entrambi i casi
+ricrea il difetto in forma nuova, e sarebbe peggio perché stavolta l'avremmo scritto
+sapendo.
+
+**Il tool:** `fic_modalita_pagamento_fornitore`, con `fornitore`, `anno`, `mese` come
+`segna_fatture_ricevute_pagate`, così la stessa selezione si descrive allo stesso modo.
+
+**Il filtro nella marcatura massiva.** `segna_fatture_ricevute_pagate` guadagna
+`solo_modalita_fornitore?: string[]` (per esempio `['contanti','carta']`): restringe la
+selezione a quelle in cui **il fornitore** ha dichiarato una di quelle modalità.
+
+⚠️ **E qui la regola più importante del task:** se anche **una sola** fattura della
+selezione ha `esito: 'non_leggibile'`, il filtro **non si applica in silenzio**. Si
+dichiara: *«di N fatture, M non sono leggibili: il filtro le lascia fuori, e non so se
+dovevano starci»*. Una scrematura fatta su un insieme che non abbiamo potuto leggere per
+intero è una scrematura che sbaglia senza dirlo — e questa volta il risultato non è un
+elenco, è una **scrittura su un gestionale fiscale**.
+
+**Cose che vanno riusate, non riscritte:**
+- il camminamento sulle pagine del Task 13 (`cercaFattureRicevute`): la selezione si prende
+  da lì, così `elenco_troncato` continua a significare «il mio elenco è incompleto»
+- `leggiAllegatoFatturaRicevuta` del Task 14 per ogni riga
+- il lettore PDF (`testoDaPdf`) e la tabella dei codici SDI già scritti
+
+**Il costo, da dichiarare:** una chiamata di rete per fattura. Per 6 fatture va bene; per 50
+no. Quindi un tetto (`MAX_ALLEGATI = 30`) e, se la selezione lo supera, **rifiuto
+dichiarato** con il conteggio — non una lettura parziale.
+E le letture vanno fatte **a gruppi** (5 alla volta), non tutte in parallelo: un burst di 30
+richieste verso FIC è un modo di farsi limitare.
+
+- [ ] **Step 1: i test che falliscono**
+
+```ts
+it('CONTROLLO POSITIVO — distingue i TRE esiti sulla stessa selezione', async () => {
+  // mock: 3 fatture — una con MP01, una il cui XML non ha DatiPagamento, una il cui
+  // scaricamento va in errore
+  expect(righe.map(r => r.esito)).toEqual(['dichiarata', 'non_dichiarata', 'non_leggibile'])
+  expect(righe[0].modalita).toBe('contanti')
+  expect(righe[0].codice_sdi).toBe('MP01')
+  expect(righe[1].modalita).toBeNull()        // non dichiarata: un dato, non un guasto
+  expect(righe[2].perche).toBeTruthy()        // non leggibile: il perche' si DICE
+})
+
+it('il conteggio dei non leggibili e separato, non sommato ai non dichiarati', async () => {
+  expect(esito.valore.non_leggibili).toBe(1)
+})
+
+it('CONTROLLO POSITIVO — il filtro nella marcatura DICHIARA i non leggibili', async () => {
+  // 5 fatture, 1 non leggibile, filtro ['contanti']
+  // il messaggio deve nominare quante ne ha lasciate fuori per non averle lette
+  expect(msg).toMatch(/non (sono )?leggibil/i)
+  expect(msg).toContain('1')
+})
+
+it('oltre il tetto di allegati rifiuta dichiarandolo, non legge a meta', async () => { /* … */ })
+
+it('le letture vanno a gruppi, non tutte insieme', async () => {
+  // conta le chiamate concorrenti al mock: mai piu' di 5 in volo
+})
+```
+
+- [ ] **Step 2: eseguire, verificare il fallimento**
+- [ ] **Step 3: `modalitaDichiarateDalFornitore`** sopra i pezzi dei Task 13 e 14
+- [ ] **Step 4: il tool** `fic_modalita_pagamento_fornitore`
+- [ ] **Step 5: `solo_modalita_fornitore`** in `segna_fatture_ricevute_pagate`, con la dichiarazione dei non leggibili
+- [ ] **Step 6: suite + typecheck**
+- [ ] **Step 7: mutazione** — far restituire `non_dichiarata` anche quando la lettura
+  fallisce, cioè **confondere il dato col guasto**. Deve morire il controllo positivo dei tre
+  esiti. È la mutazione che conta più di ogni altra in questo task.
+- [ ] **Step 8: commit** — `git commit -m "scremare le fatture per la modalita' che ha scritto il fornitore, distinguendo 'non l'ha messa' da 'non l'ho letta'"`
