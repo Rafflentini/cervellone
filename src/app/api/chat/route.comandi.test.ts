@@ -75,12 +75,39 @@ Object.assign(catenaPending, {
   gt: () => catenaPending,
   order: () => catenaPending,
   limit: () => catenaPending,
+  gte: () => catenaPending,
+  lte: () => catenaPending,
   maybeSingle: async () => ({ data: bozzeInAttesa[0] ?? null, error: null }),
   then: (resolve: (v: unknown) => unknown) =>
     Promise.resolve(resolve({ data: bozzeInAttesa, error: null })),
 })
+
+/**
+ * Le pratiche SAL in attesa, viste dalla risoluzione del codice CORTO.
+ *
+ * Sta in uno stub DEDICATO alla sua tabella e non dentro `catenaPending`:
+ * quella torna righe con la colonna `uuid` (la tabella delle bozze mail), e la
+ * tabella dei SAL ha la chiave `id`. Confonderle vorrebbe dire misurare la
+ * risoluzione su una colonna che nel mondo vero non c'è — un difetto dello
+ * strumento travestito da difetto del codice (A2 della lista tarata).
+ */
+let salInAttesa: Array<{ id: string }> = []
+let erroreLetturaSal: { message: string } | null = null
+const catenaSal: Record<string, unknown> = {}
+Object.assign(catenaSal, {
+  select: () => catenaSal,
+  eq: () => catenaSal,
+  gte: () => catenaSal,
+  lte: () => catenaSal,
+  order: () => catenaSal,
+  limit: () => catenaSal,
+  then: (resolve: (v: unknown) => unknown) =>
+    Promise.resolve(resolve({ data: erroreLetturaSal ? null : salInAttesa, error: erroreLetturaSal })),
+})
+const instrada = (tabella: string) =>
+  tabella === 'cervellone_sal_pending' ? catenaSal : catenaPending
 vi.mock('@/lib/supabase-server', () => ({
-  getSupabaseServer: () => ({ from: () => catenaPending }),
+  getSupabaseServer: () => ({ from: (t: string) => instrada(t) }),
 }))
 
 import { POST } from './route'
@@ -112,6 +139,8 @@ beforeEach(() => {
   mockShare.mockResolvedValue('https://drive.example/link')
   mockCallClaude.mockResolvedValue('risposta del modello')
   bozzeInAttesa = []
+  salInAttesa = []
+  erroreLetturaSal = null
 })
 
 describe('POST /api/chat — comandi SAL (mancavano sul web)', () => {
@@ -282,7 +311,10 @@ describe('POST /api/chat — con una bozza in attesa, il silenzio e\' vietato', 
     const out = await invia('India.')
 
     expect(out).toMatch(/non ho inviato niente/i)
-    expect(out).toContain('/invia_11111111222233334444555555555555')
+    // 16 cifre, non 32: gemello dell'asserzione in `telegram/route.comandi.test.ts`.
+    // Il formato del comando è lo stesso sui due canali — l'equipollenza si
+    // prova qui, non si deduce dal modulo condiviso.
+    expect(out).toContain('/invia_1111111122223333')
     expect(mockCallClaude).not.toHaveBeenCalled()
   })
 

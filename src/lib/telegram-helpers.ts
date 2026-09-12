@@ -3,7 +3,39 @@
  * Estratte dalla route per riuso in altri moduli.
  */
 
+import { contieneComandoConCodice } from './comandi-uuid'
+
 const TELEGRAM_API = 'https://api.telegram.org/bot'
+
+/**
+ * ⭐ Il `parse_mode` giusto per QUESTO testo.
+ *
+ * Un messaggio che porta un nostro comando va spedito in testo SEMPLICE. Motivo
+ * misurato: ogni comando porta un `_`, e due comandi nello stesso messaggio —
+ * «Per inviare: /invia_… · Per annullare: /annulla_…» — danno una COPPIA di
+ * underscore, che nel Markdown classico delimita il corsivo. Telegram li mangia
+ * e all'Ingegnere arriva `/inviaXXXX`: un comando che non esiste. Lui lavora dal
+ * telefono, e quel comando era il modo per confermare una mail.
+ *
+ * ⚠️ Il ripiego che sta sotto in `sendTelegramMessageChecked` NON copre questo
+ * caso, e resta dov'è perché serve ad altro: scatta quando Telegram RIGETTA il
+ * Markdown, mentre qui il Markdown è valido — lo rende, e basta. Nessun errore,
+ * nessun ritentativo, solo il comando mutilato.
+ *
+ * Telegram rende cliccabile `/comando` anche nel testo semplice, quindi il
+ * prezzo è il grassetto **dei soli messaggi che portano un comando**. Prezzo
+ * basso contro un comando che non si può usare.
+ *
+ * PERCHE' DECIDE IL CONTENUTO E NON IL CHIAMANTE: i comandi nascono dentro i
+ * moduli (`sal-tools`, `regole-proposte`, `drive-policy-actions`, il cron della
+ * sentinella) e viaggiano come stringhe attraverso 107 punti d'invio. Una scelta
+ * da fare a mano in 107 posti è una scelta che verrà dimenticata in 106 — è
+ * esattamente così che in questo repo sono nate le divergenze fra i canali. La
+ * via esplicita esiste comunque: `sendTelegramMessageComando`.
+ */
+function parseModePer(text: string): { parse_mode?: 'Markdown' } {
+  return contieneComandoConCodice(text) ? {} : { parse_mode: 'Markdown' }
+}
 
 function splitTelegramText(text: string): string[] {
   const MAX_LEN = 4000
@@ -62,6 +94,10 @@ async function postTelegramMessage(token: string, payload: Record<string, unknow
 export async function sendTelegramMessageChecked(chatId: number, text: string): Promise<boolean> {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) return false
+  // Un messaggio che porta un comando parte in testo semplice: vedi
+  // `parseModePer`. Quelli che non ne portano — la grande maggioranza — usano
+  // il Markdown e il suo ripiego esattamente come prima.
+  if (contieneComandoConCodice(text)) return sendTelegramMessageComando(chatId, text)
   let delivered = true
   for (const chunk of splitTelegramText(text)) {
     const ok = await postTelegramMessage(token, { chat_id: chatId, text: chunk, parse_mode: 'Markdown' })
@@ -69,6 +105,27 @@ export async function sendTelegramMessageChecked(chatId: number, text: string): 
     if (!ok && !(await postTelegramMessage(token, { chat_id: chatId, text: chunk }))) {
       delivered = false
     }
+  }
+  return delivered
+}
+
+/**
+ * La gemella esplicita: manda SENZA `parse_mode`, e riporta se è arrivato.
+ *
+ * Qui non c'è ripiego perché non serve: il ripiego di
+ * `sendTelegramMessageChecked` *è* l'invio senza `parse_mode`, cioè questo. Se
+ * questo fallisce, è fallito l'invio, non la formattazione.
+ *
+ * Chiamarla direttamente quando si sa di avere un comando in mano è lecito e
+ * documenta l'intenzione; chi non lo sa è coperto comunque, perché
+ * `sendTelegramMessageChecked` ci arriva da sola sul contenuto.
+ */
+export async function sendTelegramMessageComando(chatId: number, text: string): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return false
+  let delivered = true
+  for (const chunk of splitTelegramText(text)) {
+    if (!(await postTelegramMessage(token, { chat_id: chatId, text: chunk }))) delivered = false
   }
   return delivered
 }
@@ -164,7 +221,10 @@ export async function editTelegramMessage(
         chat_id: chatId,
         message_id: messageId,
         text: payload,
-        parse_mode: 'Markdown',
+        // ⭐ Anche gli EDIT: la risposta in streaming del modello può contenere
+        // l'anteprima di un tool coi comandi (`/sal_ok_…`, `/fic_ok_…`), e
+        // arriverebbe all'Ingegnere con gli underscore mangiati.
+        ...parseModePer(payload),
       }),
     })
     const body = await res.json().catch(() => ({}))
@@ -206,7 +266,10 @@ export async function sendTelegramMessageWithId(chatId: number, text: string): P
     const res = await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+      // ⭐ È PROPRIO QUESTA la funzione che manda la notifica della bozza mail
+      // («Per inviare: /invia_… ❌ Per annullare: /annulla_…»): due comandi,
+      // due underscore, e il Markdown li mangiava entrambi.
+      body: JSON.stringify({ chat_id: chatId, text, ...parseModePer(text) }),
     })
     const data = await res.json()
     return data?.result?.message_id || null

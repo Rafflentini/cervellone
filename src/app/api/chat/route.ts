@@ -176,7 +176,11 @@ export async function POST(request: NextRequest) {
   // canali: accetta il codice CON e SENZA trattini e ritorna l'uuid canonico.
   // Prima era una regex qui e altre 14 in fila su Telegram: quindici copie
   // sono quindici occasioni di correggerne quattordici.
-  const comando = (nome: string) => comandoUuid(userQuery, nome)
+  // `testoComandi` e' `userQuery` con l'eventuale codice CORTO (16 cifre) gia'
+  // espanso nell'uuid intero: lo riempie il blocco subito sotto
+  // `rispostaSemplice`, prima che `comando` venga mai chiamata.
+  let testoComandi = userQuery
+  const comando = (nome: string) => comandoUuid(testoComandi, nome)
 
   // I quattro blocchi che c'erano prima ripetevano queste otto righe una per
   // famiglia di comandi: aggiungerne altre tre a copia-incolla e' esattamente il
@@ -218,6 +222,26 @@ export async function POST(request: NextRequest) {
       { headers: { 'Content-Type': 'text/plain; charset=utf-8' } },
     )
 
+  // ─── Il codice CORTO si risolve qui, una volta, per tutti i rami ───
+  //
+  // Il codice nei comandi e' di 16 cifre e non di 32, perche' Telegram
+  // riconosce come comando `/` + al massimo 32 caratteri e `/invia_` + 32 cifre
+  // ne fa 38. Sedici cifre non sono piu' l'identificativo: vanno risolte contro
+  // il database, e si fa QUI riscrivendo il testo nella forma lunga.
+  //
+  // 🚨 Se 16 cifre corrispondono a piu' di una bozza non si sceglie la piu'
+  // recente: si dichiara l'ambiguita' e si chiede il codice lungo.
+  // Il gemello sta in `api/telegram/route.ts`: equipollenza vincolante — il web
+  // riceve gli stessi codici corti, perche' i tool sono gli stessi sui due
+  // canali. Un motore condiviso NON rende equipollenti i canali, e il test sta
+  // in entrambi i `route.comandi.test.ts`.
+  {
+    const { espandiCodiceBreve } = await import('@/lib/comandi-risolvi')
+    const esp = await espandiCodiceBreve(userQuery)
+    if (esp.stato === 'fermo') return rispostaSemplice(esp.messaggio)
+    if (esp.stato === 'espanso') testoComandi = esp.testo
+  }
+
   // Mail subagent V19: /invia_<uuid> · /annulla_<uuid>
   const mInvia = comando('invia')
   const mAnnulla = comando('annulla')
@@ -250,7 +274,7 @@ export async function POST(request: NextRequest) {
   // ─── Un comando col CODICE TRONCATO va detto, non passato al modello ───
   {
     const { comandoDalCodiceRotto } = await import('@/lib/comandi-uuid')
-    const rotto = comandoDalCodiceRotto(userQuery)
+    const rotto = comandoDalCodiceRotto(testoComandi)
     if (rotto) {
       const { avvisoCodiceRotto } = await import('@/v19/tools/email/telegram-confirm')
       return rispostaSemplice(avvisoCodiceRotto(rotto))

@@ -643,14 +643,34 @@ export async function POST(request: NextRequest) {
     }
 
 
+    // ─── Il codice CORTO si risolve qui, una volta, per tutti i rami ───
+    //
+    // Il codice nei comandi e' di 16 cifre e non di 32, perche' Telegram
+    // riconosce come comando `/` + al massimo 32 caratteri e `/invia_` + 32
+    // cifre ne fa 38. Sedici cifre non sono piu' l'identificativo: vanno
+    // risolte contro il database. Si fa QUI, riscrivendo il testo nella forma
+    // lunga, cosi' i 18 rami sotto continuano a funzionare senza saperne
+    // niente — la 15-copie di `comandi-uuid.ts` non si rifa'.
+    //
+    // 🚨 Se 16 cifre corrispondono a piu' di una bozza non si sceglie la piu'
+    // recente: si dichiara l'ambiguita' e si chiede il codice lungo.
+    // Il gemello sta in `api/chat/route.ts`: equipollenza vincolante.
+    let testoComandi = userText
+    {
+      const { espandiCodiceBreve } = await import('@/lib/comandi-risolvi')
+      const esp = await espandiCodiceBreve(userText)
+      if (esp.stato === 'fermo') return await rispondiESalva(esp.messaggio)
+      if (esp.stato === 'espanso') testoComandi = esp.testo
+    }
+
     // ─── /invia_<uuid> + /annulla_<uuid> — confirm flow mail subagent V19 ───
-    const mInvia = comandoUuid(userText, 'invia')
+    const mInvia = comandoUuid(testoComandi, 'invia')
     if (mInvia) {
       const { confirmPendingSend } = await import('@/v19/tools/email/telegram-confirm')
       const r = await confirmPendingSend(mInvia)
       return await rispondiESalva(r.message)
     }
-    const mAnnulla = comandoUuid(userText, 'annulla')
+    const mAnnulla = comandoUuid(testoComandi, 'annulla')
     if (mAnnulla) {
       const { cancelPendingSend } = await import('@/v19/tools/email/telegram-confirm')
       const r = await cancelPendingSend(mAnnulla)
@@ -689,15 +709,15 @@ export async function POST(request: NextRequest) {
     // non corrisponde a nessun ramo e finiva al modello come richiesta nuova.
     {
       const { comandoDalCodiceRotto } = await import('@/lib/comandi-uuid')
-      const rotto = comandoDalCodiceRotto(userText)
+      const rotto = comandoDalCodiceRotto(testoComandi)
       if (rotto) {
         const { avvisoCodiceRotto } = await import('@/v19/tools/email/telegram-confirm')
         return await rispondiESalva(avvisoCodiceRotto(rotto))
       }
     }
 
-    const mConferma = comandoUuid(userText, 'conferma')
-    const mIgnora = comandoUuid(userText, 'ignora')
+    const mConferma = comandoUuid(testoComandi, 'conferma')
+    const mIgnora = comandoUuid(testoComandi, 'ignora')
     if (mConferma || mIgnora) {
       const uuid = (mConferma ?? mIgnora)!
       const mod = await import('@/lib/doc-proposte-actions')
@@ -708,9 +728,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Governance accesso cartelle Drive — doppia conferma (parità con web)
-    const mAccOk2 = comandoUuid(userText, 'accesso_ok2')
-    const mAccOk = comandoUuid(userText, 'accesso_ok')
-    const mAccNo = comandoUuid(userText, 'accesso_no')
+    const mAccOk2 = comandoUuid(testoComandi, 'accesso_ok2')
+    const mAccOk = comandoUuid(testoComandi, 'accesso_ok')
+    const mAccNo = comandoUuid(testoComandi, 'accesso_no')
     if (mAccOk2 || mAccOk || mAccNo) {
       const uuid = (mAccOk2 ?? mAccOk ?? mAccNo)!
       const mod = await import('@/lib/drive-policy-actions')
@@ -735,10 +755,10 @@ export async function POST(request: NextRequest) {
     // LETTO DAL DATABASE, /regola_ok2_ lo attiva. Cosi' cio' che l'Ingegnere
     // approva lo scrive la route, non il modello — che potrebbe parafrasarlo.
     // ok2 va testato PRIMA di ok, altrimenti il prefisso piu' corto lo mangia.
-    const mRegOk2 = comandoUuid(userText, 'regola_ok2')
-    const mRegOk = comandoUuid(userText, 'regola_ok')
-    const mRegNo = comandoUuid(userText, 'regola_no')
-    const mRegVia = comandoUuid(userText, 'regola_via')
+    const mRegOk2 = comandoUuid(testoComandi, 'regola_ok2')
+    const mRegOk = comandoUuid(testoComandi, 'regola_ok')
+    const mRegNo = comandoUuid(testoComandi, 'regola_no')
+    const mRegVia = comandoUuid(testoComandi, 'regola_via')
     if (mRegOk2 || mRegOk || mRegNo || mRegVia) {
       const mod = await import('@/lib/regole-proposte')
       const r = mRegOk2
@@ -752,7 +772,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Privacy doc: conferma condivisione → firma e invia il link a scadenza ──
-    const mShareOk = comandoUuid(userText, 'condividi_ok')
+    const mShareOk = comandoUuid(testoComandi, 'condividi_ok')
     if (mShareOk) {
       const { confirmShareProposal } = await import('@/lib/share-proposte')
       const url = await confirmShareProposal(mShareOk)
@@ -793,9 +813,9 @@ export async function POST(request: NextRequest) {
     // Stale lock cleanup a 90s (heartbeat-based): task live aggiorna started_at ogni 20s.
     // Se Supabase down → fallback degradato (lockClaimed=true), lascia passare.
     // FIC bozze documenti - doppia conferma (parita con web)
-    const mFicOk2 = comandoUuid(userText, 'fic_ok2')
-    const mFicOk = comandoUuid(userText, 'fic_ok')
-    const mFicNo = comandoUuid(userText, 'fic_no')
+    const mFicOk2 = comandoUuid(testoComandi, 'fic_ok2')
+    const mFicOk = comandoUuid(testoComandi, 'fic_ok')
+    const mFicNo = comandoUuid(testoComandi, 'fic_no')
     if (mFicOk2 || mFicOk || mFicNo) {
       const uuid = (mFicOk2 ?? mFicOk ?? mFicNo)!
       const message = mFicOk2
@@ -806,9 +826,9 @@ export async function POST(request: NextRequest) {
       return await rispondiESalva(message)
     }
 
-    const mSalOk2 = comandoUuid(userText, 'sal_ok2')
-    const mSalOk = comandoUuid(userText, 'sal_ok')
-    const mSalNo = comandoUuid(userText, 'sal_no')
+    const mSalOk2 = comandoUuid(testoComandi, 'sal_ok2')
+    const mSalOk = comandoUuid(testoComandi, 'sal_ok')
+    const mSalNo = comandoUuid(testoComandi, 'sal_no')
     if (mSalOk2 || mSalOk || mSalNo) {
       const uuid = (mSalOk2 ?? mSalOk ?? mSalNo)!
       const message = mSalOk2

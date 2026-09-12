@@ -242,7 +242,10 @@ describe('Telegram — con una bozza in attesa, il silenzio e\' vietato', () => 
     // gli da' la frase esatta che funziona...
     expect(detto).toMatch(/invia/i)
     // ...e il comando toccabile, senza trattini
-    expect(detto).toContain('/invia_11111111222233334444555555555555')
+    // 16 cifre, non 32: Telegram rende cliccabile un comando solo se sta in 32
+    // caratteri dopo la barra, e `invia_` + 32 = 38. L'asserzione resta sul
+    // testo esatto, così un cambio silenzioso del formato rompe il test.
+    expect(detto).toContain('/invia_1111111122223333')
     // e soprattutto NON ricomincia da zero
     expect(mockRunAgentJob).not.toHaveBeenCalled()
   })
