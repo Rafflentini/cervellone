@@ -684,7 +684,8 @@ async function segnaFatturePagate(
 
   // 1) L'insieme. Si legge SEMPRE da Fatture in Cloud, mai dal testo.
   const documenti: Record<string, unknown>[] = []
-  let altrePagine = false
+  let elencoTroncato = false
+  let pagineLette = 1
   if (idSingolo !== undefined) {
     const letta = await leggiFatturaRicevuta(idSingolo, societa)
     if (!letta.ok) return fail(letta.error)
@@ -699,21 +700,34 @@ async function segnaFatturePagate(
     const trovate = await cercaFattureRicevute({ fornitore, anno, mese }, societa)
     if (!trovate.ok) return fail(trovate.error)
     documenti.push(...trovate.valore.documenti)
-    altrePagine = trovate.valore.altre_pagine
+    elencoTroncato = trovate.valore.elenco_troncato
+    pagineLette = trovate.valore.pagine_lette
   }
 
   if (documenti.length === 0) {
     return fail('nessuna fattura ricevuta corrisponde alla selezione: non ho scritto niente')
   }
 
-  // 2) Il tetto. Una scrittura di massa su un gestionale fiscale non deve
-  // poter scappare, e una conferma unica su più di così non è più una lettura.
-  if (documenti.length > TETTO_MASSIVO || altrePagine) {
+  // 2) Il tetto e la completezza. Due cause DIVERSE di rifiuto, due messaggi
+  // diversi: un rifiuto che dichiara il motivo sbagliato manda a caccia del
+  // problema inesistente (successo il 12 set 2026 con «7 fatture, oltre il
+  // tetto di 50» — 7 non supera 50, il messaggio era incoerente).
+  if (documenti.length > TETTO_MASSIVO) {
     return fail(
-      `la selezione tocca ${altrePagine ? `più di ${documenti.length}` : String(documenti.length)} fatture, `
-      + `oltre il tetto di ${TETTO_MASSIVO} per singola conferma: restringi (per fornitore, anno o mese) `
-      + 'e ripeti. Non ho scritto niente.',
+      `la selezione tocca ${documenti.length} fatture, oltre il tetto di ${TETTO_MASSIVO} per singola conferma: `
+      + 'restringi (per fornitore, anno o mese) e ripeti. Non ho scritto niente.',
       { trovate: documenti.length, tetto: TETTO_MASSIVO },
+    )
+  }
+  // Una scrittura di massa su un gestionale fiscale non deve poter scappare:
+  // se abbiamo esaurito il tetto di pagine lette SENZA finire l'elenco di FIC,
+  // l'insieme che stiamo per confermare potrebbe non essere quello vero.
+  if (elencoTroncato) {
+    return fail(
+      `ho letto ${pagineLette} pagine di Fatture in Cloud e non sono bastate per vedere tutte le fatture della `
+      + 'selezione: non garantisco che l\'elenco sia completo, quindi non lo uso per una conferma unica. '
+      + 'Restringi la ricerca (per fornitore, anno o mese) e ripeti. Non ho scritto niente.',
+      { pagine_lette: pagineLette },
     )
   }
 

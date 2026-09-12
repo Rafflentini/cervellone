@@ -22,7 +22,8 @@ const stato = {
   updates: [] as Record<string, unknown>[],
   conti: [] as ContoPagamentoFic[],
   selezione: [] as Record<string, unknown>[],
-  altrePagine: false,
+  elencoTroncato: false,
+  pagineLette: 1,
   letture: new Map<number, Record<string, unknown>>(),
   esiti: new Map<number, { ok: boolean; motivo?: string }>(),
   eliminate: [] as string[],
@@ -84,7 +85,7 @@ vi.mock('./fic-pagamenti', async (importOriginal) => {
     elencoContiPagamentoFic: async () => ({ ok: true as const, valore: stato.conti }),
     cercaFattureRicevute: async () => ({
       ok: true as const,
-      valore: { documenti: stato.selezione, altre_pagine: stato.altrePagine },
+      valore: { documenti: stato.selezione, elenco_troncato: stato.elencoTroncato, pagine_lette: stato.pagineLette },
     }),
     leggiFatturaRicevuta: async (id: number) => {
       const doc = stato.letture.get(id)
@@ -154,7 +155,8 @@ beforeEach(() => {
   stato.updates = []
   stato.conti = [{ id: 222, nome: 'Contanti' }, { id: 333, nome: 'Conto Banca Intesa' }]
   stato.selezione = []
-  stato.altrePagine = false
+  stato.elencoTroncato = false
+  stato.pagineLette = 1
   stato.letture = new Map()
   stato.esiti = new Map()
   stato.eliminate = []
@@ -303,18 +305,46 @@ describe('il tetto: una scrittura di massa non deve scappare', () => {
     expect(out.da_scrivere).toBe(50)
   })
 
-  // Un elenco che continua su un'altra pagina NON e' l'insieme descritto.
-  it('se la selezione continua su altre pagine, rifiuta', async () => {
+  // Un elenco che non sta tutto nelle pagine lette NON e' l'insieme descritto.
+  it('se l elenco e troncato (pagine non bastate), rifiuta', async () => {
     stato.selezione = Array.from({ length: 10 }, (_, i) => fattura({ id: 300 + i }))
-    stato.altrePagine = true
+    stato.elencoTroncato = true
+    stato.pagineLette = 10
     const out = JSON.parse(String(await executeFicWriteTool(
       'segna_fatture_ricevute_pagate',
       { fornitore: 'Limongi', anno: 2026, modalita_pagamento: 'Contanti' },
       'restruktura',
     )))
     expect(out.ok).toBe(false)
-    expect(out.error).toContain('più di 10')
+    expect(out.error).toContain('10 pagine')
     expect(stato.inserita).toBeNull()
+  })
+
+  // ⭐ Il difetto del 12 set 2026: con 7 fatture (ben sotto il tetto di 50) il
+  // messaggio nominava «oltre il tetto di 50» perche' condivideva il testo col
+  // rifiuto per troppe fatture. Due cause diverse vogliono due messaggi: chi
+  // legge non deve andare a caccia del problema sbagliato.
+  it('i due rifiuti (troppe fatture / elenco troncato) hanno DUE messaggi distinti', async () => {
+    stato.selezione = Array.from({ length: 51 }, (_, i) => fattura({ id: 200 + i }))
+    const troppe = JSON.parse(String(await executeFicWriteTool(
+      'segna_fatture_ricevute_pagate',
+      { fornitore: 'Limongi', anno: 2026, modalita_pagamento: 'Contanti' },
+      'restruktura',
+    )))
+    expect(troppe.ok).toBe(false)
+    expect(troppe.error).toContain('tetto di 50')
+
+    stato.selezione = Array.from({ length: 7 }, (_, i) => fattura({ id: 300 + i }))
+    stato.elencoTroncato = true
+    stato.pagineLette = 10
+    const troncato = JSON.parse(String(await executeFicWriteTool(
+      'segna_fatture_ricevute_pagate',
+      { fornitore: 'Limongi', anno: 2026, modalita_pagamento: 'Contanti' },
+      'restruktura',
+    )))
+    expect(troncato.ok).toBe(false)
+    expect(troncato.error).not.toContain('tetto di 50')
+    expect(troncato.error).toContain('10 pagine')
   })
 
   it('senza nessun criterio non segna pagate «tutte» le spese', async () => {

@@ -246,6 +246,17 @@ export const TETTO_MASSIVO = 50
 /** Pagina massima ammessa da FIC: serve poter VEDERE che sono più del tetto. */
 const PER_PAGE = 100
 
+/**
+ * Quante pagine si cammina al massimo: 1.000 fatture, abbondante per un anno.
+ *
+ * NON esiste una fonte ufficiale che elenchi i campi filtrabili di
+ * `received_documents` (a differenza della grammatica di `q`, che è
+ * documentata): `entity.name`/`entity.id` come filtro server-side sarebbero
+ * inferenza, non documentazione. Per questo qui si cammina sulle pagine e si
+ * filtra il fornitore IN MEMORIA su tutte quelle lette, non solo sulla prima.
+ */
+const MAX_PAGINE = 10
+
 function filtroData(anno?: number, mese?: number): string | undefined {
   if (!anno) return undefined
   const m = mese && mese >= 1 && mese <= 12 ? mese : undefined
@@ -260,35 +271,60 @@ function filtroData(anno?: number, mese?: number): string | undefined {
 /**
  * Le fatture ricevute che rientrano nella selezione.
  *
- * `altre_pagine` non è un dettaglio: se la selezione tocca più di una pagina,
- * l'insieme che stiamo mostrando NON è l'insieme che l'Ingegnere ha descritto,
- * e un elenco incompleto che sembra completo è la cosa peggiore che possa
- * precedere una conferma unica per tutte.
+ * `elenco_troncato` non è un dettaglio: se la selezione tocca più pagine di
+ * quante ne camminiamo, l'insieme che stiamo mostrando NON è l'insieme che
+ * l'Ingegnere ha descritto, e un elenco incompleto che sembra completo è la
+ * cosa peggiore che possa precedere una conferma unica per tutte.
+ *
+ * FIC dà la prima pagina di TUTTE le fatture ricevute del periodo, non solo
+ * quelle del fornitore cercato (nessuna fonte ufficiale elenca i campi
+ * filtrabili di `received_documents`, quindi non si scommette su un filtro
+ * server-side): si cammina sulle pagine fino a un tetto, e si filtra il
+ * fornitore IN MEMORIA su TUTTE le pagine lette, non solo sulla prima.
+ * `elenco_troncato` guarda la nostra completezza — è vero solo se il tetto di
+ * pagine è stato raggiunto E FIC ne dichiara ancora oltre.
  */
 export async function cercaFattureRicevute(
   filtri: FiltriRicerca,
   societa: CodiceSocieta,
-): Promise<EsitoFic<{ documenti: Record<string, unknown>[]; altre_pagine: boolean }>> {
+): Promise<EsitoFic<{
+  documenti: Record<string, unknown>[]
+  /** Vero solo se abbiamo esaurito il tetto di pagine SENZA finire l'elenco. */
+  elenco_troncato: boolean
+  /** Quante pagine abbiamo letto: va nel messaggio, cosi' il limite e' visibile. */
+  pagine_lette: number
+}>> {
   const company = await getCompanyId(societa)
   if (!company.ok) return { ok: false, error: company.error }
 
-  const r = await ficGet(`/c/${company.id}/received_documents`, {
-    type: 'expense',
-    q: filtroData(filtri.anno, filtri.mese),
-    per_page: PER_PAGE,
-    sort: '-date',
-    fieldset: 'detailed',
-  }, societa)
-  if (!r.ok) return { ok: false, error: r.error }
-
-  const lista = Array.isArray(r.data?.data) ? (r.data.data as unknown[]).map(oggetto) : []
   const cercato = chiave(filtri.fornitore ?? '')
-  const documenti = cercato
-    ? lista.filter((d) => chiave(testo(oggetto(d.entity).name)).includes(cercato))
-    : lista
+  const documenti: Record<string, unknown>[] = []
+  let pagineLette = 0
+  let ultimaPagina = 1
 
-  const ultima = numero(oggetto(r.data).last_page) ?? 1
-  return { ok: true, valore: { documenti, altre_pagine: ultima > 1 } }
+  for (let pagina = 1; pagina <= MAX_PAGINE; pagina++) {
+    const r = await ficGet(`/c/${company.id}/received_documents`, {
+      type: 'expense',
+      q: filtroData(filtri.anno, filtri.mese),
+      per_page: PER_PAGE,
+      page: pagina,
+      sort: '-date',
+      fieldset: 'detailed',
+    }, societa)
+    if (!r.ok) return { ok: false, error: r.error }
+
+    const lista = Array.isArray(r.data?.data) ? (r.data.data as unknown[]).map(oggetto) : []
+    pagineLette = pagina
+    documenti.push(...(cercato
+      ? lista.filter((d) => chiave(testo(oggetto(d.entity).name)).includes(cercato))
+      : lista))
+
+    ultimaPagina = numero(oggetto(r.data).last_page) ?? 1
+    if (pagina >= ultimaPagina || lista.length === 0) break
+  }
+
+  const elenco_troncato = pagineLette >= MAX_PAGINE && ultimaPagina > MAX_PAGINE
+  return { ok: true, valore: { documenti, elenco_troncato, pagine_lette: pagineLette } }
 }
 
 export interface OpzioniClassifica {
