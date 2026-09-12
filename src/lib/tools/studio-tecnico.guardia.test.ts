@@ -55,6 +55,18 @@ vi.mock('../societa-documenti', () => ({
   societaPerDocumento: (...a: unknown[]) => mockSocietaPerDocumento(...a),
 }))
 
+// Task 12 — la via d'uscita dal blocco. Mockata qui, non lasciata alla
+// guardia generica di `@supabase/supabase-js` sopra: quella condivide UN
+// solo `mockInsertSpy` per QUALUNQUE tabella, e la riga di autorizzazione che
+// `chiediAutorizzazione` scrive quando la guardia blocca e' un insert VERO e
+// intenzionale — su una tabella diversa da `documents` — che altrimenti
+// farebbe fallire "nessuna scrittura" qui sotto per il motivo sbagliato. Il
+// suo comportamento reale e' provato in guardia-autorizzazioni.test.ts.
+vi.mock('../guardia-autorizzazioni', () => ({
+  autorizzazioneValida: async () => false,
+  chiediAutorizzazione: async () => ({ uuid: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }),
+}))
+
 import { executeStudioTecnico } from './studio-tecnico'
 
 function input() {

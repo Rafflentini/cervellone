@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { verificaDatiSocietari, pivaNostre, messaggioBlocco } from './guardia-societa'
+import { contieneComandoConCodice } from './comandi-uuid'
+
+// Un uuid canonico qualunque: questi test provano il TESTO del messaggio, non
+// la generazione del codice (quella e' in guardia-autorizzazioni.test.ts).
+const UUID_DI_PROVA = '3f3fc82f-4daa-408e-9308-78effecc338e'
 
 const RESTRUKTURA = { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' }
 const LAREALESTATE = { denominazione: 'LA REAL ESTATE SRLS', piva: '02232730768' }
@@ -54,21 +59,40 @@ describe('verificaDatiSocietari — CONTROLLO POSITIVO: il caso vero deve morder
   it('il messaggio di blocco NOMINA le due partite IVA: un rifiuto muto costringe a indovinare', () => {
     const esito = verificaDatiSocietari('<h1>RESTRUKTURA S.r.l.</h1><p>02087420762</p>', LAREALESTATE)
     if (esito.ok) throw new Error('atteso blocco')
-    const msg = messaggioBlocco(esito)
+    const msg = messaggioBlocco(esito, UUID_DI_PROVA)
     expect(msg).toContain('02087420762')
     expect(msg).toContain('02232730768')
     expect(msg).toContain('LA REAL ESTATE SRLS')
   })
 
-  // Su Telegram i messaggi partono con parse_mode: 'Markdown' (telegram-helpers.ts:37),
-  // dove `_` delimita il corsivo: due underscore in un nome vengono RIMOSSI, non
-  // mostrati. `imposta_societa_attiva` arrivava all'Ingegnere come
-  // `impostasocietaattiva`, un comando che non esiste. Questo test prova
-  // l'INVARIANTE (nessun underscore), non il testo: regge anche se la frase
-  // cambia, e vale per qualunque messaggio che spediamo, non solo per questo.
-  it('il messaggio non contiene underscore: su Telegram il Markdown li mangia', () => {
+  // Task 12: il messaggio adesso PORTA un comando vero, /doc_ok_<codice>,
+  // perche' la vecchia promessa ("dimmelo e lo genero comunque") non aveva
+  // modo di essere mantenuta. Quel comando contiene per costruzione un
+  // underscore — e' l'unico modo per essere tappabile su Telegram.
+  //
+  // Su Telegram i messaggi partono con parse_mode: 'Markdown'
+  // (telegram-helpers.ts:37), dove `_` delimita il corsivo: due underscore
+  // in un nome scritto in PROSA vengono RIMOSSI, non mostrati —
+  // `imposta_societa_attiva` arrivava come `impostasocietaattiva`, un
+  // comando che non esiste. Quindi l'invariante vera non e' "nessun
+  // underscore in assoluto" (che oggi sarebbe falsa, ed e' giusto che lo
+  // sia): e' "nessun identificatore snake_case NUDO nella prosa". Un comando
+  // riconosciuto da `contieneComandoConCodice` non e' nudo: quella funzione
+  // decide GIA' di spedire il messaggio in testo semplice
+  // (telegram-helpers.ts), dove il Markdown non tocca nessun underscore.
+  it('il messaggio contiene un comando /doc_ok_<codice> tappabile, non un underscore nudo nella prosa', () => {
     const esito = verificaDatiSocietari('<p>02087420762</p>', LAREALESTATE)
     if (esito.ok) throw new Error('atteso blocco')
-    expect(messaggioBlocco(esito)).not.toMatch(/_/)
+    const msg = messaggioBlocco(esito, UUID_DI_PROVA)
+
+    // Il messaggio va gia' incontro alla sua stessa difesa: contiene un
+    // comando con codice, quindi telegram-helpers.ts lo spedira' SENZA
+    // Markdown.
+    expect(contieneComandoConCodice(msg)).toBe(true)
+
+    // Tolti i comandi riconosciuti (doc_ok/doc_no), non deve restare NESSUN
+    // altro underscore scritto a mano nella prosa.
+    const senzaComandi = msg.replace(/\/doc_(ok|no)_[0-9a-f-]+/g, '')
+    expect(senzaComandi).not.toMatch(/_/)
   })
 })

@@ -12,12 +12,28 @@ vi.mock('./supabase-server', () => ({
 const societaPerDocumento = vi.fn()
 vi.mock('./societa-documenti', () => ({ societaPerDocumento: (...a: unknown[]) => societaPerDocumento(...a) }))
 
+// Task 12 — la via d'uscita. Mockata qui: il suo comportamento VERO (le
+// cinque scelte che la rendono sicura) e' provato in
+// guardia-autorizzazioni.test.ts; qui interessa solo che salva-documento.ts
+// la CONSULTI davvero prima di dichiarare un blocco definitivo.
+const autorizzazioneValida = vi.fn()
+const chiediAutorizzazione = vi.fn()
+vi.mock('./guardia-autorizzazioni', () => ({
+  autorizzazioneValida: (...a: unknown[]) => autorizzazioneValida(...a),
+  chiediAutorizzazione: (...a: unknown[]) => chiediAutorizzazione(...a),
+}))
+
 import { salvaDocumento, aggiornaContenutoDocumento } from './salva-documento'
 
 const RESTRUKTURA = { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' }
 const LAREALESTATE = { denominazione: 'LA REAL ESTATE SRLS', piva: '02232730768' }
 
-beforeEach(() => { insert.mockClear(); societaPerDocumento.mockReset() })
+beforeEach(() => {
+  insert.mockClear()
+  societaPerDocumento.mockReset()
+  autorizzazioneValida.mockReset().mockResolvedValue(false)
+  chiediAutorizzazione.mockReset().mockResolvedValue({ uuid: 'uuid-di-prova' })
+})
 
 describe('salvaDocumento — la guardia sta dentro, non nei chiamanti', () => {
   it('CONTROLLO POSITIVO: La Real Estate attiva, contenuto con la P.IVA di Restruktura → NON scrive', async () => {
@@ -33,6 +49,27 @@ describe('salvaDocumento — la guardia sta dentro, non nei chiamanti', () => {
     expect(r.messaggio).toContain('02232730768')
     // la prova che conta: NESSUNA scrittura
     expect(insert).not.toHaveBeenCalled()
+    // Task 12: senza autorizzazione valida, il blocco NE CHIEDE una nuova —
+    // non genera comunque.
+    expect(chiediAutorizzazione).toHaveBeenCalledWith('c1', expect.stringContaining('02087420762'), expect.objectContaining({ ok: false }))
+  })
+
+  it('Task 12 — CONTROLLO NEGATIVO: con un\'autorizzazione valida per QUESTO contenuto, scrive comunque', async () => {
+    // La stessa P.IVA sbagliata di sopra, ma stavolta l'Ingegnere ha gia'
+    // tappato /doc_ok_<codice>: autorizzazioneValida(conversationId, contenuto)
+    // torna true, ed e' lei sola a decidere — non un secondo motore che
+    // rifiuta sempre.
+    societaPerDocumento.mockResolvedValue({ ok: true, societa: LAREALESTATE, esplicita: true })
+    autorizzazioneValida.mockResolvedValue(true)
+
+    const r = await salvaDocumento({
+      nome: 'Preventivo', tipo: 'html', conversationId: 'c1',
+      contenuto: '<h1>RESTRUKTURA S.r.l.</h1><p>P.IVA 02087420762</p>',
+    })
+
+    expect(r).toEqual({ ok: true, id: 'doc-1' })
+    expect(insert).toHaveBeenCalledTimes(1)
+    expect(chiediAutorizzazione).not.toHaveBeenCalled()
   })
 
   it('CONTROLLO NEGATIVO: societa\' coerente → scrive, e scrive il contenuto vero', async () => {

@@ -15,6 +15,7 @@
 import { getSupabaseServer } from './supabase-server'
 import { societaPerDocumento } from './societa-documenti'
 import { verificaDatiSocietari, messaggioBlocco, type EsitoGuardia } from './guardia-societa'
+import { autorizzazioneValida, chiediAutorizzazione } from './guardia-autorizzazioni'
 
 export type EsitoSalvataggio =
   | { ok: true; id: string }
@@ -56,9 +57,17 @@ export async function verificaSalvabile(
 
   const esito = verificaDatiSocietari(contenuto, s.societa)
   if (!esito.ok) {
+    // Task 12 — la via d'uscita: se l'Ingegnere ha gia' tappato
+    // /doc_ok_<codice> per QUESTO contenuto, in QUESTA conversazione, non e'
+    // un secondo blocco — e' il documento che finalmente si genera.
+    // `autorizzazioneValida` la CONSUMA: da qui in poi non vale piu'.
+    if (await autorizzazioneValida(conversationId, contenuto)) {
+      return { ok: true }
+    }
+    const { uuid } = await chiediAutorizzazione(conversationId, contenuto, esito)
     return {
       ok: false,
-      esito: { ok: false, motivo: 'dati_societari', messaggio: messaggioBlocco(esito), esito },
+      esito: { ok: false, motivo: 'dati_societari', messaggio: messaggioBlocco(esito, uuid), esito },
     }
   }
 

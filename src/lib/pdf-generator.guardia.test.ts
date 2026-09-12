@@ -30,6 +30,17 @@ vi.mock('@sparticuz/chromium', () => ({
   },
 }))
 
+// Task 12 — la via d'uscita. Mockata qui: il suo comportamento VERO (le
+// cinque scelte che la rendono sicura) e' provato in
+// guardia-autorizzazioni.test.ts; qui interessa solo che i due imbuti la
+// CONSULTINO davvero prima di dichiarare un blocco definitivo.
+const mockAutorizzazioneValida = vi.fn()
+const mockChiediAutorizzazione = vi.fn()
+vi.mock('./guardia-autorizzazioni', () => ({
+  autorizzazioneValida: (...a: unknown[]) => mockAutorizzazioneValida(...a),
+  chiediAutorizzazione: (...a: unknown[]) => mockChiediAutorizzazione(...a),
+}))
+
 import {
   generatePdfFromHtml,
   generateDocxFromHtml,
@@ -60,6 +71,8 @@ async function creatorDi(buf: Buffer): Promise<string> {
 beforeEach(() => {
   vi.clearAllMocks()
   launchMock.mockResolvedValue(makeMockBrowser() as never)
+  mockAutorizzazioneValida.mockResolvedValue(false)
+  mockChiediAutorizzazione.mockResolvedValue({ uuid: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' })
 })
 
 describe('la guardia sui dati societari, dentro generatePdfFromHtml', () => {
@@ -96,6 +109,35 @@ describe('la guardia sui dati societari, dentro generatePdfFromHtml', () => {
       generatePdfFromHtml('<p>Preventivo per il committente Mario Rossi</p>', 'x', { societa: LAREALESTATE }),
     ).resolves.toBeInstanceOf(Buffer)
   })
+
+  // Task 12 — la via d'uscita: senza, il messaggio di blocco prometteva
+  // "dimmelo e lo genero comunque" senza nessun modo di mantenerla.
+  it('Task 12 — senza autorizzazione, il blocco la CHIEDE (registra un nuovo codice)', async () => {
+    await expect(
+      generatePdfFromHtml('<h1>RESTRUKTURA S.r.l.</h1><p>02087420762</p>', 'x', {
+        societa: LAREALESTATE,
+        conversationId: 'conv-1',
+      }),
+    ).rejects.toBeInstanceOf(ErroreDatiSocietari)
+
+    expect(mockChiediAutorizzazione).toHaveBeenCalledWith(
+      'conv-1',
+      expect.stringContaining('02087420762'),
+      expect.objectContaining({ ok: false }),
+    )
+  })
+
+  it('Task 12 — CONTROLLO NEGATIVO: con un\'autorizzazione valida per QUESTO contenuto, genera comunque', async () => {
+    mockAutorizzazioneValida.mockResolvedValue(true)
+    const html = '<h1>RESTRUKTURA S.r.l.</h1><p>02087420762</p>'
+
+    await expect(
+      generatePdfFromHtml(html, 'x', { societa: LAREALESTATE, conversationId: 'conv-1' }),
+    ).resolves.toBeInstanceOf(Buffer)
+
+    expect(mockAutorizzazioneValida).toHaveBeenCalledWith('conv-1', html)
+    expect(mockChiediAutorizzazione).not.toHaveBeenCalled()
+  })
 })
 
 describe('la guardia sui dati societari, dentro generateDocxFromHtml', () => {
@@ -120,6 +162,15 @@ describe('la guardia sui dati societari, dentro generateDocxFromHtml', () => {
   it('CONTROLLO NEGATIVO — Word con societa coerente: genera', async () => {
     await expect(
       generateDocxFromHtml('<p>Contratto</p>', 'x', { societa: RESTRUKTURA }),
+    ).resolves.toBeInstanceOf(Buffer)
+  })
+
+  // Task 12 — stesso imbuto, stessa via d'uscita del PDF: due formati dallo
+  // stesso HTML non possono divergere nemmeno su questo.
+  it('Task 12 — CONTROLLO NEGATIVO: con un\'autorizzazione valida, il Word esce comunque', async () => {
+    mockAutorizzazioneValida.mockResolvedValue(true)
+    await expect(
+      generateDocxFromHtml('<p>02087420762</p>', 'x', { societa: LAREALESTATE, conversationId: 'conv-1' }),
     ).resolves.toBeInstanceOf(Buffer)
   })
 })

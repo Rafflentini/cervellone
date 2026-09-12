@@ -838,6 +838,26 @@ export async function POST(request: NextRequest) {
       return await rispondiESalva(message)
     }
 
+    // Blocco dati societari — la via d'uscita (Task 12): /doc_ok_<uuid>
+    // concede l'autorizzazione (una volta, per QUEL documento); /doc_no_<uuid>
+    // la scarta. La concede l'Ingegnere TAPPANDO, mai il modello: nessun
+    // tool puo' chiamare concediAutorizzazione, il ramo sta solo qui nella
+    // route. Il gemello sta in `api/chat/route.ts`: equipollenza vincolante.
+    const mDocOk = comandoUuid(testoComandi, 'doc_ok')
+    const mDocNo = comandoUuid(testoComandi, 'doc_no')
+    if (mDocOk || mDocNo) {
+      if (mDocOk) {
+        const { concediAutorizzazione } = await import('@/lib/guardia-autorizzazioni')
+        const r = await concediAutorizzazione(mDocOk)
+        return await rispondiESalva(
+          r.ok
+            ? '✅ Autorizzato. Mi ripeta la richiesta e genero il documento con questi dati.'
+            : `⚠️ Non ho potuto autorizzarlo: ${r.motivo}.`,
+        )
+      }
+      return await rispondiESalva('Va bene, non lo genero. Mi dica su quale società lavorare e lo sistemo.')
+    }
+
     // STALE_LOCK_MS = 150s con heartbeat 20s → buffer ~7 battiti. Su Fluid compute
     // i battiti persi possono falsamente marcare stale un lock ancora vivo; 150s
     // riduce il rischio di falso-stale mantenendo l'heartbeat a 20s.

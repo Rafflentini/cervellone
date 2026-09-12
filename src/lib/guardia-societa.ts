@@ -13,6 +13,7 @@
  * Una guardia che blocca il caso normale e' peggio del buco che chiude.
  */
 import { listaSocieta, type CodiceSocieta } from './societa'
+import { comandoDaMostrare } from './comandi-uuid'
 
 // `sede` e' opzionale qui: la guardia (verificaDatiSocietari/messaggioBlocco)
 // confronta e nomina solo denominazione+piva, e diversi test la costruiscono
@@ -62,8 +63,24 @@ export function verificaDatiSocietari(contenuto: string, attesa: DatiSocietari):
  * Il testo che legge l'Ingegnere. NOMINA le partite IVA: un rifiuto che non
  * dice cosa non torna lo costringe a indovinare, ed e' il difetto che abbiamo
  * chiuso sei volte questa settimana sotto altre forme.
+ *
+ * Task 12: la vecchia promessa («dimmelo e lo genero comunque») non esisteva
+ * davvero — confermare a voce faceva ritentare il modello, la guardia
+ * bloccava di nuovo, giro a vuoto. Ora la promessa e' un comando VERO,
+ * `/doc_ok_<codice>` (src/lib/guardia-autorizzazioni.ts): `uuid` e'
+ * l'autorizzazione gia' registrata da `chiediAutorizzazione` per QUESTO
+ * contenuto, e va mostrata qui — mai generata al buio da questa funzione,
+ * che resta sincrona e senza accesso al database.
+ *
+ * ⚠️ Il comando porta un underscore per costruzione (e' l'unico modo per
+ * essere tappabile su Telegram): non e' l'invariante «nessun underscore»,
+ * che infatti non vale piu' in assoluto. L'invariante vera e' «nessun
+ * identificatore snake_case NUDO nella prosa» — un comando riconosciuto da
+ * `contieneComandoConCodice` va bene, perche' quella funzione fa gia'
+ * spedire il messaggio in testo semplice, dove il Markdown non mangia nulla.
+ * Vedi il test in guardia-societa.test.ts.
  */
-export function messaggioBlocco(esito: Extract<EsitoGuardia, { ok: false }>): string {
+export function messaggioBlocco(esito: Extract<EsitoGuardia, { ok: false }>, uuid: string): string {
   const altre = esito.trovate
     .map((t) => `${t.denominazione} (P.IVA ${t.piva})`)
     .join(', ')
@@ -76,8 +93,10 @@ export function messaggioBlocco(esito: Extract<EsitoGuardia, { ok: false }>): st
     `Non l'ho consegnato: un documento con la partita IVA sbagliata, una volta`,
     `mandato, non si richiama piu'.`,
     ``,
-    `Se e' voluto (per esempio l'altra societa' e' il committente), dimmelo e`,
-    `lo genero comunque.`,
-    `Se non e' voluto, dimmi su quale societa' stiamo lavorando e la sistemo.`,
+    `Se e' voluto (per esempio l'altra societa' e' il committente), generalo`,
+    `comunque con ${comandoDaMostrare('doc_ok', uuid)} — vale una volta sola,`,
+    `per QUESTO documento, e scade fra 30 minuti.`,
+    `Se non e' voluto, dimmi su quale societa' stiamo lavorando e la sistemo,`,
+    `oppure annulla con ${comandoDaMostrare('doc_no', uuid)}`,
   ].join('\n')
 }

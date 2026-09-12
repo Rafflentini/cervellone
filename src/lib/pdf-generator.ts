@@ -44,6 +44,7 @@ import {
   formatoStampabile,
 } from './immagine-dimensioni'
 import { verificaDatiSocietari, messaggioBlocco, type EsitoGuardia, type DatiSocietari } from './guardia-societa'
+import { autorizzazioneValida, chiediAutorizzazione } from './guardia-autorizzazioni'
 
 /**
  * Il piede del PDF. La societa' NON e' cablata: le societa' sono due, e un
@@ -68,11 +69,31 @@ function piedePagina(societa: DatiSocietari): string {
  */
 export class ErroreDatiSocietari extends Error {
   readonly esito: Extract<EsitoGuardia, { ok: false }>
-  constructor(esito: Extract<EsitoGuardia, { ok: false }>) {
-    super(messaggioBlocco(esito))
+  constructor(esito: Extract<EsitoGuardia, { ok: false }>, messaggio: string) {
+    super(messaggio)
     this.name = 'ErroreDatiSocietari'
     this.esito = esito
   }
+}
+
+/**
+ * La guardia + la via d'uscita (Task 12), condivisa dai due imbuti sotto
+ * (PDF e Word): se il contenuto porta una P.IVA che non e' la nostra, prima
+ * si controlla se QUESTA conversazione ha gia' un'autorizzazione valida per
+ * QUESTO contenuto esatto (`autorizzazioneValida` la consuma, una volta) —
+ * solo se non ce l'ha si registra un nuovo blocco in attesa
+ * (`chiediAutorizzazione`) e si solleva `ErroreDatiSocietari` col codice
+ * dentro il messaggio.
+ */
+async function assertDatiSocietari(contenuto: string, opzioni: OpzioniDocumento): Promise<void> {
+  const esitoGuardia = verificaDatiSocietari(contenuto, opzioni.societa)
+  if (esitoGuardia.ok) return
+
+  const conversationId = opzioni.conversationId ?? ''
+  if (await autorizzazioneValida(conversationId, contenuto)) return
+
+  const { uuid } = await chiediAutorizzazione(conversationId, contenuto, esitoGuardia)
+  throw new ErroreDatiSocietari(esitoGuardia, messaggioBlocco(esitoGuardia, uuid))
 }
 
 /**
@@ -401,6 +422,16 @@ export type OpzioniDocumento = {
    * non genera nulla.
    */
   societa: DatiSocietari
+  /**
+   * La conversazione (Task 12): lega un'eventuale autorizzazione
+   * (`/doc_ok_<codice>`) a QUESTA conversazione, cosi' il blocco ha una via
+   * d'uscita tappabile invece di una promessa senza meccanismo. OPZIONALE
+   * per compatibilita' con i chiamanti che non la passano ancora: in quel
+   * caso la via d'uscita funziona lo stesso (chiave di conversazione vuota,
+   * usata in modo coerente sia al blocco sia al consumo), ma senza legarsi
+   * alla conversazione vera — vedi il rapporto del Task 12.
+   */
+  conversationId?: string
 }
 
 export async function generatePdfFromHtml(
@@ -410,8 +441,7 @@ export async function generatePdfFromHtml(
 ): Promise<Buffer> {
   // La guardia gira PRIMA di tutto: un documento bloccato non deve costare
   // ne' il download delle immagini Drive ne' l'avvio di un browser.
-  const esitoGuardia = verificaDatiSocietari(html, opzioni.societa)
-  if (!esitoGuardia.ok) throw new ErroreDatiSocietari(esitoGuardia)
+  await assertDatiSocietari(html, opzioni)
 
   const { html: htmlWithEmbeddedImages, mancanti } = await embedDriveImages(html)
   if (mancanti.length > 0) opzioni.onImmaginiMancanti?.(mancanti)
@@ -552,8 +582,7 @@ export async function generateDocxFromHtml(
   // Stessa guardia del PDF, e nello stesso punto: PRIMA di scaricare foto o
   // costruire il documento. Due formati dallo stesso HTML non possono
   // divergere su questo.
-  const esitoGuardia = verificaDatiSocietari(html, opzioni.societa)
-  if (!esitoGuardia.ok) throw new ErroreDatiSocietari(esitoGuardia)
+  await assertDatiSocietari(html, opzioni)
 
   const blocks = htmlToDocxBlocks(html)
 

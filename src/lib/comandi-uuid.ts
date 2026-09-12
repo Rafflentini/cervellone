@@ -90,6 +90,8 @@ export const COMANDI_CON_CODICE = [
   'regola_ok',
   'regola_no',
   'regola_via',
+  'doc_ok',
+  'doc_no',
 ] as const
 
 export type ComandoConCodice = (typeof COMANDI_CON_CODICE)[number]
@@ -142,6 +144,11 @@ export const ORIGINE_CODICE: Partial<
   regola_ok: { tabella: 'cervellone_regole', colonna: 'id' },
   regola_no: { tabella: 'cervellone_regole', colonna: 'id' },
   regola_via: { tabella: 'cervellone_regole', colonna: 'id' },
+  // Task 12 — la via d'uscita dal blocco sui dati societari. ⚠️ La chiave di
+  // questa tabella e' `uuid`, non `id`: e' lo stesso difetto A2 di sopra,
+  // vissuto in produzione per tre mesi sulle mail in sospeso.
+  doc_ok: { tabella: 'cervellone_guardia_autorizzazioni', colonna: 'uuid' },
+  doc_no: { tabella: 'cervellone_guardia_autorizzazioni', colonna: 'uuid' },
 }
 
 /**
