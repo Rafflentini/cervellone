@@ -57,8 +57,17 @@ vi.mock('@/lib/working-memory', () => ({
   buildActiveProjectContext: async () => '',
 }))
 vi.mock('@/lib/template-context', () => ({ buildTemplateContext: async () => '' }))
-vi.mock('@/lib/societa-attiva', () => ({ getSocietaAttiva: async () => 'restruktura', bloccoSocietaAttiva: () => '' }))
-vi.mock('@/lib/societa', () => ({ getSocieta: () => ({ nome: 'Restruktura' }) }))
+vi.mock('@/lib/societa-attiva', () => ({
+  getSocietaAttiva: async () => 'restruktura',
+  bloccoSocietaAttiva: () => '',
+  // societa-documenti.ts (Task 3) risolve la societa' dei documenti da qui,
+  // non piu' da getSocietaAttiva: senza questo export il mock e' incompleto
+  // e qualunque flusso che generi un documento esplode in setup.
+  leggiSocietaAttiva: async () => ({ ok: true, codice: 'restruktura', esplicita: false }),
+}))
+vi.mock('@/lib/societa', () => ({
+  getSocieta: () => ({ nome: 'Restruktura', denominazione: 'Restruktura', piva: '00000000000' }),
+}))
 vi.mock('@/lib/supabase', () => ({
   supabase: { from: () => ({ insert: () => ({ select: () => ({ single: async () => ({ data: null }) }) }) }) },
 }))

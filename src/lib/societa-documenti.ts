@@ -6,18 +6,54 @@
  * `tools.ts` e in `document-template-tools.ts`, e due copie della stessa cosa
  * sono due cose destinate a divergere.
  *
- * Best-effort: se non si riesce a risolvere la societa' attiva resta
- * Restruktura, che e' il caso di gran lunga piu' frequente.
+ * NON e' piu' best-effort. Prima, un guasto nella lettura della societa'
+ * attiva finiva nello stesso `catch { return undefined }` di "non l'ha mai
+ * scelta", e il chiamante trattava entrambi allo stesso modo: Restruktura.
+ * Per chi legge un blocco di contesto va bene (`getSocietaAttiva`, che resta
+ * cosi' apposta). Per chi stampa una partita IVA su un documento fiscale no:
+ * un guasto travestito da "Restruktura" e' un documento intestato alla
+ * societa' sbagliata, spedito con sicurezza indebita. `societaPerDocumento`
+ * si appoggia a `leggiSocietaAttiva` (Task 2), che distingue "non scelta" da
+ * "non siamo riusciti a leggerla", e propaga il secondo caso come errore
+ * dichiarato invece di indovinare.
+ */
+import { leggiSocietaAttiva } from './societa-attiva'
+import { getSocieta } from './societa'
+import type { DatiSocietari } from './guardia-societa'
+
+export type EsitoSocietaDocumento =
+  | { ok: true; societa: DatiSocietari; esplicita: boolean }
+  | { ok: false; errore: string }
+
+export async function societaPerDocumento(conversationId?: string): Promise<EsitoSocietaDocumento> {
+  const e = await leggiSocietaAttiva(conversationId ?? '')
+  if (!e.ok) return { ok: false, errore: e.errore }
+
+  const s = getSocieta(e.codice)
+  // Difesa contro un codice che leggiSocietaAttiva restituisse ma che il
+  // registro non conosce: non deve esplodere con un TypeError su
+  // `undefined.denominazione`, deve dichiarare l'errore come tutti gli altri.
+  if (!s) return { ok: false, errore: `societa' sconosciuta nel registro: ${e.codice}` }
+
+  return {
+    ok: true,
+    societa: { denominazione: s.denominazione, piva: s.piva },
+    esplicita: e.esplicita,
+  }
+}
+
+/**
+ * TRANSITORIA — la rimuove il Task 5, quando i suoi due chiamanti
+ * (`tools.ts`, `document-template-tools.ts`) passeranno a leggere
+ * `EsitoSocietaDocumento` e a dichiarare l'errore invece di indovinare.
+ * Fino ad allora resta con la stessa firma e lo stesso comportamento
+ * osservabile di prima: `undefined` su qualunque `ok:false`, guasto compreso.
+ * Non e' un regresso rispetto a oggi (quel comportamento e' quello attuale),
+ * ma non e' piu' la fonte di verita': lo e' `societaPerDocumento`.
  */
 export async function societaAttivaPerDocumenti(
   conversationId?: string,
 ): Promise<{ denominazione: string; piva: string } | undefined> {
-  try {
-    const { getSocietaAttiva } = await import('./societa-attiva')
-    const { getSocieta } = await import('./societa')
-    const s = getSocieta(await getSocietaAttiva(conversationId ?? ''))
-    return { denominazione: s.denominazione, piva: s.piva }
-  } catch {
-    return undefined
-  }
+  const e = await societaPerDocumento(conversationId)
+  return e.ok ? e.societa : undefined
 }
