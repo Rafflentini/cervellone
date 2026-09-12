@@ -15,8 +15,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 let societaAttiva = 'restruktura'
 const societaRicevute: Record<string, string> = {}
 
+// leggiSocietaAttiva e' quella che ora percorre il wrapper `contabile`
+// (Task 11): un mock che desse solo getSocietaAttiva esploderebbe in avvio,
+// non e' una regressione di questo file ma un mock diventato incompleto.
 vi.mock('./societa-attiva', () => ({
   getSocietaAttiva: async () => societaAttiva,
+  leggiSocietaAttiva: async () => ({ ok: true, codice: societaAttiva, esplicita: true }),
 }))
 
 // Ogni esecutore contabile registra la società che gli è arrivata

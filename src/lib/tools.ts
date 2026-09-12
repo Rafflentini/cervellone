@@ -837,18 +837,26 @@ export function getAllToolNames(): string[] {
 
 /**
  * Gli strumenti contabili hanno bisogno di sapere PER QUALE SOCIETÀ operano.
- * Oggi dichiarano esplicitamente Restruktura: nel Task 4 la società verrà
- * risolta dalla conversazione: `/societa` sceglie, e da qui la scelta arriva
+ * `/societa` (o il tool web equivalente) sceglie, e da qui la scelta arriva
  * agli strumenti contabili.
  *
  * Questo cablaggio NON è un dettaglio: senza, `/societa` sarebbe un interruttore
  * che risponde "fatto" e non commuta nulla — il bot dichiarerebbe di lavorare
  * per un'azienda mentre legge e scrive i dati dell'altra. Un sistema che non sa
  * fare una cosa è onesto; uno che afferma di averla fatta è pericoloso.
+ *
+ * Passa da `leggiSocietaAttiva`, non da `getSocietaAttiva`: quest'ultima, su un
+ * errore di lettura, restituisce `restruktura` — un default pensato per il
+ * contesto iniettato nel prompt, dove indovinare non produce un'operazione.
+ * Qui produce un'operazione: un errore di database non è una società, ed è
+ * esattamente il caso che `leggiSocietaAttiva` distingue (Task 2).
  */
-async function societaDellaConversazione(conversationId?: string): Promise<CodiceSocieta> {
-  const { getSocietaAttiva } = await import('./societa-attiva')
-  return getSocietaAttiva(conversationId)
+async function societaDellaConversazione(
+  conversationId: string,
+): Promise<{ ok: true; codice: CodiceSocieta } | { ok: false; errore: string }> {
+  const { leggiSocietaAttiva } = await import('./societa-attiva')
+  const e = await leggiSocietaAttiva(conversationId)
+  return e.ok ? { ok: true, codice: e.codice } : { ok: false, errore: e.errore }
 }
 
 /**
@@ -861,11 +869,35 @@ async function societaDellaConversazione(conversationId?: string): Promise<Codic
  * società esplicitamente (verificato). Ma "oggi non raggiungibile" è una
  * garanzia indiretta, e le garanzie indirette si rompono quando qualcun altro
  * cambia il chiamante.
+ *
+ * Niente underscore e nessun nome di comando nel messaggio: `/societa` esiste
+ * SOLO su Telegram (sul web i comandi slash nudi non sono gestiti), e su
+ * Telegram il Markdown mangia gli underscore in un nome_con_underscore — e i
+ * nomi dei tool (`fic_fatture_emesse`, `imposta_societa_attiva`, ...) sono
+ * pieni di underscore: per questo il nome del tool entra nel messaggio con gli
+ * spazi al posto degli underscore, non verbatim.
  */
 function senzaConversazione(name: string): string {
   return JSON.stringify({
     ok: false,
-    error: `${name}: societa non determinabile senza conversazione. Usa /societa per dichiararla.`,
+    error: `${name.replace(/_/g, ' ')}: societa non determinabile senza conversazione. Non eseguo un'operazione contabile senza saperlo: dimmi su quale societa stiamo lavorando.`,
+  })
+}
+
+/**
+ * Una lettura fallita NON è una società. Vale qui esattamente il motivo scritto
+ * sopra per la conversazione assente: un'operazione contabile non ricade su un
+ * default, perché equivale a sceglierla a caso. La differenza è che quella
+ * strada era chiusa (mai raggiunta oggi) e questa era aperta: un guasto
+ * transitorio nella lettura avrebbe fatto girare l'operazione su Restruktura in
+ * silenzio, mentre magari si lavora su La Real Estate. Stessa forma di
+ * `senzaConversazione`: il modello e l'Ingegnere leggono la stessa forma per la
+ * stessa categoria di problema.
+ */
+function societaNonLeggibile(name: string, errore: string): string {
+  return JSON.stringify({
+    ok: false,
+    error: `${name.replace(/_/g, ' ')}: non riesco a leggere quale societa e' attiva (${errore}). Non eseguo un'operazione contabile senza saperlo: dimmi su quale societa stiamo lavorando.`,
   })
 }
 
@@ -875,7 +907,9 @@ const contabile = (
 ) => async (name: string, input: Record<string, unknown>, conversationId?: string): Promise<string | null> => {
   if (!appartiene(name)) return null
   if (!conversationId) return senzaConversazione(name)
-  return esecutore(name, input, await societaDellaConversazione(conversationId))
+  const s = await societaDellaConversazione(conversationId)
+  if (!s.ok) return societaNonLeggibile(name, s.errore)
+  return esecutore(name, input, s.codice)
 }
 
 const nomiDi = (tools: ToolDefinition[]) => {
