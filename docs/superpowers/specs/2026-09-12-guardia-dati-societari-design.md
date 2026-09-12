@@ -296,3 +296,177 @@ genera documenti usa solo `leggiSocietaAttiva`.**
 → Gli altri chiamanti di `getSocietaAttiva` che **scrivono** su Fatture in Cloud restano un
 punto aperto dichiarato: un'operazione FIC sull'azienda sbagliata è grave quanto un
 documento sbagliato, ma non è il lavoro di oggi e non va nascosto dentro a questo.
+
+---
+
+## Inventario completo, chiuso il 12 set 2026 — SETTE punti
+
+La prima tabella di questo documento ne elencava quattro, il messaggio a Raffaele
+sei. Il conto definitivo, dopo aver tracciato anche la catena CIGO, è **sette**.
+Lo scarto non è un dettaglio: due dei tre punti aggiunti sono della stessa classe
+(`?? COSTANTE`), e uno è peggiore degli altri perché *sembra* prendere il dato dai
+dati.
+
+| # | Punto | Forma | Chi lo prende |
+|---|---|---|---|
+| 1 | `src/lib/tools/studio-tecnico.ts:837` | letterale cablato nell'HTML | intestazione CME |
+| 2 | `src/lib/tools/studio-tecnico.ts:857` | letterale cablato nell'HTML | **intestazione del preventivo** |
+| 3 | `src/lib/tools/studio-tecnico.ts:~970` | letterale nel piede | quadro economico |
+| 4 | `src/lib/pdf-generator.ts:59` | `opzioni.societa ?? SOCIETA_PREDEFINITA` | ogni PDF e Word generato da HTML |
+| 5 | `src/v19/render/utils.ts:110` | `text ?? "RESTRUKTURA … 02087420762 …"` | il piede di ogni Word dai modelli |
+| 6 | `src/lib/prompts.ts:134` | riga incondizionata nel prompt statico | il modello, a ogni turno |
+| 7 | `src/v19/tools/cigo/build-allegato10.ts:257` | letterale **accanto** al dato | piede dell'Allegato 10 INPS |
+
+### Perché il settimo è il più insidioso
+
+```ts
+footer: `RESTRUKTURA S.r.l. — P.IVA ${input.azienda.codice_fiscale} — ${input.azienda.denominazione} — …`
+```
+
+La ragione sociale compare **due volte**: una cablata, una interpolata dai dati
+della pratica. Chi legge questa riga vede le due interpolazioni e conclude che il
+piede viene dai dati — e non nota che il nome dell'azienda, davanti, è scritto a
+mano. Se la pratica fosse di un'altra azienda il piede si contraddirebbe da solo:
+`RESTRUKTURA S.r.l. — P.IVA <altra> — <ALTRA DENOMINAZIONE>`, su un documento
+destinato all'INPS.
+
+Il rischio pratico oggi è basso — il CIGO è per natura di Restruktura — ma è
+«basso per caso», non per costruzione: nessuna riga di codice impedisce a quella
+funzione di essere riusata.
+
+### Le due classi, nominate
+
+- **Letterale cablato** (1, 2, 3, 7): un dato societario riscritto a mano dentro un
+  generatore, fuori dal registro. → `grep` **A8**.
+- **Fallback non configurato** (4, 5): `opzioni.X ?? COSTANTE` dove `COSTANTE` è
+  l'identità di un'entità reale. **Chi dimentica il parametro non sbaglia: prende
+  un'identità in silenzio.** → `grep` **A9**. La cura non è un controllo, è
+  rendere il parametro **obbligatorio**: così l'omissione diventa un errore di
+  compilazione invece di una stampa.
+- Il sesto è a parte: non è codice che genera, è **il prompt che afferma**. Vive
+  in un file statico che non conosce la conversazione, quindi non può sapere quale
+  società è attiva. Si cancella, e l'informazione va in `bloccoSocietaAttiva`, che
+  la società attiva la riceve già e viene iniettato **simmetricamente sui due
+  canali**.
+
+---
+
+## Il conto definitivo: NOVE punti — e perché è cresciuto quattro volte
+
+La sezione precedente dice sette. Prima ne diceva quattro, e a Raffaele ne ho
+detti sei. **Il numero vero è nove**, e la progressione non è sciatteria: ogni
+conto veniva da un `grep` più largo del precedente, e vale la pena scriverla,
+perché è la parte generalizzabile di tutto questo lavoro.
+
+| Conto | Come l'avevo misurato | Cosa mi era sfuggito |
+|---|---|---|
+| **4** | `grep` delle due partite IVA nei sorgenti | i piedi con la **sola ragione sociale**, e la catena CIGO |
+| **6** | lo stesso `grep`, letto meglio | idem |
+| **7** | tracciata la catena CIGO fino a `renderDocx` | i tre piedi in `studio-tecnico.ts` |
+| **9** | `grep` della **ragione sociale**, non della partita IVA | — |
+
+### L'inventario, riga per riga
+
+| # | Punto | Forma | Porta la P.IVA? |
+|---|---|---|---|
+| 1 | `src/lib/tools/studio-tecnico.ts:837` | `const headerHtml = …` — **vivo**, usato a `:915` (CME) e `:944` (QE) | ✅ |
+| 2 | `src/lib/tools/studio-tecnico.ts:857` | la **stessa** intestazione riscritta inline → preventivo | ✅ |
+| 3 | `src/lib/tools/studio-tecnico.ts:875` | piede del preventivo | ❌ solo ragione sociale |
+| 4 | `src/lib/tools/studio-tecnico.ts:935` | piede del CME | ❌ solo ragione sociale |
+| 5 | `src/lib/tools/studio-tecnico.ts:971` | piede del quadro economico | ❌ solo ragione sociale |
+| 6 | `src/lib/pdf-generator.ts:59` | `opzioni.societa ?? SOCIETA_PREDEFINITA` | ✅ |
+| 7 | `src/v19/render/utils.ts:110` | `text ?? "RESTRUKTURA … 02087420762 …"` | ✅ |
+| 8 | `src/lib/prompts.ts:134` | riga incondizionata nel prompt statico | ✅ |
+| 9 | `src/v19/tools/cigo/build-allegato10.ts:257` | letterale **accanto** al dato interpolato | ✅ (dai dati) |
+
+### Le due cose che questo conto insegna
+
+**1. La guardia non copre tutto, e va detto.** I punti 3, 4 e 5 portano **solo la
+ragione sociale**, senza partita IVA. La guardia del Task 1 cerca le partite IVA:
+**non li vedrebbe.** Su un documento de La Real Estate resterebbe «Restruktura
+S.r.l.» stampato in fondo, e nessun controllo automatico lo troverebbe. Per
+quei tre punti la **cura è l'unica difesa** — e questo è esattamente il motivo per
+cui la promessa giusta è «non può passare inosservato» e non «non succederà mai».
+
+> Estensione possibile, non fatta oggi e dichiarata: far cercare alla guardia
+> anche le **ragioni sociali** oltre alle partite IVA. Costo: le denominazioni
+> sono stringhe libere (`RESTRUKTURA S.r.l.` vs `RESTRUKTURA S.R.L.` vs
+> `Restruktura S.r.l.`), quindi servirebbe una normalizzazione, e il rischio di
+> falso positivo sale — una lettera che *nomina* l'altra società è molto più
+> comune di una che ne riporta la partita IVA. Va misurato prima di costruirlo,
+> non stimato. **Punto aperto.**
+
+**2. Il duplicato è il difetto sotto il difetto.** Il punto 2 è una copia
+**letterale** del punto 1: la stessa intestazione scritta due volte a venti righe
+di distanza. Non è un errore di battitura, è la forma in cui i difetti si
+moltiplicano — e il file `societa-documenti.ts` esiste già proprio perché questa
+funzione era stata copiata in due posti. La cura non è correggere due stringhe:
+è costruirne **una** e usarla tre volte.
+
+### Il `grep` che questo insegna alla lista tarata
+
+Il controllo **A8** non basta se cerca solo le partite IVA. Va cercata anche la
+**ragione sociale**:
+
+    grep -rn "RESTRUKTURA\|LA REAL ESTATE" src --include=*.ts | grep -vi "test\|spec" | grep -v "societa.ts\|identita.ts"
+
+Con questo comando i nove punti si trovano **tutti**, il giorno in cui nascono.
+Senza, se ne trovano sei — ed è precisamente l'errore che ho fatto stasera.
+
+---
+
+## UNDICI. E il conto l'ha chiuso lo strumento, non io
+
+La sezione qui sopra dice nove, e propone un `grep` per trovarli. **Quel `grep`
+era sbagliato:** cercava `RESTRUKTURA` maiuscolo, e i tre piedi di
+`studio-tecnico.ts` scrivono `Restruktura S.r.l.` in minuscolo. Avrei proposto
+alla lista tarata un controllo che manca un terzo dei casi che deve trovare —
+cioè un controllo che dà **un falso verde**: lo stesso errore, in forma nuova,
+commesso mentre lo catalogavo.
+
+Il comando tarato è questo, e prima di scriverlo qui l'ho eseguito:
+
+    grep -rniE "restruktura s\.?r\.?l|la real estate s\.?r\.?l" src --include=*.ts \
+      | grep -vi "\.test\.\|spec\.ts\|__tests__" \
+      | grep -v "societa.ts:\|identita.ts:"
+
+24 righe, che contengono **tutti** i punti — e **due che il mio conteggio a mano
+aveva mancato**:
+
+| # | Punto | Cosa |
+|---|---|---|
+| 10 | `src/lib/pdf-generator.ts:653` | `creator: 'Cervellone — Restruktura S.r.l.'` — **metadati del PDF** |
+| 11 | `src/lib/pdf-generator.ts:698` | `workbook.creator = 'Cervellone — Restruktura S.r.l.'` — **metadati dell'Excel** |
+
+Un PDF de La Real Estate porterebbe «Restruktura S.r.l.» come **autore nelle
+proprietà del file**: invisibile nella pagina, visibile a chiunque apra le
+proprietà del documento o lo ispezioni. Non è la cosa più grave della lista, ma è
+un dato societario dentro un documento consegnato, e nessuna guardia che legge il
+**contenuto** lo vedrebbe mai — i metadati non stanno nell'HTML.
+
+Sono due righe, nello stesso file dove `societa` diventa obbligatoria (Task 5):
+`creator: 'Cervellone — ' + societa.denominazione`. Costo zero, fatte lì.
+
+### Le righe legittime, per non toccarle
+
+Delle 24, queste **non** sono difetti e vanno lasciate:
+
+- tutto `src/lib/checkin/*` e `src/app/api/checkin/*` — il check-in **è**
+  l'attività de La Real Estate, la sua ragione sociale lì è il dato giusto
+- `src/lib/drive.ts:1254` — testo della descrizione di un tool, non un documento
+- `src/lib/prompts.ts:129`, `:138`, `:146`, `:187`, `:188`, `:222` — l'identità e
+  il blocco che descrive **entrambe** le società: è informazione, non intestazione
+  (l'unica riga di `prompts.ts` da togliere è la **`:134`**)
+- `src/lib/pdf-generator.ts:49` — un commento
+
+### La lezione, che è la più utile di tutta la serata
+
+**Ho sbagliato il conto quattro volte — 4, 6, 7, 9 — e ogni volta perché lo
+strumento era più stretto della cosa da misurare.** Il conto giusto è arrivato
+quando ho smesso di contare a mano e ho **tarato il `grep`**: lui ne ha trovati
+undici, io undici meno due.
+
+È la stessa regola che questo repo ha già scritto due volte (*«la misura non è il
+dato»*, *«tarare lo strumento, non solo il dato»*), e stasera l'ho violata
+proponendo un comando senza eseguirlo. La differenza fra le due versioni di quel
+comando — `RESTRUKTURA` contro `-i` — è un terzo dei difetti.

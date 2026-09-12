@@ -685,10 +685,29 @@ Con La Real Estate attiva e un turno che produce un documento intestato Restrukt
 ### Task 7: le sei intestazioni cablate — la cura, non la rete
 
 **Files:**
-- Modify: `src/lib/tools/studio-tecnico.ts:837`, `:857`, e il piede del quadro economico (`Restruktura S.r.l. — Le percentuali sono indicative`, ~`:970`)
+- Modify: `src/lib/tools/studio-tecnico.ts` — **CINQUE punti, contati uno per uno** (non tre: il piano lo diceva sbagliato fino alla verifica del 12 set):
+
+| Riga | Cosa | Dove finisce |
+|---|---|---|
+| `:837` | `const headerHtml = ...RESTRUKTURA S.r.l.... P.IVA 02087420762...` | **vivo**, usato a `:915` (CME) e `:944` (quadro economico) |
+| `:857` | la **stessa** intestazione riscritta inline | intestazione del **preventivo** |
+| `:875` | `<div class="footer">Restruktura S.r.l. — Validità offerta: 60 giorni...` | piede del preventivo |
+| `:935` | `Restruktura S.r.l. — Conforme a DPR 207/2010...` | piede del CME |
+| `:971` | `Restruktura S.r.l. — Le percentuali sono indicative...` | piede del quadro economico |
+
+⚠️ **`:857` è una copia letterale di `:837`.** Non correggerne una e lasciare l'altra, e non
+lasciarne due copie corrette: costruire l'intestazione **una volta** dalla società attiva e
+usarla in tutti e tre i documenti. Due copie della stessa stringa sono due cose destinate a
+divergere — è il motivo per cui `societa-documenti.ts` esiste.
+
+I tre piedi (`:875`, `:935`, `:971`) portano **solo la ragione sociale**, senza partita IVA:
+la guardia del Task 1 **non li vedrebbe**, perché cerca le partite IVA. Su un documento de
+La Real Estate restano comunque il nome dell'azienda sbagliata, stampato in fondo. Vanno
+corretti qui: è la cura, e in questo caso la rete non c'è.
+
 - Modify: `src/v19/render/utils.ts:110` (se non già fatto nel Task 5)
 - Modify: `src/lib/prompts.ts:134`
-- Test: `src/lib/tools/studio-tecnico.characterization.test.ts` (aggiornare), più il test di riproduzione
+- Test: `src/lib/tools/studio-tecnico.characterization.test.ts` (aggiornare lo snapshot **dopo** aver letto il diff), più il test di riproduzione
 
 **Interfaces:** consuma `societaPerDocumento` (Task 3). `executeStudioTecnico` ha già `conversationId` in firma (`:147`).
 
@@ -774,13 +793,241 @@ Expected: **solo** `src/lib/societa.ts`, `src/v19/prompts/identita.ts`, `src/lib
 
 - [ ] **Step 1: le voci nuove**, ognuna col difetto vero e la data che l'ha generata
 
-- **A7 (grep):** `grep -rn "from('documents')" src | grep -E "insert|update\(\{ ?content"` fuori da `salva-documento.ts` → una strada nuova senza guardia. *Difetto: 12 set 2026, cinque scritture di contenuto sparse, nessuna che controllasse la partita IVA.*
-- **A8 (grep):** un dato di un'entità reale (partita IVA, ragione sociale, sede) scritto a mano fuori dal suo registro. *Difetto: 12 set 2026, sei intestazioni Restruktura cablate; un preventivo de La Real Estate usciva con la P.IVA di Restruktura.*
-- **A9 (grep):** `opzioni.X ?? COSTANTE` dove `COSTANTE` è il dato di un'entità reale. Un chiamante che dimentica non sbaglia: prende un'identità in silenzio. *Difetto: 12 set 2026, `pdf-generator.ts:59` e `v19/render/utils.ts:110`.*
-- **B10:** una funzione che restituisce un dato su cui si costruisce un documento, un pagamento o una dichiarazione **non può** avere lo stesso valore di ritorno per «assenza nota» e per «guasto». **Terza ricorrenza** (mail pending, prefissi UUID, società attiva) — quando una classe torna tre volte, il controllo va fatto per costruzione, non per revisione.
-- **B11:** una guardia che confronta il contenuto con un valore «atteso» va valutata **anche su come si ottiene l'atteso**. Una guardia che si fida di un dato indovinato timbra l'errore invece di trovarlo. *Difetto: 12 set 2026, `attesa` veniva da `getSocietaAttiva`, che su errore restituiva Restruktura.*
-- **C6:** una guardia si valuta su **due** prove, mai una: il caso vero morde **e** il caso normale passa. *Difetto: guardia `.docx`, che bloccava il caso normale.*
-- **C7:** **un imbuto dichiarato non è un imbuto misurato.** Prima di mettere un controllo «nel punto per cui passa tutto», contare i punti con un `grep`. *Difetto: 12 set 2026, il primo disegno di questa stessa guardia la metteva in `generatePdfFromHtml` «l'unico imbuto» — e il preventivo non passa da lì. Trovato dalla scansione pre-volo, non dai test.*
+- **A7 (grep):** una strada nuova per scrivere il contenuto di un documento, fuori da `salva-documento.ts`.
+  ```bash
+  grep -rn "from('documents')" src --include=*.ts --include=*.tsx \
+    | grep -v "\.test\." | grep -v "salva-documento.ts" \
+    | grep -E "insert|update\(\{ ?content"
+  ```
+  *Difetto: 12 set 2026 — 28 punti toccavano la tabella `documents`, 10 inserivano, cinque scrivevano contenuto di documenti, e nessuno controllava la partita IVA. Fra questi il preventivo.*
 
-- [ ] **Step 2: dichiarare i punti aperti nella spec**, se ne sono emersi. In particolare: i chiamanti di `getSocietaAttiva` che **scrivono** su Fatture in Cloud (un'operazione FIC sull'azienda sbagliata è grave quanto un documento sbagliato, e non è chiusa da questo lavoro); e la sede di Restruktura scritta in due forme diverse in due file, nessuna delle quali nel registro.
+- **A8 (grep) — ⚠️ il comando è TARATO, non cambiarlo a occhio.** Un dato societario scritto a mano fuori dal registro:
+  ```bash
+  grep -rniE "restruktura s\.?r\.?l|la real estate s\.?r\.?l" src --include=*.ts \
+    | grep -vi "\.test\.\|spec\.ts\|__tests__" \
+    | grep -v "societa.ts:\|identita.ts:"
+  ```
+  **La prima versione di questo comando cercava `RESTRUKTURA` maiuscolo e mancava tre difetti su undici**, perché i piedi di `studio-tecnico.ts` scrivono `Restruktura S.r.l.` in minuscolo. Servono `-i` **e** la tolleranza sui punti (`s\.?r\.?l`), perché la stessa ragione sociale è scritta `S.r.l.`, `S.R.L.`, `SRL` e `SRLS`.
+  Il comando tarato dà **24 righe**, di cui **11 difetti** e 13 legittime (tutto `checkin/*` — il check-in *è* l'attività de La Real Estate; l'identità e il blocco a due società in `prompts.ts`; una descrizione di tool; un commento). L'elenco delle righe legittime sta nella spec: **chi esegue questo controllo deve confrontarlo con quell'elenco**, altrimenti conclude che ci sono 24 difetti e non ne corregge nessuno.
+  *Difetto: 12 set 2026 — undici punti con i dati societari cablati; un preventivo de La Real Estate usciva con la ragione sociale e la P.IVA di Restruktura.*
+
+- **A9 (grep):** `opzioni.X ?? COSTANTE` dove `COSTANTE` è l'identità di un'entità reale. **Chi dimentica il parametro non sbaglia: prende un'identità in silenzio.** La cura non è un controllo a valle, è rendere il parametro **obbligatorio**, così l'omissione diventa un errore di compilazione.
+  *Difetto: 12 set 2026 — `pdf-generator.ts:59` e `v19/render/utils.ts:110`.*
+
+- **A10 (grep):** i **metadati** dei file generati (`creator`, `author`, `title`, `company`) con un dato societario cablato. Nessuna guardia sul **contenuto** li vede: non stanno nell'HTML.
+  *Difetto: 12 set 2026 — `pdf-generator.ts:653` e `:698` scrivevano «Restruktura S.r.l.» come autore di ogni PDF ed Excel, anche de La Real Estate. **Non li avevo contati a mano: li ha trovati il grep tarato.***
+
+- **B10:** una funzione che restituisce un dato su cui si costruisce un documento, un pagamento o una dichiarazione **non può** avere lo stesso valore di ritorno per «assenza nota» e per «guasto». **Terza ricorrenza** (mail pending il 12 set, prefissi UUID l'11 set, società attiva il 12 set): quando una classe torna tre volte, il controllo va fatto per costruzione — un tipo unione — non per revisione.
+
+- **B11:** una guardia che confronta il contenuto con un valore «atteso» va valutata **anche su come si ottiene l'atteso**. Una guardia che si fida di un dato indovinato **timbra** l'errore invece di trovarlo.
+  *Difetto: 12 set 2026 — `attesa` veniva da `getSocietaAttiva`, che su errore di database restituiva Restruktura. La guardia avrebbe dichiarato conforme un documento sbagliato.*
+
+- **B12:** una guardia copre una **forma** del dato, non il dato. Dichiarare per iscritto cosa **non** copre, nella stessa riga in cui si dichiara cosa copre.
+  *Difetto: 12 set 2026 — la guardia cerca le partite IVA; tre dei undici punti portano **solo la ragione sociale** e non li vedrebbe mai. Per quei tre la cura è l'unica difesa, e senza dirlo la promessa sarebbe stata più larga della difesa.*
+
+- **C6:** una guardia si valuta su **due** prove, mai una: il caso vero morde **e** il caso normale passa.
+  *Difetto: guardia `.docx`, 3 set 2026, che bloccava il caso normale.*
+
+- **C7:** **un imbuto dichiarato non è un imbuto misurato.** Prima di mettere un controllo «nel punto per cui passa tutto», contare i punti con un `grep`.
+  *Difetto: 12 set 2026 — il primo disegno di questa stessa guardia la metteva in `generatePdfFromHtml`, «l'unico imbuto»; il preventivo non passa da lì. Trovato dalla scansione pre-volo del piano, non dai test.*
+
+- **C8:** **un controllo proposto e non eseguito non è un controllo.** Ogni `grep` che entra in questa lista va lanciato **prima** di scriverlo qui, e va scritto accanto quante righe dà e quante sono difetti.
+  *Difetto: 12 set 2026 — ho proposto la versione maiuscola di A8 senza eseguirla: mancava un terzo dei difetti. Un controllo che dà un falso verde è peggio di nessun controllo, perché mente sul fatto di esserci — ed è lo stesso errore che questa lista esiste per prevenire, commesso mentre la scrivevo.*
+
+- [ ] **Step 2: eseguire OGNI comando nuovo** e annotare accanto il numero di righe che dà oggi e quante sono difetti. Una voce senza quel numero non è verificabile: al prossimo giro nessuno sa se «24 righe» sia normale o un'emergenza.
+
 - [ ] **Step 3: commit** — `git add docs/ && git commit -m "la lista tarata impara la classe dei dati societari indovinati"`
+
+---
+
+### Task 9: la lettera spedita — la guardia sull'invio delle mail
+
+**Perché esiste questo task.** Raffaele ha detto: *«compili un preventivo, un
+documento, **una lettera**, qualsiasi cosa sbagliando i dati che sa»*. Una lettera
+raggiunge qualcuno per mail, e l'invio **non passa** dalla tabella `documents`: i
+Task 4 e 5 non lo coprono. Ed è il caso peggiore dell'intero lavoro, perché una
+mail spedita non si richiama: un documento sbagliato lo si rigenera, una lettera
+con la partita IVA di un'altra società è già in mano al destinatario.
+
+**Files:**
+- Modify: `src/v19/tools/email/send-email.ts` (`SendEmailInput`, `sendEmailInternal` a `:84`)
+- Modify: `src/v19/tools/email/forward-email.ts:58`, `src/v19/tools/email/pack-emails-and-send.ts:172`
+- Test: `src/v19/tools/email/send-email.guardia-societa.test.ts`
+- Test: i due test di canale del Task 6 si estendono al caso mail
+
+**Interfaces:**
+- Consumes: `verificaDatiSocietari`, `messaggioBlocco` (Task 1), `societaPerDocumento` (Task 3)
+- Produces: `SendEmailInput` guadagna **un solo campo**
+  ```ts
+  /**
+   * Il corpo contiene testo scritto da TERZI (un inoltro, un impacchettamento di
+   * mail ricevute). La guardia sui dati societari NON si applica: una mail
+   * ricevuta da La Real Estate porta legittimamente la partita IVA de La Real
+   * Estate, e bloccarne l'inoltro bloccherebbe il caso normale.
+   */
+  contenuto_di_terzi?: boolean
+  ```
+
+**L'imbuto è vero, misurato.** `sendEmailInternal` è l'unico punto d'uscita: ci
+passano `forward-email.ts:58`, `pack-emails-and-send.ts:172`,
+`sendEmailWithAttachments` (`email/index.ts:326`), il cron scadenze
+(`api/cron/scadenze/route.ts:183`) e la routine fatture estere
+(`routines/monthly-foreign-invoices.ts:354`). Il commento in
+`email/pending.ts:63` lo dice già: *«`sendEmailInternal`, che chiama questa
+funzione in un punto solo»*.
+
+**⚠️ Il falso positivo qui è reale, non teorico — a differenza del Task 4.**
+Un inoltro porta il corpo di una mail di terzi. Se il commercialista scrive a
+proposito de La Real Estate mentre la società attiva è Restruktura, la guardia
+senza distinzione **bloccherebbe l'inoltro**. Questa è precisamente la guardia
+`.docx` da capo: *una guardia che blocca il caso normale è peggio del buco che
+chiude.* Per questo il campo `contenuto_di_terzi` esiste, e per questo i due
+chiamanti che inoltrano **devono** impostarlo: non è un'ottimizzazione, è la
+condizione perché la guardia sia accettabile.
+
+**Cosa si guarda e cosa no:**
+
+| Punto d'invio | Guardia | Perché |
+|---|---|---|
+| `send_email` chiamato dal modello (una lettera che il bot scrive) | ✅ | è il caso di Raffaele |
+| `sendEmailWithAttachments` | ✅ | corpo composto da noi |
+| `forward-email.ts:58` | ❌ `contenuto_di_terzi: true` | il corpo è di terzi |
+| `pack-emails-and-send.ts:172` | ❌ `contenuto_di_terzi: true` | impacchetta mail ricevute |
+| cron scadenze, routine fatture estere | ✅ | testi nostri, e girano **senza nessuno che guardi**: sono proprio i posti dove un errore resta muto |
+
+**Nota sugli allegati:** non serve guardarli qui. Un allegato generato da noi è
+già passato da `salva-documento.ts` o dagli imbuti di rendering (Task 4 e 5); un
+allegato ricevuto è contenuto di terzi. Guardarlo una seconda volta aggiungerebbe
+solo un secondo modo di sbagliare.
+
+- [ ] **Step 1: scrivere i test che falliscono**
+
+```ts
+it('CONTROLLO POSITIVO — lettera composta dal bot con la P.IVA di Restruktura, La Real Estate attiva: NON parte', async () => {
+  const r = await sendEmailInternal({
+    from_account: 'raffaele', to: ['cliente@esempio.it'], subject: 'Offerta',
+    body: 'RESTRUKTURA S.r.l. — P.IVA 02087420762', request_id: 'r1',
+  }, { bypassUserConfirmation: true })
+  expect(r.ok).toBe(false)
+  expect(String(r.error ?? r.message)).toContain('02087420762')
+  // La prova che conta: il trasporto non e' stato nemmeno aperto.
+  expect(transportMock.sendMail).not.toHaveBeenCalled()
+})
+
+it('CONTROLLO NEGATIVO — un INOLTRO che nomina l\'altra societa\' PARTE', async () => {
+  const r = await sendEmailInternal({
+    from_account: 'raffaele', to: ['commercialista@esempio.it'], subject: 'Fwd: pratica',
+    body: 'In allegato la pratica di LA REAL ESTATE SRLS — P.IVA 02232730768',
+    contenuto_di_terzi: true, request_id: 'r2',
+  }, { bypassUserConfirmation: true })
+  expect(r.ok).toBe(true)
+  expect(transportMock.sendMail).toHaveBeenCalledTimes(1)
+})
+
+it('CONTROLLO NEGATIVO — lettera con la societa\' GIUSTA parte', async () => { /* … */ })
+
+it('la guardia gira PRIMA della coda di conferma: una mail bloccata non deve creare un pending', async () => {
+  // altrimenti resta in sospeso una mail che non potra' mai partire, e
+  // l'Ingegnere la ritrova senza capire perche'
+})
+```
+
+- [ ] **Step 2: eseguire, verificare il fallimento**
+
+Run: `npx vitest run src/v19/tools/email/send-email.guardia-societa.test.ts`
+
+- [ ] **Step 3: implementare** — la guardia in cima a `sendEmailInternal`, **prima**
+  di `createPendingSend` e prima di qualunque contatto col trasporto. Salta se
+  `input.contenuto_di_terzi === true`. Su blocco restituisce l'esito d'errore con
+  `messaggioBlocco`, **senza** creare il pending e **senza** scrivere `logEmail`
+  come se un invio fosse stato tentato: un guasto non deve lasciare tracce che
+  somiglino a un invio.
+
+- [ ] **Step 4: impostare `contenuto_di_terzi: true`** in `forward-email.ts:58` e
+  `pack-emails-and-send.ts:172`, con un commento che dica **perché** (il corpo è di
+  terzi), non solo che è così.
+
+- [ ] **Step 5: suite + typecheck**
+
+- [ ] **Step 6: mutazione** — togliere il salto su `contenuto_di_terzi`: deve morire
+  il controllo negativo dell'inoltro. Questa mutazione è la più importante del task,
+  perché prova che il **falso positivo** è davvero coperto da un test e non solo da
+  un'intenzione scritta nel commento. `cp` di backup, `perl -0pi`, `grep -c` che
+  provi il morso, `md5sum` identico dopo il ripristino.
+
+- [ ] **Step 7: commit** — `git commit -m "una lettera non parte con la partita IVA di un'altra societa'"`
+
+---
+
+### Task 10: Drive — l'ultima superficie, e la chiusura del censimento
+
+**Perché esiste questo task.** Censite **tutte** le strade per cui un contenuto
+scritto dal modello diventa un documento consegnabile, ne restavano due non
+coperte, entrambe su Google Drive. Un documento archiviato con la partita IVA
+sbagliata è meno grave di una mail spedita — si cancella — ma è più insidioso nel
+tempo: un preventivo finito nella cartella del cliente viene ritrovato e **usato**
+mesi dopo, quando nessuno si ricorda com'è nato.
+
+**Il censimento completo, per il verbale** (misurato il 12 set 2026):
+
+| # | Superficie | Copertura |
+|---|---|---|
+| 1 | `genera_pdf` / `genera_word` (`tools.ts:71`, `:84`) → imbuti di rendering | Task 5 |
+| 2 | blocco `~~~document` del modello → `documents` (web e Telegram) | Task 4 |
+| 3 | preventivo / CME / QE (`studio-tecnico.ts:986`) → `documents` | Task 4 |
+| 4 | auto-bozza (`artifact-capture.ts:169`) → `documents` | Task 4 |
+| 5 | modifica di una bozza (`draft-tools.ts:186`) → `documents` | Task 4 |
+| 6 | Allegato 10 / SR41 CIGO → `renderDocx` | Task 5 (guardia sui **dati** della pratica) |
+| 7 | invio mail (`sendEmailInternal`) | Task 9 |
+| 8 | `salva_documento_su_drive` (`drive.ts:1155`, schema `:1413`) | **questo task** |
+| 9 | `drive_create_document` (`drive.ts:1346`) | **questo task** |
+| — | invio documenti su Telegram | nessuna: i documenti viaggiano come **link**, non come file |
+
+**Files:**
+- Modify: `src/lib/drive.ts` — i due `case` dell'executor (`:1155` e quello di `drive_create_document`)
+- Test: `src/lib/drive.guardia-societa.test.ts`
+
+**Interfaces:** consuma `verificaDatiSocietari`, `messaggioBlocco` (Task 1) e
+`societaPerDocumento` (Task 3). Nessuna interfaccia nuova.
+
+**Dove mettere la guardia.** Nei due `case`, **prima** di qualunque chiamata a
+Google: una guardia che scatta dopo la scrittura non è una guardia, è un
+commento. Su blocco il tool restituisce `messaggioBlocco(...)` come stringa di
+errore — il `try/catch` per-tool di `claude.ts:1126` lo consegna all'Ingegnere su
+entrambi i canali, quindi l'equipollenza qui è strutturale e non serve un test
+per canale suo.
+
+**⚠️ Da verificare e riferire, non da decidere di tua iniziativa:**
+`archivia_documento` (`drive.ts:1178`). Se archivia un documento **già esistente**
+per id, il suo contenuto è già passato dalla guardia a monte e guardarlo di nuovo
+aggiungerebbe solo un secondo modo di sbagliare. Se invece riceve contenuto dal
+modello, è una decima superficie e va coperta come le altre. **Leggi il `case` e
+scrivi nel rapporto quale dei due casi è.**
+
+- [ ] **Step 1: i test che falliscono**
+
+```ts
+it('CONTROLLO POSITIVO — salva_documento_su_drive con la P.IVA di Restruktura e La Real Estate attiva: NON scrive su Drive', async () => {
+  const out = await executeDriveTool('salva_documento_su_drive', {
+    title: 'Preventivo', document_type: 'preventivo',
+    html_content: '<h1>RESTRUKTURA S.r.l.</h1><p>P.IVA 02087420762</p>',
+  }, 'conv-lre')
+  expect(String(out)).toContain('02087420762')
+  expect(String(out)).toContain('02232730768')
+  // la prova che conta: nessuna chiamata a Google
+  expect(driveFilesCreate).not.toHaveBeenCalled()
+})
+
+it('CONTROLLO NEGATIVO — societa\' coerente: scrive, e la guardia non interferisce', async () => { /* … */ })
+
+it('CONTROLLO NEGATIVO — la P.IVA del COMMITTENTE nel corpo non blocca niente', async () => { /* … */ })
+
+it('drive_create_document: stessa guardia sullo stesso contenuto', async () => { /* … */ })
+```
+
+- [ ] **Step 2: eseguire, verificare il fallimento**
+- [ ] **Step 3: implementare** nei due `case`, prima di ogni chiamata a Google
+- [ ] **Step 4: leggere `archivia_documento` e riferire** quale dei due casi è (vedi sopra)
+- [ ] **Step 5: suite + typecheck**
+- [ ] **Step 6: mutazione** — disattivare la guardia in `salva_documento_su_drive`: deve morire il controllo positivo. `cp` di backup, `perl -0pi`, `grep -c` che provi il morso, `md5sum` identico dopo il ripristino
+- [ ] **Step 7: commit** — `git commit -m "anche su Drive un documento non si archivia con la partita IVA di un'altra societa'"`
