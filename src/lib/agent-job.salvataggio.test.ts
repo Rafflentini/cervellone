@@ -42,7 +42,21 @@ vi.mock('@/lib/working-memory', () => ({
   buildActiveProjectContext: async () => '',
 }))
 vi.mock('@/lib/template-context', () => ({ buildTemplateContext: async () => '' }))
-vi.mock('@/lib/societa-attiva', () => ({ getSocietaAttiva: async () => 'restruktura', bloccoSocietaAttiva: () => '' }))
+vi.mock('@/lib/societa-attiva', () => ({
+  getSocietaAttiva: async () => 'restruktura', bloccoSocietaAttiva: () => '',
+  // societa-documenti.ts (Task 3) risolve la societa' dei documenti da qui,
+  // non piu' da getSocietaAttiva: senza questo export il mock e' incompleto e
+  // il salvataggio del documento (Task 4, via salva-documento.ts) esplode in
+  // setup.
+  leggiSocietaAttiva: async () => ({ ok: true, codice: 'restruktura', esplicita: false }),
+}))
+vi.mock('@/lib/societa', () => ({
+  getSocieta: () => ({ codice: 'restruktura', denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' }),
+  listaSocieta: () => [
+    { codice: 'restruktura', denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' },
+    { codice: 'larealestate', denominazione: 'LA REAL ESTATE SRLS', piva: '02232730768' },
+  ],
+}))
 vi.mock('@/lib/prompts', () => ({ getTelegramSystemPrompt: async () => 'system' }))
 vi.mock('@/lib/sent-mail-memory', () => ({ buildSentMailPointer: async () => '' }))
 
@@ -65,6 +79,15 @@ vi.mock('@vercel/functions', () => ({ waitUntil: (p: Promise<unknown>) => { sfon
 // L'insert in `documents` restituisce un id: e' da li' che nasce il link.
 vi.mock('@/lib/supabase', () => ({ supabase: { from: () => ({}) } }))
 vi.mock('@/lib/resilience', () => ({ safeSupabase: async () => ({ id: 'doc-abc-123' }) }))
+// Il salvataggio del documento (Task 4) passa da salva-documento.ts, che usa
+// getSupabaseServer, non piu' safeSupabase/@/lib/supabase per questo punto.
+vi.mock('@/lib/supabase-server', () => ({
+  getSupabaseServer: () => ({
+    from: () => ({
+      insert: () => ({ select: () => ({ single: async () => ({ data: { id: 'doc-abc-123' }, error: null }) }) }),
+    }),
+  }),
+}))
 
 import { runAgentJob } from './agent-job'
 

@@ -778,7 +778,7 @@ async function executeDraftWrapper(
     }
 
     if (name === 'aggiorna_bozza') {
-      return await updateDraft(String(input.doc_id), String(input.nuovo_contenuto))
+      return await updateDraft(String(input.doc_id), String(input.nuovo_contenuto), conversationId ?? '')
     }
 
     // salva_bozza_pdf

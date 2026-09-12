@@ -8,7 +8,7 @@ import { getChatSystemPrompt } from '@/lib/prompts'
 import { validateAuth } from '@/lib/auth'
 import { rateLimit } from '@/lib/rate-limiter'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
-import { supabase } from '@/lib/supabase'
+import { salvaDocumento } from '@/lib/salva-documento'
 import { confirmFicStep1, confirmFicStep2, cancelFic } from '@/lib/fic-write-tools'
 import { confirmSalStep1, confirmSalStep2, cancelSal } from '@/lib/sal-tools'
 import { isWorkingMemoryEnabled, buildProcedureContext, buildActiveProjectContext } from '@/lib/working-memory'
@@ -499,19 +499,21 @@ export async function POST(request: NextRequest) {
             const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i)
             const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
 
-            const { data: savedDoc } = await supabase.from('documents')
-              .insert({
-                name: title,
-                content: block.content,
-                conversation_id: conversationId,
-                type: 'html',
-                metadata: { source: 'web_chat' }
-              })
-              .select('id')
-              .single()
+            // La guardia sui dati societari sta in salvaDocumento: su ok:false
+            // non si consegna nessun link, e l'Ingegnere legge il perche'
+            // invece di un silenzio o di un documento a meta'.
+            const esito = await salvaDocumento({
+              nome: title,
+              contenuto: block.content,
+              conversationId: conversationId ?? '',
+              tipo: 'html',
+              metadata: { source: 'web_chat' },
+            })
 
-            if (savedDoc?.id) {
-              docLinks.push(`\n\n📄 **${title}**\n👉 [Apri documento](https://cervellone-five.vercel.app/doc/${savedDoc.id})`)
+            if (esito.ok) {
+              docLinks.push(`\n\n📄 **${title}**\n👉 [Apri documento](https://cervellone-five.vercel.app/doc/${esito.id})`)
+            } else {
+              docLinks.push(`\n\n${esito.messaggio}`)
             }
           }
         }

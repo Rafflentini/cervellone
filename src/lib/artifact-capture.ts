@@ -23,6 +23,7 @@
 
 import { getSupabaseServer } from './supabase-server'
 import { isWorkingMemoryEnabled } from './working-memory'
+import { salvaDocumento } from './salva-documento'
 
 /* ─── Costanti tunabili ─── */
 
@@ -165,33 +166,34 @@ export async function captureArtifact(
 
     const title = deriveTitle(content, opts?.title)
 
-    const { data, error } = await supabase
-      .from('documents')
-      .insert({
-        name: title,
-        content,
-        conversation_id: conversationId,
-        type: AUTO_DRAFT_TYPE,
-        metadata: { source: 'artifact-capture', auto: true },
-      })
-      .select('id')
-      .single()
+    // La guardia sui dati societari sta in salvaDocumento. Un blocco qui non
+    // e' un errore da loggare: e' un'auto-bozza che semplicemente non si
+    // scrive, esattamente come un dedup — il turno prosegue senza di lei.
+    const esito = await salvaDocumento({
+      nome: title,
+      contenuto: content,
+      conversationId,
+      tipo: AUTO_DRAFT_TYPE,
+      metadata: { source: 'artifact-capture', auto: true },
+    })
 
-    if (error) {
-      // D — race: due turni concorrenti possono provare a inserire la stessa
-      // auto-bozza. L'indice unico parziale (md5(content) per conversazione)
-      // blocca il duplicato con una unique violation (Postgres 23505). La trattiamo
-      // come duplicato benigno, NON come errore.
-      const code = (error as { code?: string }).code
-      const msg = error.message || ''
-      if (code === '23505' || /duplicate key|unique constraint/i.test(msg)) {
-        return { saved: false, reason: 'duplicate' }
+    if (!esito.ok) {
+      if (esito.motivo === 'errore') {
+        // D — race: due turni concorrenti possono provare a inserire la stessa
+        // auto-bozza. L'indice unico parziale (md5(content) per conversazione)
+        // blocca il duplicato con una unique violation (Postgres 23505). La
+        // trattiamo come duplicato benigno, NON come errore. Il codice non
+        // attraversa piu' questo modulo (salvaDocumento lo dichiara come
+        // stringa nel messaggio): lo stesso testo lo identifica.
+        if (/duplicate key|unique constraint/i.test(esito.messaggio)) {
+          return { saved: false, reason: 'duplicate' }
+        }
+        console.error('[artifact-capture] insert failed:', esito.messaggio)
       }
-      console.error('[artifact-capture] insert failed:', msg)
-      return { saved: false, reason: msg }
+      return { saved: false, reason: esito.messaggio }
     }
 
-    return { saved: true, id: (data as { id?: string } | null)?.id }
+    return { saved: true, id: esito.id }
   } catch (err) {
     console.error(
       '[artifact-capture] captureArtifact error:',

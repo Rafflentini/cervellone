@@ -31,6 +31,7 @@ import { captureArtifact, buildArtifactsPointer } from '@/lib/artifact-capture'
 import { captureImageExtraction, buildImagesPointer, type UploadedImageRef } from '@/lib/image-memory'
 import { buildSentMailPointer } from '@/lib/sent-mail'
 import { supabase } from '@/lib/supabase'
+import { salvaDocumento } from '@/lib/salva-documento'
 import { parseDocumentBlocks } from '@/lib/parseDocumentBlocks'
 import { getTelegramSystemPrompt } from '@/lib/prompts'
 import { saveMessageWithEmbedding } from '@/lib/memory'
@@ -211,26 +212,33 @@ export async function runAgentJob(
         const titleMatch = block.content.match(/<h1[^>]*>(.*?)<\/h1>/i)
         const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'Documento'
 
-        const savedDoc = await safeSupabase(
-          () => supabase.from('documents')
-            .insert({ name: title, content: block.content, conversation_id: conversationId, type: 'html', metadata: { source: 'telegram' } })
-            .select('id').single()
-        )
-        const docUrl = (savedDoc as any)?.id
-          ? `https://cervellone-five.vercel.app/doc/${(savedDoc as any).id}`
-          : 'https://cervellone-five.vercel.app'
+        // Stessa guardia del canale web (chat/route.ts): su ok:false niente
+        // link, e all'Ingegnere arriva il perche', non un silenzio.
+        const esito = await salvaDocumento({
+          nome: title,
+          contenuto: block.content,
+          conversationId,
+          tipo: 'html',
+          metadata: { source: 'telegram' },
+        })
 
-        // FIX W1.3 (utente 2/5): NO auto-save su Drive di default.
-        // Il documento resta nella memoria permanente Cervellone (Supabase + URL /doc/[id]).
-        // Per salvare su Drive, l'utente deve chiederlo esplicitamente — Cervellone
-        // chiama il tool salva_su_drive che fa la mappatura Y+X.
-        textParts.push(`📄 *${title}*\n👉 ${docUrl}`)
-      // Lo stesso link va anche in STORIA: senza, al turno dopo il modello
-      // non puo ripassarlo e tende a RIGENERARE il documento.
-      linkDocumenti.push(`
+        if (esito.ok) {
+          const docUrl = `https://cervellone-five.vercel.app/doc/${esito.id}`
+
+          // FIX W1.3 (utente 2/5): NO auto-save su Drive di default.
+          // Il documento resta nella memoria permanente Cervellone (Supabase + URL /doc/[id]).
+          // Per salvare su Drive, l'utente deve chiederlo esplicitamente — Cervellone
+          // chiama il tool salva_su_drive che fa la mappatura Y+X.
+          textParts.push(`📄 *${title}*\n👉 ${docUrl}`)
+          // Lo stesso link va anche in STORIA: senza, al turno dopo il modello
+          // non puo ripassarlo e tende a RIGENERARE il documento.
+          linkDocumenti.push(`
 
 📄 ${title}
 👉 ${docUrl}`)
+        } else {
+          textParts.push(esito.messaggio)
+        }
       } else if (block.content.trim()) {
         textParts.push(block.content)
       }

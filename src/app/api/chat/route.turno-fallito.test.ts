@@ -59,8 +59,19 @@ vi.mock('@/lib/fic-write-tools', () => ({
 vi.mock('@/lib/societa-attiva', () => ({
   getSocietaAttiva: async () => 'restruktura',
   bloccoSocietaAttiva: () => '',
+  // societa-documenti.ts (Task 3) risolve la societa' dei documenti da qui,
+  // non piu' da getSocietaAttiva: senza questo export il mock e' incompleto e
+  // il salvataggio del documento (Task 4, via salva-documento.ts) esplode in
+  // setup.
+  leggiSocietaAttiva: async () => ({ ok: true, codice: 'restruktura', esplicita: false }),
 }))
-vi.mock('@/lib/societa', () => ({ getSocieta: () => ({ nome: 'Restruktura' }) }))
+vi.mock('@/lib/societa', () => ({
+  getSocieta: () => ({ codice: 'restruktura', denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' }),
+  listaSocieta: () => [
+    { codice: 'restruktura', denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' },
+    { codice: 'larealestate', denominazione: 'LA REAL ESTATE SRLS', piva: '02232730768' },
+  ],
+}))
 vi.mock('@/lib/supabase', () => ({
   supabase: {
     from: () => ({
@@ -70,6 +81,19 @@ vi.mock('@/lib/supabase', () => ({
       },
     }),
   },
+}))
+// Il salvataggio del documento (Task 4) passa da salva-documento.ts, che usa
+// getSupabaseServer, non piu' `@/lib/supabase`: la spia va spostata qui,
+// altrimenti mockInsertDocumento non vede piu' niente.
+vi.mock('@/lib/supabase-server', () => ({
+  getSupabaseServer: () => ({
+    from: () => ({
+      insert: (riga: Record<string, unknown>) => {
+        mockInsertDocumento(riga)
+        return { select: () => ({ single: async () => ({ data: { id: 'doc-1' }, error: null }) }) }
+      },
+    }),
+  }),
 }))
 
 import { POST } from './route'

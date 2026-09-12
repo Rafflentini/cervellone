@@ -21,6 +21,15 @@ function makeBuilder() {
 vi.mock('./supabase-server', () => ({
   getSupabaseServer: vi.fn(() => ({ from: () => makeBuilder() })),
 }))
+// updateDraft ora passa dalla guardia sui dati societari (salva-documento.ts):
+// senza questo mock societaPerDocumento farebbe rete per davvero.
+vi.mock('./societa-documenti', () => ({
+  societaPerDocumento: async () => ({
+    ok: true,
+    societa: { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' },
+    esplicita: true,
+  }),
+}))
 vi.mock('./pdf-generator', () => ({
   generatePdfFromHtml: vi.fn(async () => Buffer.from('%PDF-fake')),
 }))
@@ -77,7 +86,7 @@ describe('draft-tools', () => {
 
   it('updateDraft (modifica in-place) ritorna lo stesso link /doc/<id>', async () => {
     nextResult = { data: null, error: null }
-    const r = await updateDraft('x', '<h1>nuovo paragrafo</h1>')
+    const r = await updateDraft('x', '<h1>nuovo paragrafo</h1>', 'conv-1')
     expect(r).toContain('/doc/x')
   })
 

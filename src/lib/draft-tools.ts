@@ -16,6 +16,7 @@ import { getSupabaseServer } from './supabase-server'
 import { generatePdfFromHtml } from './pdf-generator'
 import { avvisoImmagini } from './avviso-immagini'
 import { assertWriteAllowed, uploadBinaryToDrive, describeWriteCheckFailure } from './drive'
+import { aggiornaContenutoDocumento } from './salva-documento'
 
 /** Path relativo del link pubblico di un documento. Il chiamante compone l'host. */
 function docPath(id: string): string {
@@ -175,30 +176,18 @@ export async function getDraft(
 /**
  * MODIFICA IN-PLACE: aggiorna SOLO il content di un documento esistente.
  * Stesso record, stesso id, stesso link /doc/<id> — NON crea un nuovo documento.
- * Aggiorna anche `updated_at` se la colonna esiste, altrimenti solo `content`.
+ *
+ * La scrittura vera e propria (con lo stesso ripiego su `updated_at` e la
+ * stessa guardia sui dati societari degli altri quattro punti) sta in
+ * `aggiornaContenutoDocumento`: questa funzione traduce il suo esito in un
+ * messaggio per l'Ingegnere, non fa piu' l'update a mano.
  */
-export async function updateDraft(id: string, newContent: string): Promise<string> {
+export async function updateDraft(id: string, newContent: string, conversationId: string): Promise<string> {
   try {
-    const supabase = getSupabaseServer()
-
-    // Prova con updated_at; se la colonna non esiste, riprova col solo content.
-    let { error } = await supabase
-      .from('documents')
-      .update({ content: newContent, updated_at: new Date().toISOString() })
-      .eq('id', id)
-
-    if (error) {
-      const retry = await supabase
-        .from('documents')
-        .update({ content: newContent })
-        .eq('id', id)
-      error = retry.error
+    const esito = await aggiornaContenutoDocumento(id, newContent, conversationId)
+    if (!esito.ok) {
+      return esito.messaggio
     }
-
-    if (error) {
-      return `Errore aggiornando il documento ${id}: ${error.message}`
-    }
-
     return `✅ Documento aggiornato (stesso link): ${docPath(id)}`
   } catch (err) {
     return `Errore aggiornando il documento ${id}: ${err instanceof Error ? err.message : String(err)}`

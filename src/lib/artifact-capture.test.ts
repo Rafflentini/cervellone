@@ -23,6 +23,18 @@ vi.mock('./working-memory', () => ({
   isWorkingMemoryEnabled: () => mockIsWorkingMemoryEnabled(),
 }))
 
+// captureArtifact ora scrive tramite salvaDocumento, che passa dalla guardia
+// sui dati societari (Task 4): senza questo mock societaPerDocumento farebbe
+// rete per davvero. LETTER non nomina nessuna P.IVA nostra, quindi qualunque
+// societa' attesa lascia passare il contenuto: qui conta solo che risolva.
+vi.mock('./societa-documenti', () => ({
+  societaPerDocumento: async () => ({
+    ok: true,
+    societa: { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' },
+    esplicita: true,
+  }),
+}))
+
 const LETTER = `Oggetto: Sollecito di pagamento fattura n. 123
 
 Gentile Cliente,

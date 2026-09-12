@@ -14,8 +14,15 @@ vi.mock('@supabase/supabase-js', () => {
   const chain: Record<string, unknown> = {}
   const methods = ['select', 'eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'ilike', 'like', 'in', 'order', 'limit', 'range', 'insert', 'update', 'upsert', 'delete', 'not', 'or', 'match', 'contains']
   for (const m of methods) chain[m] = () => chain
-  chain.single = () => Promise.resolve(RESULT)
-  chain.maybeSingle = () => Promise.resolve(RESULT)
+  // `.single()`/`.maybeSingle()` NON tornano RESULT (che ha `data` = array di
+  // voci prezziario): da Task 4, genera_preventivo_completo passa dalla
+  // guardia sui dati societari (`.maybeSingle()` per leggere la societa'
+  // attiva) e da salvaDocumento (`.single()` per l'id del documento appena
+  // inserito). Un `data` senza `.id`/`.societa` farebbe leggere un guasto
+  // dove non c'e', e caratterizzerebbe un blocco spurio invece della pipeline
+  // preventivo vera.
+  chain.single = () => Promise.resolve({ data: { id: 'test-doc-id' }, error: null })
+  chain.maybeSingle = () => Promise.resolve({ data: { id: 'test-doc-id' }, error: null })
   chain.then = (res: (v: unknown) => unknown) => res(RESULT)
   return { createClient: () => ({ from: () => chain }) }
 })

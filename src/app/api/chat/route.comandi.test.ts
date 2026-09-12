@@ -67,6 +67,13 @@ vi.mock('@/lib/societa-attiva', () => ({
 }))
 vi.mock('@/lib/societa', () => ({
   getSocieta: () => ({ nome: 'Restruktura', denominazione: 'Restruktura', piva: '00000000000' }),
+  // guardia-societa.ts (Task 4, via salva-documento.ts) legge le NOSTRE
+  // partite IVA da qui: senza questo export il mock e' incompleto e
+  // qualunque flusso che salvi/aggiorni un documento esplode in setup.
+  listaSocieta: () => [
+    { codice: 'restruktura', denominazione: 'Restruktura', piva: '00000000000' },
+    { codice: 'larealestate', denominazione: 'LA REAL ESTATE SRLS', piva: '02232730768' },
+  ],
 }))
 vi.mock('@/lib/supabase', () => ({
   supabase: { from: () => ({ insert: () => ({ select: () => ({ single: async () => ({ data: null }) }) }) }) },
@@ -87,6 +94,15 @@ Object.assign(catenaPending, {
   gte: () => catenaPending,
   lte: () => catenaPending,
   maybeSingle: async () => ({ data: bozzeInAttesa[0] ?? null, error: null }),
+  // Nessun test qui sotto genera un blocco ~~~document (mockCallClaude
+  // risolve sempre a testo semplice), quindi 'documents' non viene mai
+  // toccato per davvero — ma se salva-documento.ts (Task 4) ci arrivasse, un
+  // mock incompleto esploderebbe in setup invece di dare un rosso leggibile.
+  insert: (riga: Record<string, unknown>) => {
+    void riga
+    return { select: () => ({ single: async () => ({ data: { id: 'doc-mock' }, error: null }) }) }
+  },
+  update: () => ({ eq: async () => ({ error: null }) }),
   then: (resolve: (v: unknown) => unknown) =>
     Promise.resolve(resolve({ data: bozzeInAttesa, error: null })),
 })

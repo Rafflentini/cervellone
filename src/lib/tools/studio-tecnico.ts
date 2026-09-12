@@ -1,4 +1,5 @@
 import { supabase } from '../supabase'
+import { salvaDocumento } from '../salva-documento'
 import type { ToolDefinition } from './types'
 
 // ── LOOKUP PREZZIARI — URL diretti ODS/XLS/CSV per auto-import ──
@@ -982,15 +983,24 @@ export async function executeStudioTecnico(name: string, input: Record<string, u
           { name: `CME - ${committente}`, content: cmeHtml, doc_type: 'cme' },
           { name: `Quadro Economico - ${committente}`, content: qeHtml, doc_type: 'quadro_economico' },
         ]
+        // ⭐ Prima un fallimento qui finiva in console.error e la funzione
+        // proseguiva comunque, restituendo "GENERATI CON SUCCESSO": la guardia
+        // sui dati societari sarebbe finita in un log che nessuno legge mentre
+        // all'Ingegnere si dichiarava un successo che non c'era stato. Un
+        // blocco (o un guasto) qui ferma la generazione: nessuno dei tre
+        // documenti esce se anche uno solo non si salva — non un successo
+        // parziale, non un ~~~document silenzioso di quello bloccato.
         for (const doc of docsToSave) {
-          const { error } = await supabase.from('documents').insert({
-            name: doc.name,
-            content: doc.content,
-            conversation_id: conversationId,
-            type: 'html',
+          const esito = await salvaDocumento({
+            nome: doc.name,
+            contenuto: doc.content,
+            conversationId,
+            tipo: 'html',
             metadata: { source: 'genera_preventivo_completo', doc_type: doc.doc_type, committente, comune, numero },
           })
-          if (error) console.error(`Cache save failed (${doc.doc_type}):`, error.message)
+          if (!esito.ok) {
+            return `PREVENTIVO NON SALVATO (${doc.doc_type}).\n\n${esito.messaggio}\n\nNessuno dei tre documenti (preventivo, CME, quadro economico) e' stato consegnato: si fermano insieme, per non lasciarne fuori uno con la partita IVA sbagliata.`
+          }
         }
       }
 
