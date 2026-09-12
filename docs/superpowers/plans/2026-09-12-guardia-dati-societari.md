@@ -1192,3 +1192,139 @@ Run: `npx vitest run src/lib/tools.contabile-societa.test.ts`
   provi il morso, `md5sum` identico dopo il ripristino.
 
 - [ ] **Step 7: commit** — `git commit -m "una fattura non si emette sull'azienda indovinata"`
+
+---
+
+### Task 12: la via d'uscita — un blocco che non si può sciogliere è un vicolo cieco
+
+**Perché questo task esiste, e perché è bloccante per il rilascio.**
+
+`messaggioBlocco` (`src/lib/guardia-societa.ts:79-81`) dice all'Ingegnere:
+
+> *Se e' voluto (per esempio l'altra societa' e' il committente), dimmelo e lo
+> genero comunque.*
+
+**Quel modo di procedere non esiste.** Se l'Ingegnere risponde «sì, è voluto,
+genera comunque», il modello ritenta, la guardia blocca di nuovo, e si ottiene un
+giro a vuoto — **esattamente la cosa di cui si è lamentato il 12 set 2026**:
+*«mi ha chiesto conferma 4 volte senza inviarla davvero»*. Avremmo costruito
+quella frustrazione dentro la difesa fatta per evitarla.
+
+E il caso è **reale, non teorico**: le società sono due e fanno affari fra loro.
+Un preventivo di Restruktura con **La Real Estate come committente** contiene
+legittimamente la partita IVA de La Real Estate, nel campo committente. La
+guardia lo blocca, perché non distingue l'intestazione dal corpo — e non può
+farlo in modo affidabile guardando l'HTML (è scritto nella spec).
+
+Quindi: o si toglie la promessa dal messaggio, o si costruisce la via d'uscita.
+**Si costruisce**, perché il caso è legittimo e frequente abbastanza da contare.
+
+**Files:**
+- Create: `src/lib/guardia-autorizzazioni.ts`
+- Create: `src/lib/guardia-autorizzazioni.test.ts`
+- Modify: `src/lib/salva-documento.ts` (accetta un'autorizzazione già data)
+- Modify: `src/lib/pdf-generator.ts` (idem, per i due imbuti)
+- Modify: `src/lib/comandi-uuid.ts` — due voci in `COMANDI_CON_CODICE`
+- Modify: `src/app/api/telegram/route.ts` e `src/app/api/chat/route.ts` — i due rami di comando
+- Test: `src/app/api/chat/route.guardia-autorizza.test.ts`, `src/app/api/telegram/route.guardia-autorizza.test.ts`
+
+**Il meccanismo, che esiste già e va riusato — non inventato.**
+
+Questo repo ha il suo schema per «mi serve il tuo OK esplicito, e deve essere
+tappabile dal telefono»: `comandoDaMostrare('nome', uuid)` produce un comando con
+codice di 16 cifre esadecimali, e i due canali lo riconoscono.
+
+⚠️ **Verificato il 12 set 2026, e smentisce una mia affermazione precedente:** i
+comandi **con codice** (`/nome_CODICE`) funzionano su **entrambi** i canali — il
+web li gestisce a `src/app/api/chat/route.ts:182` via `comandoUuid`. Sono i
+comandi **nudi** come `/societa` a essere solo di Telegram
+(`telegram/route.ts:557`). Quindi un codice tappabile è **equipollente per
+costruzione**, ed è la forma che l'Ingegnere ha chiesto esplicitamente:
+*«io clicco e copia e mi copia il codice»*.
+
+**Il disegno:**
+
+```ts
+export type Autorizzazione = {
+  uuid: string
+  conversationId: string
+  /** md5 del contenuto autorizzato: autorizza QUEL documento, non «tutti». */
+  impronta: string
+  /** Le partite IVA che l'Ingegnere ha accettato di vedere nel documento. */
+  piveAccettate: string[]
+  scadenza: number
+}
+
+/** Registra un blocco in attesa e restituisce il codice da mostrare. */
+export async function chiediAutorizzazione(
+  conversationId: string,
+  contenuto: string,
+  esito: Extract<EsitoGuardia, { ok: false }>,
+): Promise<{ uuid: string }>
+
+/** L'Ingegnere ha tappato il codice. */
+export async function concediAutorizzazione(uuid: string): Promise<{ ok: true } | { ok: false; motivo: string }>
+
+/** Chi genera chiede: questo contenuto e' gia' autorizzato? */
+export async function autorizzazioneValida(conversationId: string, contenuto: string): Promise<boolean>
+```
+
+**Le cinque scelte che rendono questa via d'uscita sicura, e il perché di ognuna:**
+
+1. **L'autorizzazione è legata all'IMPRONTA del contenuto**, non alla
+   conversazione. Autorizzare «questa conversazione» significa spegnere la
+   guardia per tutto il resto della giornata: il primo documento sarebbe
+   controllato e i dieci dopo no. Un'autorizzazione che vale per tutto è la
+   guardia disattivata con un nome gentile.
+2. **Scade.** Trenta minuti: il tempo di leggere e tappare, non il tempo di
+   dimenticarsene. Il repo ha già `PROPOSTA_TTL_MS` come precedente.
+3. **La concede l'INGEGNERE tappando, non il modello.** Nessun parametro di tool
+   che il modello possa impostare da sé: se potesse, la guardia dipenderebbe dal
+   giudizio che la guardia esiste per non dover usare. Il codice arriva da
+   `comandoDaMostrare` e il ramo che lo consuma sta **nei route dei canali**, dove
+   il modello non arriva.
+4. **Dice cosa autorizza.** Il messaggio con il codice nomina le partite IVA che
+   comparirebbero e la società attiva: si autorizza una cosa che si è letta.
+5. **Si usa una volta.** Consumata alla prima generazione riuscita. Una
+   autorizzazione riutilizzabile è un'autorizzazione dimenticata.
+
+**Dove tenerla.** Tabella Supabase nuova (`cervellone_guardia_autorizzazioni`)
+con **RLS attiva** — 57 tabelle su 57 ce l'hanno, e una tabella nuova senza RLS è
+il difetto che l'11 set è passato inosservato nel piano. Migrazione nel repo.
+⚠️ La chiave primaria è `uuid` (testo), **non** un `id`: non scrivere
+`.select('id')` su questa tabella — è letteralmente il difetto delle mail in
+sospeso, vissuto in produzione per tre mesi.
+
+- [ ] **Step 1: i test che falliscono**
+
+```ts
+it('CONTROLLO POSITIVO — senza autorizzazione il documento resta bloccato', async () => { /* … */ })
+
+it('con autorizzazione valida per QUESTO contenuto, il documento si salva', async () => { /* … */ })
+
+it('CONTROLLO POSITIVO — l\'autorizzazione NON vale per un contenuto diverso', async () => {
+  // autorizza il contenuto A, poi prova a salvare il contenuto B: deve bloccare.
+  // E' la prova che non abbiamo spento la guardia per la conversazione.
+})
+
+it('CONTROLLO POSITIVO — scaduta non vale', async () => { /* … */ })
+
+it('CONTROLLO POSITIVO — usata una volta, non vale la seconda', async () => { /* … */ })
+
+it('il messaggio col codice NOMINA le partite IVA che si stanno autorizzando', async () => {
+  // si autorizza una cosa che si e' letta, non un codice al buio
+})
+
+it('il codice e\' tappabile: 16 cifre esadecimali, nessun trattino, sotto i 32 caratteri', async () => {
+  // Telegram tronca al primo trattino e il bot_command si ferma a 32 caratteri
+})
+```
+
+- [ ] **Step 2: eseguire, verificare il fallimento**
+- [ ] **Step 3: la migrazione** (tabella + **RLS**), poi il modulo
+- [ ] **Step 4: consumo dell'autorizzazione** in `salva-documento.ts` e nei due imbuti di `pdf-generator.ts`
+- [ ] **Step 5: i due rami di comando**, uno per canale, che chiamano `concediAutorizzazione`. `doc_ok` e `doc_no` in `COMANDI_CON_CODICE`. Su Telegram il messaggio che porta un comando va in **testo semplice** — `contieneComandoConCodice` lo decide già da sé guardando il contenuto: **non passare `parse_mode` a mano.**
+- [ ] **Step 6: i due test di canale.** Devono provare: il codice **arriva**, è **tappabile**, e tapparlo **fa uscire il documento**. Più il controllo positivo: senza tappare, il documento non esce. **I due test devono mockare lo stesso insieme di moduli**: i test di canale esistenti mockano insiemi diversi e per questo non sono confrontabili (vedi `note-task-6.md`).
+- [ ] **Step 7: aggiornare `messaggioBlocco`** perché il codice ci finisca dentro, e perché la frase «dimmelo e lo genero comunque» diventi **vera**: `Per generarlo comunque → /doc_ok_<codice>`. Niente underscore nel resto del testo (il Markdown li mangia) — l'invariante è già testata.
+- [ ] **Step 8: suite + typecheck + mutazione** (fai valere l'autorizzazione per qualunque contenuto: devono morire i controlli positivi 3 e 5)
+- [ ] **Step 9: commit** — `git commit -m "il blocco si puo' sciogliere con un codice tappabile, una volta, per quel documento"`
