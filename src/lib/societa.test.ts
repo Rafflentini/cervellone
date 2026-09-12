@@ -26,7 +26,7 @@ describe('registro societa', () => {
   // inventata qui, e non la forma diversa scritta nella memoria di progetto:
   // la forma definitiva la decide Raffaele.
   it('ogni societa ha una sede, e quella di Restruktura riusa identita.ts', () => {
-    expect(getSocieta('restruktura').sede).toBe("Villa d'Agri (PZ), Italia")
+    expect(getSocieta('restruktura').sede).toBe("Via Roma 60, 85050 Marsicovetere (PZ)")
     expect(getSocieta('larealestate').sede).toBe('Via Civita 8, Maratea (PZ)')
   })
 

@@ -157,7 +157,7 @@ describe('blocco iniettato nel contesto', () => {
   it('dichiara l\'intestazione dei documenti con la sede della societa attiva', () => {
     const restruktura = bloccoSocietaAttiva(getSocieta('restruktura'))
     expect(restruktura).toMatch(/Intestazione dei documenti/i)
-    expect(restruktura).toContain("Villa d'Agri (PZ), Italia")
+    expect(restruktura).toContain("Via Roma 60, 85050 Marsicovetere (PZ)")
 
     const larealestate = bloccoSocietaAttiva(getSocieta('larealestate'))
     expect(larealestate).toContain('Via Civita 8, Maratea (PZ)')

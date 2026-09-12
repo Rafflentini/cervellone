@@ -29,7 +29,7 @@ vi.mock('@supabase/supabase-js', () => {
   return { createClient: () => ({ from: () => chain }) }
 })
 
-const RESTRUKTURA = { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762', sede: "Villa d'Agri (PZ), Italia" }
+const RESTRUKTURA = { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762', sede: "Via Roma 60, 85050 Marsicovetere (PZ)" }
 const LAREALESTATE = { denominazione: 'LA REAL ESTATE SRLS', piva: '02232730768', sede: 'Via Civita 8, Maratea (PZ)' }
 
 const mockSocietaPerDocumento = vi.fn()
