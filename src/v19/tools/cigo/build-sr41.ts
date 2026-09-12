@@ -13,7 +13,14 @@ import { renderDocx } from '../../render/docx'
 import type { DocxDocument } from '../../render/types'
 import type { Allegato10Input } from './types'
 
-export async function compilaSr41Placeholder(input: Allegato10Input): Promise<Buffer> {
+/**
+ * Il documento, separato dal render — come `buildAllegato10Doc`.
+ *
+ * Serve perche' il piede si prova sul DATO e non sul formato: estrarre il testo
+ * da un Buffer .docx per sapere quale ragione sociale c'e' scritta significa
+ * misurare due cose insieme e non sapere quale delle due ha sbagliato.
+ */
+export function buildSr41Doc(input: Allegato10Input): DocxDocument {
   const doc: DocxDocument = {
     title: 'SR41 - Pagamento diretto integrazioni salariali',
     sections: [
@@ -70,7 +77,18 @@ export async function compilaSr41Placeholder(input: Allegato10Input): Promise<Bu
         style: { italics: true, size: 18 },
       },
     ],
-    footer: `SR41 (placeholder) — Restruktura — Periodo ${input.periodo.data_inizio}/${input.periodo.data_fine}`,
+    // ⭐ 12 set 2026 — DODICESIMO punto con la ragione sociale cablata, e
+    // l'ultimo trovato: qui c'era `— Restruktura —` scritto a mano, mentre il
+    // quadro A sopra stampa `input.azienda.denominazione` dai dati. Su una
+    // pratica di un'altra azienda il documento si contraddiceva da solo: il
+    // corpo diceva una cosa e il piede un'altra, su un modulo destinato
+    // all'INPS. Trovato dall'agente del Task 5 e RIFERITO invece di corretto
+    // in silenzio, perche' la nota di quel task escludeva questo file.
+    footer: `SR41 (placeholder) — ${input.azienda.denominazione} — Periodo ${input.periodo.data_inizio}/${input.periodo.data_fine}`,
   }
-  return await renderDocx(doc)
+  return doc
+}
+
+export async function compilaSr41Placeholder(input: Allegato10Input): Promise<Buffer> {
+  return await renderDocx(buildSr41Doc(input))
 }
