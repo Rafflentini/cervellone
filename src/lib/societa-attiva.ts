@@ -17,12 +17,27 @@ import { getSocieta, type CodiceSocieta, type Societa } from './societa'
 
 const DEFAULT_SOCIETA: CodiceSocieta = 'restruktura'
 
+export type EsitoSocietaAttiva =
+  | { ok: true; codice: CodiceSocieta; esplicita: boolean }
+  | { ok: false; errore: string }
+
 /**
- * La società in uso nella conversazione. Restruktura se non è mai stata scelta,
- * o se la lettura fallisce: un errore di database non deve cambiare azienda.
+ * Quale societa' e' in uso, distinguendo TRE casi che il codice di prima
+ * schiacciava in uno:
+ *
+ *   - l'Ingegnere l'ha scelta      → { ok: true, esplicita: true }
+ *   - non l'ha mai scelta          → { ok: true, esplicita: false }  (politica: Restruktura)
+ *   - non siamo riusciti a leggere → { ok: false }
+ *
+ * Il terzo caso e' il motivo per cui questa funzione esiste. Prima tornava
+ * `restruktura` anche su errore, col commento «un errore di database non deve
+ * cambiare azienda» — ragionamento sano che pero' rendeva un guasto
+ * indistinguibile da una scelta. Chi stampa una partita IVA su un documento
+ * NON puo' accontentarsi di un'ipotesi: la guardia a valle vale esattamente
+ * quanto vale questo dato.
  */
-export async function getSocietaAttiva(conversationId?: string): Promise<CodiceSocieta> {
-  if (!conversationId) return DEFAULT_SOCIETA
+export async function leggiSocietaAttiva(conversationId?: string): Promise<EsitoSocietaAttiva> {
+  if (!conversationId) return { ok: true, codice: DEFAULT_SOCIETA, esplicita: false }
   try {
     const { data, error } = await getSupabaseServer()
       .from('cervellone_societa_attiva')
@@ -30,14 +45,29 @@ export async function getSocietaAttiva(conversationId?: string): Promise<CodiceS
       .eq('conversation_id', conversationId)
       .maybeSingle()
 
-    if (error || !data?.societa) return DEFAULT_SOCIETA
+    if (error) return { ok: false, errore: error.message || 'lettura della societa\' attiva fallita' }
+    if (!data?.societa) return { ok: true, codice: DEFAULT_SOCIETA, esplicita: false }
     const codice = data.societa as CodiceSocieta
     // Difesa contro una riga scritta prima di un'estensione del registro:
     // un codice sconosciuto non deve produrre operazioni su un'azienda fantasma.
-    return getSocieta(codice) ? codice : DEFAULT_SOCIETA
-  } catch {
-    return DEFAULT_SOCIETA
+    if (!getSocieta(codice)) return { ok: true, codice: DEFAULT_SOCIETA, esplicita: false }
+    return { ok: true, codice, esplicita: true }
+  } catch (err) {
+    return { ok: false, errore: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/**
+ * La società in uso nella conversazione. Restruktura se non è mai stata scelta,
+ * o se la lettura fallisce: un errore di database non deve cambiare azienda.
+ *
+ * Firma e comportamento osservabile invariati: usata dai chiamanti di contesto
+ * (prompt, blocco iniettato) dove indovinare Restruktura non produce un
+ * documento. Il percorso che genera documenti usa `leggiSocietaAttiva`.
+ */
+export async function getSocietaAttiva(conversationId?: string): Promise<CodiceSocieta> {
+  const e = await leggiSocietaAttiva(conversationId)
+  return e.ok ? e.codice : DEFAULT_SOCIETA
 }
 
 /** Imposta la società della conversazione. */

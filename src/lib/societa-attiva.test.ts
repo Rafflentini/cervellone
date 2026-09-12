@@ -3,16 +3,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // Stato del finto database, per conversazione
 let righe: Record<string, string> = {}
 let erroreLettura: { message: string } | null = null
+let lanciaEccezione = false
 
 vi.mock('./supabase-server', () => ({
   getSupabaseServer: () => ({
     from: () => ({
       select: () => ({
         eq: (_col: string, convId: string) => ({
-          maybeSingle: async () => ({
-            data: righe[convId] ? { societa: righe[convId] } : null,
-            error: erroreLettura,
-          }),
+          maybeSingle: async () => {
+            if (lanciaEccezione) throw new Error('connessione interrotta')
+            return {
+              data: righe[convId] ? { societa: righe[convId] } : null,
+              error: erroreLettura,
+            }
+          },
         }),
       }),
       upsert: async (row: { conversation_id: string; societa: string }) => {
@@ -23,13 +27,14 @@ vi.mock('./supabase-server', () => ({
   }),
 }))
 
-import { getSocietaAttiva, setSocietaAttiva, bloccoSocietaAttiva } from './societa-attiva'
+import { getSocietaAttiva, setSocietaAttiva, bloccoSocietaAttiva, leggiSocietaAttiva } from './societa-attiva'
 import { getSocieta } from './societa'
 
 describe('societa attiva', () => {
   beforeEach(() => {
     righe = {}
     erroreLettura = null
+    lanciaEccezione = false
   })
 
   // Chi non ha mai usato /societa deve trovare il comportamento di sempre.
@@ -61,6 +66,62 @@ describe('societa attiva', () => {
 
   it('senza conversazione ritorna il default invece di lanciare', async () => {
     expect(await getSocietaAttiva('')).toBe('restruktura')
+  })
+})
+
+describe('leggiSocietaAttiva — un errore NON e\' una societa\'', () => {
+  beforeEach(() => {
+    righe = {}
+    erroreLettura = null
+    lanciaEccezione = false
+  })
+
+  it('nessuna riga: Restruktura, ma dichiarata NON esplicita', async () => {
+    const e = await leggiSocietaAttiva('conv-1')
+    expect(e).toEqual({ ok: true, codice: 'restruktura', esplicita: false })
+  })
+
+  it('riga presente: la societa\' scelta, esplicita', async () => {
+    righe['conv-1'] = 'larealestate'
+    const e = await leggiSocietaAttiva('conv-1')
+    expect(e).toEqual({ ok: true, codice: 'larealestate', esplicita: true })
+  })
+
+  it('CONTROLLO POSITIVO — errore dal database: ok:false, NON Restruktura', async () => {
+    erroreLettura = { message: 'connessione persa' }
+    const e = await leggiSocietaAttiva('conv-1')
+    expect(e.ok).toBe(false)
+    if (e.ok) throw new Error('un guasto si e\' travestito da societa\': e\' il difetto, non il fix')
+    expect(e.errore).toContain('connessione persa')
+  })
+
+  it('CONTROLLO POSITIVO — eccezione: ok:false', async () => {
+    lanciaEccezione = true
+    const e = await leggiSocietaAttiva('conv-1')
+    expect(e.ok).toBe(false)
+  })
+
+  it('senza conversationId: Restruktura non esplicita (non c\'e\' niente da leggere)', async () => {
+    expect(await leggiSocietaAttiva(undefined)).toEqual({ ok: true, codice: 'restruktura', esplicita: false })
+  })
+
+  it('codice sconosciuto in riga: Restruktura non esplicita, non un\'azienda fantasma', async () => {
+    righe['conv-1'] = 'acme'
+    const e = await leggiSocietaAttiva('conv-1')
+    expect(e).toEqual({ ok: true, codice: 'restruktura', esplicita: false })
+  })
+})
+
+describe('getSocietaAttiva — comportamento invariato', () => {
+  beforeEach(() => {
+    righe = {}
+    erroreLettura = null
+    lanciaEccezione = false
+  })
+
+  it('su errore restituisce ancora restruktura (i chiamanti di contesto non cambiano)', async () => {
+    erroreLettura = { message: 'connessione persa' }
+    expect(await getSocietaAttiva('conv-1')).toBe('restruktura')
   })
 })
 
