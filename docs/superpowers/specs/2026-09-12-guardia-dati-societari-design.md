@@ -74,21 +74,72 @@ frase è accettabile; una consegna sbagliata silenziosa no.
 > visto nascere e di cui non conosce la provenienza — esattamente il tipo di silenzio che
 > stiamo eliminando.
 
-## Dove sta la guardia
+## Dove sta la guardia — e perché il primo disegno era sbagliato
 
-**Dentro l'imbuto, non nei chiamanti.** Tutti i documenti HTML→PDF e HTML→Word passano per
-due funzioni sole:
+> **Correzione registrata.** Il primo disegno metteva la guardia dentro
+> `generatePdfFromHtml` e `generateDocxFromHtml`, «i due unici imbuti». La
+> scansione pre-volo del piano ha dimostrato che **non sono gli imbuti**: il
+> preventivo non passa da lì. `genera_preventivo_completo` scrive la riga in
+> `documents` **da solo** (`studio-tecnico.ts:986`) e restituisce l'HTML dentro
+> un blocco `~~~document`; l'Ingegnere lo apre dal pannello anteprima e lo
+> stampa dal browser. La guardia nel PDF avrebbe protetto i PDF e **mancato
+> esattamente il preventivo**, cioè il caso che Raffaele ha nominato.
+> La lezione va nella lista tarata: *un imbuto dichiarato non è un imbuto
+> misurato.* Si conta chi scrive, non chi sembra il posto giusto.
 
-- `generatePdfFromHtml(html, title, opzioni)` — `src/lib/pdf-generator.ts:384`
-- `generateDocxFromHtml(html, title, opzioni)` — `src/lib/pdf-generator.ts:520`
+### La misura
 
-con **sei** punti di chiamata (`document-template-tools.ts:305`, `draft-tools.ts:249`,
-`sal-tools.ts:189`, `tools.ts:152`, `tools.ts:166`). Se la guardia stesse nei chiamanti, il
-settimo punto scritto fra un mese la dimenticherebbe **senza che nessuno se ne accorga**.
-Dentro l'imbuto, nessuno la aggira per distrazione.
+`grep -rn "from('documents')" src` → **28 punti**, di cui **10 inseriscono**.
+Non esiste un collo di bottiglia: esiste una dispersione. Dei dieci, questi
+portano il contenuto di un documento **che Cervellone compila**:
 
-`src/v19/render/docx.ts:renderDocx` genera dai modelli `.docx` con segnaposto e **non passa
-da lì**: è un secondo imbuto, coperto separatamente (Task 6).
+| Punto | Cosa scrive | Guardia |
+|---|---|---|
+| `src/app/api/chat/route.ts:502` | il blocco `~~~document` del modello, **web** | ✅ |
+| `src/lib/agent-job.ts:215` | lo stesso blocco, **Telegram** | ✅ |
+| `src/lib/tools/studio-tecnico.ts:986` | preventivo, CME, quadro economico | ✅ |
+| `src/lib/artifact-capture.ts:169` | l'auto-bozza ricavata dal testo del modello | ✅ |
+| `src/lib/draft-tools.ts:186` | la **modifica** del contenuto di una bozza | ✅ |
+| `src/lib/pdf-generator.ts:384` / `:520` | HTML→PDF e HTML→Word | ✅ |
+| `src/v19/render/docx.ts:34` | i modelli `.docx` coi segnaposto | ✅ |
+
+I due primi punti sono **già simmetrici**: stessa `insert`, stessa forma, cambia
+solo `metadata.source` (`web_chat` / `telegram`). L'equipollenza qui non va
+costruita: va **non rotta**, e provata.
+
+### Le esclusioni, dichiarate
+
+Una guardia si giudica anche da cosa lascia passare di proposito. Queste
+scritture **non** vengono guardate, e il motivo conta:
+
+- `src/app/api/projects/route.ts:371,380,437` — il digest di un file **che
+  l'Ingegnere ha caricato**. Un capitolato ricevuto da La Real Estate porta
+  legittimamente la partita IVA de La Real Estate: guardarlo bloccherebbe il
+  caso normale. Non è un documento che Cervellone compila, è un documento che
+  Cervellone legge.
+- `src/lib/image-memory.ts`, `src/lib/sent-mail.ts`, `src/lib/share-proposte.ts`
+  — memoria interna, copia di una mail già spedita, righe di condivisione.
+  Nessuna di queste è un documento compilato.
+
+### La conseguenza architetturale
+
+Otto punti da guardare non si guardano otto volte: il nono, scritto fra un mese,
+sarebbe senza guardia **e nessuno se ne accorgerebbe**. Quindi:
+
+1. **Un modulo nuovo, `src/lib/salva-documento.ts`**, con l'unica funzione che
+   scrive il contenuto di un documento in `documents`. La guardia sta dentro.
+   I cinque punti Supabase passano da lì.
+2. **La guardia dentro i tre imbuti di rendering** (`generatePdfFromHtml`,
+   `generateDocxFromHtml`, `renderDocx`), perché quelli non passano da Supabase.
+3. **Un `grep` nella lista tarata** che trova un `insert` su `documents` fuori
+   da `salva-documento.ts`. È il solo meccanismo che non dipende dalla memoria
+   di nessuno — e la dispersione di oggi è nata proprio perché quel `grep` non
+   esisteva.
+
+E soprattutto: **la guardia è la rete, non la cura.** La cura è togliere le sei
+intestazioni cablate, così il documento sbagliato non nasce. La rete serve per il
+caso che resta — il modello che scrive la partita IVA di testa sua, che è
+letteralmente la domanda di Raffaele.
 
 ## L'architettura
 

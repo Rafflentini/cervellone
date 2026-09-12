@@ -4,7 +4,7 @@
 
 **Goal:** nessun documento generato da Cervellone può essere consegnato portando i dati societari di una società diversa da quella attiva, senza che l'Ingegnere lo sappia.
 
-**Architecture:** un modulo nuovo (`guardia-societa.ts`) che cerca nel contenuto solo l'insieme **chiuso** delle nostre partite IVA; la guardia vive **dentro** i due imbuti di generazione (`generatePdfFromHtml`, `generateDocxFromHtml`) così nessun chiamante può dimenticarla; le sei intestazioni cablate diventano dati della società attiva; e le tre catene che oggi trasformano un guasto in «Restruktura» imparano a distinguere un'assenza nota da un errore.
+**Architecture:** un modulo nuovo (`guardia-societa.ts`) che cerca nel contenuto solo l'insieme **chiuso** delle nostre partite IVA; un secondo modulo nuovo (`salva-documento.ts`) che diventa l'**unica** strada per scrivere il contenuto di un documento, con la guardia dentro; la stessa guardia nei tre imbuti di rendering (PDF, Word da HTML, modelli .docx); le sei intestazioni cablate che diventano dati della societa attiva; e le tre catene che oggi trasformano un guasto in «Restruktura» che imparano a distinguere un'assenza nota da un errore.
 
 **Tech Stack:** TypeScript, Next.js, vitest, Supabase.
 
@@ -26,14 +26,15 @@
 | File | Responsabilità |
 |---|---|
 | `src/lib/guardia-societa.ts` | **nuovo** — insieme chiuso delle nostre P.IVA + verdetto sul contenuto |
-| `src/lib/guardia-societa.test.ts` | **nuovo** — controlli negativi (il caso normale passa) e positivi (il caso vero morde) |
+| `src/lib/salva-documento.ts` | **nuovo** — l'unica strada per scrivere il contenuto di un documento; la guardia sta qui |
 | `src/lib/societa-attiva.ts` | `leggiSocietaAttiva` con esito discriminato; `getSocietaAttiva` invariata |
-| `src/lib/societa-documenti.ts` | esito discriminato, nessun `catch → undefined` |
-| `src/lib/pdf-generator.ts` | `societa` obbligatoria, `SOCIETA_PREDEFINITA` eliminata, guardia nei due imbuti |
-| `src/lib/tools/studio-tecnico.ts` | tre intestazioni cablate → società attiva |
-| `src/v19/render/utils.ts` | piede Word: nessun predefinito Restruktura |
-| `src/lib/prompts.ts` | riga `Intestazione:` condizionata alla società attiva |
-| chiamanti (`tools.ts`, `draft-tools.ts`, `sal-tools.ts`, `document-template-tools.ts`) | passano la società e dichiarano il rifiuto |
+| `src/lib/societa-documenti.ts` | `societaPerDocumento` con esito discriminato, nessun `catch → undefined` |
+| `src/lib/pdf-generator.ts` | `societa` obbligatoria, `SOCIETA_PREDEFINITA` eliminata, guardia nei due imbuti HTML |
+| `src/v19/render/docx.ts` + `utils.ts` | terzo imbuto: modelli .docx; nessun predefinito Restruktura nel piede |
+| `src/lib/tools/studio-tecnico.ts` | tre intestazioni cablate → societa attiva; l'insert su `documents` passa dal modulo nuovo |
+| `src/lib/prompts.ts` | riga `Intestazione:` condizionata alla societa attiva |
+| `chat/route.ts`, `agent-job.ts`, `artifact-capture.ts`, `draft-tools.ts` | le cinque scritture di contenuto passano da `salva-documento.ts` |
+| chiamanti dei render (`tools.ts`, `draft-tools.ts`, `sal-tools.ts`, `document-template-tools.ts`) | passano la societa e dichiarano il rifiuto |
 
 ---
 
@@ -410,124 +411,348 @@ git commit -m "un guasto nella lettura della societa' attiva non e' piu' 'Restru
 
 ---
 
-### Task 4: la guardia dentro i due imbuti, e `societa` obbligatoria
+### Task 4: `salva-documento.ts` — l'unica strada per scrivere il contenuto di un documento
 
 **Files:**
-- Modify: `src/lib/pdf-generator.ts` (`OpzioniDocumento`, `:59`, `:384`, `:520`, `:409`, `:644`)
-- Modify: `src/lib/tools.ts:139-170`, `src/lib/draft-tools.ts:249`, `src/lib/sal-tools.ts:189`, `src/lib/document-template-tools.ts:305,409`
-- Test: `src/lib/pdf-generator.guardia.test.ts` (creare)
+- Create: `src/lib/salva-documento.ts`
+- Test: `src/lib/salva-documento.test.ts`
+- Modify: `src/app/api/chat/route.ts:502`, `src/lib/agent-job.ts:215`, `src/lib/tools/studio-tecnico.ts:986`, `src/lib/artifact-capture.ts:169`, `src/lib/draft-tools.ts:186`
 
 **Interfaces:**
 - Consumes: `verificaDatiSocietari`, `messaggioBlocco` (Task 1), `societaPerDocumento` (Task 3)
-- Produces: `generatePdfFromHtml` e `generateDocxFromHtml` **rigettano** (`throw new ErroreDatiSocietari`) quando la guardia blocca; `societa` non è più opzionale.
+- Produces:
+  ```ts
+  export type EsitoSalvataggio =
+    | { ok: true; id: string }
+    | { ok: false; motivo: 'dati_societari'; messaggio: string; esito: Extract<EsitoGuardia, { ok: false }> }
+    | { ok: false; motivo: 'societa_ignota'; messaggio: string }
+    | { ok: false; motivo: 'errore'; messaggio: string }
+
+  /**
+   * L'UNICO modo per scrivere il contenuto di un documento in `documents`.
+   * Un secondo modo e' un difetto: la guardia sui dati societari sta qui.
+   */
+  export async function salvaDocumento(d: {
+    nome: string
+    contenuto: string
+    conversationId: string
+    tipo: string
+    metadata?: Record<string, unknown>
+  }): Promise<EsitoSalvataggio>
+
+  /** Aggiorna il contenuto di una bozza esistente, con la stessa guardia. */
+  export async function aggiornaContenutoDocumento(
+    id: string,
+    contenuto: string,
+    conversationId: string,
+  ): Promise<EsitoSalvataggio>
+  ```
+
+**Perché tre `motivo` e non un `error: string`:** chi chiama deve poter dire cose
+diverse all'Ingegnere. «Dati societari incoerenti» è un blocco che lui può
+sciogliere; «non so quale società» è un guasto da riferire; «errore» è un guasto
+del database. Schiacciarli in una stringa riporta il difetto che stiamo chiudendo.
+
+- [ ] **Step 1: scrivere i test che falliscono**
 
 ```ts
-/** Rigetto della guardia: distinguibile da un guasto di Chromium. */
-export class ErroreDatiSocietari extends Error {
-  readonly esito: Extract<EsitoGuardia, { ok: false }>
-  constructor(esito: Extract<EsitoGuardia, { ok: false }>) {
-    super(messaggioBlocco(esito))
-    this.name = 'ErroreDatiSocietari'
-    this.esito = esito
-  }
-}
-```
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-**Perché un `throw` e non un ritorno:** le due funzioni restituiscono `Promise<Buffer>` e hanno cinque chiamanti. Cambiare il tipo di ritorno in un'unione obbligherebbe a toccare tutti e cinque nello stesso commit e a gestire il caso in cinque modi diversi. Un errore tipizzato attraversa il `try/catch` per-tool già presente in `claude.ts:1126`, che consegna il messaggio all'Ingegnere su **entrambi** i canali. → Questo è anche il motivo per cui l'equipollenza è gratuita qui, e va **provata**, non dedotta (Task 5).
+const insert = vi.fn()
+vi.mock('./supabase-server', () => ({
+  getSupabaseServer: () => ({
+    from: () => ({
+      insert: (row: unknown) => { insert(row); return { select: () => ({ single: () => Promise.resolve({ data: { id: 'doc-1' }, error: null }) }) } },
+      update: (row: unknown) => ({ eq: () => { insert(row); return Promise.resolve({ error: null }) } }),
+    }),
+  }),
+}))
+const societaPerDocumento = vi.fn()
+vi.mock('./societa-documenti', () => ({ societaPerDocumento: (...a: unknown[]) => societaPerDocumento(...a) }))
 
-- [ ] **Step 1: test che falliscono**
+import { salvaDocumento } from './salva-documento'
 
-```ts
-it('CONTROLLO POSITIVO — PDF con la P.IVA di Restruktura e La Real Estate attiva: RIGETTA', async () => {
-  const html = `<h1>RESTRUKTURA S.r.l.</h1><p>P.IVA 02087420762</p>`
-  await expect(generatePdfFromHtml(html, 'x', { societa: LAREALESTATE }))
-    .rejects.toThrow(/02087420762/)
-})
+const RESTRUKTURA = { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' }
+const LAREALESTATE = { denominazione: 'LA REAL ESTATE SRLS', piva: '02232730768' }
 
-it('CONTROLLO NEGATIVO — la guardia NON tocca il caso normale', async () => {
-  // stessa societa' attesa: la generazione procede (Chromium mockato)
-})
+beforeEach(() => { insert.mockClear(); societaPerDocumento.mockReset() })
 
-it('lo stesso vale per il Word: due formati dallo stesso HTML non possono divergere', async () => {
-  await expect(generateDocxFromHtml(html, 'x', { societa: LAREALESTATE })).rejects.toThrow(/02087420762/)
-})
+describe('salvaDocumento — la guardia sta dentro, non nei chiamanti', () => {
+  it('CONTROLLO POSITIVO: La Real Estate attiva, contenuto con la P.IVA di Restruktura → NON scrive', async () => {
+    societaPerDocumento.mockResolvedValue({ ok: true, societa: LAREALESTATE, esplicita: true })
+    const r = await salvaDocumento({
+      nome: 'Preventivo', tipo: 'html', conversationId: 'c1',
+      contenuto: '<h1>RESTRUKTURA S.r.l.</h1><p>P.IVA 02087420762</p>',
+    })
+    expect(r.ok).toBe(false)
+    if (r.ok) throw new Error('ha salvato un documento con la partita IVA sbagliata')
+    expect(r.motivo).toBe('dati_societari')
+    expect(r.messaggio).toContain('02087420762')
+    expect(r.messaggio).toContain('02232730768')
+    // la prova che conta: NESSUNA scrittura
+    expect(insert).not.toHaveBeenCalled()
+  })
 
-it('la guardia gira PRIMA di Chromium: un documento bloccato non deve costare un browser', async () => {
-  // il mock di puppeteer.launch non deve essere stato chiamato
+  it('CONTROLLO NEGATIVO: societa\' coerente → scrive, e scrive il contenuto vero', async () => {
+    societaPerDocumento.mockResolvedValue({ ok: true, societa: RESTRUKTURA, esplicita: true })
+    const r = await salvaDocumento({
+      nome: 'Preventivo', tipo: 'html', conversationId: 'c1',
+      contenuto: '<h1>RESTRUKTURA S.r.l.</h1><p>P.IVA 02087420762</p><p>Committente P.IVA 01234567890</p>',
+    })
+    expect(r).toEqual({ ok: true, id: 'doc-1' })
+    expect(insert).toHaveBeenCalledTimes(1)
+    expect((insert.mock.calls[0][0] as Record<string, unknown>).content).toContain('02087420762')
+  })
+
+  it('societa\' non leggibile → NON scrive, e lo dice: non indovina Restruktura', async () => {
+    societaPerDocumento.mockResolvedValue({ ok: false, errore: 'connessione persa' })
+    const r = await salvaDocumento({ nome: 'x', tipo: 'html', conversationId: 'c1', contenuto: '<p>x</p>' })
+    expect(r.ok).toBe(false)
+    if (r.ok) throw new Error('atteso rifiuto')
+    expect(r.motivo).toBe('societa_ignota')
+    expect(r.messaggio).toContain('connessione persa')
+    expect(insert).not.toHaveBeenCalled()
+  })
+
+  it('un documento senza nessuna partita IVA passa: non e\' un caso sospetto', async () => {
+    societaPerDocumento.mockResolvedValue({ ok: true, societa: RESTRUKTURA, esplicita: true })
+    const r = await salvaDocumento({ nome: 'x', tipo: 'html', conversationId: 'c1', contenuto: '<p>Relazione</p>' })
+    expect(r.ok).toBe(true)
+  })
 })
 ```
 
 - [ ] **Step 2: eseguire, verificare il fallimento**
-- [ ] **Step 3: implementare** — guardia in cima a entrambe le funzioni, **prima** di `embedDriveImages` e di `getBrowser()`; eliminare `SOCIETA_PREDEFINITA` e i due `?? SOCIETA_PREDEFINITA`; `societa: DatiSocietari` richiesta in `OpzioniDocumento`
-- [ ] **Step 4: aggiornare i cinque chiamanti** — ognuno chiama `societaPerDocumento(conversationId)`; su `ok:false` **non genera** e restituisce all'Ingegnere il messaggio d'errore (non un documento, non un silenzio)
-- [ ] **Step 5: eseguire suite intera + typecheck**
+
+Run: `npx vitest run src/lib/salva-documento.test.ts`
+Expected: FAIL — `Cannot find module './salva-documento'`
+
+- [ ] **Step 3: implementare il modulo**
+
+La guardia gira **prima** di qualunque scrittura. L'intestazione del file deve
+dire perché il modulo esiste, in una forma che sopravvive a chi lo legge fra sei
+mesi:
+
+```ts
+/**
+ * src/lib/salva-documento.ts — l'unica strada per scrivere in `documents` il
+ * contenuto di un documento che Cervellone compila.
+ *
+ * Nasce da una misura: il 12 set 2026 `grep "from('documents')"` dava VENTOTTO
+ * punti, DIECI dei quali inserivano. Cinque scrivevano il contenuto di un
+ * documento compilato, ognuno a modo suo, e nessuno controllava che la partita
+ * IVA stampata fosse quella della societa' attiva. Il preventivo, che e' il
+ * documento piu' importante, era fra questi.
+ *
+ * Un secondo modo di scrivere un documento e' un difetto, non una comodita':
+ * sarebbe senza guardia, e nessuno se ne accorgerebbe. Il `grep` A7 nella lista
+ * tarata sorveglia questa invariante.
+ */
+```
+
+- [ ] **Step 4: migrare i cinque punti**
+
+Ognuno smette di fare `insert` a mano. Su `ok: false` il chiamante:
+- **non** consegna il documento
+- **dice all'Ingegnere** `r.messaggio` — su entrambi i canali; mai un silenzio, mai un documento parziale
+
+`chat/route.ts:502` e `agent-job.ts:215` vanno migrati **nello stesso commit**:
+sono la stessa scrittura sui due canali, e migrarne uno solo crea la divergenza
+che questo repo ha già pagato più volte.
+
+- [ ] **Step 5: verificare che non resti nessun'altra strada**
+
+```bash
+grep -rn "from('documents')" src --include=*.ts --include=*.tsx | grep -v "\.test\." | grep -v "salva-documento.ts" | grep -E "insert|update\(\{ ?content"
+```
+Expected: solo `projects/route.ts` (digest di file caricati — **esclusione dichiarata** nella spec) e `sent-mail.ts` / `image-memory.ts` / `artifact-capture.ts` se scrivono tipi non-documento. Qualunque altra riga è un punto che il piano non ha visto: **riferirla**, non migrarla d'iniziativa.
+
+- [ ] **Step 6: suite intera + typecheck**
 
 Run: `npx vitest run && npx tsc --noEmit`
-Expected: tutto verde. Il typecheck è la prova che nessun chiamante è rimasto senza società.
 
-- [ ] **Step 6: mutazione — rimettere `?? SOCIETA_PREDEFINITA`: almeno un test deve morire**
-- [ ] **Step 7: commit**
+- [ ] **Step 7: mutazione**
+
+```bash
+cp src/lib/salva-documento.ts "$TMP/sd.bak"
+md5sum src/lib/salva-documento.ts
+# La guardia smette di bloccare: deve morire almeno un test
+# Disattivare la guardia. Il nome della variabile dipende dall'implementazione:
+# si legge dal file, NON si copia da qui. Sotto, ESITO e' un segnaposto.
+perl -0pi -e 's/\Qif (!ESITO.ok)\E/if (false \&\& !ESITO.ok)/' src/lib/salva-documento.ts
+grep -c "false &&" src/lib/salva-documento.ts   # deve stampare 1, altrimenti il pattern non ha morso
+npx vitest run src/lib/salva-documento.test.ts        # DEVE FALLIRE
+cp "$TMP/sd.bak" src/lib/salva-documento.ts
+md5sum src/lib/salva-documento.ts                      # identico a prima
+```
+Se la suite resta verde con la mutazione: **fermarsi e dirlo.** Un controllo positivo inerte è peggio di nessun controllo, perché mente sul fatto di esserci.
+
+- [ ] **Step 8: commit**
+
+```bash
+git add src/lib/salva-documento.ts src/lib/salva-documento.test.ts src/app/api/chat/route.ts src/lib/agent-job.ts src/lib/tools/studio-tecnico.ts src/lib/artifact-capture.ts src/lib/draft-tools.ts
+git commit -m "una sola strada per salvare un documento, e la guardia sta dentro"
+```
 
 ---
 
-### Task 5: equipollenza — un test per canale
+### Task 5: la guardia nei tre imbuti di rendering
 
 **Files:**
-- Test: `src/app/api/chat/route.guardia-societa.test.ts` (creare)
-- Test: `src/app/api/telegram/route.guardia-societa.test.ts` (creare)
+- Modify: `src/lib/pdf-generator.ts` (`OpzioniDocumento`, `:59`, `:384`, `:520`, `:409`, `:644`)
+- Modify: `src/v19/render/docx.ts:34`, `src/v19/render/utils.ts:110`
+- Modify: i chiamanti — `src/lib/tools.ts:152,166`, `src/lib/draft-tools.ts:249`, `src/lib/sal-tools.ts:189`, `src/lib/document-template-tools.ts:305`
+- Test: `src/lib/pdf-generator.guardia.test.ts`
 
-**Interfaces:** consuma il comportamento dei Task 1-4. Nessun codice di produzione nuovo: se per far passare questi test servisse toccare la produzione, **è un difetto trovato** — riferirlo, non aggirarlo.
+**Interfaces:**
+- Consumes: Task 1 e Task 3
+- Produces:
+  ```ts
+  export class ErroreDatiSocietari extends Error {
+    readonly esito: Extract<EsitoGuardia, { ok: false }>
+    constructor(esito: Extract<EsitoGuardia, { ok: false }>)
+  }
+  ```
+  `OpzioniDocumento.societa` passa da opzionale a **richiesto**; `SOCIETA_PREDEFINITA` **eliminata**.
 
-Lo schema dei test di canale esistenti sta in `src/app/api/chat/route.comandi.test.ts` e `src/app/api/telegram/route.comandi.test.ts`: seguirlo.
+**Perché un `throw` e non un tipo di ritorno unione:** le funzioni restituiscono
+`Promise<Buffer>` e hanno cinque chiamanti. Un'unione obbligherebbe a gestire il
+caso in cinque modi diversi nello stesso commit. Un errore **tipizzato**
+attraversa il `try/catch` per-tool già presente in `claude.ts:1126`, che
+consegna il messaggio all'Ingegnere su entrambi i canali. Questo rende
+l'equipollenza gratuita — motivo in più per **provarla** invece di dedurla (Task 6).
 
-- [ ] **Step 1: i due test**
+- [ ] **Step 1: i test che falliscono**
 
-Per **ciascun** canale, con La Real Estate attiva e un tool che genera un documento intestato Restruktura:
-1. il messaggio di blocco **arriva all'Ingegnere** (sul web: nella risposta salvata; su Telegram: in una `sendMessage` effettiva, verificata sulla chiamata al mock — non sulla variante fire-and-forget)
+```ts
+it('CONTROLLO POSITIVO — PDF con la P.IVA di Restruktura e La Real Estate attesa: RIGETTA', async () => {
+  await expect(generatePdfFromHtml('<h1>RESTRUKTURA S.r.l.</h1><p>02087420762</p>', 'x', { societa: LAREALESTATE }))
+    .rejects.toThrow(/02087420762/)
+})
+
+it('la guardia gira PRIMA di Chromium: un documento bloccato non deve costare un browser', async () => {
+  await expect(generatePdfFromHtml(HTML_SBAGLIATO, 'x', { societa: LAREALESTATE })).rejects.toThrow()
+  expect(launchMock).not.toHaveBeenCalled()
+})
+
+it('CONTROLLO NEGATIVO — societa\' coerente: genera, la guardia non interferisce', async () => {
+  await expect(generatePdfFromHtml('<h1>RESTRUKTURA S.r.l.</h1><p>02087420762</p>', 'x', { societa: RESTRUKTURA }))
+    .resolves.toBeInstanceOf(Buffer)
+})
+
+it('il Word si comporta identico al PDF: due formati dallo stesso HTML non possono divergere', async () => {
+  await expect(generateDocxFromHtml(HTML_SBAGLIATO, 'x', { societa: LAREALESTATE })).rejects.toThrow(/02087420762/)
+})
+
+it('renderDocx dai modelli .docx: stessa guardia', async () => {
+  // il testo dei segnaposto compilati e' il contenuto da verificare
+})
+```
+
+- [ ] **Step 2: eseguire, verificare il fallimento**
+- [ ] **Step 3: implementare** — guardia in cima alle tre funzioni, prima di `embedDriveImages` e di `getBrowser()`; eliminare `SOCIETA_PREDEFINITA` e i due `?? SOCIETA_PREDEFINITA`; in `v19/render/utils.ts:110` togliere il predefinito `"RESTRUKTURA … 02087420762"` e richiedere il dato
+- [ ] **Step 4: aggiornare i cinque chiamanti** — `societaPerDocumento(conversationId)`, e su `ok:false` nessun documento più il messaggio all'Ingegnere
+- [ ] **Step 5: suite + typecheck** — il typecheck è la prova che nessun chiamante è rimasto senza società: `societa` richiesta rende un'omissione un errore di compilazione, non una stampa silenziosa di Restruktura
+- [ ] **Step 6: mutazione** — rimettere `?? SOCIETA_PREDEFINITA`: almeno un test deve morire
+- [ ] **Step 7: commit** — `git commit -m "PDF, Word e modelli .docx: la societa' e' obbligatoria e verificata"`
+
+---
+
+### Task 6: equipollenza — un test per canale
+
+**Files:**
+- Test: `src/app/api/chat/route.guardia-societa.test.ts`
+- Test: `src/app/api/telegram/route.guardia-societa.test.ts`
+
+**Interfaces:** consuma i Task 1-5. **Nessun codice di produzione nuovo.** Se per far passare questi test servisse toccare la produzione, **è un difetto trovato**: riferirlo, non aggirarlo.
+
+Lo schema dei test di canale sta in `src/app/api/chat/route.comandi.test.ts` e `src/app/api/telegram/route.comandi.test.ts`: seguirlo, non inventarne uno nuovo.
+
+- [ ] **Step 1: per ciascun canale, il caso di blocco**
+
+Con La Real Estate attiva e un turno che produce un documento intestato Restruktura:
+1. il messaggio di blocco **arriva** — sul web nella risposta salvata; su Telegram in una `sendMessage` **verificata sulla chiamata al mock**, e con `sendTelegramMessageChecked`, non con la variante che non rigetta mai
 2. il messaggio **contiene entrambe** le partite IVA
-3. **nessun documento** viene consegnato o salvato
+3. **nessuna riga** in `documents`
 
-- [ ] **Step 2: eseguire, verificare il fallimento** (prima dei Task 1-4, oppure con un fixture che li aggira)
-- [ ] **Step 3: far passare** — senza toccare la produzione
-- [ ] **Step 4: CONTROLLO POSITIVO di canale** — con la società **giusta**, su entrambi i canali il documento esce e nessun blocco appare. Un test che dice «bloccato» su ogni input non misura niente.
+- [ ] **Step 2: eseguire, verificare il fallimento** (con un fixture che aggira i Task 1-5, o prima di essi)
+- [ ] **Step 3: far passare senza toccare la produzione**
+- [ ] **Step 4: CONTROLLO POSITIVO di canale** — con la società **giusta**, su entrambi i canali il documento viene salvato e **nessun** blocco appare. Un test che dice «bloccato» su ogni input non misura niente: è il difetto del 3 settembre, quando tre difetti in un giorno stavano nei test.
 - [ ] **Step 5: commit** — `git commit -m "la guardia parla identica su chat web e Telegram, provato per canale"`
 
 ---
 
-### Task 6: le sei intestazioni cablate
+### Task 7: le sei intestazioni cablate — la cura, non la rete
 
 **Files:**
-- Modify: `src/lib/tools/studio-tecnico.ts:837`, `:857`, e il piede del Quadro Economico (`Restruktura S.r.l. — Le percentuali sono indicative`, ~`:970`)
-- Modify: `src/v19/render/utils.ts:110`
+- Modify: `src/lib/tools/studio-tecnico.ts:837`, `:857`, e il piede del quadro economico (`Restruktura S.r.l. — Le percentuali sono indicative`, ~`:970`)
+- Modify: `src/v19/render/utils.ts:110` (se non già fatto nel Task 5)
 - Modify: `src/lib/prompts.ts:134`
-- Test: aggiornare `src/lib/tools/studio-tecnico.characterization.test.ts`
+- Test: `src/lib/tools/studio-tecnico.characterization.test.ts` (aggiornare), più il test di riproduzione
 
 **Interfaces:** consuma `societaPerDocumento` (Task 3). `executeStudioTecnico` ha già `conversationId` in firma (`:147`).
 
-**Attenzione allo snapshot:** `studio-tecnico.characterization.test.ts` snapshotta l'output di `genera_preventivo_completo`. L'intestazione **cambia** per costruzione. Lo snapshot va aggiornato **dopo** aver letto il diff e verificato che cambi **solo** l'intestazione: uno snapshot aggiornato senza guardare è un test che ha smesso di misurare.
+**Attenzione allo snapshot:** `studio-tecnico.characterization.test.ts` snapshotta l'output di `genera_preventivo_completo`. L'intestazione **cambia per costruzione**. Lo snapshot si aggiorna **dopo** aver letto il diff e verificato che cambi **solo** l'intestazione. Uno snapshot aggiornato senza guardare è un test che ha smesso di misurare — ed è esattamente come un difetto sopravvive a 2.468 test verdi.
 
-- [ ] **Step 1: la riproduzione del difetto** — un test che, con La Real Estate attiva, prova che il preventivo di **oggi** contiene `02087420762`. Questo test è la prova che il difetto era vero: va scritto **prima** del fix, deve **passare** prima e **fallire** dopo, e poi va invertito nella sua forma definitiva (con La Real Estate attiva il preventivo contiene `02232730768` e **non** `02087420762`)
-- [ ] **Step 2: eseguire la riproduzione, verificare che PASSI** (il difetto è vivo)
-- [ ] **Step 3: intestazione e piede dalla società attiva** in tutti e quattro i punti HTML/Word; su `ok:false` il preventivo **non si genera**
-- [ ] **Step 4: `prompts.ts:134`** — la riga `Intestazione:` si costruisce dalla società attiva. Se il prompt suggerisce Restruktura mentre la guardia blocca, il bot combatte contro se stesso e l'Ingegnere vede solo un rifiuto
-- [ ] **Step 5: invertire la riproduzione** nella forma definitiva; eseguire suite + typecheck
-- [ ] **Step 6: `grep -rn "02087420762" src --include=*.ts | grep -v test`** — devono restare **solo** `societa.ts` e `identita.ts`. Ogni altra occorrenza è un punto che il piano non ha visto: riferirla
-- [ ] **Step 7: commit**
+- [ ] **Step 1: la riproduzione del difetto, PRIMA del fix**
+
+Un test che, con La Real Estate attiva, prova che il preventivo di **oggi**
+contiene `02087420762`. L'exploit si riproduce prima della difesa: senza questo
+test non sappiamo di aver chiuso qualcosa di vero.
+
+```ts
+it('IL DIFETTO, riprodotto: con La Real Estate attiva il preventivo porta la P.IVA di Restruktura', async () => {
+  // mock: leggiSocietaAttiva → larealestate
+  const out = String(await executeStudioTecnico('genera_preventivo_completo', {
+    committente: 'Cliente', comune: 'Maratea', descrizione_lavoro: 'x',
+    lavorazioni: [{ descrizione: 'calcestruzzo', quantita: 10, um: 'mc' }], regione: 'basilicata',
+  }, 'conv-lre'))
+  expect(out).toContain('02087420762')   // ← passa OGGI. E' il difetto.
+})
+```
+
+- [ ] **Step 2: eseguire e verificare che PASSI** — il difetto è vivo. Se non passa, il difetto non è dove credevo: **fermarsi e riferirlo** invece di aggiustare il test.
+- [ ] **Step 3: intestazione e piede dalla società attiva** nei quattro punti HTML/Word; su `ok:false` il preventivo **non si genera** e lo dichiara
+- [ ] **Step 4: `prompts.ts:134`** — la riga `Intestazione:` si costruisce dalla società attiva. Se il prompt suggerisce Restruktura mentre la guardia blocca, il bot combatte contro se stesso e l'Ingegnere vede solo un rifiuto senza capire perché
+- [ ] **Step 5: invertire la riproduzione nella forma definitiva**
+
+```ts
+it('con La Real Estate attiva il preventivo porta LA SUA partita IVA, e non quella di Restruktura', async () => {
+  const out = /* come sopra */
+  expect(out).toContain('02232730768')
+  expect(out).not.toContain('02087420762')
+})
+```
+
+- [ ] **Step 6: suite + typecheck**
+- [ ] **Step 7: verificare che non resti niente cablato**
+
+```bash
+grep -rn "02087420762\|02232730768" src --include=*.ts | grep -v "\.test\." | grep -v "__tests__" | grep -v "spec.ts"
+```
+Expected: **solo** `src/lib/societa.ts`, `src/v19/prompts/identita.ts`, `src/lib/checkin/foglio-schema.ts:101` (quest'ultimo è La Real Estate nel foglio check-in: **corretto**, il check-in è la sua attività). Ogni altra occorrenza è un punto che il piano non ha visto: **riferirla**.
+
+- [ ] **Step 8: commit** — `git commit -m "sei intestazioni cablate diventano la societa' attiva"`
 
 ---
 
-### Task 7: la lista tarata degli audit, e i punti aperti
+### Task 8: la lista tarata, e i punti aperti dichiarati
 
 **Files:**
 - Modify: `docs/superpowers/audit-checklist-tarata.md`
-- Modify: `docs/superpowers/specs/2026-09-12-guardia-dati-societari-design.md` (sezione «punti aperti», se i task ne hanno scoperti)
+- Modify: `docs/superpowers/specs/2026-09-12-guardia-dati-societari-design.md` (sezione punti aperti, se i task ne hanno scoperti)
 
 *«Fix, poi imparo e prossima volta calibro gli audit per scovare il problema in fase di creazione»* — un fix non è finito finché la classe non è nella lista.
 
-- [ ] **Step 1: aggiungere le voci**, ognuna con il difetto vero e la data che l'ha generata:
-  - **A7 (grep):** `grep -rn "<numero di 11 cifre>" src --include=*.ts | grep -v test` — un dato societario riscritto a mano fuori dal registro. *Difetto: 12 set 2026, sei intestazioni Restruktura cablate; un preventivo de La Real Estate usciva con la P.IVA di Restruktura.*
-  - **A8 (grep):** un parametro `opzioni.X ?? COSTANTE` dove `COSTANTE` è un dato di un'entità reale. *Difetto: 12 set 2026, `pdf-generator.ts:59` e `v19/render/utils.ts:110`.*
-  - **B10:** una funzione che restituisce un dato su cui si costruisce un documento, un pagamento o una dichiarazione **non può** avere lo stesso valore di ritorno per «assenza nota» e per «guasto». Terza ricorrenza (mail pending, prefissi UUID, società attiva).
-  - **C6:** una guardia va valutata su **due** prove, mai una: il caso vero morde **e** il caso normale passa. *Difetto: guardia `.docx`, che bloccava il caso normale.*
-  - **B11:** una guardia che confronta il contenuto con un valore «atteso» va valutata anche su **come si ottiene l'atteso**. Una guardia che si fida di un dato indovinato timbra l'errore invece di trovarlo.
-- [ ] **Step 2: commit** — `git add docs/ && git commit -m "la lista tarata impara la classe dei dati societari indovinati"`
+- [ ] **Step 1: le voci nuove**, ognuna col difetto vero e la data che l'ha generata
+
+- **A7 (grep):** `grep -rn "from('documents')" src | grep -E "insert|update\(\{ ?content"` fuori da `salva-documento.ts` → una strada nuova senza guardia. *Difetto: 12 set 2026, cinque scritture di contenuto sparse, nessuna che controllasse la partita IVA.*
+- **A8 (grep):** un dato di un'entità reale (partita IVA, ragione sociale, sede) scritto a mano fuori dal suo registro. *Difetto: 12 set 2026, sei intestazioni Restruktura cablate; un preventivo de La Real Estate usciva con la P.IVA di Restruktura.*
+- **A9 (grep):** `opzioni.X ?? COSTANTE` dove `COSTANTE` è il dato di un'entità reale. Un chiamante che dimentica non sbaglia: prende un'identità in silenzio. *Difetto: 12 set 2026, `pdf-generator.ts:59` e `v19/render/utils.ts:110`.*
+- **B10:** una funzione che restituisce un dato su cui si costruisce un documento, un pagamento o una dichiarazione **non può** avere lo stesso valore di ritorno per «assenza nota» e per «guasto». **Terza ricorrenza** (mail pending, prefissi UUID, società attiva) — quando una classe torna tre volte, il controllo va fatto per costruzione, non per revisione.
+- **B11:** una guardia che confronta il contenuto con un valore «atteso» va valutata **anche su come si ottiene l'atteso**. Una guardia che si fida di un dato indovinato timbra l'errore invece di trovarlo. *Difetto: 12 set 2026, `attesa` veniva da `getSocietaAttiva`, che su errore restituiva Restruktura.*
+- **C6:** una guardia si valuta su **due** prove, mai una: il caso vero morde **e** il caso normale passa. *Difetto: guardia `.docx`, che bloccava il caso normale.*
+- **C7:** **un imbuto dichiarato non è un imbuto misurato.** Prima di mettere un controllo «nel punto per cui passa tutto», contare i punti con un `grep`. *Difetto: 12 set 2026, il primo disegno di questa stessa guardia la metteva in `generatePdfFromHtml` «l'unico imbuto» — e il preventivo non passa da lì. Trovato dalla scansione pre-volo, non dai test.*
+
+- [ ] **Step 2: dichiarare i punti aperti nella spec**, se ne sono emersi. In particolare: i chiamanti di `getSocietaAttiva` che **scrivono** su Fatture in Cloud (un'operazione FIC sull'azienda sbagliata è grave quanto un documento sbagliato, e non è chiusa da questo lavoro); e la sede di Restruktura scritta in due forme diverse in due file, nessuna delle quali nel registro.
+- [ ] **Step 3: commit** — `git add docs/ && git commit -m "la lista tarata impara la classe dei dati societari indovinati"`
