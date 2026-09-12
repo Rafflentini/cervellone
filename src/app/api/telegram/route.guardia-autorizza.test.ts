@@ -14,7 +14,7 @@
  *
  * Cosa provano, dal brief (Step 6): identico al gemello sulla chat web.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
 
 const inviati: Array<{ chatId: number; testo: string }> = []
 const mockRunAgentJob = vi.fn()
@@ -40,7 +40,26 @@ vi.mock('@/lib/workflow/runs', () => ({ createRun: async () => ({ id: 'r' }), ge
 vi.mock('workflow/api', () => ({ start: async () => ({ runId: 'r' }) }))
 vi.mock('@/workflows/agent-task', () => ({ runAgentTask: {} }))
 vi.mock('@vercel/functions', () => ({ waitUntil: (p: Promise<unknown>) => { sfondo.push(p) } }))
-vi.mock('@/lib/resilience', () => ({ safeSupabase: async (_f: unknown, fallback: unknown) => fallback }))
+// ⚠️ Il mock e' COMPLETO di proposito (tutti e cinque gli export), non ridotto
+// a quello che serve oggi.
+//
+// Un mock parziale non e' una scorciatoia: e' una mina che scoppia il giorno in
+// cui qualcuno chiama l'export che manca — ed e' scoppiata due volte il 12 set
+// 2026, con `leggiSocietaAttiva` e con `societaPerDocumento`, in test che
+// sembravano rotti dal codice nuovo e invece erano rotti dal proprio mock.
+//
+// NOTA sull'onesta' di questo commento: nella prima stesura qui c'era scritto
+// che `withRetry` mancante causava i 2 secondi del primo test. **Era falso.**
+// L'esperimento (completare il mock e rimisurare) ha lasciato il test a 2.002ms:
+// la causa era la compilazione del modulo, vedi il `beforeAll` piu' sotto. Il
+// mock resta completo perche' e' giusto cosi', non perche' risolveva quello.
+vi.mock('@/lib/resilience', () => ({
+  safeSupabase: async (_f: unknown, fallback: unknown) => fallback,
+  withRetry: async (f: () => unknown) => f(),
+  trackEmbeddingFailure: () => {},
+  resetEmbeddingFailure: () => {},
+  getHealthStatus: () => ({ ok: true }),
+}))
 
 const sfondo: Promise<unknown>[] = []
 /** Tabelle di contorno non toccate da questi test: righe vuote, non rete. */
@@ -86,6 +105,27 @@ function richiesta(testo: string) {
     headers: new Headers(),
   } as never
 }
+
+/**
+ * ⚠️ Il modulo della route si carica QUI, non dentro il primo test.
+ *
+ * Misurato il 13 set 2026: i sei test fanno tutti `await import('./route')`, ma
+ * il primo impiegava **1.990 ms** e gli altri 1-16 ms. Non era un'attesa
+ * nascosta: erano due secondi di **compilazione** della route e di tutto il suo
+ * albero di dipendenze, pagati una volta sola e poi serviti dalla cache.
+ *
+ * Sotto carico pieno (197 file di test in parallelo) quei due secondi
+ * sforavano il tetto di 5s per singolo test, e la suite falliva **una volta su
+ * due** — un rosso che non era una regressione, cioe' la cosa che insegna a
+ * ignorare il rosso.
+ *
+ * Pagando il costo in un hook, il tetto che conta e' quello degli hook e i test
+ * restano dentro i loro millisecondi. Non si alza nessun limite: si sposta il
+ * lavoro dove non finge di essere lento.
+ */
+beforeAll(async () => {
+  await import('./route')
+}, 60_000)
 
 beforeEach(() => {
   vi.clearAllMocks()
