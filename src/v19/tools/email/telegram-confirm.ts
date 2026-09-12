@@ -8,6 +8,7 @@
  * confirmPendingSend() che bypassa la policy e invia. /annulla_<uuid>
  * chiama cancelPendingSend().
  */
+import type { EsitoLetturaPending } from './pending'
 import {
   fetchPending,
   getLatestPendingSend,
@@ -24,9 +25,52 @@ import type { AccountKey } from './config'
 import { recordSentMail } from '@/lib/sent-mail'
 import { confermaFicSenzaSocieta } from '@/lib/conferma-fic'
 
+/**
+ * Il messaggio per una lettura di pending che non ha dato una riga.
+ *
+ * Tiene separate le tre assenze vere dal guasto: fino al 12 set 2026 erano un
+ * `null` solo, e «Pending non trovato (scaduto o già processato)» veniva detto
+ * anche quando il database non rispondeva — mandando l'Ingegnere a cercare una
+ * bozza scaduta che invece era lì.
+ */
+function messaggioLetturaFallita(
+  lettura: Extract<EsitoLetturaPending, { ok: false }>,
+  uuid: string,
+): string {
+  if (lettura.motivo === 'errore') {
+    console.error('[pending] lettura pending fallita', { uuid, error: lettura.error })
+    return [
+      '⚠️ NON ho fatto niente: non riesco a leggere questo invio',
+      `(errore nel database: ${lettura.error}).`,
+      'Non e\' detto che sia scaduto o gia\' processato — e\' il controllo che non funziona.',
+      'Riprovi fra poco col comando che le ho mandato.',
+    ].join('\n')
+  }
+  if (lettura.motivo === 'scaduto') {
+    return '⌛ Questo invio e\' scaduto (le bozze valgono 30 minuti). Mi ridica cosa mandare e la ripreparo.'
+  }
+  if (lettura.motivo === 'non_piu_pending') {
+    return '⚠️ Questo invio e\' gia\' stato processato (inviato o annullato) — controlli se la mail e\' partita.'
+  }
+  return '📭 Non trovo questo invio: il codice non corrisponde a nessuna bozza.'
+}
+
 export async function buildPendingTelegramMessage(uuid: string): Promise<string | null> {
-  const p = await fetchPending(uuid)
-  if (!p) return null
+  const lettura = await fetchPending(uuid)
+  // Qui il `null` resta: il chiamante è il notificatore della bozza appena
+  // creata, e se non c'è niente da mostrare non c'è messaggio. Ma il guasto
+  // va almeno LOGGATO, perché «non ho notificato la bozza» e «il database non
+  // risponde» sono due fatti diversi e finora erano lo stesso silenzio.
+  if (!lettura.ok) {
+    if (lettura.motivo === 'errore') {
+      console.error('[pending] buildPendingTelegramMessage: lettura fallita', {
+        uuid,
+        error: lettura.error,
+      })
+    }
+    return null
+  }
+  const p = lettura.pending
   const attachmentsLine =
     p.attachments && p.attachments.length > 0
       ? `\n📎 Allegati: ${p.attachments.map((a) => a.filename).join(', ')}`
@@ -54,8 +98,9 @@ export async function buildPendingTelegramMessage(uuid: string): Promise<string 
 export async function confirmPendingSend(
   uuid: string,
 ): Promise<{ ok: boolean; result?: SendEmailResult; message: string }> {
-  const p = await fetchPending(uuid)
-  if (!p) return { ok: false, message: 'Pending non trovato (scaduto o già processato)' }
+  const lettura = await fetchPending(uuid)
+  if (!lettura.ok) return { ok: false, message: messaggioLetturaFallita(lettura, uuid) }
+  const p = lettura.pending
 
   // CLAIM ATOMICO: marca 'sent' con placeholder PRIMA del send per chiudere la race SMTP.
   // Se 2 webhook /invia_<uuid> arrivano simultanei, solo uno passa qui.
@@ -176,8 +221,34 @@ export async function confirmLatestPendingSend(): Promise<{ ok: boolean; message
     return { ok: false, message: '📭 Non ho una mail pronta da inviare in questo momento.' }
   }
   if (count > 1) {
-    const pendings = await listValidPendingSends()
-    const lines = pendings.map(
+    const elenco = await listValidPendingSends()
+    // L'elenco è l'unica cosa che gli dà i CODICI per scegliere. Se non riesco
+    // a leggerlo, un elenco vuoto lo lascerebbe bloccato senza sapere perché:
+    // meglio dire che il controllo è rotto e come uscirne.
+    if (!elenco.ok) {
+      console.error('[pending] elenco disambiguazione non disponibile', { error: elenco.error })
+      return {
+        ok: false,
+        message: [
+          `⚠️ NON ho inviato niente: ci sono ${count} mail in attesa e non riesco a`,
+          `elencarle per farle scegliere (errore nel database: ${elenco.error}).`,
+          '',
+          'Usi il comando esplicito che le ho mandato insieme alla bozza che vuole inviare.',
+        ].join('\n'),
+      }
+    }
+    if (elenco.pendings.length === 0) {
+      // Lettura riuscita ma vuota, mentre il conteggio dice 2+: discordanza,
+      // non assenza. Non si tace e non si inventa.
+      return {
+        ok: false,
+        message: [
+          `⚠️ NON ho inviato niente: risultano ${count} mail in attesa ma l'elenco torna vuoto.`,
+          'Usi il comando esplicito che le ho mandato insieme alla bozza.',
+        ].join('\n'),
+      }
+    }
+    const lines = elenco.pendings.map(
       (p) => `• A: ${p.to_addrs.join(', ')} — Oggetto: ${p.subject}\n  /invia_${p.uuid}`,
     )
     return {
@@ -190,7 +261,19 @@ export async function confirmLatestPendingSend(): Promise<{ ok: boolean; message
       ].join('\n'),
     }
   }
-  const latest = await getLatestPendingSend()
+  const ultimo = await getLatestPendingSend()
+  if (!ultimo.ok) {
+    console.error('[pending] rilettura ultimo pending fallita', { error: ultimo.error })
+    return {
+      ok: false,
+      message: [
+        '⚠️ NON ho inviato niente: non riesco a rileggere la mail in attesa',
+        `(errore nel database: ${ultimo.error}).`,
+        'Usi il comando esplicito che le ho mandato insieme alla bozza.',
+      ].join('\n'),
+    }
+  }
+  const latest = ultimo.pending
   if (!latest) {
     // Il conteggio ha detto «una», la lettura non la trova: è una discordanza,
     // non un'assenza. Dirla «non ho una mail pronta» ripeterebbe lo stesso
@@ -208,8 +291,9 @@ export async function confirmLatestPendingSend(): Promise<{ ok: boolean; message
 }
 
 export async function cancelPendingSend(uuid: string): Promise<{ ok: boolean; message: string }> {
-  const p = await fetchPending(uuid)
-  if (!p) return { ok: false, message: 'Pending non trovato (scaduto o già processato)' }
+  const lettura = await fetchPending(uuid)
+  if (!lettura.ok) return { ok: false, message: messaggioLetturaFallita(lettura, uuid) }
+  const p = lettura.pending
   // L'esito si guarda, come fa il gemello `markPendingSent` poche righe sopra.
   // Buttarlo qui significava dire «annullato» anche quando la riga era rimasta
   // `pending` per un errore del database: quella riga resta il latest pending

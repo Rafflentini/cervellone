@@ -66,24 +66,50 @@ export async function createPendingSend(
   return { uuid: data.uuid, expires_at: data.expires_at }
 }
 
-export async function fetchPending(uuid: string): Promise<PendingRow | null> {
+/**
+ * Esito della lettura di UN pending per uuid.
+ *
+ * Le tre assenze VERE (`assente` / `non_piu_pending` / `scaduto`) sono separate
+ * dal GUASTO (`errore`) perché vogliono risposte diverse all'Ingegnere: le
+ * prime sono un fatto da riferire, il secondo è una cosa nostra che non
+ * funziona, e dirgli «non trovato» quando il database non risponde lo manda a
+ * cercare un problema che non ha.
+ */
+export type EsitoLetturaPending =
+  | { ok: true; pending: PendingRow }
+  | { ok: false; motivo: 'assente' | 'non_piu_pending' | 'scaduto' }
+  | { ok: false; motivo: 'errore'; error: string }
+
+export async function fetchPending(uuid: string): Promise<EsitoLetturaPending> {
   const supabase = getSupabaseServer()
   const { data, error } = await supabase
     .from('cervellone_email_pending_send')
     .select('*')
     .eq('uuid', uuid)
     .maybeSingle()
-  if (error || !data) return null
-  if (data.status !== 'pending') return null
-  if (new Date(data.expires_at).getTime() < Date.now()) return null
-  return data as PendingRow
+  // 🚨 `if (error || !data) return null` metteva il guasto del database e la
+  // riga inesistente nello stesso cassetto. Sono cose diverse e vanno dette
+  // diverse: un errore non diventa mai un'assenza.
+  if (error) return { ok: false, motivo: 'errore', error: error.message }
+  if (!data) return { ok: false, motivo: 'assente' }
+  if (data.status !== 'pending') return { ok: false, motivo: 'non_piu_pending' }
+  if (new Date(data.expires_at).getTime() < Date.now()) return { ok: false, motivo: 'scaduto' }
+  return { ok: true, pending: data as PendingRow }
 }
+
+/**
+ * Esito della lettura dell'ULTIMO pending valido.
+ * `pending: null` con `ok:true` è l'assenza vera: non c'è nessuna bozza.
+ */
+export type EsitoUltimoPending =
+  | { ok: true; pending: PendingRow | null }
+  | { ok: false; error: string }
 
 /**
  * Ultimo pending non scaduto (status='pending'). Per la conferma a linguaggio
  * naturale "invia pure mail" senza uuid. Single-user → l'ultimo è quello giusto.
  */
-export async function getLatestPendingSend(): Promise<PendingRow | null> {
+export async function getLatestPendingSend(): Promise<EsitoUltimoPending> {
   const supabase = getSupabaseServer()
   const { data, error } = await supabase
     .from('cervellone_email_pending_send')
@@ -93,8 +119,8 @@ export async function getLatestPendingSend(): Promise<PendingRow | null> {
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle()
-  if (error || !data) return null
-  return data as PendingRow
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, pending: (data as PendingRow | null) ?? null }
 }
 
 /**
@@ -153,9 +179,22 @@ export async function countValidPendingSends(): Promise<ConteggioPending> {
  * disambiguazione (uuid + destinatario + oggetto). Stessi filtri di
  * `getLatestPendingSend`.
  */
-export async function listValidPendingSends(): Promise<
-  Array<{ uuid: string; to_addrs: string[]; subject: string }>
-> {
+export type RigaDisambiguazione = { uuid: string; to_addrs: string[]; subject: string }
+
+/**
+ * Esito dell'elenco dei pending validi.
+ *
+ * 🚨 `if (error || !data) return []` qui era un gradino più in basso dello
+ * stesso guasto del conteggio, ma pesa quanto quello: l'elenco serve a dare
+ * all'Ingegnere i CODICI con cui scegliere la bozza. Un elenco vuoto per
+ * errore lo lascia senza nessun codice da usare — bloccato, e senza sapere
+ * perché. Un errore non diventa mai un'assenza.
+ */
+export type EsitoElencoPending =
+  | { ok: true; pendings: RigaDisambiguazione[] }
+  | { ok: false; error: string }
+
+export async function listValidPendingSends(): Promise<EsitoElencoPending> {
   const supabase = getSupabaseServer()
   const { data, error } = await supabase
     .from('cervellone_email_pending_send')
@@ -163,8 +202,8 @@ export async function listValidPendingSends(): Promise<
     .eq('status', 'pending')
     .gt('expires_at', new Date().toISOString())
     .order('created_at', { ascending: false })
-  if (error || !data) return []
-  return data as Array<{ uuid: string; to_addrs: string[]; subject: string }>
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, pendings: (data as RigaDisambiguazione[] | null) ?? [] }
 }
 
 /**

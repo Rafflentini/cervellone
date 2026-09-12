@@ -48,7 +48,9 @@ const PENDING = { uuid: 'u-1', from_account: 'raffaele', to: ['cliente@esterno.i
 describe('/annulla dice la verita sull esito', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    fetchPendingMock.mockResolvedValue(PENDING)
+    // Busta `{ok, pending}`: dal 12 set 2026 `fetchPending` distingue il guasto
+    // del database dalle assenze vere, e il chiamante deve dirle diverse.
+    fetchPendingMock.mockResolvedValue({ ok: true, pending: PENDING })
   })
 
   it('se il database NON ha annullato, NON dice che ha annullato', async () => {

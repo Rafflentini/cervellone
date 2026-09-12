@@ -176,7 +176,13 @@ describe('confirmPendingSend — claim atomico chiude race SMTP', () => {
     const recordSentMailMock = vi.fn(async () => undefined)
 
     vi.doMock('../tools/email/pending', () => ({
-      fetchPending: fetchPendingMock,
+      // `fetchPending` ritorna una BUSTA `{ok, pending}` dal 12 set 2026: un
+      // errore del database non deve piu' poter passare per «pending non
+      // trovato». Il mock resta sulla riga e la busta si mette qui.
+      fetchPending: async (_uuid: string) => ({
+        ok: true as const,
+        pending: await fetchPendingMock(),
+      }),
       markPendingSent: vi.fn(async () => ({ ok: true })),
       markPendingCancelled: vi.fn(),
       updatePendingMessageId: vi.fn(async () => ({ ok: true })),
@@ -226,7 +232,13 @@ describe('confirmPendingSend — claim atomico chiude race SMTP', () => {
     const recordSentMailMock = vi.fn(async () => undefined)
 
     vi.doMock('../tools/email/pending', () => ({
-      fetchPending: fetchPendingMock,
+      // `fetchPending` ritorna una BUSTA `{ok, pending}` dal 12 set 2026: un
+      // errore del database non deve piu' poter passare per «pending non
+      // trovato». Il mock resta sulla riga e la busta si mette qui.
+      fetchPending: async (_uuid: string) => ({
+        ok: true as const,
+        pending: await fetchPendingMock(),
+      }),
       markPendingSent: vi.fn(async () => ({ ok: true })),
       markPendingCancelled: vi.fn(),
       updatePendingMessageId: vi.fn(async () => ({ ok: true })),
@@ -286,7 +298,13 @@ describe('confirmPendingSend — claim atomico chiude race SMTP', () => {
     const logEmailMock = vi.fn(async () => undefined)
 
     vi.doMock('../tools/email/pending', () => ({
-      fetchPending: fetchPendingMock,
+      // `fetchPending` ritorna una BUSTA `{ok, pending}` dal 12 set 2026: un
+      // errore del database non deve piu' poter passare per «pending non
+      // trovato». Il mock resta sulla riga e la busta si mette qui.
+      fetchPending: async (_uuid: string) => ({
+        ok: true as const,
+        pending: await fetchPendingMock(),
+      }),
       markPendingSent: markPendingSentMock,
       markPendingCancelled: markPendingCancelledMock,
       updatePendingMessageId: updatePendingMessageIdMock,
@@ -349,7 +367,13 @@ describe('confirmPendingSend — claim atomico chiude race SMTP', () => {
     const logEmailMock = vi.fn(async () => undefined)
 
     vi.doMock('../tools/email/pending', () => ({
-      fetchPending: fetchPendingMock,
+      // `fetchPending` ritorna una BUSTA `{ok, pending}` dal 12 set 2026: un
+      // errore del database non deve piu' poter passare per «pending non
+      // trovato». Il mock resta sulla riga e la busta si mette qui.
+      fetchPending: async (_uuid: string) => ({
+        ok: true as const,
+        pending: await fetchPendingMock(),
+      }),
       markPendingSent: markPendingSentMock,
       markPendingCancelled: vi.fn(),
       updatePendingMessageId: updatePendingMessageIdMock,

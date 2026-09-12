@@ -214,7 +214,7 @@ describe('confirmLatestPendingSend — davanti a un «non lo so» non dice «non
     const sendEmailInternalMock = vi.fn()
     vi.doMock('../tools/email/pending', () => ({
       fetchPending: vi.fn(),
-      getLatestPendingSend: vi.fn(async () => null),
+      getLatestPendingSend: vi.fn(async () => ({ ok: true as const, pending: null })),
       countValidPendingSends: vi.fn(async () => ({ ok: true as const, count: 1 })),
       listValidPendingSends: vi.fn(),
       markPendingSent: vi.fn(),
@@ -266,8 +266,8 @@ describe('confirmLatestPendingSend — davanti a un «non lo so» non dice «non
       conversation_id: null,
     }
     vi.doMock('../tools/email/pending', () => ({
-      fetchPending: vi.fn(async () => riga),
-      getLatestPendingSend: vi.fn(async () => riga),
+      fetchPending: vi.fn(async () => ({ ok: true as const, pending: riga })),
+      getLatestPendingSend: vi.fn(async () => ({ ok: true as const, pending: riga })),
       countValidPendingSends: vi.fn(async () => ({ ok: true as const, count: 1 })),
       listValidPendingSends: vi.fn(),
       markPendingSent: vi.fn(async () => ({ ok: true })),
