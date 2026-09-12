@@ -420,6 +420,53 @@ export async function downloadFileBase64(fileId: string): Promise<{ base64: stri
   return { base64: f.buffer.toString('base64'), mimeType: f.mimeType, name: f.name }
 }
 
+/**
+ * Il testo di un PDF, da un buffer. Estratto da `readPdfFromDrive` (Task 14)
+ * per riuso da `fic-allegato.ts`: leggere l'allegato di una fattura ricevuta
+ * richiede la STESSA estrazione, senza passare da Drive.
+ *
+ * ⚠️ `readPdfFromDrive` è in produzione: il polyfill di `DOMMatrix` e il
+ * `parser.destroy()` nel `finally` vivono qui, identici a prima — spostarli
+ * senza cambiarli è la condizione per cui il comportamento resta lo stesso.
+ */
+export async function testoDaPdf(
+  buffer: Buffer,
+  nome: string,
+): Promise<{ ok: true; testo: string; pagine: number } | { ok: false; errore: string }> {
+  // FIX W1.3: polyfill DOMMatrix per pdfjs-dist in Node.js serverless.
+  // pdfjs-dist (usato da pdf-parse v2) richiede DOMMatrix che NON esiste in Node serverless.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const g = globalThis as any
+  if (typeof g.DOMMatrix === 'undefined') {
+    g.DOMMatrix = class DOMMatrix {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      constructor(..._args: any[]) {}
+      // Stubs minimali per evitare crash, sufficienti per text extraction
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      multiply() { return this } translate() { return this } scale() { return this }
+    }
+  }
+  try {
+    // pdf-parse v2 API: new PDFParse({ data }) + getText()
+    const { PDFParse } = await import('pdf-parse')
+    const parser = new PDFParse({ data: buffer })
+    try {
+      const result = await parser.getText()
+      const testo = result.text || ''
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pagine = (result as any).numpages || (result as any).pages?.length || 0
+      console.log(`[DRIVE] testoDaPdf ok nome="${nome}" pagine=${pagine} chars=${testo.length}`)
+      return { ok: true, testo, pagine }
+    } finally {
+      await parser.destroy()
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[DRIVE] testoDaPdf ERROR nome="${nome}":`, err)
+    return { ok: false, errore: msg }
+  }
+}
+
 export async function readPdfFromDrive(fileId: string, offset: number = 0): Promise<string> {
   console.log(`[DRIVE] readPdfFromDrive id=${fileId}`)
   try {
@@ -427,42 +474,25 @@ export async function readPdfFromDrive(fileId: string, offset: number = 0): Prom
     if (!file.mimeType.includes('pdf')) {
       return `File "${file.name}" non è un PDF (mime: ${file.mimeType}). Usa drive_read_office o drive_read_document.`
     }
-    // FIX W1.3: polyfill DOMMatrix per pdfjs-dist in Node.js serverless.
-    // pdfjs-dist (usato da pdf-parse v2) richiede DOMMatrix che NON esiste in Node serverless.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const g = globalThis as any
-    if (typeof g.DOMMatrix === 'undefined') {
-      g.DOMMatrix = class DOMMatrix {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        constructor(..._args: any[]) {}
-        // Stubs minimali per evitare crash, sufficienti per text extraction
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        multiply() { return this } translate() { return this } scale() { return this }
+    const esito = await testoDaPdf(file.buffer, file.name)
+    if (!esito.ok) {
+      const msg = esito.errore
+      // #6: fallback resiliente. Errori di worker/bundling pdfjs (o PDF problematici) non
+      // devono lasciare l'utente bloccato: indirizza all'OCR vision con l'ID del file.
+      if (/worker|cannot find module|import|dommatrix/i.test(msg)) {
+        return `Non sono riuscito a estrarre il testo del PDF (${msg}). Leggilo con leggi_scansione_drive (file_id=${fileId}), che usa l'OCR vision.`
       }
+      return `Errore lettura PDF: ${msg}. Se è una scansione/immagine, usa leggi_scansione_drive (file_id=${fileId}).`
     }
-    // pdf-parse v2 API: new PDFParse({ data }) + getText()
-    const { PDFParse } = await import('pdf-parse')
-    const parser = new PDFParse({ data: file.buffer })
-    let text = ''
-    let pageText = ''
-    let pages = 0
-    try {
-      const result = await parser.getText()
-      text = result.text || ''
-      pageText = paginatedTextWindow(text, offset, 'drive_read_pdf')
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      pages = (result as any).numpages || (result as any).pages?.length || 0
-    } finally {
-      await parser.destroy()
-    }
+    const { testo: text, pagine: pages } = esito
+    const pageText = paginatedTextWindow(text, offset, 'drive_read_pdf')
     console.log(`[DRIVE] readPdfFromDrive ok pages=${pages} chars=${text.length}`)
     const emptyHint = `PDF senza testo estraibile (probabile scansione/immagine). Leggilo con leggi_scansione_drive (file_id=${fileId}) che usa l'OCR vision.`
     return `📄 PDF: ${file.name}${pages ? ` (${pages} pagine)` : ''}\n\n${pageText || emptyHint}`
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`[DRIVE] readPdfFromDrive ERROR:`, err)
-    // #6: fallback resiliente. Errori di worker/bundling pdfjs (o PDF problematici) non
-    // devono lasciare l'utente bloccato: indirizza all'OCR vision con l'ID del file.
+    // Errori a monte dell'estrazione (es. downloadFile: file troppo grande, non trovato).
     if (/worker|cannot find module|import|dommatrix/i.test(msg)) {
       return `Non sono riuscito a estrarre il testo del PDF (${msg}). Leggilo con leggi_scansione_drive (file_id=${fileId}), che usa l'OCR vision.`
     }

@@ -333,6 +333,34 @@ function buildDateQuery(anno?: number, mese?: number): string | undefined {
   return `date >= '${anno}-01-01' and date <= '${anno}-12-31'`
 }
 
+/**
+ * Il conto con cui NOI abbiamo registrato il pagamento (`payments_list[].payment_account`),
+ * quando c'è. NON è quello che ha scritto il fornitore sulla fattura — v. `mapDoc`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function contoRegistratoDaNoi(payments: any): string | null {
+  if (!Array.isArray(payments)) return null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const p of payments) {
+    const nome = p?.payment_account?.name
+    if (typeof nome === 'string' && nome.trim()) return nome
+  }
+  return null
+}
+
+/**
+ * Frase fissa, deliberatamente: `mapDoc` non può leggere la `ModalitaPagamento`
+ * scritta dal fornitore (v. task-14-brief.md — non è esposta da nessun campo di
+ * `ReceivedDocument`), e deve DIRLO invece di lasciare che l'assenza del CONTO
+ * NOSTRO (sotto) venga letta come assenza del dato del fornitore.
+ *
+ * ⭐ Questo è il campo che impedisce al modello di ripetere il difetto del
+ * 12 set 2026: tre ore passate a riportare "nessuna modalità di pagamento"
+ * guardando `payment_account` invece della `ModalitaPagamento` SDI.
+ */
+const MODALITA_SCRITTA_DAL_FORNITORE_NON_LEGGIBILE_QUI =
+  'non leggibile da questo campo: usa fic_leggi_allegato_fattura'
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapDoc(d: any) {
   const payments = d?.payments_list ?? d?.paymentsList
@@ -354,6 +382,11 @@ function mapDoc(d: any) {
     scadenza: d?.next_due_date ?? d?.nextDueDate ?? d?.due_date ?? d?.dueDate ?? null,
     residuo: amountDue ?? null,
     pagamenti_count: Array.isArray(payments) ? payments.length : 0,
+    // Due campi DISTINTI di proposito (Task 14): uno è la NOSTRA registrazione,
+    // l'altro è quello che ha scritto il fornitore. Confonderli in un unico
+    // "pagamenti_count" è il difetto che ha causato tre ore di risposte sbagliate.
+    pagamento_registrato_da_noi: contoRegistratoDaNoi(payments),
+    modalita_scritta_dal_fornitore: MODALITA_SCRITTA_DAL_FORNITORE_NON_LEGGIBILE_QUI,
   }
 }
 
@@ -386,11 +419,20 @@ export const FIC_READ_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'fic_dettaglio_documento',
-    description: 'Dettaglio completo di un documento Fatture in Cloud dato il suo id e il tipo ("emessa"|"ricevuta").',
+    description: 'Dettaglio completo di un documento Fatture in Cloud dato il suo id e il tipo ("emessa"|"ricevuta"). ⚠️ Il pagamento che vedi qui (pagamento_registrato_da_noi / payments_list) è IL CONTO CON CUI NOI abbiamo registrato il pagamento, NON la modalità di pagamento scritta dal fornitore sulla fattura (contanti/bonifico/carta/ecc.): quella non è leggibile da questo tool, usa fic_leggi_allegato_fattura.',
     input_schema: {
       type: 'object',
       properties: { tipo: { type: 'string', enum: ['emessa', 'ricevuta'] }, id: { type: 'integer' } },
       required: ['tipo', 'id'],
+    },
+  },
+  {
+    name: 'fic_leggi_allegato_fattura',
+    description: 'Legge l\'ALLEGATO (XML SDI o PDF) di una fattura RICEVUTA per sapere la modalità di pagamento SCRITTA DAL FORNITORE sulla fattura (es. "pagamento contanti", MP01=contanti, MP08=carta) — un dato DIVERSO da payment_account/pagamento_registrato_da_noi (il conto con cui NOI abbiamo registrato il pagamento). Usa questo tool quando ti chiedono cosa ha scritto il fornitore/esercente sulla fattura, mai fic_dettaglio_documento per questo.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'integer' } },
+      required: ['id'],
     },
   },
   {
@@ -450,6 +492,13 @@ export async function executeFicTool(
       const r = await ficGet(`/c/${cid}/${seg}/${id}`, { type: typeQ, fieldset: 'detailed' }, societa)
       if (!r.ok) return JSON.stringify({ ok: false, error: r.error })
       return JSON.stringify({ ok: true, documento: r.data?.data ?? r.data })
+    }
+    if (name === 'fic_leggi_allegato_fattura') {
+      const id = intParam(input.id)
+      if (!id) return JSON.stringify({ ok: false, error: 'id richiesto' })
+      const { leggiAllegatoFatturaRicevuta } = await import('./fic-allegato')
+      const esito = await leggiAllegatoFatturaRicevuta(id, societa)
+      return JSON.stringify(esito)
     }
     if (name === 'fic_cerca_anagrafica') {
       const nome = String(input.nome || '').trim()
