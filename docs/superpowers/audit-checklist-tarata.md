@@ -94,6 +94,32 @@ grep -rln "nome-modulo" src/ --include=*.ts | grep -v test   # zero importatori 
 
 ---
 
+### A6. 🚨 La risposta di una scrittura usata come prova
+
+> **Nato da:** il 12 settembre 2026, scrivendo `segna_fatture_ricevute_pagate` (pagamento su una
+> fattura RICEVUTA). L'unica cosa che l'API di Fatture in Cloud garantisce con un `200` è di aver
+> **ricevuto** la richiesta — non che il campo sia finito sul documento. E la semantica del `PUT`
+> non è nemmeno documentata: non si sa se sostituisca il documento intero o accetti un payload
+> parziale. Un «fatto» dedotto dal `200` sarebbe stato indistinguibile da un pagamento mai scritto.
+
+```bash
+grep -rn "method: '\(PUT\|POST\|DELETE\|PATCH\)'" src/ --include=*.ts | grep -v test
+```
+
+Per ogni scrittura verso un sistema esterno: **dopo, si rilegge?** E l'esito riferito viene dalla
+rilettura o dalla risposta? Due controlli, non uno:
+
+1. **il fatto c'è** — il campo scritto si ritrova rileggendo;
+2. **il resto non è cambiato** — fornitore, numero, data, importi. Serve proprio quando la semantica
+   della scrittura è ignota: se fosse una sostituzione integrale e avessimo rispedito meno campi di
+   quanti servono, il danno comparirebbe solo qui.
+
+**La regola:** su un dato che conta, `ok` lo può dire **solo** una rilettura. E quando la rilettura
+non conferma, il messaggio deve dirlo con parole che non si possono confondere con un successo —
+*«l'API ha risposto ok ma rileggendo non risulta»*.
+
+---
+
 ## B — I controlli sul comportamento verso l'Ingegnere
 
 ### B1. 🚨 Un messaggio che il codice scrive al posto del modello deve dire la verità
@@ -146,6 +172,42 @@ punto esatto in cui il fatto accade**, con un flag o un tipo.
 
 Per ogni costante che limita il lavoro: **misurata contro il carico di oggi**, o su quello di quando
 è stata scritta?
+
+---
+
+### B7. 🚨 Un esito di GRUPPO che nasconde i singoli
+
+> **Nato da:** il 12 settembre 2026, dal massivo di `segna_fatture_ricevute_pagate`. L'Ingegnere ha
+> chiesto **una conferma sola per N fatture**. Un'operazione che tocca 5 documenti può riuscirne 3:
+> un «fatto» sul gruppo lascerebbe due fatture non pagate che lui crede pagate, e la contabilità
+> divergerebbe in silenzio. Nessuno se ne accorgerebbe fino al bilancio.
+
+Per ogni operazione che tocca **più di un elemento** in un colpo:
+
+1. **l'esito è per elemento**, con il motivo di ogni fallimento — non un conteggio e non un «ok»;
+2. **il conteggio delle riuscite si costruisce contando le verifiche**, non i tentativi;
+3. **gli esclusi si dichiarano**: chi è stato saltato, e perché. Una regola di prudenza che vale su
+   un elemento vale su tutti — il massivo non la annulla;
+4. **l'anteprima elenca tutto** quello su cui si sta chiedendo il sì; se si taglia, si dichiara
+   quante righe non sono mostrate. Un elenco troncato che sembra intero fa dire sì a cose mai viste;
+5. **un tetto**, perché una scrittura di massa non deve poter scappare;
+6. **se si interrompe a metà**, si dice quali sono già scritte. Nessun rollback improvvisato: su un
+   gestionale fiscale peggiorerebbe.
+
+### B8. 🚨 Un «annulla» che agisce sul documento sbagliato
+
+> **Nato da:** il 12 settembre 2026. La tabella `cervellone_fic_pending` ha una colonna
+> `fic_document_id`, e `elimina_bozza_fic` la usa per **cancellare** il documento da Fatture in
+> Cloud. Legittimo finché il pending è una BOZZA NOSTRA; ma il nuovo tipo `pagamento_ricevuta` ci
+> mette l'id della fattura **del fornitore**, che esiste indipendentemente da noi. Senza una guardia
+> sul `tipo`, un «annulla» avrebbe **distrutto un documento fiscale altrui**. È la stessa forma del
+> difetto del 10 settembre, quando *«ok annulla»* **creava** il documento.
+
+Quando si aggiunge un tipo a una tabella di pending condivisa: **ogni ramo che legge quella riga va
+riletto col nuovo tipo in mano** — la conferma, l'annullo, l'elenco, la conferma a voce. Un `if` sul
+tipo che manca in uno solo di quei rami è un'azione applicata al documento sbagliato. E ogni guardia
+così vuole accanto il **controllo positivo** che prova che sul tipo giusto l'azione avviene ancora
+davvero (altrimenti il test è verde anche se la cancellazione è stata rimossa del tutto).
 
 ---
 
@@ -206,7 +268,9 @@ bene» o «sono morto»?** Se sono indistinguibili, non è una rete di sicurezza
 
 ## Il filo che lega tutto
 
-Delle diciotto voci, **undici** sono la stessa cosa detta in posti diversi:
+Le voci sono **19** (`grep -c '^### '` — il 12 set 2026 questa riga diceva «diciotto» quando le
+intestazioni erano **sedici**: un indice non aggiornato mente come un test vacuo, e il conto ora si
+misura invece di ricordarlo). Di quelle, la maggior parte sono la stessa cosa detta in posti diversi:
 
 > **Un guasto non deve poter passare per un'assenza, per un successo, o per una colpa
 > dell'Ingegnere.**

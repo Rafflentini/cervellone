@@ -35,15 +35,23 @@ describe('differimento delle definizioni dei tool', () => {
   // se ne accorgesse.
   //
   // ⚠️ L'md5 e' quello di `main`: md5(JSON.stringify(getToolDefinitions())),
-  // 129 definizioni = 2 tool server + 127 custom, ordine compreso. Se questa
+  // 130 definizioni = 2 tool server + 128 custom, ordine compreso. Se questa
   // asserzione cade, NON si aggiorna il numero: o la parita' con `main` si e'
   // rotta per sbaglio, o si e' DECISO di cambiarla — e allora va scritta la
   // decisione, non il nuovo md5.
-  it('senza opzioni: 129 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 12 settembre 2026. Era 129 (2 + 127) con impronta
+  // `5fe48792af88c5f89beaf66c53366b1c`. E' stato aggiunto UN tool custom:
+  // `segna_fatture_ricevute_pagate` — segnare pagata una fattura RICEVUTA su
+  // Fatture in Cloud, che prima non si poteva fare, per registrare i pagamenti
+  // in contanti che non lasciano nessun movimento bancario. Un tool in piu' e'
+  // esattamente quello che questa asserzione deve costringere a dichiarare: il
+  // numero sale da 129 a 130 di proposito, non per sbaglio.
+  it('senza opzioni: 130 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(129)
+    expect(defs).toHaveLength(130)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('5fe48792af88c5f89beaf66c53366b1c')
+      .toBe('16ce3fca1c09ee99f6f379e648300bee')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

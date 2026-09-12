@@ -1,6 +1,18 @@
 import { supabase } from './supabase'
 import { ficGet, getCompanyId, creaDocumentoFIC, eliminaDocumentoFIC } from './fatture-in-cloud'
 import { getSocieta, type CodiceSocieta } from './societa'
+import {
+  cercaFattureRicevute,
+  classificaFatturaRicevuta,
+  elencoContiPagamentoFic,
+  leggiFatturaRicevuta,
+  risolviContoPagamento,
+  segnaPagataFatturaRicevuta,
+  TETTO_MASSIVO,
+  type ContoPagamentoFic,
+  type FatturaDaSegnarePagata,
+  type FatturaEsclusa,
+} from './fic-pagamenti'
 
 interface ToolDefinition {
   name: string
@@ -9,7 +21,7 @@ interface ToolDefinition {
 }
 
 type PendingStato = 'in_attesa' | 'creata' | 'annullata'
-type PendingTipo = 'fattura_emessa' | 'rapporto_intervento'
+type PendingTipo = 'fattura_emessa' | 'rapporto_intervento' | 'pagamento_ricevuta'
 
 interface PendingRow {
   id: string
@@ -480,7 +492,7 @@ async function eliminaBozzaFic(input: Record<string, unknown>, societa: CodiceSo
 
   const { data, error } = await supabase
     .from('cervellone_fic_pending')
-    .select('id, stato, fic_document_id, societa')
+    .select('id, tipo, stato, fic_document_id, societa')
     // Senza questo filtro, da un contesto Restruktura si potrebbe annullare —
     // e cancellare da Fatture in Cloud — una bozza de La Real Estate.
     .eq('societa', societa)
@@ -490,8 +502,35 @@ async function eliminaBozzaFic(input: Record<string, unknown>, societa: CodiceSo
   if (error) return fail(error.message)
   if (!data) return fail('bozza FIC non trovata', { id })
 
-  const row = data as Pick<PendingRow, 'id' | 'stato' | 'fic_document_id'> & { societa: CodiceSocieta }
+  const row = data as Pick<PendingRow, 'id' | 'tipo' | 'stato' | 'fic_document_id'> & { societa: CodiceSocieta }
   if (row.stato === 'annullata') return ok({ id, stato: 'gia_annullata' })
+
+  // 🚨 Un pagamento su fattura RICEVUTA non e' una bozza nostra: il
+  // `fic_document_id` e' l'id della fattura DEL FORNITORE, che esiste su
+  // Fatture in Cloud indipendentemente da noi. Senza questa guardia il ramo
+  // sotto chiamerebbe `eliminaDocumentoFIC` e CANCELLEREBBE quella fattura:
+  // un «annulla» che distrugge un documento fiscale altrui. E' la stessa forma
+  // del difetto del 10 set 2026, quando «ok annulla» CREAVA il documento.
+  if (row.tipo === 'pagamento_ricevuta') {
+    if (row.stato === 'creata') {
+      return fail(
+        'questo pending e\' un PAGAMENTO su fatture ricevute, gia\' scritto su Fatture in Cloud: non si annulla '
+        + 'da qui e non cancello le fatture del fornitore. Per togliere il pagamento, modifica la fattura su '
+        + 'Fatture in Cloud.',
+        { id, ids_fatture: row.fic_document_id },
+      )
+    }
+    const annullato = await supabase
+      .from('cervellone_fic_pending')
+      .update({ stato: 'annullata', updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('stato', 'in_attesa')
+      .select('id, stato')
+    if (annullato.error) return fail(annullato.error.message)
+    if (!annullato.data?.length) return fail('pending FIC gia elaborato', { id })
+    return ok({ id, stato: 'annullata', nota: 'Nessun pagamento era stato scritto.' })
+  }
+
   if (row.stato === 'creata') {
     if (!row.fic_document_id) return fail('bozza creata senza fic_document_id', { id })
     // La società viene dalla RIGA, non dal contesto corrente: la bozza puo
@@ -510,6 +549,339 @@ async function eliminaBozzaFic(input: Record<string, unknown>, societa: CodiceSo
   if (updated.error) return fail(updated.error.message)
   if (!updated.data?.length) return fail('bozza FIC gia elaborata', { id })
   return ok({ id, stato: 'annullata' })
+}
+
+/* ------------------------------------------------------------------ *
+ * Segnare PAGATA una fattura RICEVUTA (uno o molti documenti)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Righe mostrate nell'anteprima, per elenco.
+ *
+ * Una conferma sola per N documenti vale solo se l'anteprima è quella vera:
+ * quindi oltre questa soglia l'elenco si taglia DICHIARANDO quante righe non
+ * sono mostrate. Un elenco troncato che sembra intero è peggio di nessun
+ * elenco, perché fa dire «sì» su cose mai viste.
+ */
+const MAX_RIGHE_ANTEPRIMA = 20
+
+function euro(n: number): string {
+  return n.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function intero(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const n = Number(value)
+  return Number.isFinite(n) ? Math.trunc(n) : undefined
+}
+
+interface PagamentiPayload {
+  conto: ContoPagamentoFic
+  /** Data imposta dall'Ingegnere. Assente = la data DI OGNI FATTURA. */
+  data_pagamento?: string
+  /** Voce scelta nel piano pagamenti. Solo sul caso singolo. */
+  voce?: number
+  documenti: FatturaDaSegnarePagata[]
+}
+
+function rigaFattura(f: FatturaDaSegnarePagata): string {
+  return `- [${f.id}] ${f.fornitore} — n.${f.numero} del ${f.data} — ${euro(f.importo)} → pagamento il ${f.data_pagamento}`
+}
+
+function rigaEsclusa(f: FatturaEsclusa): string {
+  return `- [${f.id}] ${f.fornitore} — n.${f.numero} del ${f.data} — ${f.motivo}`
+}
+
+function elencoTagliato<T>(righe: T[], formatta: (r: T) => string, cosa: string): string[] {
+  const mostrate = righe.slice(0, MAX_RIGHE_ANTEPRIMA).map(formatta)
+  if (righe.length > MAX_RIGHE_ANTEPRIMA) {
+    mostrate.push(
+      `⚠️ altre ${righe.length - MAX_RIGHE_ANTEPRIMA} ${cosa} NON mostrate qui: `
+      + 'restringi la selezione se le vuoi vedere tutte prima di confermare.',
+    )
+  }
+  return mostrate
+}
+
+function descriviPagamenti(input: {
+  id: string
+  societa: CodiceSocieta
+  conto: ContoPagamentoFic
+  daScrivere: FatturaDaSegnarePagata[]
+  escluse: FatturaEsclusa[]
+}): string {
+  const s = getSocieta(input.societa)
+  const totale = input.daScrivere.reduce((somma, f) => somma + f.importo, 0)
+  return [
+    `Segno PAGATE ${input.daScrivere.length} fatture RICEVUTE su Fatture in Cloud`,
+    `SOCIETA: ${s.denominazione} (P.IVA ${s.piva})`,
+    `Modalita di pagamento: ${input.conto.nome} (conto FIC id ${input.conto.id})`,
+    `DA SCRIVERE: ${input.daScrivere.length} — totale ${euro(Math.round(totale * 100) / 100)}`,
+    ...elencoTagliato(input.daScrivere, rigaFattura, 'fatture da scrivere'),
+    input.escluse.length > 0 ? `ESCLUSE, non verranno toccate: ${input.escluse.length}` : null,
+    ...(input.escluse.length > 0 ? elencoTagliato(input.escluse, rigaEsclusa, 'escluse') : []),
+    'Non si emette e non si trasmette niente: si scrive solo il pagamento sulle fatture di spesa.',
+    `1a conferma -> /fic_ok_${input.id}`,
+    `annulla -> /fic_no_${input.id}`,
+  ].filter(Boolean).join('\n')
+}
+
+async function salvaPendingPagamenti(
+  payload: PagamentiPayload,
+  descrivi: (id: string) => string,
+  societa: CodiceSocieta,
+): Promise<{ ok: true; id: string; descrizione: string } | { ok: false; error: string }> {
+  const { data, error } = await supabase
+    .from('cervellone_fic_pending')
+    .insert({
+      tipo: 'pagamento_ricevuta',
+      payload: payload as unknown as Record<string, unknown>,
+      descrizione: '',
+      stato: 'in_attesa',
+      conferme: 0,
+      societa,
+    })
+    .select('id')
+    .single()
+
+  if (error) return { ok: false, error: error.message }
+  const id = data?.id
+  if (!id) return { ok: false, error: 'pending FIC creato senza id' }
+
+  const descrizione = descrivi(id)
+  const updated = await supabase
+    .from('cervellone_fic_pending')
+    .update({ descrizione, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select('id, descrizione')
+    .single()
+
+  if (updated.error) return { ok: false, error: updated.error.message }
+  return { ok: true, id, descrizione }
+}
+
+/**
+ * Prepara la scrittura del pagamento su una o più fatture ricevute.
+ *
+ * Il caso singolo È il caso massivo con un elemento: stesse difese, stesso
+ * percorso, stessa doppia conferma. Duplicarle in due tool avrebbe significato
+ * due posti dove possono divergere.
+ */
+async function segnaFatturePagate(
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string> {
+  const idSingolo = intero(input.id)
+  const voce = intero(input.voce)
+  if (voce !== undefined && idSingolo === undefined) {
+    return fail('la voce del piano pagamenti si può indicare solo su UNA fattura: passa anche id')
+  }
+
+  const dataImposta = cleanString(input.data_pagamento)
+  if (dataImposta && !/^\d{4}-\d{2}-\d{2}$/.test(dataImposta)) {
+    return fail(`data_pagamento "${dataImposta}" non valida: serve il formato YYYY-MM-DD`)
+  }
+
+  // 1) L'insieme. Si legge SEMPRE da Fatture in Cloud, mai dal testo.
+  const documenti: Record<string, unknown>[] = []
+  let altrePagine = false
+  if (idSingolo !== undefined) {
+    const letta = await leggiFatturaRicevuta(idSingolo, societa)
+    if (!letta.ok) return fail(letta.error)
+    documenti.push(letta.valore)
+  } else {
+    const fornitore = cleanString(input.fornitore)
+    const anno = intero(input.anno)
+    const mese = intero(input.mese)
+    if (!fornitore && !anno) {
+      return fail('serve almeno un criterio: id di una fattura, oppure fornitore e/o anno. Non segno pagate «tutte» le fatture di spesa.')
+    }
+    const trovate = await cercaFattureRicevute({ fornitore, anno, mese }, societa)
+    if (!trovate.ok) return fail(trovate.error)
+    documenti.push(...trovate.valore.documenti)
+    altrePagine = trovate.valore.altre_pagine
+  }
+
+  if (documenti.length === 0) {
+    return fail('nessuna fattura ricevuta corrisponde alla selezione: non ho scritto niente')
+  }
+
+  // 2) Il tetto. Una scrittura di massa su un gestionale fiscale non deve
+  // poter scappare, e una conferma unica su più di così non è più una lettura.
+  if (documenti.length > TETTO_MASSIVO || altrePagine) {
+    return fail(
+      `la selezione tocca ${altrePagine ? `più di ${documenti.length}` : String(documenti.length)} fatture, `
+      + `oltre il tetto di ${TETTO_MASSIVO} per singola conferma: restringi (per fornitore, anno o mese) `
+      + 'e ripeti. Non ho scritto niente.',
+      { trovate: documenti.length, tetto: TETTO_MASSIVO },
+    )
+  }
+
+  // 3) La modalità di pagamento, SCELTA FRA QUELLE CHE FIC ESPONE.
+  const conti = await elencoContiPagamentoFic(societa)
+  if (!conti.ok) return fail(`conti di pagamento non leggibili da Fatture in Cloud: ${conti.error}`)
+  const richiesta = cleanString(input.modalita_pagamento) ?? ''
+  const conto = risolviContoPagamento(conti.valore, richiesta)
+  if (!conto.ok) {
+    return ok({
+      need: 'modalita_pagamento',
+      messaggio: conto.error,
+      // L'elenco viene da Fatture in Cloud: qui non c'è nessuna lista scritta
+      // a mano da cui scegliere.
+      modalita_disponibili: conti.valore.map((c) => ({ id: c.id, nome: c.nome })),
+      fatture_selezionate: documenti.length,
+      nota: 'Chiedi all Ingegnere quale di queste modalita, poi richiama il tool. Non ho scritto niente.',
+    })
+  }
+
+  // 4) Classificazione: chi si scrive, chi si esclude e PERCHE'.
+  const daScrivere: FatturaDaSegnarePagata[] = []
+  const escluse: FatturaEsclusa[] = []
+  for (const doc of documenti) {
+    const c = classificaFatturaRicevuta(doc, { data_pagamento: dataImposta, voce })
+    if (c.stato === 'da_scrivere') daScrivere.push(c.fattura)
+    else escluse.push(c.fattura)
+  }
+
+  if (daScrivere.length === 0) {
+    return fail('nessuna delle fatture selezionate si può segnare pagata: non ho scritto niente', {
+      escluse: escluse.map((f) => ({ id: f.id, fornitore: f.fornitore, numero: f.numero, motivo: f.motivo })),
+    })
+  }
+
+  const payload: PagamentiPayload = {
+    conto: conto.valore,
+    data_pagamento: dataImposta,
+    voce,
+    documenti: daScrivere,
+  }
+
+  const pending = await salvaPendingPagamenti(
+    payload,
+    (id) => descriviPagamenti({ id, societa, conto: conto.valore, daScrivere, escluse }),
+    societa,
+  )
+  if (!pending.ok) return fail(pending.error)
+
+  const s = getSocieta(societa)
+  return ok({
+    societa: s.denominazione,
+    partita_iva: s.piva,
+    id: pending.id,
+    stato: 'in_attesa',
+    modalita_pagamento: conto.valore.nome,
+    da_scrivere: daScrivere.length,
+    escluse: escluse.map((f) => ({ id: f.id, fornitore: f.fornitore, numero: f.numero, motivo: f.motivo })),
+    anteprima: pending.descrizione,
+    conferma_1: `/fic_ok_${pending.id}`,
+    annulla: `/fic_no_${pending.id}`,
+    nota: 'Mostra l anteprima COM E, comprese le escluse col motivo: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte.',
+  })
+}
+
+function leggiPagamentiPayload(payload: unknown): PagamentiPayload | null {
+  const p = asObject(payload)
+  const conto = asObject(p.conto)
+  const id = Number(conto.id)
+  const nome = cleanString(conto.nome)
+  if (!Number.isFinite(id) || !nome) return null
+  const documenti = Array.isArray(p.documenti) ? p.documenti.map(asObject) : []
+  if (documenti.length === 0) return null
+  return {
+    conto: { id, nome },
+    data_pagamento: cleanString(p.data_pagamento),
+    voce: Number.isFinite(Number(p.voce)) && p.voce !== null && p.voce !== undefined ? Number(p.voce) : undefined,
+    documenti: documenti as unknown as FatturaDaSegnarePagata[],
+  }
+}
+
+interface EsitoPagamenti {
+  messaggio: string
+  scritte: number
+  ids: number[]
+}
+
+/**
+ * Esegue le scritture, UNA FATTURA PER VOLTA, e riferisce PER DOCUMENTO.
+ *
+ * 🚨 Il conteggio delle riuscite si costruisce contando le RILETTURE che
+ * confermano, non le risposte della PUT: `segnaPagataFatturaRicevuta` torna
+ * `ok` solo dopo aver riletto e confrontato. Un «fatte tutte» sul gruppo
+ * quando due sono fallite sarebbe il difetto peggiore introducibile qui.
+ *
+ * Se la scrittura si interrompe a metà, le fatture già scritte RESTANO
+ * scritte: si dice quali, e non si tenta nessun rollback contabile.
+ */
+async function eseguiPagamentiRicevute(
+  payload: unknown,
+  societa: CodiceSocieta,
+): Promise<EsitoPagamenti> {
+  const dati = leggiPagamentiPayload(payload)
+  if (!dati) {
+    return {
+      messaggio: 'NESSUN pagamento registrato: il pending non contiene una selezione leggibile.',
+      scritte: 0,
+      ids: [],
+    }
+  }
+
+  const s = getSocieta(societa)
+  const riuscite: string[] = []
+  const fallite: string[] = []
+  const ids: number[] = []
+  let interruzione: string | null = null
+  let trattate = 0
+
+  for (const f of dati.documenti) {
+    try {
+      const esito = await segnaPagataFatturaRicevuta(
+        f.id,
+        dati.conto,
+        { data_pagamento: dati.data_pagamento, voce: dati.voce },
+        societa,
+      )
+      trattate++
+      const intestazione = `[${f.id}] ${f.fornitore} n.${f.numero} del ${f.data}`
+      if (esito.ok) {
+        ids.push(f.id)
+        riuscite.push(`✅ ${intestazione} — ${euro(f.importo)} pagata il ${f.data_pagamento} su ${dati.conto.nome}`)
+      } else {
+        fallite.push(`❌ ${intestazione} — ${esito.motivo}`)
+      }
+    } catch (err) {
+      // Rete, token, 429: si ferma qui e si DICE dove si è fermata.
+      interruzione = err instanceof Error ? err.message : String(err)
+      break
+    }
+  }
+
+  const totale = dati.documenti.length
+  const nonTrattate = dati.documenti.slice(trattate)
+  const coda = [
+    riuscite.length > 0 ? `RIUSCITE (${riuscite.length}), verificate rileggendo ogni fattura:\n${riuscite.join('\n')}` : null,
+    fallite.length > 0 ? `NON RIUSCITE (${fallite.length}), NON sono state segnate pagate:\n${fallite.join('\n')}` : null,
+    interruzione
+      ? `⚠️ La scrittura si è INTERROTTA (${interruzione}). Le fatture elencate come riuscite RESTANO scritte `
+        + 'su Fatture in Cloud: non tento nessun rollback. Da riprendere: '
+        + `${nonTrattate.map((f) => `[${f.id}] ${f.fornitore} n.${f.numero}`).join(', ') || 'nessuna'}.`
+      : null,
+  ].filter(Boolean).join('\n\n')
+
+  if (riuscite.length === 0) {
+    return { messaggio: `NESSUN pagamento registrato su ${s.denominazione}: 0 su ${totale}.\n\n${coda}`, scritte: 0, ids }
+  }
+  if (riuscite.length < totale) {
+    return {
+      messaggio: `PAGAMENTI REGISTRATI IN PARTE su ${s.denominazione}: ${riuscite.length} su ${totale}.\n\n${coda}`,
+      scritte: riuscite.length,
+      ids,
+    }
+  }
+  return {
+    messaggio: `PAGAMENTI REGISTRATI su ${s.denominazione}: ${riuscite.length} su ${totale}.\n\n${coda}`,
+    scritte: riuscite.length,
+    ids,
+  }
 }
 
 export async function confirmFicStep1(id: string): Promise<string> {
@@ -540,14 +912,14 @@ export async function confirmFicStep2(id: string): Promise<string> {
 
   const { data, error } = await supabase
     .from('cervellone_fic_pending')
-    .select('id, payload, conferme, stato, societa')
+    .select('id, tipo, payload, conferme, stato, societa')
     .eq('id', cleanId)
     .maybeSingle()
 
   if (error) return `Errore caricamento bozza FIC: ${error.message}`
   if (!data) return 'Bozza FIC non trovata.'
 
-  const row = data as Pick<PendingRow, 'id' | 'payload' | 'conferme' | 'stato'> & { societa: CodiceSocieta }
+  const row = data as Pick<PendingRow, 'id' | 'tipo' | 'payload' | 'conferme' | 'stato'> & { societa: CodiceSocieta }
   if (row.stato !== 'in_attesa') return 'Bozza FIC gia elaborata.'
   if (Number(row.conferme) < 1) return `Serve prima la prima conferma -> /fic_ok_${cleanId}`
 
@@ -561,6 +933,45 @@ export async function confirmFicStep2(id: string): Promise<string> {
 
   if (claim.error) return `Errore claim bozza FIC: ${claim.error.message}`
   if (!claim.data?.length) return 'Bozza gia in elaborazione o elaborata.'
+
+  // Il pagamento di fatture RICEVUTE passa per la STESSA doppia conferma, la
+  // stessa riga e gli stessi comandi /fic_ok_ e /fic_ok2_ — quindi funziona
+  // identico su Telegram e sulla chat web senza toccare i due dispatch. Un
+  // secondo meccanismo di conferma sarebbe un secondo posto dove sbagliare.
+  if (row.tipo === 'pagamento_ricevuta') {
+    const esito = await eseguiPagamentiRicevute(row.payload, row.societa)
+
+    if (esito.scritte === 0) {
+      // Niente e' stato scritto: la riga torna a una conferma, come quando la
+      // creazione di una bozza fallisce, cosi' si puo' ritentare.
+      await supabase
+        .from('cervellone_fic_pending')
+        .update({ conferme: 1, updated_at: new Date().toISOString() })
+        .eq('id', cleanId)
+        .eq('stato', 'in_attesa')
+        .eq('conferme', 2)
+      return esito.messaggio
+    }
+
+    // Almeno una scrittura e' andata: la riga si CHIUDE. Non si ritenta un
+    // gruppo in cui qualcosa e' gia' stato scritto — un secondo giro su una
+    // fattura gia' pagata e' esattamente l'errore contabile da evitare.
+    const chiusa = await supabase
+      .from('cervellone_fic_pending')
+      .update({
+        stato: 'creata',
+        fic_document_id: esito.ids.join(','),
+        fic_url: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', cleanId)
+      .eq('stato', 'in_attesa')
+      .eq('conferme', 2)
+      .select('id')
+
+    if (chiusa.error) return `${esito.messaggio}\n\n⚠️ Aggiornamento audit fallito: ${chiusa.error.message}`
+    return esito.messaggio
+  }
 
   // Società dalla RIGA, non dal contesto: fra la compilazione e questa conferma
   // puo essere cambiata la società attiva, e il documento deve nascere
@@ -724,15 +1135,23 @@ async function confermaBozzaFic(
   }
 
   const messaggio = await confirmFicStep2(riga.id)
-  const creata = messaggio.startsWith('BOZZA creata su FIC')
+  // Il pending puo' essere una bozza da creare oppure un pagamento da
+  // scrivere: senza riconoscere anche il secondo, un pagamento riuscito
+  // veniva riferito come «NON riuscito» — cioe' il codice avrebbe mentito
+  // all'Ingegnere sull'esito di una scrittura contabile.
+  const parziale = messaggio.startsWith('PAGAMENTI REGISTRATI IN PARTE')
+  const eseguita = messaggio.startsWith('BOZZA creata su FIC') || messaggio.startsWith('PAGAMENTI REGISTRATI')
   return ok({
     id: riga.id,
     passo: 2,
-    documento_creato: creata,
+    documento_creato: eseguita,
+    esito_parziale: parziale,
     messaggio,
-    avviso: creata
-      ? null
-      : 'La creazione NON e riuscita: riporta il messaggio TESTUALMENTE e non dire che la fattura esiste.',
+    avviso: !eseguita
+      ? 'L operazione NON e riuscita: riporta il messaggio TESTUALMENTE e non dire che e stata fatta.'
+      : parziale
+        ? 'ATTENZIONE: solo ALCUNE fatture sono state scritte. Riporta il messaggio TESTUALMENTE, con l elenco di quali SI e quali NO col motivo. Non dire «fatte tutte».'
+        : null,
   })
 }
 
@@ -796,6 +1215,25 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    // Nome al PLURALE di proposito: e' lo stesso tool per una fattura e per
+    // cinquanta — il caso singolo e' il massivo con un elemento, e due tool
+    // separati sarebbero due posti dove le difese possono divergere.
+    name: 'segna_fatture_ricevute_pagate',
+    description: 'Segna PAGATA (saldata) una fattura RICEVUTA da un fornitore su Fatture in Cloud, registrando la modalita di pagamento: serve per i pagamenti in CONTANTI o con carta al ritiro, che non lasciano nessun movimento bancario da riconciliare. Funziona su UNA fattura (passa id) o su un INSIEME di fatture di spesa (fornitore e/o anno, mese): es. "segna pagate in contanti tutte le fatture Limongi del 2026". La modalita di pagamento si scegli fra i conti che Fatture in Cloud espone: se non la passi, il tool ti restituisce l elenco vero e tu CHIEDI all Ingegnere quale. La data di pagamento e la DATA DELLA FATTURA (pagata al ritiro), salvo che l Ingegnere ne indichi un altra. REGOLE: (1) non scrive niente subito — prepara l anteprima e serve la doppia conferma /fic_ok_<id> poi /fic_ok2_<id>; (2) mostra l anteprima COM E, comprese le fatture ESCLUSE col motivo (gia pagate, o con piu voci nel piano pagamenti: quelle non le tocca e non sceglie al posto suo); (3) massimo 50 fatture per conferma; (4) l esito e PER FATTURA e viene da una RILETTURA: se dice che 3 su 5 sono riuscite, riporta quali si e quali no col motivo, e NON dire «fatte tutte».',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer', description: 'Id della singola fattura ricevuta su Fatture in Cloud. Alternativo ai filtri fornitore/anno/mese.' },
+        fornitore: { type: 'string', description: 'Nome (anche parziale) del fornitore, per selezionare piu fatture. Es. "Limongi".' },
+        anno: { type: 'integer', description: 'Anno delle fatture da selezionare.' },
+        mese: { type: 'integer', description: 'Mese 1-12, insieme ad anno.' },
+        modalita_pagamento: { type: 'string', description: 'Nome o id del conto di pagamento di Fatture in Cloud, es. "Contanti", "Carta di credito". Se omesso o non riconosciuto, il tool torna l elenco vero dei conti dell azienda: chiedi all Ingegnere quale e richiama.' },
+        data_pagamento: { type: 'string', description: 'Data del pagamento YYYY-MM-DD. Se omessa vale la DATA DI OGNI FATTURA, non oggi: il contante si paga al ritiro.' },
+        voce: { type: 'integer', description: 'Quale voce del piano pagamenti segnare pagata (1 = la prima), solo quando la fattura ne ha piu di una e l Ingegnere ha detto quale. Richiede id.' },
+      },
+    },
+  },
+  {
     name: 'lista_bozze_fic',
     description: 'Lista le bozze FIC pending, create o annullate registrate in cervellone_fic_pending.',
     input_schema: {
@@ -822,6 +1260,7 @@ export async function executeFicWriteTool(
   try {
     if (name === 'compila_fattura_emessa') return compilaDocumento(input, 'fattura_emessa', societa)
     if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento', societa)
+    if (name === 'segna_fatture_ricevute_pagate') return segnaFatturePagate(input, societa)
     if (name === 'conferma_bozza_fic') return confermaBozzaFic(input, societa)
     if (name === 'lista_bozze_fic') return listaBozzeFic(input, societa)
     if (name === 'elimina_bozza_fic') return eliminaBozzaFic(input, societa)

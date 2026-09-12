@@ -64,6 +64,49 @@ export async function ficGet(
 }
 
 /**
+ * Modifica di una risorsa FIC. `PUT` e non `PATCH`: nell'OpenAPI ufficiale
+ * (https://developers.fattureincloud.it/api-reference/ — spec in
+ * fattureincloud/openapi-fattureincloud, `/c/{company_id}/received_documents/{document_id}`)
+ * i verbi esposti sono GET, PUT e DELETE. Un `PATCH` non esiste.
+ *
+ * ⚠️ La documentazione NON dichiara se il PUT sia una sostituzione integrale o
+ * una modifica parziale. Per questo i chiamanti di qui devono rispedire il
+ * documento INTERO riletto, non solo il campo che cambia: così l'esito è lo
+ * stesso sotto entrambe le semantiche. E la prova non è la risposta di questa
+ * funzione — è la rilettura.
+ */
+export async function ficPut(
+  path: string,
+  body: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<FicResult> {
+  const s = getSocieta(societa)
+  const token = getFicToken(societa)
+  if (!token) return { ok: false, error: `${s.ficTokenEnv} non configurato su Vercel (${s.denominazione}).` }
+
+  console.log(`[FIC] PUT ${path}`) // audit (mai loggare il token)
+  try {
+    const res = await fetch(FIC_BASE + path, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ data: body }),
+    })
+    if (res.status === 401) return { ok: false, error: 'Token FIC non valido/revocato: rigeneralo nelle Applicazioni collegate.' }
+    if (res.status === 429) return { ok: false, error: 'Troppe richieste a Fatture in Cloud, riprova tra poco.' }
+    // 600 caratteri come nella creazione: il testo di FIC dice QUALE campo e'
+    // in errore, e troncarlo a 200 cancellava esattamente quella parte.
+    if (!res.ok) return { ok: false, error: `Errore FIC ${res.status}: ${(await res.text()).slice(0, 600)}` }
+    return { ok: true, data: await res.json() }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
  * Id azienda su Fatture in Cloud per la società indicata.
  *
  * Il vecchio ripiego prendeva `companies[0]`, cioè la PRIMA azienda restituita
