@@ -1328,3 +1328,209 @@ it('il codice e\' tappabile: 16 cifre esadecimali, nessun trattino, sotto i 32 c
 - [ ] **Step 7: aggiornare `messaggioBlocco`** perché il codice ci finisca dentro, e perché la frase «dimmelo e lo genero comunque» diventi **vera**: `Per generarlo comunque → /doc_ok_<codice>`. Niente underscore nel resto del testo (il Markdown li mangia) — l'invariante è già testata.
 - [ ] **Step 8: suite + typecheck + mutazione** (fai valere l'autorizzazione per qualunque contenuto: devono morire i controlli positivi 3 e 5)
 - [ ] **Step 9: commit** — `git commit -m "il blocco si puo' sciogliere con un codice tappabile, una volta, per quel documento"`
+
+---
+
+### Task 13: la marcatura massiva rifiuta sempre — e per il motivo sbagliato
+
+**Trovato in produzione il 12 set 2026**, leggendo `cervellone_tool_calls` e `messages`
+dopo una segnalazione di Raffaele. Dettaglio completo in
+`.superpowers/sdd/2026-09-12-guardia-dati-societari/diagnosi-limongi-modalita-pagamento.md`.
+
+**Il difetto, in due parti che si sommano.**
+
+`src/lib/fic-pagamenti.ts:268-291`, `cercaFattureRicevute`:
+
+```ts
+const r = await ficGet(`/c/${company.id}/received_documents`, {
+  type: 'expense', q: filtroData(...), per_page: 100, sort: '-date', fieldset: 'detailed',
+})                                        // ← nessun filtro fornitore nella query
+const documenti = cercato ? lista.filter(d => …entity.name…includes(cercato)) : lista
+const ultima = numero(oggetto(r.data).last_page) ?? 1
+return { ok: true, valore: { documenti, altre_pagine: ultima > 1 } }   // ← paginazione dell'insieme NON filtrato
+```
+
+1. **Rifiuta sempre.** Restruktura riceve più di 100 fatture in un anno →
+   `last_page > 1` → `altre_pagine = true` → `fic-write-tools.ts:711` rifiuta, anche per
+   7 fatture. **Il tool consegnato la mattina del 12 set era inutilizzabile**, e in
+   produzione Raffaele ci ha sbattuto contro.
+2. **Potrebbe mostrare un insieme incompleto.** Il filtro gira **in memoria sulla prima
+   pagina**: le fatture di quel fornitore che stanno a pagina 2 **non si vedono**. Se il
+   rifiuto non scattasse, una conferma unica coprirebbe un sottoinsieme presentato come
+   l'insieme — che è **esattamente** quello che il commento del file dichiara inaccettabile:
+   *«un elenco incompleto che sembra completo è la cosa peggiore che possa precedere una
+   conferma unica per tutte»*. **Il ragionamento era giusto e l'implementazione lo viola.**
+
+E il messaggio di rifiuto (`fic-write-tools.ts:711-717`) usa **un solo testo per due cause
+diverse** — «sono troppe» e «non le vedo tutte» — quindi con 7 fatture diceva *«la selezione
+tocca più di 7 fatture, oltre il tetto di 50»*. Il bot l'ha riferito a Raffaele come
+*«7 non supera 50, il messaggio sembra incoerente/bacato»*. Aveva ragione.
+
+**Files:**
+- Modify: `src/lib/fic-pagamenti.ts` — `cercaFattureRicevute` (`:268-291`), `PER_PAGE` (`:247`)
+- Modify: `src/lib/fic-write-tools.ts:711-717` — il rifiuto, due messaggi invece di uno
+- Test: `src/lib/fic-pagamenti.paginazione.test.ts` (creare)
+
+**Interfaces:**
+```ts
+export async function cercaFattureRicevute(
+  filtri: FiltriRicerca,
+  societa: CodiceSocieta,
+): Promise<EsitoFic<{
+  documenti: Record<string, unknown>[]
+  /** Vero solo se abbiamo esaurito il tetto di pagine SENZA finire l'elenco. */
+  elenco_troncato: boolean
+  /** Quante pagine abbiamo letto: va nel messaggio, cosi' il limite e' visibile. */
+  pagine_lette: number
+}>>
+```
+`altre_pagine` → **`elenco_troncato`**, perché il nome vecchio descriveva la paginazione di
+FIC e quello nuovo descrive **la nostra completezza**, che è la cosa che conta.
+
+**Il disegno: si cammina sulle pagine, non si scommette su un filtro non documentato.**
+
+⚠️ Ricerca già fatta (fonte: `github.com/fattureincloud/openapi-fattureincloud`, docs
+`developers.fattureincloud.it/docs/basics/filter-results/queries/`): la grammatica di `q`
+è documentata (`and`, `contains`, `=`, ecc.) **ma NON esiste alcuna fonte ufficiale che
+elenchi i campi filtrabili di `received_documents`**. `entity.name` ed `entity.id` come
+campi filtrabili su quell'endpoint sono **inferenza, non documentazione**. `per_page`
+massimo **100** (questo è documentato).
+
+Quindi **non** si fa dipendere la correttezza da un comportamento non documentato:
+
+1. si cammina sulle pagine (`current_page` → `last_page`) con `per_page: 100`, fino a un
+   tetto di pagine (`MAX_PAGINE = 10`, cioè 1.000 fatture: abbondante per un anno)
+2. si filtra il fornitore **in memoria su tutte le pagine lette**, non solo sulla prima
+3. `elenco_troncato` è vero **solo** se il tetto di pagine è stato raggiunto **e**
+   `last_page` è ancora oltre: allora sì, l'elenco potrebbe essere incompleto e lo si dice
+4. **in più**, come ottimizzazione e non come garanzia: si può provare ad aggiungere il
+   filtro fornitore alla `q`. Se si fa, va **verificato** che abbia morso confrontando
+   `total` con e senza filtro, e il camminamento sulle pagine resta comunque. Un filtro
+   server-side che non funziona deve degradare in lentezza, **non** in un elenco incompleto.
+   Se non vuoi aggiungere questa parte, **non aggiungerla**: il punto 1-3 è sufficiente e
+   non dipende da nulla di incerto.
+
+- [ ] **Step 1: i test che falliscono**
+
+```ts
+it('IL DIFETTO: con piu di una pagina di fatture, oggi rifiuta anche per 7 risultati filtrati', async () => {
+  // mock ficGet: pagina 1 con 100 documenti di cui 7 del fornitore, last_page: 3
+  // PRIMA: altre_pagine === true → il chiamante rifiuta
+  // DOPO: cammina su 3 pagine, trova tutte le fatture del fornitore, elenco_troncato === false
+})
+
+it('CONTROLLO POSITIVO — le fatture del fornitore a pagina 2 e 3 vengono trovate', async () => {
+  // mock: il fornitore ha 2 fatture in pagina 1, 3 in pagina 2, 1 in pagina 3 → devono essere 6
+  // E' la prova che l'insieme non e' piu' incompleto.
+})
+
+it('elenco_troncato e vero SOLO se il tetto di pagine non basta', async () => {
+  // mock: last_page = 20, MAX_PAGINE = 10 → elenco_troncato true, pagine_lette 10
+})
+
+it('una sola pagina: nessun giro in piu e elenco_troncato falso', async () => {
+  // mock: last_page = 1 → una sola chiamata a ficGet (verificare il conteggio delle chiamate)
+})
+
+it('i due rifiuti hanno DUE messaggi distinti', async () => {
+  // troppe fatture → il messaggio nomina il tetto di 50
+  // elenco troncato → il messaggio dice che non le vediamo tutte, e NON nomina il tetto di 50
+  // Un rifiuto che dichiara il motivo sbagliato manda a caccia del problema inesistente.
+})
+```
+
+- [ ] **Step 2: eseguire, verificare il fallimento**
+- [ ] **Step 3: implementare** il camminamento sulle pagine e i due messaggi distinti
+- [ ] **Step 4: verificare i chiamanti** di `cercaFattureRicevute`: chi leggeva
+  `altre_pagine` va aggiornato. Il typecheck è la prova.
+- [ ] **Step 5: suite + typecheck**
+- [ ] **Step 6: mutazione** — rimettere il filtro sulla sola prima pagina: deve morire il
+  controllo positivo delle fatture a pagina 2 e 3. `cp`, `perl -0pi`, **`grep -c` che provi
+  il morso**, `md5sum` identico dopo il ripristino.
+- [ ] **Step 7: commit** — `git commit -m "la marcatura massiva guardava solo la prima pagina, e rifiutava per il motivo sbagliato"`
+
+---
+
+### Task 14: leggere cosa ha scritto il fornitore sulla fattura
+
+**Il fatto, dal registro di produzione.** Per tre ore il bot ha risposto che sulla fattura
+non c'era scritta nessuna modalità di pagamento. L'esercente aveva scritto «pagamento
+contanti». `fic_dettaglio_documento` era stato chiamato **29 volte**: non è che non
+guardasse — guardava **il campo sbagliato**.
+
+`payments_list[].payment_account` è **il conto con cui NOI registriamo il pagamento**. La
+`ModalitaPagamento` dell'XML SDI (MP01 contanti, MP08 carta) è **quello che scrive il
+fornitore**. Il bot ha riportato l'assenza del primo come assenza del secondo, e alle 17:44
+è arrivato a dire *«nel corpo di questa fattura non c'è scritta nessuna modalità di
+pagamento»* — un'affermazione **sul contenuto della fattura**, fatta guardando un campo che
+non è il contenuto della fattura.
+
+⚠️ **Ricerca già fatta, e la risposta è NO** (fonti: `openapi-fattureincloud`, schema
+`ReceivedDocument.yaml` e `ReceivedDocumentPaymentsListItem.yaml`): la `ModalitaPagamento`
+del fornitore **non è esposta da nessun campo** dei documenti ricevuti. Non esistono
+`payment_method`, `ei_data`, `ei_raw`, `notes` su `ReceivedDocument`. `ei_payment_method`
+esiste ma appartiene a `PaymentMethod`, usato sui documenti **emessi**. E gli endpoint
+`e_invoice/xml` esistono **solo** sotto `issued_documents`, non sotto `received_documents`.
+
+**Ma `ReceivedDocument` espone `attachment_url`** (URL temporaneo, `readOnly`), cioè il
+file della fattura conservato da FIC. Quella è la strada.
+
+**Files:**
+- Modify: `src/lib/drive.ts` — estrarre da `readPdfFromDrive` (`:423`) un helper riusabile
+- Create: `src/lib/fic-allegato.ts` — scarica l'allegato e ne estrae il testo
+- Modify: `src/lib/fatture-in-cloud.ts` — il tool nuovo, e la **chiarezza** su `mapDoc`
+- Test: `src/lib/fic-allegato.test.ts`
+
+**Interfaces:**
+```ts
+/** Il testo di un PDF, da un buffer. Estratto da readPdfFromDrive per riuso. */
+export async function testoDaPdf(buffer: Buffer, nome: string): Promise<{ ok: true; testo: string; pagine: number } | { ok: false; errore: string }>
+
+export type EsitoAllegato =
+  | { ok: true; formato: 'xml' | 'pdf' | 'altro'; testo: string; modalita_sdi?: string; modalita_leggibile?: string }
+  | { ok: false; motivo: 'nessun_allegato' | 'scaricamento' | 'illeggibile'; messaggio: string }
+
+export async function leggiAllegatoFatturaRicevuta(id: number, societa: CodiceSocieta): Promise<EsitoAllegato>
+```
+
+**Tre cose che questo task deve fare, e la terza è la più importante:**
+
+1. **Scaricare e leggere l'allegato.** XML → si estrae `<ModalitaPagamento>` e si traduce
+   (`MP01` = contanti, `MP02` = assegno, `MP05` = bonifico, `MP08` = carta di pagamento, e
+   si restituisce **anche il codice grezzo** quando non è in tabella: un codice ignoto va
+   detto, non nascosto). PDF → si estrae il testo e lo si restituisce, così il modello legge
+   «pagamento contanti» dov'è scritto.
+2. **Un tool nuovo**, perché *per una funzione nuova serve un tool*: il bot non deve
+   indovinare che può scaricare l'allegato. Nome suggerito: `fic_leggi_allegato_fattura`.
+3. **`mapDoc` (`fatture-in-cloud.ts:337`) deve NOMINARE la differenza.** Oggi restituisce
+   `pagamenti_count: 1` e nient'altro sul pagamento: il modello vede un numero e conclude.
+   Deve restituire un campo che dica **che cosa è** e **che cosa non è**, per esempio:
+   ```ts
+   pagamento_registrato_da_noi: 'Carta di credito (CC Montepruno)' | null,
+   modalita_scritta_dal_fornitore: 'non leggibile da questo campo: usa fic_leggi_allegato_fattura',
+   ```
+   **Questa terza parte è la cura del difetto vero.** Le prime due danno al bot lo
+   strumento; questa gli impedisce di **affermare** una cosa che non ha guardato. Senza di
+   essa, il prossimo modello rifarà esattamente le stesse tre ore.
+
+- [ ] **Step 1: i test che falliscono** — un XML SDI finto con `<ModalitaPagamento>MP01`
+  deve dare `modalita_sdi: 'MP01'` e `modalita_leggibile: 'contanti'`; un codice ignoto
+  (`MP99`) deve restituire il codice e dichiararlo non in tabella; nessun allegato →
+  `motivo: 'nessun_allegato'` con un messaggio che **dice cosa fare**, non «non trovato»
+- [ ] **Step 2: eseguire, verificare il fallimento**
+- [ ] **Step 3: `testoDaPdf` estratto da `readPdfFromDrive`** — ⚠️ `readPdfFromDrive` deve
+  continuare a funzionare **identico**: è in produzione. Il polyfill di `DOMMatrix` e il
+  `parser.destroy()` nel `finally` vanno nell'helper, non persi.
+- [ ] **Step 4: `leggiAllegatoFatturaRicevuta`** e il tool nuovo
+- [ ] **Step 5: `mapDoc` che nomina la differenza** fra i due campi
+- [ ] **Step 6: suite + typecheck**
+- [ ] **Step 7: mutazione** — far sparire `modalita_scritta_dal_fornitore` da `mapDoc`:
+  deve morire un test. È la parte che impedisce al modello di affermare quello che non sa.
+- [ ] **Step 8: commit** — `git commit -m "leggere cosa ha scritto il fornitore sulla fattura, e non spacciare il nostro campo per il suo"`
+
+**Dichiarazione onesta del limite, da riportare nel rapporto:** l'unica verifica che manca è
+**cosa contiene davvero `attachment_url`** per una fattura ricevuta via SDI — se l'XML
+originale o un PDF di cortesia. Non è verificabile senza un token FIC vero, che in locale
+non c'è (le variabili sono *Sensitive* su Vercel e tornano vuote). Il codice va scritto per
+gestire **entrambi** i casi e per **dire quale ha trovato**; la prima chiamata vera in
+produzione lo dirà. **Non scrivere nel messaggio all'Ingegnere una promessa sul formato.**
