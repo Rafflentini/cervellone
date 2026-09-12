@@ -142,7 +142,29 @@ export async function confirmLatestPendingSend(): Promise<{ ok: boolean; message
   // non porta un uuid, quindi è sicura SOLO se esiste un singolo pending valido.
   // Con 2+ pending invierebbe in silenzio il più recente (rischio invio sbagliato):
   // in quel caso NON inviamo e chiediamo il codice esplicito /invia_<uuid>.
-  const count = await countValidPendingSends()
+  const conteggio = await countValidPendingSends()
+
+  // 🚨 «Non lo so» NON è «zero». Finché il conteggio restituiva un numero, un
+  // errore del database diventava uno zero e questo ramo diceva «non ho una
+  // mail pronta»: per tre mesi la risposta era una BUGIA, e l'Ingegnere non
+  // aveva modo di capire che il guasto era nostro. Qui dichiariamo il guasto e
+  // diamo la via d'uscita che non dipende dal conteggio (il comando esplicito
+  // arrivato insieme alla bozza).
+  if (!conteggio.ok) {
+    console.error('[pending] conteggio pending non disponibile', { error: conteggio.error })
+    return {
+      ok: false,
+      message: [
+        '⚠️ NON ho inviato niente: non riesco a controllare quali mail sono in attesa',
+        `(errore nel database: ${conteggio.error}).`,
+        '',
+        'Per inviare comunque, usi il comando esplicito che le ho mandato insieme alla',
+        'bozza: /invia_<codice> — così l\'invio non dipende da questo controllo.',
+      ].join('\n'),
+    }
+  }
+
+  const count = conteggio.count
   if (count === 0) {
     // Nessuna mail da inviare: la stessa frase-conferma puo' riguardare una
     // BOZZA FIC in attesa. Questo ramo sta a monte di quello FIC nel dispatch
@@ -170,7 +192,16 @@ export async function confirmLatestPendingSend(): Promise<{ ok: boolean; message
   }
   const latest = await getLatestPendingSend()
   if (!latest) {
-    return { ok: false, message: '📭 Non ho una mail pronta da inviare in questo momento.' }
+    // Il conteggio ha detto «una», la lettura non la trova: è una discordanza,
+    // non un'assenza. Dirla «non ho una mail pronta» ripeterebbe lo stesso
+    // errore di classe appena chiuso poche righe sopra.
+    return {
+      ok: false,
+      message: [
+        '⚠️ NON ho inviato niente: risulta una mail in attesa ma non riesco a rileggerla.',
+        'Usi il comando esplicito /invia_<codice> che le ho mandato con la bozza.',
+      ].join('\n'),
+    }
   }
   const r = await confirmPendingSend(latest.uuid)
   return { ok: r.ok, message: r.message }

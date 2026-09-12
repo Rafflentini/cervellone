@@ -98,19 +98,53 @@ export async function getLatestPendingSend(): Promise<PendingRow | null> {
 }
 
 /**
+ * Esito del conteggio dei pending.
+ *
+ * È un tipo esito e non un `number | null` di proposito: `null` si legge bene
+ * con `=== 0` ma si sbaglia con `!count` o con `count > 1`, e il compilatore
+ * non obbliga nessuno ad accorgersene. Con due varianti, `tsc` costringe ogni
+ * chiamante a dire cosa fa del «non lo so» — che NON è «zero».
+ */
+export type ConteggioPending =
+  | { ok: true; count: number }
+  | { ok: false; error: string }
+
+/**
  * Conta i pending validi (status='pending', non scaduti). Stessi filtri di
  * `getLatestPendingSend`. Usato dalla conferma a linguaggio naturale per
  * rilevare l'ambiguità multi-pending (più bozze pronte contemporaneamente).
+ *
+ * 🚨 Due difetti vissuti qui dal 4 giugno 2026 (commit dd20348, «P0 conferma
+ * NL sicura»), per tre mesi, in silenzio:
+ *
+ * 1. il conteggio chiedeva `count` sulla colonna **`id`**, che in
+ *    `cervellone_email_pending_send` NON ESISTE — la chiave è `uuid`. Postgres
+ *    rispondeva `42703: column "id" does not exist` a OGNI chiamata.
+ * 2. `if (error) return 0` trasformava quell'errore in «non ci sono mail».
+ *
+ * Insieme: `confirmLatestPendingSend` cadeva SEMPRE nel ramo `count === 0` e
+ * rispondeva «non ho una mail pronta da inviare» anche con sei bozze valide in
+ * attesa. La guardia anti-ambiguità ha disattivato in silenzio esattamente la
+ * funzione che doveva proteggere. Il primo difetto era una riga; il secondo è
+ * il motivo per cui nessuno l'ha visto. **Un guasto non deve mai poter passare
+ * per un'assenza.**
  */
-export async function countValidPendingSends(): Promise<number> {
+export async function countValidPendingSends(): Promise<ConteggioPending> {
   const supabase = getSupabaseServer()
   const { count, error } = await supabase
     .from('cervellone_email_pending_send')
-    .select('id', { count: 'exact', head: true })
+    // `uuid`: la tabella non ha una colonna `id`. Chiederla qui rendeva ogni
+    // conteggio un errore, e l'errore diventava «zero mail in attesa».
+    .select('uuid', { count: 'exact', head: true })
     .eq('status', 'pending')
     .gt('expires_at', new Date().toISOString())
-  if (error) return 0
-  return count ?? 0
+  if (error) return { ok: false, error: error.message }
+  // `count` nullo = la risposta non porta il conteggio: anche questo è un «non
+  // lo so», non uno zero.
+  if (count === null || count === undefined) {
+    return { ok: false, error: 'conteggio assente nella risposta Supabase' }
+  }
+  return { ok: true, count }
 }
 
 /**
