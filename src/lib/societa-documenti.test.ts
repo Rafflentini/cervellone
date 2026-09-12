@@ -23,7 +23,7 @@ describe('societaPerDocumento', () => {
     const r = await societaPerDocumento('conv-1')
     expect(r).toEqual({
       ok: true,
-      societa: { denominazione: LAREALESTATE.denominazione, piva: LAREALESTATE.piva },
+      societa: { denominazione: LAREALESTATE.denominazione, piva: LAREALESTATE.piva, sede: LAREALESTATE.sede },
       esplicita: true,
     })
   })
@@ -33,7 +33,7 @@ describe('societaPerDocumento', () => {
     const r = await societaPerDocumento()
     expect(r).toEqual({
       ok: true,
-      societa: { denominazione: RESTRUKTURA.denominazione, piva: RESTRUKTURA.piva },
+      societa: { denominazione: RESTRUKTURA.denominazione, piva: RESTRUKTURA.piva, sede: RESTRUKTURA.sede },
       esplicita: false,
     })
   })

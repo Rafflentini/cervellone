@@ -37,7 +37,7 @@ export async function societaPerDocumento(conversationId?: string): Promise<Esit
 
   return {
     ok: true,
-    societa: { denominazione: s.denominazione, piva: s.piva },
+    societa: { denominazione: s.denominazione, piva: s.piva, sede: s.sede },
     esplicita: e.esplicita,
   }
 }

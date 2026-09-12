@@ -47,8 +47,8 @@ vi.mock('@supabase/supabase-js', () => {
   return { createClient: () => ({ from: () => chain }) }
 })
 
-const RESTRUKTURA = { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' }
-const LAREALESTATE = { denominazione: 'LA REAL ESTATE SRLS', piva: '02232730768' }
+const RESTRUKTURA = { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762', sede: "Villa d'Agri (PZ), Italia" }
+const LAREALESTATE = { denominazione: 'LA REAL ESTATE SRLS', piva: '02232730768', sede: 'Via Civita 8, Maratea (PZ)' }
 
 const mockSocietaPerDocumento = vi.fn()
 vi.mock('../societa-documenti', () => ({
@@ -77,8 +77,24 @@ beforeEach(() => {
 })
 
 describe('genera_preventivo_completo — la guardia sui dati societari (end-to-end)', () => {
-  it('CONTROLLO POSITIVO: La Real Estate attiva, intestazione Restruktura → blocca, nomina entrambe le P.IVA, non scrive', async () => {
-    mockSocietaPerDocumento.mockResolvedValue({ ok: true, societa: LAREALESTATE, esplicita: true })
+  // Task 7: prima le CINQUE intestazioni erano cablate a Restruktura, quindi
+  // "La Real Estate attiva" bastava da solo a far mordere la guardia. Dopo la
+  // cura l'intestazione la scrive gia' giusta (Step 3): la guardia di
+  // salvataggio non ha piu' nulla da bloccare in questo caso, che infatti ora
+  // e' coperto da studio-tecnico.header.test.ts ("porta LA SUA partita IVA").
+  //
+  // Il caso che RESTA per la guardia di rete, qui, e' la RACE: la societa'
+  // attiva letta al momento di costruire l'intestazione (Restruktura) non e'
+  // piu' quella letta un istante dopo, al momento di salvare (La Real
+  // Estate) — per esempio l'Ingegnere cambia societa' a meta' generazione.
+  // Il contenuto scritto (Restruktura) e quello atteso al salvataggio (La
+  // Real Estate) divergono, ed e' esattamente il caso per cui la guardia
+  // esiste: un confronto fra stringhe che non dipende dall'attenzione di
+  // nessuno, indipendente da quanto e' accurata la cura a monte.
+  it('CONTROLLO POSITIVO: la societa cambia fra la generazione e il salvataggio → blocca, nomina entrambe le P.IVA, non scrive', async () => {
+    mockSocietaPerDocumento
+      .mockResolvedValueOnce({ ok: true, societa: RESTRUKTURA, esplicita: false }) // letta per l'intestazione
+      .mockResolvedValue({ ok: true, societa: LAREALESTATE, esplicita: true }) // letta per il salvataggio
 
     const out = await executeStudioTecnico('genera_preventivo_completo', input(), 'conv-test')
 
@@ -86,6 +102,20 @@ describe('genera_preventivo_completo — la guardia sui dati societari (end-to-e
     expect(out).toContain(RESTRUKTURA.piva)
     expect(out).toContain(LAREALESTATE.piva)
     // la prova che conta: NESSUNA scrittura, su nessuno dei tre documenti.
+    expect(mockInsertSpy).not.toHaveBeenCalled()
+  })
+
+  // Controllo positivo del ramo ok:false NUOVO di questo task (Step 3): se
+  // non sappiamo quale societa' e' attiva GIA' al momento di costruire
+  // l'intestazione, il preventivo non si genera — non solo non si salva.
+  it('societa attiva sconosciuta al momento di costruire l\'intestazione → non genera niente, nessuna scrittura', async () => {
+    mockSocietaPerDocumento.mockResolvedValue({ ok: false, errore: 'connessione a supabase persa' })
+
+    const out = await executeStudioTecnico('genera_preventivo_completo', input(), 'conv-test')
+
+    expect(out).not.toContain('GENERATI CON SUCCESSO')
+    expect(out).toMatch(/non so quale societa/i)
+    expect(out).toContain('connessione a supabase persa')
     expect(mockInsertSpy).not.toHaveBeenCalled()
   })
 

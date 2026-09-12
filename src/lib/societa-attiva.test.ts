@@ -150,4 +150,16 @@ describe('blocco iniettato nel contesto', () => {
     expect(a).not.toBe(b)
     expect(a).not.toContain('02232730768')
   })
+
+  // Task 7: prompts.ts:134 (intestazione statica, sempre Restruktura) e'
+  // stata cancellata — l'informazione ora vive QUI, dove conosce la societa'
+  // attiva davvero.
+  it('dichiara l\'intestazione dei documenti con la sede della societa attiva', () => {
+    const restruktura = bloccoSocietaAttiva(getSocieta('restruktura'))
+    expect(restruktura).toMatch(/Intestazione dei documenti/i)
+    expect(restruktura).toContain("Villa d'Agri (PZ), Italia")
+
+    const larealestate = bloccoSocietaAttiva(getSocieta('larealestate'))
+    expect(larealestate).toContain('Via Civita 8, Maratea (PZ)')
+  })
 })

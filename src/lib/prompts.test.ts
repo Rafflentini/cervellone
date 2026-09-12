@@ -235,3 +235,35 @@ describe('getTelegramSystemPrompt — blocco LE DUE SOCIETA (equipollenza)', () 
     expect(prompt.indexOf('LE DUE SOCIETA')).toBeLessThan(prompt.indexOf(SYSTEM_CACHE_SPLIT))
   })
 })
+
+// ─── Task 7 — la regola gemella di quella sulle immagini: riferire un blocco
+// sui dati societari, per intero, senza ritentare in silenzio. Senza un test
+// che la cerchi nel prompt VIVO (le due funzioni che il codice chiama
+// davvero) e' una speranza, non una difesa — questo repo ha gia' pagato una
+// "regola universale" che viveva in un file senza importatori.
+
+const FRASE_REGOLA_BLOCCO_SOCIETARIO = 'incoerenza nei dati societari'
+
+describe('regola: riferire un blocco sui dati societari (equipollenza)', () => {
+  it('getChatSystemPrompt la contiene', async () => {
+    const prompt = await getChatSystemPrompt('ciao')
+    expect(prompt).toContain(FRASE_REGOLA_BLOCCO_SOCIETARIO)
+    expect(prompt).toMatch(/RIFERISCI/i)
+  })
+
+  it('getTelegramSystemPrompt la contiene (stesso testo, non solo lo stesso motore)', async () => {
+    const prompt = await getTelegramSystemPrompt('ciao')
+    expect(prompt).toContain(FRASE_REGOLA_BLOCCO_SOCIETARIO)
+    expect(prompt).toMatch(/RIFERISCI/i)
+  })
+
+  it('non ha rimosso la regola gemella sulle immagini: stanno insieme', async () => {
+    const prompt = await getChatSystemPrompt('ciao')
+    expect(prompt).toContain('una o piu\' immagini non sono entrate')
+  })
+
+  it('la vecchia intestazione fissa a Restruktura e\' sparita dal prompt statico', async () => {
+    const prompt = await getChatSystemPrompt('ciao')
+    expect(prompt).not.toMatch(/Intestazione: RESTRUKTURA/i)
+  })
+})

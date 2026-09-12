@@ -21,6 +21,15 @@ describe('registro societa', () => {
     expect(s.aliquotaIvaDefault).toBe(10)
   })
 
+  // Task 7: il campo `sede` non esisteva. Per Restruktura riusa ESATTAMENTE
+  // RESTRUKTURA.sedeLegale (src/v19/prompts/identita.ts) — non una terza forma
+  // inventata qui, e non la forma diversa scritta nella memoria di progetto:
+  // la forma definitiva la decide Raffaele.
+  it('ogni societa ha una sede, e quella di Restruktura riusa identita.ts', () => {
+    expect(getSocieta('restruktura').sede).toBe("Villa d'Agri (PZ), Italia")
+    expect(getSocieta('larealestate').sede).toBe('Via Civita 8, Maratea (PZ)')
+  })
+
   it('risolve il nome scritto dall utente, anche parziale', () => {
     expect(risolviSocieta('la real estate')).toBe('larealestate')
     expect(risolviSocieta('LAREALESTATE')).toBe('larealestate')

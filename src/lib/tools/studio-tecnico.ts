@@ -1,5 +1,6 @@
 import { supabase } from '../supabase'
 import { salvaDocumento, verificaSalvabile } from '../salva-documento'
+import { societaPerDocumento } from '../societa-documenti'
 import type { ToolDefinition } from './types'
 
 /** Nome leggibile di ogni doc_type, per i messaggi all'Ingegnere. */
@@ -842,7 +843,22 @@ export async function executeStudioTecnico(name: string, input: Record<string, u
     .footer{margin-top:30px;font-size:10px;color:#888;border-top:1px solid #ddd;padding-top:10px}
     code{background:#f0f0f0;padding:1px 4px;border-radius:3px;font-size:10px}`
 
-      const headerHtml = `<div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>`
+      // Intestazione e piedi COSTRUITI dalla societa' attiva, una volta sola:
+      // prima erano CINQUE stringhe scritte a mano (sempre Restruktura), due
+      // delle quali (l'intestazione qui e la sua copia letterale piu' sotto,
+      // nel preventivo) destinate a divergere. Su ok:false il preventivo NON
+      // si genera: e' lo stesso principio della guardia su salvaDocumento,
+      // applicato PRIMA di scrivere anche solo l'HTML, non solo prima di
+      // salvarlo.
+      const esitoSocieta = await societaPerDocumento(conversationId)
+      if (!esitoSocieta.ok) {
+        return `PREVENTIVO NON GENERATO — non so quale societa' e' attiva (${esitoSocieta.errore}): non compilo un'intestazione senza saperlo.`
+      }
+      const societaDoc = esitoSocieta.societa
+      const headerHtml = `<div class="header"><h1>${societaDoc.denominazione}</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA ${societaDoc.piva} — ${societaDoc.sede} — Ing. Raffaele Lentini</p></div>`
+      const footerPreventivo = `${societaDoc.denominazione} — Validità offerta: 60 giorni — Condizioni: 30% firma, 40% SAL, 30% collaudo`
+      const footerCme = `${societaDoc.denominazione} — Conforme a DPR 207/2010 Art. 32 e D.Lgs. 36/2023`
+      const footerQe = `${societaDoc.denominazione} — Le percentuali sono indicative e soggette a verifica del R.U.P.`
 
       // ══════════════════════════════════════════════════════════
       // PREVENTIVO HTML (documento commerciale — può avere spese generali ecc.)
@@ -862,7 +878,7 @@ export async function executeStudioTecnico(name: string, input: Record<string, u
     .info-box{background:#f8f9fa;padding:10px;border-radius:6px;border-left:3px solid #1e3a5f}
     .info-box strong{display:block;font-size:10px;color:#666;margin-bottom:2px}
   </style></head><body>
-    <div class="header"><h1>RESTRUKTURA S.r.l.</h1><p>Ingegneria, Costruzioni, Ponteggi — P.IVA 02087420762 — Villa d'Agri (PZ) — Ing. Raffaele Lentini</p></div>
+    ${headerHtml}
     <h2>PREVENTIVO ESTIMATIVO N. ${numero}</h2>
     <div class="info-grid">
       <div class="info-box"><strong>Committente</strong>${committente}</div>
@@ -880,7 +896,7 @@ export async function executeStudioTecnico(name: string, input: Record<string, u
       <tr><td colspan="5">IVA (${(ivaPerc * 100).toFixed(0)}%)</td><td class="right">€ ${fmt(ivaMercato)}</td></tr>
       <tr class="total-row" style="font-size:14px"><td colspan="5">TOTALE COMPLESSIVO</td><td class="right">€ ${fmt(totMercato)}</td></tr>
     </tbody></table>
-    <div class="footer">Restruktura S.r.l. — Validità offerta: 60 giorni — Condizioni: 30% firma, 40% SAL, 30% collaudo</div>
+    <div class="footer">${footerPreventivo}</div>
   </body></html>`
 
       // ══════════════════════════════════════════════════════════
@@ -940,7 +956,7 @@ export async function executeStudioTecnico(name: string, input: Record<string, u
     ${analisiNPHtml}
 
     <div class="footer">
-      Restruktura S.r.l. — Conforme a DPR 207/2010 Art. 32 e D.Lgs. 36/2023<br>
+      ${footerCme}<br>
       I Nuovi Prezzi (N.P.) sono soggetti a verifica del R.U.P.
     </div>
   </body></html>`
@@ -976,7 +992,7 @@ export async function executeStudioTecnico(name: string, input: Record<string, u
     </table>
 
     <div class="footer">
-      Restruktura S.r.l. — Le percentuali sono indicative e soggette a verifica del R.U.P.<br>
+      ${footerQe}<br>
       Le somme a disposizione saranno adeguate in fase di progettazione esecutiva.
     </div>
   </body></html>`

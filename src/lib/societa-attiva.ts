@@ -102,6 +102,7 @@ export function bloccoSocietaAttiva(s: Societa): string {
     '=== SOCIETA ATTIVA ===',
     `Ogni operazione contabile si riferisce a: ${s.denominazione} (P.IVA ${s.piva}).`,
     `Aliquota IVA di riferimento: ${s.aliquotaIvaDefault}%.`,
+    `Intestazione dei documenti: ${s.denominazione} — P.IVA ${s.piva}, ${s.sede}.`,
     "Se l'Ingegnere parla di un'altra societa NON dedurlo e non cambiare da solo:",
     'chiedi conferma, poi usa il tool imposta_societa_attiva.',
     '=== fine societa attiva ===',

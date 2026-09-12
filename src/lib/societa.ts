@@ -15,6 +15,15 @@ export interface Societa {
   codice: CodiceSocieta
   denominazione: string
   piva: string
+  /**
+   * La sede da stampare sui documenti. Per Restruktura riusa ESATTAMENTE
+   * `RESTRUKTURA.sedeLegale` (src/v19/prompts/identita.ts) — la stessa
+   * costante gia' citata per denominazione/piva qui sotto: due fonti per lo
+   * stesso dato prima o poi divergono, e infatti la sede di Restruktura si
+   * trova scritta in due forme diverse altrove nel repo (v. Task 7 report).
+   * Chi deve decidere la forma DEFINITIVA e' Raffaele, non questo commit.
+   */
+  sede: string
   /** Nome della variabile d'ambiente col token FIC. MAI il valore. */
   ficTokenEnv: string
   /** Nome della variabile d'ambiente con l'id azienda FIC. MAI il valore. */
@@ -30,6 +39,7 @@ const REGISTRO: Record<CodiceSocieta, Societa> = {
     // due fonti per la stessa partita IVA prima o poi divergono.
     denominazione: RESTRUKTURA.ragioneSociale,
     piva: RESTRUKTURA.partitaIva,
+    sede: RESTRUKTURA.sedeLegale,
     ficTokenEnv: 'FIC_ACCESS_TOKEN',
     ficCompanyIdEnv: 'FIC_COMPANY_ID',
     googleAccount: RESTRUKTURA.email,
@@ -39,6 +49,7 @@ const REGISTRO: Record<CodiceSocieta, Societa> = {
     codice: 'larealestate',
     denominazione: 'LA REAL ESTATE SRLS',
     piva: '02232730768',
+    sede: 'Via Civita 8, Maratea (PZ)',
     ficTokenEnv: 'FIC_ACCESS_TOKEN_LAREALESTATE',
     ficCompanyIdEnv: 'FIC_COMPANY_ID_LAREALESTATE',
     googleAccount: 'larealestate.amministrazione@gmail.com',

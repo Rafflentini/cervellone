@@ -14,7 +14,12 @@
  */
 import { listaSocieta, type CodiceSocieta } from './societa'
 
-export type DatiSocietari = { denominazione: string; piva: string }
+// `sede` e' opzionale qui: la guardia (verificaDatiSocietari/messaggioBlocco)
+// confronta e nomina solo denominazione+piva, e diversi test la costruiscono
+// a mano senza sede. `societaPerDocumento` la valorizza sempre: e' il posto
+// dove chi genera un documento (es. studio-tecnico.ts) la trova, senza una
+// seconda chiamata a getSocieta.
+export type DatiSocietari = { denominazione: string; piva: string; sede?: string }
 
 export type EsitoGuardia =
   | { ok: true }
