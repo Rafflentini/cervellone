@@ -1799,3 +1799,146 @@ it('CONTROLLO POSITIVO — un prefisso ambiguo NON viene risolto a caso', async 
   32 caratteri **e** quello del giro che si chiude. `cp`, `perl -0pi`, **`grep -c` che provi
   il morso**, `md5sum` identico dopo il ripristino.
 - [ ] **Step 10: commit** — `git commit -m "i comandi di conferma FIC diventano toccabili: il buco era scritto nel commento"`
+
+---
+
+### Task 17: la mappa piccola, e l'interruttore che si accende
+
+**Deciso da Raffaele il 13 set 2026**, dopo aver misurato insieme che cosa costa cosa.
+
+**Il fatto misurato, con chiamate vere all'API (non stime):**
+
+| Configurazione | token di input per turno |
+|---|---|
+| oggi, `TOOL_DEFER` **spento** | **49.874** |
+| acceso, **cieco** (com'è adesso) | **22.136** — −56% |
+| acceso **+ mappa piccola** | ~22.450 — **−55%** |
+| di cui il **solo prompt** | 17.371 — il 78% di ciò che resta |
+
+⚠️ **Due errori di misura, entrambi miei, entrambi corretti misurando meglio.** Vanno
+conosciuti prima di toccare questo codice:
+
+1. Contando i **byte** dell'array dei tool il risparmio risulta **negativo** (−3%), e stavo
+   per dichiarare inutile una funzione che taglia il 56%. `defer_loading` **non toglie** i
+   tool dalla richiesta: li manda e lascia all'API decidere cosa rendere nel contesto. Il
+   risparmio avviene **dall'altra parte del filo**, e si vede **solo** in
+   `usage.input_tokens`. → **Non misurare questo lavoro contando byte.**
+2. I 115 tool differiti costano **ZERO** token: la richiesta pesa 6.999 sia mandandoli sia
+   togliendoli del tutto (misurato per differenza). Quindi il modello è **completamente
+   cieco** su di loro e deve interrogare la ricerca BM25 **indovinando le parole**. È la
+   causa del difetto vissuto in produzione il 12 set: *«non ho un tool che scriva su FIC»*,
+   detto due volte mentre il tool esisteva.
+
+**Perché la mappa PICCOLA e non quella grande.** Una bozza con 19 scaffali e i 91 nomi
+esatti costa 1.056 token e funziona meglio. Ma il prossimo passo dell'architettura (il
+«Decollo»: specialisti per ruolo) **la rende inutile**, perché il coordinatore non dovrà più
+prendere gli attrezzi da solo — dovrà sapere **a chi girarsi**. La mappa **piccola** invece
+sopravvive: quei domini **diventano** l'elenco degli specialisti. Costa **318 token, l'1,1%**
+del risparmio, e non si butta niente.
+
+**Files:**
+- Create: `src/lib/mappa-officina.ts`
+- Create: `src/lib/mappa-officina.test.ts`
+- Modify: `src/lib/prompts.ts` — il blocco entra nel prompt **di entrambi i canali**
+- Modify: `src/lib/tool-nucleo.ts` — se serve esporre l'elenco dei domini
+
+**Interfaces:**
+```ts
+/** Un dominio = uno scaffale. Diventera' uno specialista nel Decollo. */
+export type Dominio = { nome: string; contiene: string; tool: readonly string[] }
+
+export const DOMINI: readonly Dominio[]
+
+/** Il blocco da iniettare nel prompt. ~318 token. */
+export function mappaOfficina(): string
+```
+
+**Il testo del blocco** (la forma è questa, le parole si possono limare):
+
+```
+=== DOVE STANNO GLI ATTREZZI ===
+Questi strumenti esistono e NON sono caricati: li carichi quando servono con
+tool_search_tool_bm25, cercando nel dominio giusto. Non concludere MAI che una
+cosa non sai farla senza aver guardato qui: se il dominio e elencato, la
+capacita c'e'.
+
+- Contabilita e fatture: Fatture in Cloud su entrambe le societa, prima nota,
+  movimenti di banca e carte, riconciliazione, note spese
+- Studio tecnico: prezzari regionali, preventivi, computi metrici, quadri
+  economici, SAL
+- Pratiche e modelli: CIGO, Allegato 10, SR41, modelli di documento con segnaposto
+- Segreteria: posta, calendario, scadenze di mezzi e documenti
+- Archivio: Google Drive, file, cartelle, permessi, foto di cantiere
+- Affitti brevi (La Real Estate, Maratea): check-in, Portale Alloggiati,
+  imposta di soggiorno
+- Se stesso: autodiagnosi, skill, proprio codice, rilasci
+```
+
+⭐ **L'ultima frase dell'intestazione è la più importante di tutto il task.** *«Non
+concludere MAI che una cosa non sai farla senza aver guardato qui»* è la riga che impedisce
+il difetto del 12 set. Senza quella, la mappa è un elenco che il modello può ignorare.
+
+**⚠️ IL VINCOLO CHE RENDE LA MAPPA ONESTA: non deve avere buchi.**
+
+Una mappa incompleta è **peggio di nessuna mappa**, perché il modello si fida: se un attrezzo
+non è su nessuno scaffale, conclude che non esiste — e siamo tornati al difetto di partenza,
+con in più la convinzione di averlo chiuso.
+
+Quindi ogni `Dominio` dichiara **i nomi dei tool che contiene**, e un test verifica che
+**ogni tool fuori dal nucleo appartenga a esattamente un dominio**. Il test deve **fallire**
+quando qualcuno aggiunge un tool senza metterlo su uno scaffale — è l'unica difesa che non
+dipende dalla memoria di nessuno.
+
+I nomi dei tool **non entrano nel testo** del blocco (sono i 1.056 token che non vogliamo
+spendere): servono solo al test. Il blocco porta i domini; il registro porta i nomi.
+
+- [ ] **Step 1: i test che falliscono**
+
+```ts
+it('CONTROLLO POSITIVO — ogni tool fuori dal nucleo sta in ESATTAMENTE un dominio', () => {
+  const tutti = getToolDefinitions().map(t => t.name).filter(Boolean)
+  const fuoriNucleo = tutti.filter(n => !NUCLEO_TOOL.has(n) && !SERVER_TOOLS.includes(n))
+  const catalogati = DOMINI.flatMap(d => d.tool)
+  const senzaScaffale = fuoriNucleo.filter(n => !catalogati.includes(n))
+  // Il messaggio deve NOMINARE i tool orfani: un test che dice solo "3 != 0"
+  // fa perdere mezz'ora a chi lo legge fra sei mesi.
+  expect(senzaScaffale, `tool senza scaffale: ${senzaScaffale.join(', ')}`).toEqual([])
+})
+
+it('nessun tool sta in due domini: uno scaffale solo per attrezzo', () => { /* … */ })
+
+it('nessun dominio elenca un tool che non esiste piu', () => {
+  // il caso opposto: un attrezzo tolto dal codice e rimasto sulla mappa.
+  // La mappa mentirebbe al contrario: prometterebbe una capacita' sparita.
+})
+
+it('il blocco NOMINA i domini ma NON i singoli tool (e la scelta sui token)', () => {
+  const m = mappaOfficina()
+  expect(m).toContain('Contabilita e fatture')
+  expect(m).not.toContain('fic_fatture_ricevute')   // i nomi costano 1.056 token: stanno nel registro, non nel prompt
+})
+
+it('il blocco contiene la frase che vieta di concludere "non so farlo"', () => {
+  expect(mappaOfficina()).toMatch(/non concludere mai/i)
+})
+
+it('la mappa arriva nel prompt VIVO di ENTRAMBI i canali', async () => {
+  expect(await getChatSystemPrompt('ciao', [])).toContain('DOVE STANNO GLI ATTREZZI')
+  expect(await getTelegramSystemPrompt('ciao', [])).toContain('DOVE STANNO GLI ATTREZZI')
+})
+```
+
+⭐ L'ultimo test non è un di più: questo repo ha già pagato **una «regola universale» che
+viveva in un file senza importatori**. Una mappa che non arriva nel prompt vivo è codice
+morto con l'aria di una difesa.
+
+- [ ] **Step 2: eseguire, verificare che FALLISCANO**
+- [ ] **Step 3: `mappa-officina.ts`** con i sette domini e i nomi dei tool di ciascuno
+- [ ] **Step 4: agganciare il blocco** al prompt di entrambi i canali, accanto al blocco della società attiva
+- [ ] **Step 5: suite + typecheck**
+- [ ] **Step 6: la misura VERA, con una chiamata all'API.** Non contare byte (vedi sopra). Usa lo schema di `.superpowers/sdd/2026-09-12-guardia-dati-societari/misura-strada-c.ts`: due chiamate con `max_tokens: 1`, e leggi `usage.input_tokens` a interruttore spento e acceso **col prompt vero**. Attesi ~49.900 e ~22.450. **Incolla i due numeri nel rapporto.** Costa circa 20 centesimi ed è l'unica prova che il lavoro serve.
+- [ ] **Step 7: mutazione** — togli un dominio dalla lista: deve morire il controllo positivo dei tool orfani, **e il messaggio deve nominare i tool rimasti senza scaffale**. `cp`, `perl -0pi`, **`grep -c` che provi il morso**, `md5sum` identico dopo il ripristino.
+- [ ] **Step 8: commit** — `git commit -m "la mappa dell'officina: sette scaffali, e il divieto di dire 'non so farlo' senza aver guardato"`
+
+**NON fa parte di questo task:** accendere `TOOL_DEFER` su Vercel. È una modifica alla
+produzione e la fa il coordinatore, dopo aver letto i due numeri dello Step 6.
