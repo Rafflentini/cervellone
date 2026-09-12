@@ -51,8 +51,12 @@ export async function renderDocx(doc: DocxDocument): Promise<Buffer> {
     children.push(...rendered)
   }
 
-  // Footer (in-flow paragraph at end; per veri footer Word, vedi sez. polish)
-  children.push(buildFooterParagraph(doc.footer))
+  // Footer (in-flow paragraph at end; per veri footer Word, vedi sez. polish).
+  // OPZIONALE (Task 5): `buildFooterParagraph` ora richiede una stringa, e il
+  // predefinito Restruktura e' stato rimosso — un documento senza footer
+  // dichiarato semplicemente non ne stampa uno, invece di ereditarne uno che
+  // non gli appartiene.
+  if (doc.footer) children.push(buildFooterParagraph(doc.footer))
 
   const margins = doc.margins
   const orient = doc.orientation === 'landscape' ? PageOrientation.LANDSCAPE : PageOrientation.PORTRAIT

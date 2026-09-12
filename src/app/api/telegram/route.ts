@@ -6,7 +6,6 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
-import { societaAttivaPerDocumenti } from '@/lib/societa-documenti'
 import type Anthropic from '@anthropic-ai/sdk'
 import crypto from 'crypto'
 import { supabase } from '@/lib/supabase'
@@ -832,7 +831,7 @@ export async function POST(request: NextRequest) {
     if (mSalOk2 || mSalOk || mSalNo) {
       const uuid = (mSalOk2 ?? mSalOk ?? mSalNo)!
       const message = mSalOk2
-? await confirmSalStep2(uuid, await societaAttivaPerDocumenti(chatIdToUuid(chatId)))
+? await confirmSalStep2(uuid, chatIdToUuid(chatId))
         : mSalOk
           ? await confirmSalStep1(uuid)
           : await cancelSal(uuid)

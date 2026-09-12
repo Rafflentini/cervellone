@@ -85,6 +85,10 @@ describe('executeDocumentTemplateTool', () => {
       valori: {
         periodo_dal: '2026-06-01',
         periodo_al: '2026-06-11',
+        // Task 5: il CIGO confronta il CF della pratica con la P.IVA della
+        // societa' attiva. Qui _conversationId e' undefined -> Restruktura
+        // (default), quindi la pratica deve dichiararsi di Restruktura.
+        azienda_cf: '02087420762',
         beneficiari: [{ cognome: 'ROSSI', nome: 'MARIO', codice_fiscale: 'RSSMRA80A01H501U', ore: 8 }],
       },
     })
@@ -132,7 +136,10 @@ describe('executeDocumentTemplateTool', () => {
       ],
       dati_fissi: {
         azienda_denominazione: 'ACME S.R.L.',
-        azienda_cf: '99999999999',
+        // Task 5: il CIGO confronta il CF della pratica con la P.IVA della
+        // societa' attiva. Qui _conversationId e' undefined -> Restruktura
+        // (default), quindi il CF nei dati fissi deve coincidere.
+        azienda_cf: '02087420762',
         azienda_matricola_inps: '1234567890',
         lr_nome_cognome: 'Mario Rossi',
       },
@@ -530,6 +537,9 @@ describe('CIGO — un pacchetto INPS non parte con zero ore', () => {
       slug: 'cigo_allegato10',
       valori: {
         periodo_dal: '2026-06-01', periodo_al: '2026-06-11',
+        // Task 5: _conversationId e' undefined -> societa' attiva Restruktura
+        // (default); la pratica deve dichiararsi sua per non essere bloccata.
+        azienda_cf: '02087420762',
         beneficiari: [
           { cognome: 'ROSSI', nome: 'MARIO', codice_fiscale: 'RSSMRA80A01H501U', ore: 16 },
           { cognome: 'VERDI', nome: 'LUCA', codice_fiscale: 'VRDLCU90A01F205E', ore: 0 },
@@ -539,5 +549,63 @@ describe('CIGO — un pacchetto INPS non parte con zero ore', () => {
 
     expect(cigo.generaAllegato10Cigo).toHaveBeenCalledOnce()
     expect(out).toContain('https://drive/ok')
+  })
+})
+
+describe('CIGO — la pratica di un\'azienda diversa dalla societa\' attiva NON genera (Task 5)', () => {
+  const tplCigo = {
+    slug: 'cigo_allegato10', titolo: 'CIGO', metodo: 'builtin_cigo',
+    campi: [
+      { nome: 'periodo_dal', label: 'dal', tipo: 'data', obbligatorio: true },
+      { nome: 'periodo_al', label: 'al', tipo: 'data', obbligatorio: true },
+    ],
+    dati_fissi: {}, formati_output: ['pdf'], mai_inviare: true,
+  }
+
+  // Questo repo ha gia' pagato una pratica INPS con dati inventati: se il CF
+  // dichiarato nella pratica non coincide con la P.IVA della societa' attiva
+  // (qui Restruktura, default per conversationId assente), o la pratica e'
+  // dell'azienda sbagliata o la societa' attiva e' quella sbagliata. In
+  // entrambi i casi Raffaele deve saperlo PRIMA che il documento vada
+  // all'INPS, non dopo.
+  it('RIFIUTA quando il CF della pratica non e la P.IVA della societa attiva', async () => {
+    ;(dt.getTemplate as any).mockResolvedValue(tplCigo)
+
+    const out = await executeDocumentTemplateTool('compila_modello', {
+      slug: 'cigo_allegato10',
+      valori: {
+        periodo_dal: '2026-06-01', periodo_al: '2026-06-11',
+        azienda_denominazione: 'LA REAL ESTATE SRLS',
+        azienda_cf: '02232730768',
+        beneficiari: [{ cognome: 'ROSSI', nome: 'MARIO', codice_fiscale: 'RSSMRA80A01H501U', ore: 16 }],
+      },
+    })
+
+    expect(cigo.generaAllegato10Cigo).not.toHaveBeenCalled()
+    expect(out).toMatch(/NON GENERATO/i)
+    expect(out).toContain('02232730768')
+    expect(out).toContain('02087420762')
+  })
+
+  // CONTROLLO POSITIVO: senza questo, un rifiuto incondizionato sul CIGO
+  // passerebbe il test sopra e renderebbe il CIGO impossibile da produrre —
+  // gia' provato da "GENERA quando almeno un operaio ha le ore" qui sopra,
+  // ripetuto qui per tenere i due controlli (ore e CF) vicini l'uno all'altro.
+  it('CONTROLLO POSITIVO — CF coerente con la societa attiva: genera', async () => {
+    ;(dt.getTemplate as any).mockResolvedValue(tplCigo)
+    ;(cigo.generaAllegato10Cigo as any).mockResolvedValue({ zipBuffer: Buffer.from('ZIP'), warnings: [] })
+    ;(drive.uploadBinaryToDrive as any).mockResolvedValue({ id: 'z', webViewLink: 'https://drive/coerente' })
+
+    const out = await executeDocumentTemplateTool('compila_modello', {
+      slug: 'cigo_allegato10',
+      valori: {
+        periodo_dal: '2026-06-01', periodo_al: '2026-06-11',
+        azienda_cf: '02087420762',
+        beneficiari: [{ cognome: 'ROSSI', nome: 'MARIO', codice_fiscale: 'RSSMRA80A01H501U', ore: 16 }],
+      },
+    })
+
+    expect(cigo.generaAllegato10Cigo).toHaveBeenCalledOnce()
+    expect(out).toContain('https://drive/coerente')
   })
 })

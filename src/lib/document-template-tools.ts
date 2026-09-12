@@ -11,7 +11,8 @@ import {
 import { validateValues, applyDefaults, riempiHtml } from './template-fill-html'
 import { generatePdfFromHtml } from './pdf-generator'
 import { avvisoImmagini } from './avviso-immagini'
-import { societaAttivaPerDocumenti } from './societa-documenti'
+import { societaPerDocumento } from './societa-documenti'
+import type { DatiSocietari } from './guardia-societa'
 
 import { uploadBinaryToDrive } from './drive'
 import { generaAllegato10Cigo } from '@/v19/tools/cigo'
@@ -212,7 +213,13 @@ function todayTag(): string {
 
 async function compila(
   input: Record<string, unknown>,
-  societa?: { denominazione: string; piva: string },
+  /**
+   * OBBLIGATORIA (Task 5): serve sia per firmare il PDF del metodo B_html, sia
+   * — per il CIGO — per il confronto con `mapped.azienda.codice_fiscale` qui
+   * sotto. Il chiamante la risolve con `societaPerDocumento(conversationId)` e
+   * su `ok:false` non chiama nemmeno questa funzione.
+   */
+  societa: DatiSocietari,
 ): Promise<string> {
   const slug = normalizeSlug(String(input.slug ?? ''))
   const valoriRaw = (input.valori as Record<string, unknown>) ?? {}
@@ -244,6 +251,26 @@ async function compila(
     // domanda di integrazione salariale che non chiede niente. E nessuno lo dice.
     if (mapped.beneficiari.every((b) => !b.ore_perse_settimana_1)) {
       return `Ho ${mapped.beneficiari.length} operai ma NESSUNA ora di sospensione: il pacchetto per l'INPS uscirebbe con zero ore richieste per tutti. Dimmi le ore TOTALI di stop nel periodo per ciascun operaio (le ore cambiano a ogni periodo, per questo non stanno nei dati fissi). Il pacchetto NON e' stato generato.`
+    }
+    // Il CIGO e' per natura di Restruktura (e' l'impresa edile con gli
+    // operai), e i suoi dati azienda arrivano DALLA PRATICA, non dalla
+    // societa' attiva — renderDocx non si tocca (Task 5, decisione del
+    // coordinatore). Ma se la pratica e' intestata a un CF diverso da quello
+    // della societa' attiva, o la pratica e' dell'azienda sbagliata o la
+    // societa' attiva e' quella sbagliata: in entrambi i casi va detto PRIMA
+    // che il documento vada all'INPS, non dopo. Questo repo ha gia' pagato
+    // una pratica INPS con dati inventati.
+    if (mapped.azienda.codice_fiscale !== societa.piva) {
+      return [
+        `⚠️ PACCHETTO CIGO NON GENERATO — dati societari incoerenti.`,
+        ``,
+        `La pratica e' intestata a ${mapped.azienda.denominazione} (CF/P.IVA ${mapped.azienda.codice_fiscale}),`,
+        `ma la societa' attiva e' ${societa.denominazione} (P.IVA ${societa.piva}).`,
+        ``,
+        `O la pratica e' dell'azienda sbagliata, o la societa' attiva e' quella`,
+        `sbagliata: dimmi qual e' il caso prima di generare, cosi' non arriva`,
+        `all'INPS un documento intestato a chi non c'entra.`,
+      ].join('\n')
     }
     const out = await generaAllegato10Cigo(mapped, {})
     const zip = (out as { zipBuffer?: Buffer }).zipBuffer
@@ -406,7 +433,9 @@ export async function executeDocumentTemplateTool(
     }
 
     if (name === 'compila_modello') {
-      return await compila(input, await societaAttivaPerDocumenti(_conversationId))
+      const esitoSocieta = await societaPerDocumento(_conversationId)
+      if (!esitoSocieta.ok) return `Errore: societa' attiva non determinabile (${esitoSocieta.errore}). Documento NON generato.`
+      return await compila(input, esitoSocieta.societa)
     }
 
     if (name === 'imposta_dati_fissi') {

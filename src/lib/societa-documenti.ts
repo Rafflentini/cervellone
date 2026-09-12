@@ -41,19 +41,3 @@ export async function societaPerDocumento(conversationId?: string): Promise<Esit
     esplicita: e.esplicita,
   }
 }
-
-/**
- * TRANSITORIA — la rimuove il Task 5, quando i suoi due chiamanti
- * (`tools.ts`, `document-template-tools.ts`) passeranno a leggere
- * `EsitoSocietaDocumento` e a dichiarare l'errore invece di indovinare.
- * Fino ad allora resta con la stessa firma e lo stesso comportamento
- * osservabile di prima: `undefined` su qualunque `ok:false`, guasto compreso.
- * Non e' un regresso rispetto a oggi (quel comportamento e' quello attuale),
- * ma non e' piu' la fonte di verita': lo e' `societaPerDocumento`.
- */
-export async function societaAttivaPerDocumenti(
-  conversationId?: string,
-): Promise<{ denominazione: string; piva: string } | undefined> {
-  const e = await societaPerDocumento(conversationId)
-  return e.ok ? e.societa : undefined
-}

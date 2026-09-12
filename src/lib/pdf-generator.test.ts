@@ -27,6 +27,11 @@ import {
   generatePdfFromHtml, generateDocxFromHtml, generateXlsxFromData, MAX_IMMAGINI_PER_DOCUMENTO,
 } from './pdf-generator'
 
+// `societa` e' ora OBBLIGATORIA (Task 5): questi test non verificano la
+// guardia sui dati societari (coperta da pdf-generator.guardia.test.ts), quindi
+// passano sempre una societa' coerente col contenuto — RESTRUKTURA di default.
+const RESTRUKTURA = { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' }
+
 function makeMockBrowser(opts: {
   setContent?: ReturnType<typeof vi.fn>
   pdf?: ReturnType<typeof vi.fn>
@@ -54,7 +59,7 @@ describe('generatePdfFromHtml', () => {
   it('returns Buffer with PDF magic bytes', async () => {
     vi.mocked(puppeteer.launch).mockResolvedValueOnce(makeMockBrowser() as never)
 
-    const buf = await generatePdfFromHtml('<p>test</p>', 'Test Doc')
+    const buf = await generatePdfFromHtml('<p>test</p>', 'Test Doc', { societa: RESTRUKTURA })
 
     expect(buf).toBeInstanceOf(Buffer)
     expect(buf.subarray(0, 5).toString('ascii')).toBe('%PDF-')
@@ -65,7 +70,7 @@ describe('generatePdfFromHtml', () => {
     const setContent = vi.fn(async (_html: string) => undefined)
     vi.mocked(puppeteer.launch).mockResolvedValueOnce(makeMockBrowser({ setContent }) as never)
 
-    await generatePdfFromHtml('<p>frammento</p>', 'Test')
+    await generatePdfFromHtml('<p>frammento</p>', 'Test', { societa: RESTRUKTURA })
 
     const passedHtml = setContent.mock.calls[0][0]
     expect(passedHtml).toContain('<!DOCTYPE html>')
@@ -78,7 +83,7 @@ describe('generatePdfFromHtml', () => {
     vi.mocked(puppeteer.launch).mockResolvedValueOnce(makeMockBrowser({ setContent }) as never)
 
     const fullDoc = '<!DOCTYPE html><html><head><title>Mio</title></head><body>x</body></html>'
-    await generatePdfFromHtml(fullDoc, 'Ignored')
+    await generatePdfFromHtml(fullDoc, 'Ignored', { societa: RESTRUKTURA })
 
     const passedHtml = setContent.mock.calls[0][0]
     // Niente doppio wrap: il documento resta il suo, titolo e corpo intatti.
@@ -98,7 +103,7 @@ describe('generatePdfFromHtml', () => {
     const setContent = vi.fn(async (_html: string) => undefined)
     vi.mocked(puppeteer.launch).mockResolvedValueOnce(makeMockBrowser({ setContent }) as never)
 
-    await generatePdfFromHtml('<p>x</p>', 'Doc <script>alert(1)</script>')
+    await generatePdfFromHtml('<p>x</p>', 'Doc <script>alert(1)</script>', { societa: RESTRUKTURA })
 
     const passedHtml = setContent.mock.calls[0][0]
     expect(passedHtml).toContain('Doc &lt;script&gt;alert(1)&lt;/script&gt;')
@@ -115,7 +120,7 @@ describe('generatePdfFromHtml', () => {
     // l'invariante verificato è "il browser viene chiuso ad OGNI tentativo".
     vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser({ pdf, close: closeBrowser }) as never)
 
-    await expect(generatePdfFromHtml('<p>x</p>', 'T')).rejects.toThrow('pdf render failed')
+    await expect(generatePdfFromHtml('<p>x</p>', 'T', { societa: RESTRUKTURA })).rejects.toThrow('pdf render failed')
     expect(closeBrowser).toHaveBeenCalledTimes(2)
   })
 
@@ -123,7 +128,7 @@ describe('generatePdfFromHtml', () => {
     const pdf = vi.fn(async (_opts: Record<string, unknown>) => mockPdfBytes)
     vi.mocked(puppeteer.launch).mockResolvedValueOnce(makeMockBrowser({ pdf }) as never)
 
-    await generatePdfFromHtml('<p>x</p>', 'T')
+    await generatePdfFromHtml('<p>x</p>', 'T', { societa: RESTRUKTURA })
 
     expect(pdf).toHaveBeenCalledOnce()
     const opts = pdf.mock.calls[0][0]
@@ -137,7 +142,7 @@ describe('generatePdfFromHtml', () => {
 
 describe('generateDocxFromHtml', () => {
   it('returns Buffer with ZIP magic bytes (DOCX is ZIP)', async () => {
-    const buf = await generateDocxFromHtml('<h1>Titolo</h1><p>Corpo</p>', 'TestDoc')
+    const buf = await generateDocxFromHtml('<h1>Titolo</h1><p>Corpo</p>', 'TestDoc', { societa: RESTRUKTURA })
     expect(buf).toBeInstanceOf(Buffer)
     // DOCX file = ZIP container, magic bytes "PK\x03\x04"
     expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
@@ -145,13 +150,13 @@ describe('generateDocxFromHtml', () => {
   })
 
   it('handles plain text fallback when no semantic blocks', async () => {
-    const buf = await generateDocxFromHtml('Solo testo senza tag', 'PlainText')
+    const buf = await generateDocxFromHtml('Solo testo senza tag', 'PlainText', { societa: RESTRUKTURA })
     expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
   })
 
   it('strips style/script/head from HTML before parsing', async () => {
     const html = `<style>body{color:red}</style><h1>Vero titolo</h1>`
-    const buf = await generateDocxFromHtml(html, 'StripTest')
+    const buf = await generateDocxFromHtml(html, 'StripTest', { societa: RESTRUKTURA })
     expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
   })
 })
@@ -161,6 +166,7 @@ describe('generateXlsxFromData', () => {
     const buf = await generateXlsxFromData(
       [{ name: 'Test', rows: [['Codice', 'Descr', 'Q.tà'], ['BAS_01', 'Demolizione', 50]] }],
       'TestXlsx',
+      { societa: RESTRUKTURA },
     )
     expect(buf).toBeInstanceOf(Buffer)
     expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
@@ -168,7 +174,7 @@ describe('generateXlsxFromData', () => {
   })
 
   it('handles empty sheets array', async () => {
-    const buf = await generateXlsxFromData([], 'EmptyTest')
+    const buf = await generateXlsxFromData([], 'EmptyTest', { societa: RESTRUKTURA })
     expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
   })
 
@@ -177,6 +183,7 @@ describe('generateXlsxFromData', () => {
     const buf = await generateXlsxFromData(
       [{ name: 'CME/2026:test', rows: [['a', 'b']] }],
       'SanitizeTest',
+      { societa: RESTRUKTURA },
     )
     expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
   })
@@ -188,6 +195,7 @@ describe('generateXlsxFromData', () => {
         { name: 'SAL', rows: [['Voce', 'Importo'], ['Demo', 1000]] },
       ],
       'MultiSheet',
+      { societa: RESTRUKTURA },
     )
     expect(buf.subarray(0, 2).toString('ascii')).toBe('PK')
   })
@@ -222,7 +230,7 @@ describe('immagini Drive nei PDF', () => {
     const setContent = vi.fn(async (_html: string) => undefined)
     vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser({ setContent }) as never)
 
-    await generatePdfFromHtml(HTML_CON_FOTO, 'Preventivo')
+    await generatePdfFromHtml(HTML_CON_FOTO, 'Preventivo', { societa: RESTRUKTURA })
 
     const htmlRenderizzato = setContent.mock.calls[0][0]
     expect(htmlRenderizzato).toContain('data:image/jpeg;base64,')
@@ -237,6 +245,7 @@ describe('immagini Drive nei PDF', () => {
 
     await generatePdfFromHtml(HTML_CON_FOTO, 'Preventivo', {
       onImmaginiMancanti: (ids) => { mancanti.push(...ids) },
+      societa: RESTRUKTURA,
     })
 
     expect(mancanti).toEqual(['1Zg97_TDKOoUWeAAYsTQ-TrlH5m601rXU'])
@@ -248,7 +257,7 @@ describe('immagini Drive nei PDF', () => {
     })
     const onImmaginiMancanti = vi.fn()
 
-    await generatePdfFromHtml(HTML_CON_FOTO, 'Preventivo', { onImmaginiMancanti })
+    await generatePdfFromHtml(HTML_CON_FOTO, 'Preventivo', { onImmaginiMancanti, societa: RESTRUKTURA })
 
     expect(onImmaginiMancanti).not.toHaveBeenCalled()
   })
@@ -266,7 +275,7 @@ describe('immagini Drive nei DOCX', () => {
       name: 'IMG.jpeg',
     })
 
-    const buf = await generateDocxFromHtml(HTML_CON_FOTO, 'Preventivo')
+    const buf = await generateDocxFromHtml(HTML_CON_FOTO, 'Preventivo', { societa: RESTRUKTURA })
 
     expect(downloadFileBase64).toHaveBeenCalledWith('1Zg97_TDKOoUWeAAYsTQ-TrlH5m601rXU')
     // Un DOCX e' uno ZIP: con un'immagine dentro contiene la cartella media/.
@@ -275,7 +284,7 @@ describe('immagini Drive nei DOCX', () => {
   })
 
   it('un Word senza foto resta un Word valido', async () => {
-    const buf = await generateDocxFromHtml('<h1>Solo testo</h1><p>Nessuna foto.</p>', 'Titolo')
+    const buf = await generateDocxFromHtml('<h1>Solo testo</h1><p>Nessuna foto.</p>', 'Titolo', { societa: RESTRUKTURA })
     expect(buf.subarray(0, 2).toString()).toBe('PK')
     expect(downloadFileBase64).not.toHaveBeenCalled()
   })
@@ -305,6 +314,7 @@ describe('DOCX — quando una foto non si scarica', () => {
 
     const buf = await generateDocxFromHtml(TRE_FOTO, 'Perizia', {
       onImmaginiMancanti: (ids) => { mancanti.push(...ids) },
+      societa: RESTRUKTURA,
     })
 
     expect(mancanti).toEqual(['BBBBBBBBBBBB'])
@@ -328,7 +338,7 @@ describe('DOCX — quando una foto non si scarica', () => {
     await generateDocxFromHtml(
       '<p>Foto</p><img src="https://drive.google.com/thumbnail?id=WWWWWWWWWWWW">',
       'Perizia',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
 
     // Col NOME del file, non solo l id: "Id Drive: 1a2b3c..." non dice
@@ -360,7 +370,7 @@ describe('le forme di <img> che il modello puo scrivere', () => {
     const setContent = vi.fn(async (_html: string) => undefined)
     vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser({ setContent }) as never)
 
-    await generatePdfFromHtml(`<p>Foto</p>${tag}`, 'Doc')
+    await generatePdfFromHtml(`<p>Foto</p>${tag}`, 'Doc', { societa: RESTRUKTURA })
 
     expect(setContent.mock.calls[0][0]).toContain('data:image/jpeg;base64,')
   })
@@ -374,7 +384,7 @@ describe('le forme di <img> che il modello puo scrivere', () => {
     await generatePdfFromHtml(
       '<img src="https://lh3.googleusercontent.com/drive-viewer/AKxyz-senza-id">',
       'Doc',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
 
     expect(mancanti).toHaveLength(1)
@@ -396,6 +406,7 @@ describe('immagini negli Excel', () => {
     const buf = await generateXlsxFromData(
       [{ name: 'Foto', rows: [['Data', 'Descrizione'], ['08/09', 'Facciata Est']], immagini: ['AAAAAAAAAAAA'] }],
       'Registro',
+      { societa: RESTRUKTURA },
     )
 
     expect(downloadFileBase64).toHaveBeenCalledWith('AAAAAAAAAAAA')
@@ -410,14 +421,14 @@ describe('immagini negli Excel', () => {
     await generateXlsxFromData(
       [{ name: 'Foto', rows: [['a']], immagini: ['BBBBBBBBBBBB'] }],
       'Registro',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
 
     expect(mancanti).toEqual(['BBBBBBBBBBBB'])
   })
 
   it('un Excel senza foto resta com era', async () => {
-    const buf = await generateXlsxFromData([{ name: 'Dati', rows: [['a', 1]] }], 'X')
+    const buf = await generateXlsxFromData([{ name: 'Dati', rows: [['a', 1]] }], 'X', { societa: RESTRUKTURA })
     expect(buf.subarray(0, 2).toString()).toBe('PK')
     expect(downloadFileBase64).not.toHaveBeenCalled()
   })
@@ -435,7 +446,7 @@ describe('immagini negli Excel', () => {
     await generateXlsxFromData(
       [{ name: 'Foto', rows: [['a']], immagini: troppe }],
       'Registro',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
 
     expect(vi.mocked(downloadFileBase64).mock.calls).toHaveLength(MAX_IMMAGINI_PER_DOCUMENTO)
@@ -450,6 +461,7 @@ describe('immagini negli Excel', () => {
     await generateXlsxFromData(
       [{ name: 'Foto', rows: [['a']], immagini: ['CCCCCCCCCCCC', 'CCCCCCCCCCCC', 'DDDDDDDDDDDD'] }],
       'Registro',
+      { societa: RESTRUKTURA },
     )
 
     expect(vi.mocked(downloadFileBase64).mock.calls).toHaveLength(2)
@@ -475,7 +487,7 @@ describe('coerenza fra PDF e Word, e tetto alle foto', () => {
       '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA&sz=w600">' +
       '<img src="https://drive.google.com/file/d/AAAAAAAAAAAA/view">'
 
-    await generatePdfFromHtml(html, 'Doc')
+    await generatePdfFromHtml(html, 'Doc', { societa: RESTRUKTURA })
 
     expect(downloadFileBase64).toHaveBeenCalledTimes(1)
   })
@@ -488,7 +500,7 @@ describe('coerenza fra PDF e Word, e tetto alle foto', () => {
       `<img src="https://drive.google.com/thumbnail?id=IMG${String(i).padStart(9, '0')}">`).join('')
     const mancanti: string[] = []
 
-    await generatePdfFromHtml(html, 'Doc', { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } })
+    await generatePdfFromHtml(html, 'Doc', { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA })
 
     expect(downloadFileBase64).toHaveBeenCalledTimes(MAX_IMMAGINI_PER_DOCUMENTO)
     expect(mancanti).toHaveLength(3)
@@ -515,7 +527,7 @@ describe('le foto nel PDF devono STARE nella pagina', () => {
     const setContent = vi.fn(async (_html: string) => undefined)
     vi.mocked(puppeteer.launch).mockResolvedValue(makeMockBrowser({ setContent }) as never)
 
-    await generatePdfFromHtml('<p>Foto</p><img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">', 'Perizia')
+    await generatePdfFromHtml('<p>Foto</p><img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">', 'Perizia', { societa: RESTRUKTURA })
 
     const html = setContent.mock.calls[0][0]
     expect(html).toMatch(/img\s*\{[^}]*max-width:\s*100%/)
@@ -536,7 +548,7 @@ describe('le foto nel PDF devono STARE nella pagina', () => {
     await generatePdfFromHtml(
       '<img src="https://drive.google.com/thumbnail?id=HHHHHHHHHHHH">',
       'Perizia',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
 
     expect(mancanti).toHaveLength(1)
@@ -555,7 +567,7 @@ describe('le foto nel PDF devono STARE nella pagina', () => {
     await generatePdfFromHtml(
       '<img src="https://drive.google.com/thumbnail?id=HHHHHHHHHHHH">',
       'Perizia',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
 
     expect(mancanti[0]).toContain('IMG_5685.HEIC')
@@ -610,6 +622,7 @@ describe('il tetto vale anche nel WORD, e nello stesso modo', () => {
     const mancanti: string[] = []
     await generateDocxFromHtml(htmlCon(MAX_IMMAGINI_PER_DOCUMENTO + 3), 'Perizia', {
       onImmaginiMancanti: (ids) => { mancanti.push(...ids) },
+      societa: RESTRUKTURA,
     })
     expect(mancanti).toHaveLength(3)
   })
@@ -620,11 +633,11 @@ describe('il tetto vale anche nel WORD, e nello stesso modo', () => {
   it('PDF e Word scaricano lo STESSO insieme di foto', async () => {
     const html = htmlCon(MAX_IMMAGINI_PER_DOCUMENTO + 5)
 
-    await generatePdfFromHtml(html, 'Doc')
+    await generatePdfFromHtml(html, 'Doc', { societa: RESTRUKTURA })
     const idPdf = vi.mocked(downloadFileBase64).mock.calls.map((c) => c[0]).sort()
 
     vi.mocked(downloadFileBase64).mockClear()
-    await generateDocxFromHtml(html, 'Doc')
+    await generateDocxFromHtml(html, 'Doc', { societa: RESTRUKTURA })
     const idDocx = vi.mocked(downloadFileBase64).mock.calls.map((c) => c[0]).sort()
 
     expect(idPdf).toEqual(idDocx)
@@ -680,6 +693,7 @@ describe('dentro il Word, guardato davvero', () => {
       '<img src="https://drive.google.com/thumbnail?id=BBBBBBBBBBBB">' +
       '<img src="https://drive.google.com/thumbnail?id=CCCCCCCCCCCC">',
       'Perizia',
+      { societa: RESTRUKTURA },
     )
     const { quanteFoto, testo } = await apriDocx(buf)
 
@@ -698,6 +712,7 @@ describe('dentro il Word, guardato davvero', () => {
 
     const buf = await generateDocxFromHtml(
       '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">', 'Perizia',
+      { societa: RESTRUKTURA },
     )
     const { misure } = await apriDocx(buf)
 
@@ -728,6 +743,7 @@ describe('l HTML consegnato a Chromium, guardato davvero', () => {
       '<p>Prima</p><img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">' +
       '<p>Mezzo</p><img src="https://drive.google.com/thumbnail?id=BBBBBBBBBBBB"><p>Dopo</p>',
       'Doc',
+      { societa: RESTRUKTURA },
     )
 
     const html = setContent.mock.calls[0][0]
@@ -755,6 +771,7 @@ describe('l HTML consegnato a Chromium, guardato davvero', () => {
       '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">' +
       '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA&sz=w600">',
       'Doc',
+      { societa: RESTRUKTURA },
     )
 
     const html = setContent.mock.calls[0][0]
@@ -784,11 +801,10 @@ describe('il piede: sul Word come sul PDF', () => {
     expect(testo).not.toContain('02087420762')
   })
 
-  it('senza indicazioni resta Restruktura', async () => {
-    const buf = await generateDocxFromHtml('<p>Contratto</p>', 'Doc')
-    const { testo } = await apriDocx(buf)
-    expect(testo).toContain('02087420762')
-  })
+  // Il predefinito "senza indicazioni resta Restruktura" e' stato RIMOSSO
+  // (Task 5): `societa` e' ora obbligatoria, quindi non esiste piu' un
+  // "senza indicazioni" da testare — un chiamante che la dimentica non
+  // compila, invece di ereditare Restruktura in silenzio.
 })
 
 describe('l ORDINE delle foto nel Word', () => {
@@ -819,6 +835,7 @@ describe('l ORDINE delle foto nel Word', () => {
     const buf = await generateDocxFromHtml(
       Object.keys(forme).map((id) => `<img src="https://drive.google.com/thumbnail?id=${id}">`).join(''),
       'Perizia',
+      { societa: RESTRUKTURA },
     )
     const { misure } = await apriDocx(buf)
 
@@ -838,6 +855,7 @@ describe('l ORDINE delle foto nel Word', () => {
 
     const buf = await generateDocxFromHtml(
       '<img src="https://drive.google.com/thumbnail?id=AAAAAAAAAAAA">', 'Perizia',
+      { societa: RESTRUKTURA },
     )
     const { misure } = await apriDocx(buf)
 
@@ -868,23 +886,24 @@ describe('gli URL Drive che non si capiscono', () => {
     const mancanti: string[] = []
     await generateDocxFromHtml(html, 'Perizia', {
       onImmaginiMancanti: (ids) => { mancanti.push(...ids) },
+      societa: RESTRUKTURA,
     })
     expect(mancanti).toHaveLength(2)
   })
 
   it('PDF e Word ne dichiarano lo STESSO numero', async () => {
     const daPdf: string[] = []
-    await generatePdfFromHtml(html, 'Perizia', { onImmaginiMancanti: (i) => { daPdf.push(...i) } })
+    await generatePdfFromHtml(html, 'Perizia', { onImmaginiMancanti: (i) => { daPdf.push(...i) }, societa: RESTRUKTURA })
 
     const daDocx: string[] = []
-    await generateDocxFromHtml(html, 'Perizia', { onImmaginiMancanti: (i) => { daDocx.push(...i) } })
+    await generateDocxFromHtml(html, 'Perizia', { onImmaginiMancanti: (i) => { daDocx.push(...i) }, societa: RESTRUKTURA })
 
     expect(daDocx.length).toBe(daPdf.length)
   })
 
   it('e nessuno dei due li passa a Drive come se fossero id', async () => {
     vi.mocked(downloadFileBase64).mockClear()
-    await generateDocxFromHtml(html, 'Perizia')
+    await generateDocxFromHtml(html, 'Perizia', { societa: RESTRUKTURA })
     const chiamati = vi.mocked(downloadFileBase64).mock.calls.map((c) => c[0])
     expect(chiamati).toEqual(['AAAAAAAAAAAA'])
   })
@@ -904,7 +923,7 @@ describe('difetti trovati dagli audit avversariali del 8 set', () => {
     await generatePdfFromHtml(
       '<p>Prima</p><img alt="Facciata Est"><p>Dopo</p>',
       'Perizia',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
     expect(mancanti).toHaveLength(1)
     expect(mancanti[0]).toContain('Facciata Est')
@@ -915,7 +934,7 @@ describe('difetti trovati dagli audit avversariali del 8 set', () => {
     await generateDocxFromHtml(
       '<p>Prima</p><img alt="Facciata Est"><p>Dopo</p>',
       'Perizia',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
     expect(mancanti).toHaveLength(1)
     expect(mancanti[0]).toContain('Facciata Est')
@@ -926,7 +945,7 @@ describe('difetti trovati dagli audit avversariali del 8 set', () => {
     await generatePdfFromHtml(
       '<img src="">',
       'Perizia',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
     expect(mancanti).toHaveLength(1)
   })
@@ -939,7 +958,7 @@ describe('difetti trovati dagli audit avversariali del 8 set', () => {
     await generatePdfFromHtml(
       '<img src="https://drive.google.com/uc?id=AAAAAAAAAAAA"><img src="https://esempio.it/logo.png"><img src="data:image/png;base64,QQ==">',
       'Perizia',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
     expect(mancanti).toEqual([])
   })
@@ -955,7 +974,7 @@ describe('difetti trovati dagli audit avversariali del 8 set', () => {
     await generatePdfFromHtml(
       '<img src="https://drive.google.com/uc?id=AAAAAAAAAAAA"><img alt="Balcone">',
       'Perizia',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
     expect(mancanti).toHaveLength(1)
     expect(mancanti[0]).toContain('Balcone')
@@ -966,7 +985,7 @@ describe('difetti trovati dagli audit avversariali del 8 set', () => {
     await generatePdfFromHtml(
       '<img src="   " alt="Cornicione">',
       'Perizia',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
     expect(mancanti).toHaveLength(1)
     expect(mancanti[0]).toContain('Cornicione')
@@ -974,9 +993,9 @@ describe('difetti trovati dagli audit avversariali del 8 set', () => {
 
   it('l etichetta si legge sia dagli apici doppi sia dai singoli', async () => {
     const doppi: string[] = []
-    await generatePdfFromHtml('<img alt="Doppi">', 'P', { onImmaginiMancanti: (i) => { doppi.push(...i) } })
+    await generatePdfFromHtml('<img alt="Doppi">', 'P', { onImmaginiMancanti: (i) => { doppi.push(...i) }, societa: RESTRUKTURA })
     const singoli: string[] = []
-    await generatePdfFromHtml("<img alt='Singoli'>", 'P', { onImmaginiMancanti: (i) => { singoli.push(...i) } })
+    await generatePdfFromHtml("<img alt='Singoli'>", 'P', { onImmaginiMancanti: (i) => { singoli.push(...i) }, societa: RESTRUKTURA })
     expect(doppi[0]).toBe('immagine senza indirizzo: Doppi')
     expect(singoli[0]).toBe('immagine senza indirizzo: Singoli')
   })
@@ -990,7 +1009,7 @@ describe('difetti trovati dagli audit avversariali del 8 set', () => {
       '<img src="https://lh3.googleusercontent.com/drive-viewer/PRIMA">' +
       '<img src="https://lh3.googleusercontent.com/drive-viewer/SECONDA">',
       'Perizia',
-      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { mancanti.push(...ids) }, societa: RESTRUKTURA },
     )
     expect(mancanti).toHaveLength(2)
     expect(mancanti[0]).toContain('PRIMA')
@@ -1034,6 +1053,7 @@ describe('nel Word la foto sta sotto la SUA didascalia', () => {
       + '<p>Foto 2 — lesione sul cornicione</p>'
       + '<p><img src="https://drive.google.com/uc?id=CORNICIONEBB"></p>',
       'Perizia',
+      { societa: RESTRUKTURA },
     )
 
     const ordine = await ordineNelDocx(buf)
@@ -1058,6 +1078,7 @@ describe('nel Word la foto sta sotto la SUA didascalia', () => {
       '<p>Prima didascalia</p><p><img src="https://drive.google.com/uc?id=ROTTAAAAAAAA"></p>'
       + '<p>Seconda didascalia</p><p><img src="https://drive.google.com/uc?id=BUONAAAAAAAA"></p>',
       'Perizia',
+      { societa: RESTRUKTURA },
     )
 
     const ordine = await ordineNelDocx(buf)
@@ -1078,6 +1099,7 @@ describe('nel Word la foto sta sotto la SUA didascalia', () => {
     const buf = await generateDocxFromHtml(
       '<p>Sopra</p><img src="https://drive.google.com/uc?id=NUDAAAAAAAAA"><p>Sotto</p>',
       'Perizia',
+      { societa: RESTRUKTURA },
     )
 
     const ordine = await ordineNelDocx(buf)
@@ -1091,7 +1113,7 @@ describe('nel Word la foto sta sotto la SUA didascalia', () => {
   // CONTROLLO POSITIVO: senza, un generatore che non mette nessuna foto
   // passerebbe i due test qui sopra a mani basse.
   it('un Word senza foto ha comunque il suo testo, e nessuna foto', async () => {
-    const buf = await generateDocxFromHtml('<h1>Titolo</h1><p>Solo testo</p>', 'Doc')
+    const buf = await generateDocxFromHtml('<h1>Titolo</h1><p>Solo testo</p>', 'Doc', { societa: RESTRUKTURA })
     const ordine = await ordineNelDocx(buf)
     expect(ordine.join(' ')).toContain('Solo testo')
     expect(ordine).not.toContain('[FOTO]')

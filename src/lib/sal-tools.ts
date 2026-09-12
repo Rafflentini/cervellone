@@ -5,6 +5,7 @@ import { getOrCreatePathFolders, searchFilesFullText, readPdfFromDrive, readXlsx
 import { generatePdfFromHtml, generateXlsxFromData } from './pdf-generator'
 import { avvisoImmagini } from './avviso-immagini'
 import { getSupabaseServer } from './supabase-server'
+import { societaPerDocumento } from './societa-documenti'
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 const PDF_MIME = 'application/pdf'
@@ -164,8 +165,12 @@ export async function cancelSal(id: string): Promise<string> {
 
 export async function confirmSalStep2(
   id: string,
-  /** Chi firma il SAL in fondo: le societa' sono due. */
-  societa?: { denominazione: string; piva: string },
+  /**
+   * La conversazione, per risolvere QUALE societa' firma il SAL in fondo: le
+   * societa' sono due. Risolta qui (Task 5), non passata gia' pronta dal
+   * chiamante: su un guasto o un'assenza il SAL NON si genera.
+   */
+  conversationId?: string,
 ): Promise<string> {
   const sb = getSupabaseServer()
   const { data: claimed } = await sb.from('cervellone_sal_pending')
@@ -173,6 +178,15 @@ export async function confirmSalStep2(
     .eq('id', id).eq('stato', 'in_attesa').eq('conferme', 1)
     .select('payload')
   if (!claimed || claimed.length === 0) return 'SAL non pronto (serve prima /sal_ok_...) o già creato/annullato.'
+
+  const esitoSocieta = await societaPerDocumento(conversationId)
+  if (!esitoSocieta.ok) {
+    // Il claim (conferme:2) resta: senza rimetterlo a 1, un retry con
+    // /sal_ok2_ troverebbe "gia' in salvataggio" invece di poter riprovare.
+    await sb.from('cervellone_sal_pending').update({ conferme: 1, updated_at: new Date().toISOString() }).eq('id', id)
+    return `Impossibile generare il SAL: societa' attiva non determinabile (${esitoSocieta.errore}). Riprova con ${comandoDaMostrare('sal_ok2', id)}.`
+  }
+  const societa = esitoSocieta.societa
 
   const payload = claimed[0].payload as SalPayload
   try {
@@ -184,7 +198,7 @@ export async function confirmSalStep2(
     const xlsxBuf = await generateXlsxFromData(
       buildSalSheets(payload.result, payload.meta),
       `SAL_${payload.result.numero_sal}`,
-      { onImmaginiMancanti: (ids) => { salMancanti.push(...ids) } },
+      { onImmaginiMancanti: (ids) => { salMancanti.push(...ids) }, societa },
     )
     const pdfBuf = await generatePdfFromHtml(
       buildSalHtml(payload.result, payload.meta),

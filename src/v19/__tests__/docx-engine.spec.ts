@@ -87,15 +87,33 @@ describe('renderDocx', () => {
     expect(documentXml).toContain('<w:tcBorders>')
   })
 
-  it('include footer Restruktura di default', async () => {
+  // Il predefinito Restruktura e' stato RIMOSSO (Task 5): un documento senza
+  // footer dichiarato non deve stampare l'identita' di Restruktura per
+  // caso — chi vuole un footer lo passa esplicito (i due builder CIGO lo
+  // fanno, coi dati della pratica).
+  it('senza footer dichiarato, nessun piede viene aggiunto', async () => {
     const doc: DocxDocument = {
       title: 'Footer Test',
       sections: [{ kind: 'paragraph', text: 'body' }],
     }
     const buf = await renderDocx(doc)
     const { documentXml } = await unzipDocx(buf)
-    expect(documentXml).toContain('RESTRUKTURA')
-    expect(documentXml).toContain('02087420762')
+    expect(documentXml).not.toContain('RESTRUKTURA')
+    expect(documentXml).not.toContain('02087420762')
+  })
+
+  // CONTROLLO POSITIVO: senza questo, un `renderDocx` che ignorasse SEMPRE
+  // `doc.footer` passerebbe il test sopra a mani basse.
+  it('con un footer esplicito, il testo passato compare nel documento', async () => {
+    const doc: DocxDocument = {
+      title: 'Footer Test',
+      sections: [{ kind: 'paragraph', text: 'body' }],
+      footer: 'LA REAL ESTATE SRLS — P.IVA 02232730768',
+    }
+    const buf = await renderDocx(doc)
+    const { documentXml } = await unzipDocx(buf)
+    expect(documentXml).toContain('LA REAL ESTATE SRLS')
+    expect(documentXml).toContain('02232730768')
   })
 
   it('heading level 1/2/3 vanno renderizzati', async () => {

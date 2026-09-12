@@ -17,6 +17,7 @@ import { generatePdfFromHtml } from './pdf-generator'
 import { avvisoImmagini } from './avviso-immagini'
 import { assertWriteAllowed, uploadBinaryToDrive, describeWriteCheckFailure } from './drive'
 import { aggiornaContenutoDocumento } from './salva-documento'
+import { societaPerDocumento } from './societa-documenti'
 
 /** Path relativo del link pubblico di un documento. Il chiamante compone l'host. */
 function docPath(id: string): string {
@@ -204,12 +205,14 @@ export async function saveDraftPdfToDrive(
   id: string,
   folderId: string,
   /**
-   * Chi firma il documento in fondo. Passata dall'executor, che conosce la
-   * conversazione: senza, un documento de La Real Estate CONSEGNATO da qui
-   * portava la partita IVA di Restruktura — ed e' proprio questo il tool che il
-   * prompt raccomanda per consegnare.
+   * La conversazione, per risolvere QUALE societa' firma il documento in
+   * fondo. Senza, un documento de La Real Estate CONSEGNATO da qui portava la
+   * partita IVA di Restruktura — ed e' proprio questo il tool che il prompt
+   * raccomanda per consegnare. Risolta qui, non passata gia' pronta dal
+   * chiamante (Task 5): su un guasto o un'assenza, NON si genera nulla — si
+   * dice il perche', invece di ereditare Restruktura in silenzio.
    */
-  societa?: { denominazione: string; piva: string },
+  conversationId?: string,
 ): Promise<string> {
   // 1. Recupera il documento
   const draft = await getDraft(id)
@@ -218,6 +221,12 @@ export async function saveDraftPdfToDrive(
   }
 
   const name = draft.name || 'Documento'
+
+  const esitoSocieta = await societaPerDocumento(conversationId)
+  if (!esitoSocieta.ok) {
+    return `Impossibile salvare: societa' attiva non determinabile (${esitoSocieta.errore}). Documento NON generato.`
+  }
+  const societa = esitoSocieta.societa
 
   // 2. Genera il PDF dall'HTML.
   // Le auto-bozze (artifact-capture) salvano content = TESTO PIATTO, NON HTML: se

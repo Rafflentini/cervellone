@@ -105,14 +105,21 @@ export function renderCell(cell: DocxCell, borders: DocxBordersKind, columnAlign
   })
 }
 
-export function buildFooterParagraph(text?: string): Paragraph {
-  const footerText =
-    text ?? "RESTRUKTURA S.r.l. — P.IVA 02087420762 — Villa d'Agri (PZ)"
+/**
+ * Il piede del documento. `text` e' OBBLIGATORIO (Task 5): il predefinito
+ * "RESTRUKTURA S.r.l. — P.IVA 02087420762 — Villa d'Agri (PZ)" faceva
+ * prendere l'identita' di Restruktura a chi dimenticava di passarlo — corretto
+ * per caso finche' l'unico chiamante era il CIGO, un difetto muto il giorno in
+ * cui qualcun altro riusasse questa funzione per un documento de La Real
+ * Estate. Un chiamante che dimentica il piede ora non compila, invece di
+ * stampare una partita IVA che non c'entra.
+ */
+export function buildFooterParagraph(text: string): Paragraph {
   return new Paragraph({
     alignment: AlignmentType.CENTER,
     children: [
       new TextRun({
-        text: footerText,
+        text,
         size: 18, // 9pt
         italics: true,
       }),

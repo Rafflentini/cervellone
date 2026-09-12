@@ -43,20 +43,37 @@ import {
   riquadroDocx,
   formatoStampabile,
 } from './immagine-dimensioni'
+import { verificaDatiSocietari, messaggioBlocco, type EsitoGuardia, type DatiSocietari } from './guardia-societa'
 
 /**
  * Il piede del PDF. La societa' NON e' cablata: le societa' sono due, e un
  * documento de La Real Estate che porta in fondo "RESTRUKTURA S.r.l. — P.IVA
  * 02087420762" espone un dato societario sbagliato a chi lo riceve.
  */
-function piedePagina(societa: { denominazione: string; piva: string }): string {
+function piedePagina(societa: DatiSocietari): string {
   return `<div style="font-size: 8pt; color: #888888; width: 100%; padding: 0 15mm; display: flex; justify-content: space-between; -webkit-print-color-adjust: exact;">
   <span>${escapeHtml(societa.denominazione)} — P.IVA ${escapeHtml(societa.piva)}</span>
   <span>Pagina <span class="pageNumber"></span> di <span class="totalPages"></span></span>
 </div>`
 }
 
-const SOCIETA_PREDEFINITA = { denominazione: 'RESTRUKTURA S.r.l.', piva: '02087420762' }
+/**
+ * Un documento NON generato perche' i dati societari nel contenuto non
+ * coincidono con la societa' attesa (Task 5). Un `throw` tipizzato, non
+ * un'unione di ritorno: le tre funzioni di questo file restituiscono
+ * `Promise<Buffer>` e hanno cinque chiamanti — un'unione obbligherebbe a
+ * gestire il caso in cinque modi diversi nello stesso commit. Questo errore
+ * attraversa il try/catch per-tool gia' presente in `claude.ts`, che consegna
+ * `message` (= `messaggioBlocco(esito)`) all'Ingegnere su ENTRAMBI i canali.
+ */
+export class ErroreDatiSocietari extends Error {
+  readonly esito: Extract<EsitoGuardia, { ok: false }>
+  constructor(esito: Extract<EsitoGuardia, { ok: false }>) {
+    super(messaggioBlocco(esito))
+    this.name = 'ErroreDatiSocietari'
+    this.esito = esito
+  }
+}
 
 /**
  * Quante foto al massimo si incorporano in un documento.
@@ -377,15 +394,25 @@ export type OpzioniDocumento = {
    * Chi firma il documento in fondo. Le societa' sono DUE: un documento de La
    * Real Estate che porta il piede di Restruktura espone al destinatario una
    * ragione sociale e una partita IVA che non sono le sue.
+   *
+   * OBBLIGATORIA (Task 5): un chiamante che la dimentica non compila, invece
+   * di ereditare "RESTRUKTURA S.r.l." in silenzio. Chi genera un documento
+   * la risolve con `societaPerDocumento(conversationId)` e, su `ok:false`,
+   * non genera nulla.
    */
-  societa?: { denominazione: string; piva: string }
+  societa: DatiSocietari
 }
 
 export async function generatePdfFromHtml(
   html: string,
   title: string,
-  opzioni: OpzioniDocumento = {},
+  opzioni: OpzioniDocumento,
 ): Promise<Buffer> {
+  // La guardia gira PRIMA di tutto: un documento bloccato non deve costare
+  // ne' il download delle immagini Drive ne' l'avvio di un browser.
+  const esitoGuardia = verificaDatiSocietari(html, opzioni.societa)
+  if (!esitoGuardia.ok) throw new ErroreDatiSocietari(esitoGuardia)
+
   const { html: htmlWithEmbeddedImages, mancanti } = await embedDriveImages(html)
   if (mancanti.length > 0) opzioni.onImmaginiMancanti?.(mancanti)
   const wrappedHtml = wrapForPrint(htmlWithEmbeddedImages, title)
@@ -406,7 +433,7 @@ export async function generatePdfFromHtml(
         margin: { top: '15mm', right: '15mm', bottom: '20mm', left: '15mm' },
         displayHeaderFooter: true,
         headerTemplate: HEADER_TEMPLATE,
-        footerTemplate: piedePagina(opzioni.societa ?? SOCIETA_PREDEFINITA),
+        footerTemplate: piedePagina(opzioni.societa),
       })
       return Buffer.from(pdfBytes)
     } catch (err) {
@@ -520,8 +547,14 @@ function htmlToDocxBlocks(rawHtml: string): DocBlock[] {
 export async function generateDocxFromHtml(
   html: string,
   title: string,
-  opzioni: OpzioniDocumento = {},
+  opzioni: OpzioniDocumento,
 ): Promise<Buffer> {
+  // Stessa guardia del PDF, e nello stesso punto: PRIMA di scaricare foto o
+  // costruire il documento. Due formati dallo stesso HTML non possono
+  // divergere su questo.
+  const esitoGuardia = verificaDatiSocietari(html, opzioni.societa)
+  if (!esitoGuardia.ok) throw new ErroreDatiSocietari(esitoGuardia)
+
   const blocks = htmlToDocxBlocks(html)
 
   // Le foto si scaricano PRIMA di comporre il documento: `docx` vuole i byte,
@@ -641,7 +674,7 @@ export async function generateDocxFromHtml(
       alignment: AlignmentType.CENTER,
       children: [
         new TextRun({
-          text: `${(opzioni.societa ?? SOCIETA_PREDEFINITA).denominazione} — P.IVA ${(opzioni.societa ?? SOCIETA_PREDEFINITA).piva}`,
+          text: `${opzioni.societa.denominazione} — P.IVA ${opzioni.societa.piva}`,
           size: 18,
           italics: true,
         }),
@@ -650,7 +683,7 @@ export async function generateDocxFromHtml(
   )
 
   const doc = new Document({
-    creator: 'Cervellone — Restruktura S.r.l.',
+    creator: `Cervellone — ${opzioni.societa.denominazione}`,
     title,
     sections: [
       {
@@ -692,10 +725,10 @@ function safeSheetName(raw: string, fallback: string): string {
 export async function generateXlsxFromData(
   sheets: XlsxSheet[],
   title: string,
-  opzioni: OpzioniDocumento = {},
+  opzioni: OpzioniDocumento,
 ): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook()
-  workbook.creator = 'Cervellone — Restruktura S.r.l.'
+  workbook.creator = `Cervellone — ${opzioni.societa.denominazione}`
   workbook.title = title
   workbook.created = new Date()
 

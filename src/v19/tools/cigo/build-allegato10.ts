@@ -254,7 +254,10 @@ export function buildAllegato10Doc(input: Allegato10Input, opts: OpzioniAllegato
   return {
     title: 'Allegato 10 - Relazione Tecnica CIGO Eventi Meteo',
     sections,
-    footer: `RESTRUKTURA S.r.l. — P.IVA ${input.azienda.codice_fiscale} — ${input.azienda.denominazione} — Allegato 10 CIGO ${input.periodo.data_inizio} / ${input.periodo.data_fine}`,
+    // La ragione sociale NON e' cablata (Task 5): prima compariva due volte,
+    // una fissa e una dai dati — se la pratica fosse di un'altra azienda il
+    // piede si sarebbe contraddetto da solo, senza che il codice lo dicesse.
+    footer: `P.IVA ${input.azienda.codice_fiscale} — ${input.azienda.denominazione} — Allegato 10 CIGO ${input.periodo.data_inizio} / ${input.periodo.data_fine}`,
   }
 }
 

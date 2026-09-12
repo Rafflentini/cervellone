@@ -12,7 +12,7 @@
 import { comandoDaMostrare } from '@/lib/comandi-uuid'
 import { getSupabaseServer } from './supabase-server'
 import { avvisoImmagini } from './avviso-immagini'
-import { societaAttivaPerDocumenti } from './societa-documenti'
+import { societaPerDocumento } from './societa-documenti'
 
 import type { ToolDefinition, OpzioniTool } from './tools/types'
 import type { CodiceSocieta } from './societa'
@@ -135,8 +135,12 @@ async function executePdfTools(
   try {
     // Il piede del documento porta la societa' ATTIVA, non Restruktura cablata:
     // un documento de La Real Estate con la partita IVA di Restruktura espone al
-    // destinatario dati societari che non sono i suoi.
-    const societa = await societaAttivaPerDocumenti(conversationId)
+    // destinatario dati societari che non sono i suoi. `societa` e' OBBLIGATORIA
+    // per generatePdfFromHtml/generateDocxFromHtml/generateXlsxFromData (Task 5):
+    // se non si riesce a determinarla, NON si genera nulla — si dice il perche'.
+    const esitoSocieta = await societaPerDocumento(conversationId)
+    if (!esitoSocieta.ok) return `Errore ${name}: societa' attiva non determinabile (${esitoSocieta.errore}). Documento NON generato.`
+    const societa = esitoSocieta.societa
     const title = ((input.title as string) || 'Documento').slice(0, 100)
     const folderId = input.folder_id as string | undefined
     const safeTitle = title.replace(/[/\\:*?"<>|]/g, '_')
@@ -182,7 +186,7 @@ async function executePdfTools(
     const buffer = await generateXlsxFromData(
       sheets as { name: string; rows: (string | number | null)[][]; immagini?: string[] }[],
       title,
-      { onImmaginiMancanti: (ids) => { xlsxMancanti = ids } },
+      { onImmaginiMancanti: (ids) => { xlsxMancanti = ids }, societa },
     )
     const fileName = `${safeTitle}.xlsx`
     const { webViewLink } = await uploadBinaryToDrive(buffer, fileName, XLSX_MIME, folderId)
@@ -781,11 +785,12 @@ async function executeDraftWrapper(
       return await updateDraft(String(input.doc_id), String(input.nuovo_contenuto), conversationId ?? '')
     }
 
-    // salva_bozza_pdf
+    // salva_bozza_pdf — la societa' la risolve saveDraftPdfToDrive stesso, da
+    // conversationId: su ok:false NON genera (Task 5).
     return await saveDraftPdfToDrive(
       String(input.doc_id),
       String(input.folder_id),
-      await societaAttivaPerDocumenti(conversationId),
+      conversationId,
     )
   } catch (err) {
     return `Errore bozze: ${err instanceof Error ? err.message : err}`

@@ -11,7 +11,7 @@ vi.mock('./societa-attiva', () => ({
   leggiSocietaAttiva: async () => esito,
 }))
 
-import { societaPerDocumento, societaAttivaPerDocumenti } from './societa-documenti'
+import { societaPerDocumento } from './societa-documenti'
 import { getSocieta } from './societa'
 
 const LAREALESTATE = getSocieta('larealestate')
@@ -63,16 +63,8 @@ describe('societaPerDocumento', () => {
   })
 })
 
-describe('societaAttivaPerDocumenti (transitoria — la rimuove il Task 5)', () => {
-  it('ok:true -> restituisce denominazione e piva, comportamento invariato', async () => {
-    esito = { ok: true, codice: 'larealestate', esplicita: true }
-    const r = await societaAttivaPerDocumenti('conv-1')
-    expect(r).toEqual({ denominazione: LAREALESTATE.denominazione, piva: LAREALESTATE.piva })
-  })
-
-  it('ok:false -> undefined, comportamento osservabile invariato rispetto a prima', async () => {
-    esito = { ok: false, errore: 'boom' }
-    const r = await societaAttivaPerDocumenti('conv-1')
-    expect(r).toBeUndefined()
-  })
-})
+// `societaAttivaPerDocumenti` — la funzione transitoria che questa suite
+// testava qui sotto — e' stata RIMOSSA dal Task 5: i suoi chiamanti
+// (tools.ts, document-template-tools.ts, e i due comandi /sal_ok2_ su
+// Telegram e web) risolvono la societa' con `societaPerDocumento` e, su
+// `ok:false`, non generano nulla invece di ereditare Restruktura in silenzio.
