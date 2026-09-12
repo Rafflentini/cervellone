@@ -209,6 +209,31 @@ tipo che manca in uno solo di quei rami è un'azione applicata al documento sbag
 così vuole accanto il **controllo positivo** che prova che sul tipo giusto l'azione avviene ancora
 davvero (altrimenti il test è verde anche se la cancellazione è stata rimossa del tutto).
 
+### B9. 🚨 Un dato copiato nel prompt è una copia che invecchia
+
+> **Nato da:** il 12 settembre 2026. Il `BASE_PROMPT` non sapeva nulla de LA REAL ESTATE S.R.L.S. —
+> né il nome, né il CF, né cosa facesse — e l'Ingegnere ha dovuto dire lui al bot dove salvare i
+> documenti, e ripeterglielo. Rimediare scrivendo i dati nel prompt **crea il difetto opposto**: il
+> giorno che cambia una sede, un amministratore o un'aliquota, il prompt resta indietro e il bot
+> riferisce il dato vecchio **con sicurezza** — che è peggio del non saperlo.
+
+Ogni dato anagrafico, fiscale o di configurazione **scritto a mano nel prompt** è una copia di una
+fonte che vive altrove (una visura, il Drive, una tabella). Tre cose vanno dichiarate nel testo
+stesso, non lasciate al caso:
+
+1. **dov'è la fonte autorevole** e con quale tool la si raggiunge — mai un id di cartella cablato,
+   che una riorganizzazione rompe: un tool di ricerca sopravvive, un id no;
+2. **quando vale la copia** (orientarsi subito, gratis) e **quando serve la fonte** (un dato che
+   finisce in un atto, un contratto, una pratica);
+3. **chi vince in caso di contraddizione** — e la precedenza va scritta, con un'asserzione nel test
+   che la pinza (qui: `VALE LA VISURA`). Aggiungi l'obbligo di **segnalarlo all'Ingegnere**: è il
+   solo modo in cui la copia vecchia si fa aggiornare invece di restare una bugia.
+
+Corollario: una entità che il bot deve **conoscere** ma su cui non deve **agire** (la partita IVA
+personale dell'Ingegnere, di cui non emette fatture) va messa **solo nella conoscenza**, non nel
+registro dei percorsi di scrittura (`src/lib/societa.ts`). Un registro attira credenziali; il
+prompt no. E il divieto va asserito nei test come si asserisce un dato.
+
 ---
 
 ## C — I controlli sugli audit e sulle misure
@@ -268,7 +293,7 @@ bene» o «sono morto»?** Se sono indistinguibili, non è una rete di sicurezza
 
 ## Il filo che lega tutto
 
-Le voci sono **19** (`grep -c '^### '` — il 12 set 2026 questa riga diceva «diciotto» quando le
+Le voci sono **20** (`grep -c '^### '` — il 12 set 2026 questa riga diceva «diciotto» quando le
 intestazioni erano **sedici**: un indice non aggiornato mente come un test vacuo, e il conto ora si
 misura invece di ricordarlo). Di quelle, la maggior parte sono la stessa cosa detta in posti diversi:
 

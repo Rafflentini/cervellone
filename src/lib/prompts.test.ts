@@ -36,6 +36,7 @@ vi.mock('./skills', () => ({
 }))
 
 import { getChatSystemPrompt, getTelegramSystemPrompt, invalidatePromptExtraCache } from './prompts'
+import { SYSTEM_CACHE_SPLIT, splitSystemPrompt } from './system-prompt-split'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -152,5 +153,85 @@ describe('getTelegramSystemPrompt — prompt_extra', () => {
     mockConfigResult = { data: null, error: null }
     const prompt = await getTelegramSystemPrompt('test')
     expect(prompt).toContain('Telegram')
+  })
+})
+
+// ─── Blocco LE DUE SOCIETA (statico, cachato, su ENTRAMBI i canali) ──────────
+//
+// Perche' questi test: il 12 set l'Ingegnere ha dovuto spiegare al bot dove
+// salvare i documenti de La Real Estate. Non era distrazione: il prompt non
+// sapeva che quella societa' esistesse. Il blocco deve stare nella parte
+// STATICA (prima dello split) o si paga fino a 10 volte per turno, e deve
+// arrivare da TUTTI E DUE i canali — un motore condiviso non li rende
+// equipollenti da solo.
+
+const MARCATORI_ENTITA_FISCALI = [
+  'LE DUE SOCIETA',
+  'RESTRUKTURA S.r.l.',
+  '02087420762',
+  'LA REAL ESTATE S.R.L.S.',
+  '02232730768',
+  'Albini Lucia Carmela',
+  'Via Civita 8, Maratea (PZ)',
+  // Maratea come ANTI-segnale: il luogo non decide la societa'.
+  '"Maratea" da solo NON basta',
+  'imposta_societa_attiva',
+  // Terza entita' fiscale: esiste nella conoscenza, NON nei percorsi di
+  // scrittura. Il divieto e' la riga che evita una fattura emessa dal
+  // soggetto sbagliato.
+  'ING. RAFFAELE LENTINI — libero professionista',
+  "NON EMETTERE FATTURE PER QUESTA ENTITA'",
+  // Precedenza dichiarata: la copia nel prompt non puo' mentire con sicurezza.
+  'VALE LA VISURA',
+  'drive_search_fulltext',
+]
+
+describe('getChatSystemPrompt — blocco LE DUE SOCIETA', () => {
+  it('il blocco c\'e\', con CF, amministratrice e Maratea come anti-segnale', async () => {
+    const prompt = await getChatSystemPrompt('ciao')
+    for (const m of MARCATORI_ENTITA_FISCALI) expect(prompt).toContain(m)
+  })
+
+  it('sta nella parte CACHATA: prima dello split, non dopo', async () => {
+    const prompt = await getChatSystemPrompt('ciao')
+    const { staticPart, variablePart } = splitSystemPrompt(prompt)
+    // controllo positivo della misura: lo split esiste davvero in questo prompt,
+    // altrimenti staticPart === prompt e l'asserzione passerebbe a vuoto.
+    expect(prompt).toContain(SYSTEM_CACHE_SPLIT)
+    expect(variablePart.length).toBeGreaterThan(0)
+    for (const m of MARCATORI_ENTITA_FISCALI) {
+      expect(staticPart).toContain(m)
+      expect(variablePart).not.toContain(m)
+    }
+    expect(prompt.indexOf('LE DUE SOCIETA')).toBeLessThan(prompt.indexOf(SYSTEM_CACHE_SPLIT))
+  })
+
+  it('sta dopo l\'identita\' e prima del PROFILO UTENTE', async () => {
+    const prompt = await getChatSystemPrompt('ciao')
+    const iIdentita = prompt.indexOf('Sei il Cervellone')
+    const iBlocco = prompt.indexOf('LE DUE SOCIETA')
+    const iProfilo = prompt.indexOf('PROFILO UTENTE (Ing. Raffaele Lentini):')
+    expect(iIdentita).toBeGreaterThanOrEqual(0)
+    expect(iBlocco).toBeGreaterThan(iIdentita)
+    expect(iProfilo).toBeGreaterThan(iBlocco)
+  })
+})
+
+describe('getTelegramSystemPrompt — blocco LE DUE SOCIETA (equipollenza)', () => {
+  it('il blocco c\'e\' anche su Telegram, con gli stessi dati', async () => {
+    const prompt = await getTelegramSystemPrompt('ciao')
+    for (const m of MARCATORI_ENTITA_FISCALI) expect(prompt).toContain(m)
+  })
+
+  it('anche su Telegram sta nella parte CACHATA: prima dello split', async () => {
+    const prompt = await getTelegramSystemPrompt('ciao')
+    const { staticPart, variablePart } = splitSystemPrompt(prompt)
+    expect(prompt).toContain(SYSTEM_CACHE_SPLIT)
+    expect(variablePart.length).toBeGreaterThan(0)
+    for (const m of MARCATORI_ENTITA_FISCALI) {
+      expect(staticPart).toContain(m)
+      expect(variablePart).not.toContain(m)
+    }
+    expect(prompt.indexOf('LE DUE SOCIETA')).toBeLessThan(prompt.indexOf(SYSTEM_CACHE_SPLIT))
   })
 })
