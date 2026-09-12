@@ -663,11 +663,36 @@ export async function POST(request: NextRequest) {
     // regex e la stessa pre-normalizzazione della voce valgono anche sul web,
     // che dall 8 set 2026 ha la dettatura.
     {
-      const { eConfermaInvio } = await import('@/lib/conferma-invio')
+      const { eConfermaInvio, eMessaggioBreveNonConferma } = await import('@/lib/conferma-invio')
       if (eConfermaInvio(userText)) {
         const { confirmLatestPendingSend } = await import('@/v19/tools/email/telegram-confirm')
         const r = await confirmLatestPendingSend()
         return await rispondiESalva(r.message)
+      }
+      // 🚨 IL SILENZIO. Se c'e' una bozza in attesa e arriva un messaggio breve
+      // che NON e' una conferma, non si ricomincia in silenzio preparando
+      // un'altra bozza: si dice che non si e' capito e si da' la frase esatta
+      // che funziona. Parole sue: «non mi dice ne' che non lo ha fatto ne' che
+      // problema ha, questa cosa non dovrebbe succedere».
+      // Il gemello sta in `api/chat/route.ts`: equipollenza vincolante.
+      if (eMessaggioBreveNonConferma(userText)) {
+        const { avvisoConfermaNonRiconosciuta } = await import(
+          '@/v19/tools/email/telegram-confirm'
+        )
+        const avviso = await avvisoConfermaNonRiconosciuta(userText)
+        if (avviso) return await rispondiESalva(avviso)
+      }
+    }
+
+    // ─── Un comando col CODICE TRONCATO va detto, non passato al modello ───
+    // Toccando un codice vecchio (coi trattini) Telegram manda `/invia_d8f8ad16`:
+    // non corrisponde a nessun ramo e finiva al modello come richiesta nuova.
+    {
+      const { comandoDalCodiceRotto } = await import('@/lib/comandi-uuid')
+      const rotto = comandoDalCodiceRotto(userText)
+      if (rotto) {
+        const { avvisoCodiceRotto } = await import('@/v19/tools/email/telegram-confirm')
+        return await rispondiESalva(avvisoCodiceRotto(rotto))
       }
     }
 

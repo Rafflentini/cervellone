@@ -108,7 +108,13 @@ export async function sendEmailInternal(
     return {
       status: 'pending',
       uuid: pending.uuid,
-      reason: 'recipients include external addresses; user confirmation required',
+      // `riusato` va DETTO al modello: se la bozza è quella di prima, deve
+      // riferire che è già pronta e chiedere la conferma, non annunciare di
+      // averne preparata un'altra. Tacerlo è come sono nate le cinque bozze
+      // identiche del 12 set 2026.
+      reason: pending.riusato
+        ? 'una bozza IDENTICA (stessi destinatari, stesso oggetto) era già in attesa: è stata riusata, NON ne è stata creata un\'altra. Dillo all\'Ingegnere e chiedi la conferma per quella.'
+        : 'recipients include external addresses; user confirmation required',
     }
   }
 

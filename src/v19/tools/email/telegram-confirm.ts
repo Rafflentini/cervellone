@@ -9,6 +9,7 @@
  * chiama cancelPendingSend().
  */
 import { comandoDaMostrare } from '@/lib/comandi-uuid'
+import { FRASE_CONFERMA_SUGGERITA } from '@/lib/conferma-invio'
 import type { EsitoLetturaPending } from './pending'
 import {
   fetchPending,
@@ -89,7 +90,12 @@ export async function buildPendingTelegramMessage(uuid: string): Promise<string 
     '─────────────────',
     attachmentsLine,
     '',
-    `✅ Per inviare: scrivi o di’ "invia pure mail"  (oppure ${comandoDaMostrare('invia', uuid)})`,
+    // La frase suggerita viene dalla COSTANTE accanto alla regola che la deve
+    // accettare, non scritta a mano qui: il 12 set 2026 questo messaggio
+    // suggeriva «invia pure mail» (che funzionava), il modello l'ha parafrasata
+    // in «invia» (che NON funzionava), e l'Ingegnere ha scritto «Invia» tre
+    // volte a vuoto. Un test lega la costante a `eConfermaInvio`.
+    `✅ Per inviare: scrivi o di’ "${FRASE_CONFERMA_SUGGERITA}" — va bene anche solo "invia"  (oppure ${comandoDaMostrare('invia', uuid)})`,
     `❌ Per annullare: ${comandoDaMostrare('annulla', uuid)}`,
   ]
     .filter((line) => line !== '')
@@ -289,6 +295,74 @@ export async function confirmLatestPendingSend(): Promise<{ ok: boolean; message
   }
   const r = await confirmPendingSend(latest.uuid)
   return { ok: r.ok, message: r.message }
+}
+
+/**
+ * 🚨 Il difetto che all'Ingegnere è pesato più di tutti, parole sue: «non mi
+ * dice né che non lo ha fatto né che problema ha, questa cosa non dovrebbe
+ * succedere».
+ *
+ * Quando c'è una bozza in attesa e arriva un messaggio BREVE che non viene
+ * riconosciuto come conferma, il bot non deve ricominciare in silenzio
+ * preparando un'altra bozza: deve dire che non ha capito, dare la frase esatta
+ * che funziona, e il comando.
+ *
+ * Sta qui e non nelle route perché deve valere IDENTICA sui due canali — la
+ * regola dell'equipollenza qui è vincolante. Le route la chiamano subito dopo
+ * `eConfermaInvio`, e il test sta in entrambi i `route.comandi.test.ts`.
+ *
+ * @returns il messaggio da mandare, o `null` se non c'è niente da dire
+ *   (nessuna bozza in attesa: allora il messaggio breve è una richiesta come
+ *   un'altra e va al modello)
+ */
+export async function avvisoConfermaNonRiconosciuta(
+  testo: string,
+): Promise<string | null> {
+  const elenco = await listValidPendingSends()
+  if (!elenco.ok) {
+    // Non so se c'è una bozza. Non invento un'assenza e non blocco il turno:
+    // taccio qui e lascio proseguire, ma il guasto resta a log.
+    console.error('[pending] avviso conferma: elenco non disponibile', { error: elenco.error })
+    return null
+  }
+  if (elenco.pendings.length === 0) return null
+
+  const righe = elenco.pendings.map(
+    (p) =>
+      `• A: ${p.to_addrs.join(', ')} — Oggetto: ${p.subject}\n  ${comandoDaMostrare('invia', p.uuid)}`,
+  )
+  return [
+    `🤔 Non ho capito «${testo.trim()}» come una conferma, quindi **non ho inviato niente**`,
+    `e non ho preparato un'altra bozza.`,
+    '',
+    elenco.pendings.length === 1
+      ? 'Ho una mail pronta in attesa:'
+      : `Ho ${elenco.pendings.length} mail pronte in attesa:`,
+    ...righe,
+    '',
+    `Per mandarla mi dica «${FRASE_CONFERMA_SUGGERITA}» (va bene anche solo «invia»,`,
+    '«manda», «confermo»), oppure tocchi il comando qui sopra.',
+    'Per annullare, «annulla» col codice della bozza.',
+  ].join('\n')
+}
+
+/**
+ * Il messaggio per un comando il cui CODICE non si legge — tipicamente il
+ * troncamento di Telegram su un codice coi trattini (`/invia_d8f8ad16`).
+ *
+ * Senza questo il messaggio non corrisponde a nessun ramo e finisce al
+ * modello, che lo legge come una richiesta nuova: lo stesso silenzio di sopra,
+ * da un'altra porta.
+ */
+export function avvisoCodiceRotto(nomeComando: string): string {
+  return [
+    `⚠️ Il comando \`/${nomeComando}_…\` è arrivato **senza il codice completo**:`,
+    'NON ho fatto niente.',
+    '',
+    'Succede toccando un codice vecchio: si interrompe al primo trattino.',
+    `Mi dica «${FRASE_CONFERMA_SUGGERITA}» a parole, oppure mi chieda di rimandarle`,
+    'il comando aggiornato e sarà toccabile per intero.',
+  ].join('\n')
 }
 
 export async function cancelPendingSend(uuid: string): Promise<{ ok: boolean; message: string }> {

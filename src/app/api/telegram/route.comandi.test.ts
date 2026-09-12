@@ -77,8 +77,33 @@ Object.assign(catena, {
   insert: async () => ({ error: null }), update: () => catena, delete: () => catena,
   order: () => catena, limit: async () => ({ data: [] }), single: async () => ({ data: null }),
 })
-vi.mock('@/lib/supabase', () => ({ supabase: { from: () => catena } }))
-vi.mock('@/lib/supabase-server', () => ({ getSupabaseServer: () => ({ from: () => catena }) }))
+/**
+ * Le bozze mail in attesa, pilotabili dal singolo test.
+ *
+ * Sta in uno stub DEDICATO alla sua tabella e non dentro `catena`: dare un
+ * `then` a `catena` la trasformerebbe in un thenable per TUTTE le query di
+ * questo file, e le altre risolverebbero il valore sbagliato. Un difetto
+ * dello strumento di misura si traveste da difetto del codice.
+ */
+let bozzeInAttesa: Array<{ uuid: string; to_addrs: string[]; subject: string }> = []
+const catenaPending: Record<string, unknown> = {}
+Object.assign(catenaPending, {
+  select: () => catenaPending,
+  eq: () => catenaPending,
+  gt: () => catenaPending,
+  order: () => catenaPending,
+  limit: () => catenaPending,
+  maybeSingle: async () => ({ data: bozzeInAttesa[0] ?? null, error: null }),
+  then: (resolve: (v: unknown) => unknown) =>
+    Promise.resolve(resolve({ data: bozzeInAttesa, error: null })),
+})
+const instrada = (tabella: string) =>
+  tabella === 'cervellone_email_pending_send' ? catenaPending : catena
+
+vi.mock('@/lib/supabase', () => ({ supabase: { from: (t: string) => instrada(t) } }))
+vi.mock('@/lib/supabase-server', () => ({
+  getSupabaseServer: () => ({ from: (t: string) => instrada(t) }),
+}))
 vi.mock('@/lib/resilience', () => ({ safeSupabase: async (_f: unknown, fallback: unknown) => fallback }))
 
 function richiesta(testo: string) {
@@ -97,6 +122,7 @@ beforeEach(() => {
   ritardoScrittura = 0
   mockShare.mockResolvedValue('🔗 Ecco il link: https://esempio.it/doc/abc?firma=xyz')
   mockRegoleList.mockResolvedValue('nessuna regola')
+  bozzeInAttesa = []
 })
 
 const UUID = '11111111-2222-3333-4444-555555555555'
@@ -184,5 +210,81 @@ describe('Telegram — il codice accettato in ENTRAMBE le forme', () => {
     await Promise.all(sfondo)
 
     expect(mockShare).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * 🚨 IL SILENZIO — su TELEGRAM.
+ *
+ * Parole dell'Ingegnere, 12 set 2026: «non mi dice ne' che non lo ha fatto ne'
+ * che problema ha, questa cosa non dovrebbe succedere». Con una bozza in
+ * attesa, un messaggio breve non riconosciuto come conferma faceva ricominciare
+ * il modello da zero, che preparava un'altra bozza. Cinque volte.
+ *
+ * Il gemello sta in `src/app/api/chat/route.comandi.test.ts`. Due test, uno per
+ * canale: l'equipollenza si prova sugli adattatori.
+ */
+describe('Telegram — con una bozza in attesa, il silenzio e\' vietato', () => {
+  const BOZZA = {
+    uuid: '11111111-2222-3333-4444-555555555555',
+    to_addrs: ['destinataria@esterno.it'],
+    subject: 'Due contratti',
+  }
+
+  it('un messaggio breve non riconosciuto viene DETTO, non passato al modello', async () => {
+    bozzeInAttesa = [BOZZA]
+    const { POST } = await import('./route')
+    await POST(richiesta('India.'))
+    await Promise.all(sfondo)
+
+    const detto = inviati.map((i) => i.testo).join('\n')
+    expect(detto).toMatch(/non ho inviato niente/i)
+    // gli da' la frase esatta che funziona...
+    expect(detto).toMatch(/invia/i)
+    // ...e il comando toccabile, senza trattini
+    expect(detto).toContain('/invia_11111111222233334444555555555555')
+    // e soprattutto NON ricomincia da zero
+    expect(mockRunAgentJob).not.toHaveBeenCalled()
+  })
+
+  it('lo dice anche per l\'assenso generico, che non conferma piu\'', async () => {
+    bozzeInAttesa = [BOZZA]
+    const { POST } = await import('./route')
+    await POST(richiesta('ok'))
+    await Promise.all(sfondo)
+
+    expect(inviati.map((i) => i.testo).join('\n')).toMatch(/non ho capito/i)
+    expect(mockRunAgentJob).not.toHaveBeenCalled()
+  })
+
+  it('CONTROLLO POSITIVO: SENZA bozze in attesa il messaggio breve va al modello', async () => {
+    // Senza questo, il blocco potrebbe mangiarsi ogni messaggio corto della
+    // giornata — «ciao», «grazie» — e il test sopra sarebbe verde comunque.
+    bozzeInAttesa = []
+    const { POST } = await import('./route')
+    await POST(richiesta('ok'))
+    await Promise.all(sfondo)
+
+    expect(mockRunAgentJob).toHaveBeenCalled()
+  })
+
+  it('CONTROLLO POSITIVO: un messaggio LUNGO va al modello anche con una bozza in attesa', async () => {
+    bozzeInAttesa = [BOZZA]
+    const { POST } = await import('./route')
+    await POST(richiesta('preparami il computo del cantiere di Paterno per domani mattina'))
+    await Promise.all(sfondo)
+
+    expect(mockRunAgentJob).toHaveBeenCalled()
+  })
+
+  it('un comando col codice TRONCATO viene detto, non passato al modello', async () => {
+    const { POST } = await import('./route')
+    await POST(richiesta('/invia_11111111'))
+    await Promise.all(sfondo)
+
+    const detto = inviati.map((i) => i.testo).join('\n')
+    expect(detto).toMatch(/senza il codice completo/i)
+    expect(detto).toMatch(/NON ho fatto niente/i)
+    expect(mockRunAgentJob).not.toHaveBeenCalled()
   })
 })

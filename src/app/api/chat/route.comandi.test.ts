@@ -63,6 +63,26 @@ vi.mock('@/lib/supabase', () => ({
   supabase: { from: () => ({ insert: () => ({ select: () => ({ single: async () => ({ data: null }) }) }) }) },
 }))
 
+/**
+ * Le bozze mail in attesa, pilotabili dal singolo test. Serve al blocco sul
+ * silenzio, in fondo al file: il gemello su Telegram usa lo stesso trucco.
+ */
+let bozzeInAttesa: Array<{ uuid: string; to_addrs: string[]; subject: string }> = []
+const catenaPending: Record<string, unknown> = {}
+Object.assign(catenaPending, {
+  select: () => catenaPending,
+  eq: () => catenaPending,
+  gt: () => catenaPending,
+  order: () => catenaPending,
+  limit: () => catenaPending,
+  maybeSingle: async () => ({ data: bozzeInAttesa[0] ?? null, error: null }),
+  then: (resolve: (v: unknown) => unknown) =>
+    Promise.resolve(resolve({ data: bozzeInAttesa, error: null })),
+})
+vi.mock('@/lib/supabase-server', () => ({
+  getSupabaseServer: () => ({ from: () => catenaPending }),
+}))
+
 import { POST } from './route'
 
 const UUID = '11111111-2222-3333-4444-555555555555'
@@ -91,6 +111,7 @@ beforeEach(() => {
   mockRegoleList.mockResolvedValue('Elenco regole')
   mockShare.mockResolvedValue('https://drive.example/link')
   mockCallClaude.mockResolvedValue('risposta del modello')
+  bozzeInAttesa = []
 })
 
 describe('POST /api/chat — comandi SAL (mancavano sul web)', () => {
@@ -181,12 +202,23 @@ describe('POST /api/chat — il dispatcher non mangia le conversazioni normali',
     expect(mockRegoleList).not.toHaveBeenCalled()
   })
 
-  it('un comando con uuid malformato NON viene intercettato', async () => {
-    // Se il dispatcher fosse troppo largo si mangerebbe del testo legittimo.
-    await invia('/sal_ok_non-un-uuid')
+  it('un comando con uuid malformato non esegue NIENTE...', async () => {
+    // Se il dispatcher fosse troppo largo si mangerebbe del testo legittimo:
+    // questa meta' della garanzia resta intatta.
+    const out = await invia('/sal_ok_non-un-uuid')
 
     expect(mockSalStep1).not.toHaveBeenCalled()
-    expect(mockCallClaude).toHaveBeenCalledTimes(1)
+    expect(mockSalStep2).not.toHaveBeenCalled()
+
+    // ...E DAL 12 SET 2026 NON FINISCE PIU' AL MODELLO IN SILENZIO.
+    // Prima questo test pretendeva `mockCallClaude` chiamato una volta: era il
+    // contratto vecchio, e dentro c'era il difetto. Un codice troncato letto
+    // come richiesta nuova e' esattamente cio' che ha prodotto cinque bozze
+    // identiche, e l'Ingegnere non veniva avvisato di niente. Ora glielo si
+    // dice.
+    expect(mockCallClaude).not.toHaveBeenCalled()
+    expect(out).toMatch(/senza il codice completo/i)
+    expect(out).toMatch(/NON ho fatto niente/i)
   })
 })
 
@@ -227,5 +259,71 @@ describe('POST /api/chat — il codice accettato in ENTRAMBE le forme', () => {
     // uuid plausibile che punta a un'altra pratica.
     await invia('/sal_ok_11111111')
     expect(mockSalStep1).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * 🚨 IL SILENZIO — sulla CHAT WEB.
+ *
+ * Gemello del blocco in `src/app/api/telegram/route.comandi.test.ts`. Due
+ * test, uno per canale: l'equipollenza si prova sugli ADATTATORI, e su questo
+ * repo e' proprio dandola per scontata che web e Telegram sono divergiti piu'
+ * volte.
+ */
+describe('POST /api/chat — con una bozza in attesa, il silenzio e\' vietato', () => {
+  const BOZZA = {
+    uuid: '11111111-2222-3333-4444-555555555555',
+    to_addrs: ['destinataria@esterno.it'],
+    subject: 'Due contratti',
+  }
+
+  it('un messaggio breve non riconosciuto viene DETTO, non passato al modello', async () => {
+    bozzeInAttesa = [BOZZA]
+    const out = await invia('India.')
+
+    expect(out).toMatch(/non ho inviato niente/i)
+    expect(out).toContain('/invia_11111111222233334444555555555555')
+    expect(mockCallClaude).not.toHaveBeenCalled()
+  })
+
+  it('lo dice anche per l\'assenso generico, che non conferma piu\'', async () => {
+    bozzeInAttesa = [BOZZA]
+    const out = await invia('ok')
+
+    expect(out).toMatch(/non ho capito/i)
+    expect(mockCallClaude).not.toHaveBeenCalled()
+  })
+
+  it('CONTROLLO POSITIVO: SENZA bozze in attesa il messaggio breve va al modello', async () => {
+    // Senza questo, il blocco potrebbe mangiarsi ogni messaggio corto — «ciao»,
+    // «grazie» — e il test sopra sarebbe verde comunque.
+    bozzeInAttesa = []
+    await invia('ok')
+
+    expect(mockCallClaude).toHaveBeenCalledTimes(1)
+  })
+
+  it('CONTROLLO POSITIVO: un messaggio LUNGO va al modello anche con una bozza in attesa', async () => {
+    bozzeInAttesa = [BOZZA]
+    await invia('preparami il computo del cantiere di Paterno per domani mattina')
+
+    expect(mockCallClaude).toHaveBeenCalledTimes(1)
+  })
+
+  it('una conferma VERA invia, non viene scambiata per un messaggio da segnalare', async () => {
+    // Il controllo positivo che conta di piu': se il blocco del silenzio
+    // intercettasse anche le conferme buone, nessuna mail partirebbe mai piu'.
+    bozzeInAttesa = [BOZZA]
+    const out = await invia('invia')
+
+    expect(out).not.toMatch(/non ho capito/i)
+    expect(mockCallClaude).not.toHaveBeenCalled()
+  })
+
+  it('un comando col codice TRONCATO viene detto, non passato al modello', async () => {
+    const out = await invia('/invia_11111111')
+
+    expect(out).toMatch(/senza il codice completo/i)
+    expect(mockCallClaude).not.toHaveBeenCalled()
   })
 })

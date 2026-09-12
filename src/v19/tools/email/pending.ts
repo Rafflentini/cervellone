@@ -41,10 +41,75 @@ export type PendingTransitionResult =
   | { ok: true }
   | { ok: false; reason: 'already_processed' | 'not_found' | 'expired' | 'db_error'; error?: string }
 
+/**
+ * Due elenchi di destinatari sono lo stesso destinatario? Confronto per
+ * INSIEME, non per ordine: `[a, b]` e `[b, a]` sono la stessa mail, e il
+ * modello non garantisce l'ordine fra un tentativo e l'altro.
+ */
+function stessiDestinatari(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false
+  const norm = (x: string[]) => [...x].map((s) => s.trim().toLowerCase()).sort()
+  const na = norm(a)
+  const nb = norm(b)
+  return na.every((v, i) => v === nb[i])
+}
+
+/**
+ * Crea il pending, oppure RIUSA quello identico che è già in attesa.
+ *
+ * 🚨 Perché la deduplica sta QUI e non nei tool: `createPendingSend` è
+ * l'imbuto unico. `send_email` e `send_email_with_attachments` (e anche
+ * `forward_email` e `pack_emails_and_send`) passano tutti da
+ * `sendEmailInternal`, che chiama questa funzione in un punto solo. Metterla
+ * nei tool vorrebbe dire scriverla quattro volte e dimenticarsene in uno —
+ * che è come sono nate quasi tutte le divergenze di questo repo.
+ *
+ * Il difetto che chiude, misurato il 12 set 2026: il bot chiedeva «mi dica
+ * "invia"», l'Ingegnere scriveva «Invia», la regola non lo riconosceva e il
+ * modello leggeva la parola come una RICHIESTA NUOVA, preparando un'altra
+ * bozza. In `cervellone_email_pending_send` sono finite CINQUE bozze identiche
+ * in attesa. Cinque bozze non sono solo disordine: fanno scattare la guardia
+ * anti-ambiguità, che a quel punto rifiuta la conferma a parole e chiede il
+ * codice — cioè la cosa che dal telefono lui non riusciva a usare.
+ *
+ * La regola della conferma è stata allargata, ma questa difesa serve comunque:
+ * un doppione può nascere da qualunque ripetizione, non solo da quella.
+ */
 export async function createPendingSend(
   input: SendEmailInput,
-): Promise<{ uuid: string; expires_at: string }> {
+): Promise<{ uuid: string; expires_at: string; riusato: boolean }> {
   const supabase = getSupabaseServer()
+
+  // Cerco un pending valido con STESSO oggetto e STESSI destinatari.
+  const { data: esistenti, error: erroreRicerca } = await supabase
+    .from('cervellone_email_pending_send')
+    .select('uuid, expires_at, to_addrs')
+    .eq('status', 'pending')
+    .eq('subject', input.subject)
+    .gt('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false })
+  if (erroreRicerca) {
+    // Qui il guasto NON diventa un'assenza silenziosa: viene detto a log, e si
+    // procede a creare. È l'unica direzione sicura — al peggio nasce un
+    // doppione, che è disordine; il contrario (non creare) perderebbe una mail
+    // che l'Ingegnere ha chiesto di preparare. Nessuna mail viene inviata in
+    // nessuno dei due casi: qui si prepara soltanto.
+    console.error('[pending] ricerca doppioni fallita, procedo a creare', {
+      error: erroreRicerca.message,
+      subject: input.subject,
+    })
+  } else if (esistenti) {
+    const gemello = (esistenti as Array<{ uuid: string; expires_at: string; to_addrs: string[] }>)
+      .find((r) => stessiDestinatari(r.to_addrs ?? [], input.to))
+    if (gemello) {
+      console.warn('[pending] bozza identica già in attesa: riuso, non ne creo un\'altra', {
+        uuid: gemello.uuid,
+        subject: input.subject,
+      })
+      return { uuid: gemello.uuid, expires_at: gemello.expires_at, riusato: true }
+    }
+  }
+
   const row = {
     from_account: input.from_account,
     to_addrs: input.to,
@@ -63,7 +128,7 @@ export async function createPendingSend(
     .select('uuid, expires_at')
     .single()
   if (error || !data) throw new Error(`pending insert: ${error?.message ?? 'no data'}`)
-  return { uuid: data.uuid, expires_at: data.expires_at }
+  return { uuid: data.uuid, expires_at: data.expires_at, riusato: false }
 }
 
 /**

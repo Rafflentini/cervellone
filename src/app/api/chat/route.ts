@@ -229,11 +229,32 @@ export async function POST(request: NextRequest) {
   }
 
   // ─── Conferma invio mail a LINGUAGGIO NATURALE: "invia pure mail" (parità Telegram) ───
-  const { eConfermaInvio } = await import('@/lib/conferma-invio')
+  const { eConfermaInvio, eMessaggioBreveNonConferma } = await import('@/lib/conferma-invio')
   if (eConfermaInvio(userQuery)) {
     const { confirmLatestPendingSend } = await import('@/v19/tools/email/telegram-confirm')
     const r = await confirmLatestPendingSend()
     return rispostaSemplice(r.message)
+  }
+
+  // 🚨 IL SILENZIO — gemello del blocco in `api/telegram/route.ts`.
+  // Se c'è una bozza in attesa e arriva un messaggio breve che NON è una
+  // conferma, non si ricomincia in silenzio preparando un'altra bozza: si dice
+  // che non si è capito e si dà la frase esatta che funziona. L'equipollenza
+  // qui è vincolante, e il test sta in entrambi i `route.comandi.test.ts`.
+  if (eMessaggioBreveNonConferma(userQuery)) {
+    const { avvisoConfermaNonRiconosciuta } = await import('@/v19/tools/email/telegram-confirm')
+    const avviso = await avvisoConfermaNonRiconosciuta(userQuery)
+    if (avviso) return rispostaSemplice(avviso)
+  }
+
+  // ─── Un comando col CODICE TRONCATO va detto, non passato al modello ───
+  {
+    const { comandoDalCodiceRotto } = await import('@/lib/comandi-uuid')
+    const rotto = comandoDalCodiceRotto(userQuery)
+    if (rotto) {
+      const { avvisoCodiceRotto } = await import('@/v19/tools/email/telegram-confirm')
+      return rispostaSemplice(avvisoCodiceRotto(rotto))
+    }
   }
 
   // Proposte documento: /conferma_<uuid> · /ignora_<uuid>
