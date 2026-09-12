@@ -436,6 +436,23 @@ export const FIC_READ_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    // Task 15 — «scremare le fatture» (parole di Raffaele, 12 set 2026): non
+    // una fattura alla volta come fic_leggi_allegato_fattura, ma un GRUPPO
+    // intero, diviso per cosa ha scritto il fornitore (contanti/bonifico/
+    // assegno/carta/RIBA/nessuna). Stessi filtri di segna_fatture_ricevute_pagate,
+    // cosi' la stessa selezione si descrive allo stesso modo.
+    name: 'fic_modalita_pagamento_fornitore',
+    description: 'Screma un GRUPPO di fatture RICEVUTE per la modalita di pagamento SCRITTA DAL FORNITORE sulla fattura (contanti, bonifico, assegno, carta, RIBA...), leggendo l allegato di ognuna. Usa per "quali fatture di [fornitore] sono state pagate in contanti", "controlla come ha pagato/scritto [fornitore]". Filtri: fornitore, anno, mese — come segna_fatture_ricevute_pagate: la stessa selezione si descrive allo stesso modo. Per OGNI fattura l esito e UNO fra tre, MAI da confondere: "dichiarata" (il fornitore l ha scritta: e in modalita/codice_sdi), "non_dichiarata" (l abbiamo letta e il fornitore NON l ha messa — un DATO, riportalo come tale, non come guasto), "non_leggibile" (non siamo riusciti a leggere l allegato, anche perche mancava — un GUASTO che devi dire, MAI riportarlo come "non l ha messa"). Tetto di 30 fatture per chiamata: oltre, rifiuta dichiarandolo invece di leggere solo alcune.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        fornitore: { type: 'string', description: 'Nome (anche parziale) del fornitore.' },
+        anno: { type: 'integer' },
+        mese: { type: 'integer', description: 'Mese 1-12, insieme ad anno.' },
+      },
+    },
+  },
+  {
     name: 'fic_cerca_anagrafica',
     description: 'Cerca un cliente o fornitore in Fatture in Cloud per nome (sola lettura).',
     input_schema: {
@@ -499,6 +516,28 @@ export async function executeFicTool(
       const { leggiAllegatoFatturaRicevuta } = await import('./fic-allegato')
       const esito = await leggiAllegatoFatturaRicevuta(id, societa)
       return JSON.stringify(esito)
+    }
+    if (name === 'fic_modalita_pagamento_fornitore') {
+      const fornitore = typeof input.fornitore === 'string' && input.fornitore.trim() ? input.fornitore.trim() : undefined
+      const anno = intParam(input.anno)
+      const mese = intParam(input.mese)
+      const { modalitaDichiarateDalFornitore } = await import('./fic-allegato')
+      const esito = await modalitaDichiarateDalFornitore({ fornitore, anno, mese }, societa)
+      if (!esito.ok) return JSON.stringify({ ok: false, error: esito.error })
+      const { righe, elenco_troncato, non_leggibili } = esito.valore
+      return JSON.stringify({
+        ok: true,
+        count: righe.length,
+        non_leggibili,
+        elenco_troncato,
+        righe,
+        // Il campo che impedisce di riportare un guasto come un dato: se
+        // non_leggibili > 0, quelle righe NON dicono "non l'ha messa".
+        nota: non_leggibili > 0
+          ? `${non_leggibili} di ${righe.length} fatture NON sono leggibili: non so cosa ci fosse scritto sull'allegato, `
+            + 'non e un "non l\'ha messa" — dillo come guasto, non come dato.'
+          : null,
+      })
     }
     if (name === 'fic_cerca_anagrafica') {
       const nome = String(input.nome || '').trim()

@@ -57,11 +57,21 @@ describe('differimento delle definizioni dei tool', () => {
   // modalita' di pagamento" leggendo `payment_account` (il CONTO con cui NOI
   // registriamo il pagamento) invece della `ModalitaPagamento` dell'XML SDI.
   // Il numero sale da 130 a 131 di proposito.
-  it('senza opzioni: 131 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 13 settembre 2026 (Task 15). Era 131 con impronta
+  // `d232705817ad40a8d35902df2c968b82`. E' stato aggiunto UN tool custom:
+  // `fic_modalita_pagamento_fornitore` — screma un GRUPPO di fatture RICEVUTE
+  // per la modalita' di pagamento SCRITTA DAL FORNITORE (contanti/bonifico/
+  // assegno/carta/RIBA), leggendo l'allegato di ognuna e dividendo l'insieme
+  // in tre esiti mai confusi: dichiarata, non_dichiarata (un DATO) e
+  // non_leggibile (un GUASTO). Nasce dalle parole di Raffaele il 12 set 2026:
+  // «se io ti dico di controllare, se c'e', tu devi saperlo fare e dirmelo, in
+  // modo da scremare le fatture». Il numero sale da 131 a 132 di proposito.
+  it('senza opzioni: 132 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(131)
+    expect(defs).toHaveLength(132)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('d232705817ad40a8d35902df2c968b82')
+      .toBe('fd64fdae3ab2fc6c39e7d6fe1a54fc22')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

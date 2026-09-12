@@ -22,6 +22,7 @@
  */
 import { testoDaPdf } from './drive'
 import { ficGet, getCompanyId } from './fatture-in-cloud'
+import { cercaFattureRicevute, datiFattura, type EsitoFic, type FiltriRicerca } from './fic-pagamenti'
 import type { CodiceSocieta } from './societa'
 
 export type EsitoAllegato =
@@ -164,4 +165,129 @@ export async function leggiAllegatoFatturaRicevuta(
   // Formato non riconosciuto: si dichiara come tale invece di nasconderlo
   // dietro un errore o un testo vuoto (stessa regola del codice SDI ignoto).
   return { ok: true, formato: 'altro', testo: scarico.buffer.toString('utf-8') }
+}
+
+/* ------------------------------------------------------------------ *
+ * Task 15 — scremare un INSIEME di fatture per la modalita' scritta
+ * dal fornitore. Le parole di Raffaele, 12 set 2026: «se io ti dico di
+ * controllare, se c'e', tu devi saperlo fare e dirmelo, in modo da
+ * scremare le fatture».
+ * ------------------------------------------------------------------ */
+
+/** Una riga del prospetto: cosa ha scritto il fornitore su QUELLA fattura. */
+export type ModalitaPerFattura = {
+  id: number
+  numero: string | null
+  data: string | null
+  importo: number | null
+  /** Il codice SDI grezzo, quando c'e'. */
+  codice_sdi: string | null
+  /** L'etichetta leggibile, quando il codice e' in tabella. */
+  modalita: string | null
+  /**
+   * TRE esiti distinti, MAI schiacciati in uno:
+   *  - 'dichiarata'      → il fornitore l'ha scritta, ed e' in `modalita`
+   *  - 'non_dichiarata'  → l'abbiamo letta e il fornitore NON l'ha messa:
+   *                        e' un DATO, su cui decide l'Ingegnere
+   *  - 'non_leggibile'   → non siamo riusciti a leggere l'allegato (nessun
+   *                        allegato compreso): e' un GUASTO, e `perche` lo dice
+   *
+   * Confondere questi due ultimi esiti e' esattamente cio' che e' costato
+   * tre ore il 12 set 2026: il bot diceva «non c'e'» quando il significato
+   * vero era «non l'ho guardato».
+   */
+  esito: 'dichiarata' | 'non_dichiarata' | 'non_leggibile'
+  perche?: string
+}
+
+/**
+ * Tetto di allegati leggibili in una sola chiamata: una rete per fattura, e
+ * oltre questo numero si RIFIUTA dichiarandolo invece di leggere solo in
+ * parte — un elenco parziale che sembra completo e' il difetto peggiore
+ * introducibile in una scrematura.
+ */
+export const MAX_ALLEGATI = 30
+
+/**
+ * Quante letture in volo insieme. Non tutte in parallelo: un burst di 30
+ * richieste verso Fatture in Cloud e' un modo di farsi limitare (429).
+ */
+const DIMENSIONE_GRUPPO = 5
+
+async function leggiRigaModalita(
+  doc: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<ModalitaPerFattura> {
+  const dati = datiFattura(doc)
+  const base = {
+    id: dati.id,
+    numero: dati.numero || null,
+    data: dati.data || null,
+    importo: dati.importo,
+  }
+
+  const esito = await leggiAllegatoFatturaRicevuta(dati.id, societa)
+  if (!esito.ok) {
+    // Nessun allegato, download fallito, PDF illeggibile: sono tutti la
+    // STESSA cosa dal punto di vista di questo prospetto — un guasto di
+    // lettura, non un dato sul fornitore. `perche` porta il dettaglio.
+    return { ...base, codice_sdi: null, modalita: null, esito: 'non_leggibile', perche: esito.messaggio }
+  }
+  if (esito.modalita_sdi) {
+    return { ...base, codice_sdi: esito.modalita_sdi, modalita: esito.modalita_leggibile ?? null, esito: 'dichiarata' }
+  }
+  // Allegato letto (XML o PDF), ma nessuna ModalitaPagamento trovata dentro:
+  // il fornitore non l'ha scritta. Questo E' un dato, non un guasto.
+  return { ...base, codice_sdi: null, modalita: null, esito: 'non_dichiarata' }
+}
+
+/**
+ * Legge la modalita' di pagamento scritta dal fornitore su un elenco di
+ * fatture GIA' selezionato (id compresi) — usata sia da
+ * `modalitaDichiarateDalFornitore` sotto, sia dal filtro
+ * `solo_modalita_fornitore` di `segna_fatture_ricevute_pagate`, che ha gia'
+ * la sua selezione in mano e non deve rifare la ricerca da capo.
+ */
+export async function modalitaPerDocumenti(
+  documenti: Record<string, unknown>[],
+  societa: CodiceSocieta,
+): Promise<EsitoFic<{ righe: ModalitaPerFattura[]; non_leggibili: number }>> {
+  if (documenti.length > MAX_ALLEGATI) {
+    return {
+      ok: false,
+      error: `la selezione tocca ${documenti.length} fatture, oltre il tetto di ${MAX_ALLEGATI} allegati leggibili `
+        + 'in una volta: restringi la selezione (per fornitore, anno o mese) e ripeti. Non ho letto nessun allegato.',
+    }
+  }
+
+  const righe: ModalitaPerFattura[] = new Array(documenti.length)
+  for (let i = 0; i < documenti.length; i += DIMENSIONE_GRUPPO) {
+    const gruppo = documenti.slice(i, i + DIMENSIONE_GRUPPO)
+    // eslint-disable-next-line no-await-in-loop
+    const esitiGruppo = await Promise.all(gruppo.map((doc) => leggiRigaModalita(doc, societa)))
+    esitiGruppo.forEach((riga, indice) => { righe[i + indice] = riga })
+  }
+
+  const non_leggibili = righe.filter((r) => r.esito === 'non_leggibile').length
+  return { ok: true, valore: { righe, non_leggibili } }
+}
+
+/**
+ * La funzione sull'INSIEME (Task 15): parte da un filtro (fornitore/anno/mese
+ * — Task 13, `cercaFattureRicevute`) e per ognuna delle fatture trovate legge
+ * l'allegato (Task 14, `leggiAllegatoFatturaRicevuta`) per sapere cosa ha
+ * scritto il fornitore. E' l'operazione che Raffaele chiama «scremare»: si
+ * parte da un gruppo e si divide in due (o tre, contando i non leggibili).
+ */
+export async function modalitaDichiarateDalFornitore(
+  filtri: FiltriRicerca,
+  societa: CodiceSocieta,
+): Promise<EsitoFic<{ righe: ModalitaPerFattura[]; elenco_troncato: boolean; non_leggibili: number }>> {
+  const trovate = await cercaFattureRicevute(filtri, societa)
+  if (!trovate.ok) return trovate
+
+  const esito = await modalitaPerDocumenti(trovate.valore.documenti, societa)
+  if (!esito.ok) return esito
+
+  return { ok: true, valore: { ...esito.valore, elenco_troncato: trovate.valore.elenco_troncato } }
 }

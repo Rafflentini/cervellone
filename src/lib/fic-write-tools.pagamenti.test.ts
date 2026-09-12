@@ -27,6 +27,10 @@ const stato = {
   letture: new Map<number, Record<string, unknown>>(),
   esiti: new Map<number, { ok: boolean; motivo?: string }>(),
   eliminate: [] as string[],
+  // Task 15 — cosa risponde la lettura degli allegati (modalitaPerDocumenti),
+  // per id di documento. Assente = di default "dichiarata contanti", cosi i
+  // test che non se ne occupano non devono popolarla.
+  modalitaRighe: new Map<number, { esito: 'dichiarata' | 'non_dichiarata' | 'non_leggibile'; modalita: string | null }>(),
 }
 
 /* ---------- mock ---------- */
@@ -101,6 +105,24 @@ vi.mock('./fic-pagamenti', async (importOriginal) => {
   }
 })
 
+// Task 15 — il filtro `solo_modalita_fornitore` legge gli allegati con
+// `modalitaPerDocumenti` (Task 15, sopra i pezzi dei Task 13/14): qui si
+// sostituisce SOLO quella lettura, per provare la logica di scrematura senza
+// rifare rete/PDF/XML — gia' provati in fic-allegato.insieme.test.ts.
+vi.mock('./fic-allegato', () => ({
+  modalitaPerDocumenti: async (documenti: Record<string, unknown>[]) => {
+    const righe = documenti.map((d) => {
+      const id = Number((d as { id: unknown }).id)
+      const preparata = stato.modalitaRighe.get(id)
+      return preparata
+        ? { id, esito: preparata.esito, modalita: preparata.modalita }
+        : { id, esito: 'dichiarata' as const, modalita: 'contanti' }
+    })
+    const non_leggibili = righe.filter((r) => r.esito === 'non_leggibile').length
+    return { ok: true as const, valore: { righe, non_leggibili } }
+  },
+}))
+
 import { executeFicWriteTool, confirmFicStep2 } from './fic-write-tools'
 
 /* ---------- fixture ---------- */
@@ -160,6 +182,7 @@ beforeEach(() => {
   stato.letture = new Map()
   stato.esiti = new Map()
   stato.eliminate = []
+  stato.modalitaRighe = new Map()
 })
 
 /* ---------- l'anteprima ---------- */
@@ -619,6 +642,96 @@ describe('il caso singolo e il massivo con un elemento', () => {
     )))
     expect(out.ok).toBe(false)
     expect(String(out.error)).toContain('YYYY-MM-DD')
+  })
+})
+
+/* ---------- solo_modalita_fornitore: scremare per come ha pagato il fornitore ---------- */
+
+describe('solo_modalita_fornitore: scremare per la modalita scritta dal fornitore', () => {
+  beforeEach(() => {
+    stato.selezione = Array.from({ length: 5 }, (_, i) => fattura({ id: 400 + i, invoice_number: `n${400 + i}` }))
+  })
+
+  // ⭐ La regola piu importante del task: una sola non leggibile basta a far
+  // dichiarare il filtro invece di applicarlo in silenzio.
+  it('CONTROLLO POSITIVO — il filtro nella marcatura DICHIARA i non leggibili', async () => {
+    stato.modalitaRighe.set(400, { esito: 'dichiarata', modalita: 'contanti' })
+    stato.modalitaRighe.set(401, { esito: 'dichiarata', modalita: 'bonifico' })
+    stato.modalitaRighe.set(402, { esito: 'non_dichiarata', modalita: null })
+    stato.modalitaRighe.set(403, { esito: 'non_leggibile', modalita: null })
+    stato.modalitaRighe.set(404, { esito: 'dichiarata', modalita: 'contanti' })
+
+    const out = JSON.parse(String(await executeFicWriteTool(
+      'segna_fatture_ricevute_pagate',
+      { fornitore: 'Limongi', anno: 2026, modalita_pagamento: 'Contanti', solo_modalita_fornitore: ['contanti'] },
+      'restruktura',
+    )))
+
+    expect(out.ok).toBe(false)
+    expect(out.error).toMatch(/non (sono )?leggibil/i)
+    expect(out.error).toContain('1')
+    expect(stato.inserita).toBeNull()
+  })
+
+  // Controllo positivo: senza non leggibili, il filtro restringe davvero.
+  it('senza non leggibili, restringe alle fatture con la modalita richiesta', async () => {
+    stato.modalitaRighe.set(400, { esito: 'dichiarata', modalita: 'contanti' })
+    stato.modalitaRighe.set(401, { esito: 'dichiarata', modalita: 'bonifico' })
+    stato.modalitaRighe.set(402, { esito: 'non_dichiarata', modalita: null })
+    stato.modalitaRighe.set(403, { esito: 'dichiarata', modalita: 'carta di pagamento' })
+    stato.modalitaRighe.set(404, { esito: 'dichiarata', modalita: 'contanti' })
+
+    const out = JSON.parse(String(await executeFicWriteTool(
+      'segna_fatture_ricevute_pagate',
+      { fornitore: 'Limongi', anno: 2026, modalita_pagamento: 'Contanti', solo_modalita_fornitore: ['contanti'] },
+      'restruktura',
+    )))
+
+    expect(out.ok).toBe(true)
+    expect(out.da_scrivere).toBe(2)
+  })
+
+  // "carta" deve prendere "carta di pagamento": e' cosi che la tabella dei
+  // codici SDI traduce MP08, non un valore che l'Ingegnere scriverebbe uguale.
+  it('"carta" prende anche "carta di pagamento"', async () => {
+    stato.modalitaRighe.set(400, { esito: 'dichiarata', modalita: 'carta di pagamento' })
+    stato.modalitaRighe.set(401, { esito: 'dichiarata', modalita: 'bonifico' })
+    stato.modalitaRighe.set(402, { esito: 'dichiarata', modalita: 'contanti' })
+    stato.modalitaRighe.set(403, { esito: 'dichiarata', modalita: 'bonifico' })
+    stato.modalitaRighe.set(404, { esito: 'dichiarata', modalita: 'bonifico' })
+
+    const out = JSON.parse(String(await executeFicWriteTool(
+      'segna_fatture_ricevute_pagate',
+      { fornitore: 'Limongi', anno: 2026, modalita_pagamento: 'Contanti', solo_modalita_fornitore: ['carta'] },
+      'restruktura',
+    )))
+
+    expect(out.ok).toBe(true)
+    expect(out.da_scrivere).toBe(1)
+  })
+
+  it('nessuna fattura con quella modalita: lo dice, non scrive niente', async () => {
+    for (const id of [400, 401, 402, 403, 404]) stato.modalitaRighe.set(id, { esito: 'dichiarata', modalita: 'bonifico' })
+
+    const out = JSON.parse(String(await executeFicWriteTool(
+      'segna_fatture_ricevute_pagate',
+      { fornitore: 'Limongi', anno: 2026, modalita_pagamento: 'Contanti', solo_modalita_fornitore: ['contanti'] },
+      'restruktura',
+    )))
+
+    expect(out.ok).toBe(false)
+    expect(stato.inserita).toBeNull()
+  })
+
+  // Senza il filtro, il comportamento di prima resta intatto.
+  it('senza solo_modalita_fornitore il comportamento e quello di sempre', async () => {
+    const out = JSON.parse(String(await executeFicWriteTool(
+      'segna_fatture_ricevute_pagate',
+      { fornitore: 'Limongi', anno: 2026, modalita_pagamento: 'Contanti' },
+      'restruktura',
+    )))
+    expect(out.ok).toBe(true)
+    expect(out.da_scrivere).toBe(5)
   })
 })
 

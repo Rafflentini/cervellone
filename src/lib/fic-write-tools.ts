@@ -2,6 +2,7 @@ import { supabase } from './supabase'
 import { ficGet, getCompanyId, creaDocumentoFIC, eliminaDocumentoFIC } from './fatture-in-cloud'
 import { getSocieta, type CodiceSocieta } from './societa'
 import { comandoDaMostrare } from './comandi-uuid'
+import { modalitaPerDocumenti } from './fic-allegato'
 import {
   cercaFattureRicevute,
   classificaFatturaRicevuta,
@@ -684,7 +685,7 @@ async function segnaFatturePagate(
   }
 
   // 1) L'insieme. Si legge SEMPRE da Fatture in Cloud, mai dal testo.
-  const documenti: Record<string, unknown>[] = []
+  let documenti: Record<string, unknown>[] = []
   let elencoTroncato = false
   let pagineLette = 1
   if (idSingolo !== undefined) {
@@ -730,6 +731,46 @@ async function segnaFatturePagate(
       + 'Restringi la ricerca (per fornitore, anno o mese) e ripeti. Non ho scritto niente.',
       { pagine_lette: pagineLette },
     )
+  }
+
+  // 2.5) Scrematura per la modalita' che il FORNITORE ha scritto sulla
+  // fattura (Task 15). Legge l'allegato di OGNI fattura della selezione con
+  // `modalitaPerDocumenti` (stessa lettura di fic_modalita_pagamento_fornitore,
+  // sullo stesso insieme gia' in mano: non si rifa' la ricerca).
+  //
+  // ⭐ La regola piu' importante: se anche UNA sola fattura non e' leggibile,
+  // il filtro NON si applica in silenzio. «Non sono riuscito a leggerla» e un
+  // GUASTO, non e' «non l'ha messa» — e qui il risultato non e' un elenco, e
+  // una SCRITTURA su un gestionale fiscale.
+  const soloModalita = Array.isArray(input.solo_modalita_fornitore)
+    ? input.solo_modalita_fornitore.map((v) => cleanString(v)).filter((v): v is string => !!v)
+    : []
+  if (soloModalita.length > 0) {
+    const letti = await modalitaPerDocumenti(documenti, societa)
+    if (!letti.ok) return fail(letti.error)
+    const { righe, non_leggibili } = letti.valore
+    if (non_leggibili > 0) {
+      return fail(
+        `di ${righe.length} fatture, ${non_leggibili} non sono leggibili: il filtro solo_modalita_fornitore le `
+        + 'lascia fuori, e non so se dovevano starci. Non ho scritto niente. Restringi la selezione (per id o '
+        + 'per un fornitore/periodo piu preciso), o richiama senza solo_modalita_fornitore per vedere quali sono.',
+        { trovate: righe.length, non_leggibili },
+      )
+    }
+    const richieste = soloModalita.map((m) => m.toLowerCase().trim())
+    const idAmmessi = new Set(
+      righe
+        .filter((r) => r.esito === 'dichiarata' && r.modalita
+          && richieste.some((req) => (r.modalita as string).toLowerCase().includes(req)))
+        .map((r) => r.id),
+    )
+    documenti = documenti.filter((doc) => idAmmessi.has(Number((doc as { id: unknown }).id)))
+    if (documenti.length === 0) {
+      return fail(
+        `nessuna fattura della selezione ha dichiarato una di queste modalita di pagamento: ${soloModalita.join(', ')}. `
+        + 'Non ho scritto niente.',
+      )
+    }
   }
 
   // 3) La modalità di pagamento, SCELTA FRA QUELLE CHE FIC ESPONE.
@@ -1234,7 +1275,7 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     // cinquanta — il caso singolo e' il massivo con un elemento, e due tool
     // separati sarebbero due posti dove le difese possono divergere.
     name: 'segna_fatture_ricevute_pagate',
-    description: 'Segna PAGATA (saldata) una fattura RICEVUTA da un fornitore su Fatture in Cloud, registrando la modalita di pagamento: serve per i pagamenti in CONTANTI o con carta al ritiro, che non lasciano nessun movimento bancario da riconciliare. Funziona su UNA fattura (passa id) o su un INSIEME di fatture di spesa (fornitore e/o anno, mese): es. "segna pagate in contanti tutte le fatture Limongi del 2026". La modalita di pagamento si scegli fra i conti che Fatture in Cloud espone: se non la passi, il tool ti restituisce l elenco vero e tu CHIEDI all Ingegnere quale. La data di pagamento e la DATA DELLA FATTURA (pagata al ritiro), salvo che l Ingegnere ne indichi un altra. REGOLE: (1) non scrive niente subito — prepara l anteprima e serve la doppia conferma /fic_ok_<id> poi /fic_ok2_<id>; (2) mostra l anteprima COM E, comprese le fatture ESCLUSE col motivo (gia pagate, o con piu voci nel piano pagamenti: quelle non le tocca e non sceglie al posto suo); (3) massimo 50 fatture per conferma; (4) l esito e PER FATTURA e viene da una RILETTURA: se dice che 3 su 5 sono riuscite, riporta quali si e quali no col motivo, e NON dire «fatte tutte».',
+    description: 'Segna PAGATA (saldata) una fattura RICEVUTA da un fornitore su Fatture in Cloud, registrando la modalita di pagamento: serve per i pagamenti in CONTANTI o con carta al ritiro, che non lasciano nessun movimento bancario da riconciliare. Funziona su UNA fattura (passa id) o su un INSIEME di fatture di spesa (fornitore e/o anno, mese): es. "segna pagate in contanti tutte le fatture Limongi del 2026". La modalita di pagamento si scegli fra i conti che Fatture in Cloud espone: se non la passi, il tool ti restituisce l elenco vero e tu CHIEDI all Ingegnere quale. La data di pagamento e la DATA DELLA FATTURA (pagata al ritiro), salvo che l Ingegnere ne indichi un altra. Puoi restringere la selezione a quelle in cui il FORNITORE ha scritto una certa modalita di pagamento sulla fattura (contanti/carta/bonifico/...) con solo_modalita_fornitore, es. per scremare "quali fatture Limongi erano state pagate in contanti al ritiro". REGOLE: (1) non scrive niente subito — prepara l anteprima e serve la doppia conferma /fic_ok_<id> poi /fic_ok2_<id>; (2) mostra l anteprima COM E, comprese le fatture ESCLUSE col motivo (gia pagate, o con piu voci nel piano pagamenti: quelle non le tocca e non sceglie al posto suo); (3) massimo 50 fatture per conferma; (4) l esito e PER FATTURA e viene da una RILETTURA: se dice che 3 su 5 sono riuscite, riporta quali si e quali no col motivo, e NON dire «fatte tutte»; (5) con solo_modalita_fornitore, se anche una sola fattura della selezione non ha l allegato leggibile il tool NON applica il filtro in silenzio: rifiuta dichiarando quante non sono leggibili, e tu lo riporti cosi.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1245,6 +1286,11 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
         modalita_pagamento: { type: 'string', description: 'Nome o id del conto di pagamento di Fatture in Cloud, es. "Contanti", "Carta di credito". Se omesso o non riconosciuto, il tool torna l elenco vero dei conti dell azienda: chiedi all Ingegnere quale e richiama.' },
         data_pagamento: { type: 'string', description: 'Data del pagamento YYYY-MM-DD. Se omessa vale la DATA DI OGNI FATTURA, non oggi: il contante si paga al ritiro.' },
         voce: { type: 'integer', description: 'Quale voce del piano pagamenti segnare pagata (1 = la prima), solo quando la fattura ne ha piu di una e l Ingegnere ha detto quale. Richiede id.' },
+        solo_modalita_fornitore: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Restringe la selezione alle fatture in cui il FORNITORE ha scritto sulla fattura una di queste modalita (es. ["contanti","carta"]). Legge l allegato di ogni fattura della selezione (tetto 30, come fic_modalita_pagamento_fornitore): se anche una sola non e leggibile, il tool RIFIUTA dichiarandolo invece di applicare il filtro senza quella fattura.',
+        },
       },
     },
   },
