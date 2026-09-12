@@ -1031,3 +1031,164 @@ it('drive_create_document: stessa guardia sullo stesso contenuto', async () => {
 - [ ] **Step 5: suite + typecheck**
 - [ ] **Step 6: mutazione** — disattivare la guardia in `salva_documento_su_drive`: deve morire il controllo positivo. `cp` di backup, `perl -0pi`, `grep -c` che provi il morso, `md5sum` identico dopo il ripristino
 - [ ] **Step 7: commit** — `git commit -m "anche su Drive un documento non si archivia con la partita IVA di un'altra societa'"`
+
+---
+
+### Task 11: le operazioni contabili non girano sull'azienda indovinata
+
+**Perché questo task esiste, e perché è il più importante dopo il Task 4.**
+
+`src/lib/tools.ts:844`:
+
+```ts
+async function societaDellaConversazione(conversationId?: string): Promise<CodiceSocieta> {
+  const { getSocietaAttiva } = await import('./societa-attiva')
+  return getSocietaAttiva(conversationId)
+}
+```
+
+`getSocietaAttiva` su errore di database restituisce `restruktura`. Quindi un
+guasto transitorio nella lettura, mentre l'Ingegnere lavora su La Real Estate,
+farebbe girare **ogni operazione contabile sull'azienda sbagliata, in silenzio**:
+è il wrapper `contabile` (`:867`) che serve **cinque** esecutori — `fic_*`,
+`FIC_WRITE_TOOLS`, riconciliazione, prima nota, movimenti.
+
+Una fattura emessa o un pagamento registrato sull'azienda sbagliata è **peggio di
+un documento sbagliato**: un documento si rigenera, una fattura elettronica
+trasmessa no.
+
+**E il codice già sa che non si deve indovinare.** Venti righe sopra, a `:872`:
+
+```ts
+if (!conversationId) return senzaConversazione(name)
+```
+
+col commento: *«Senza conversazione la società non è determinabile, e
+un'operazione contabile NON deve ricadere su un default: è come sceglierla a
+caso, cioè il difetto che questo ramo elimina. Meglio rifiutare dicendolo.»*
+
+Il ragionamento è già quello giusto. È applicato a **una** delle due strade per
+«non lo sappiamo» e non all'altra: *una correzione applicata a metà è il difetto
+della giornata.*
+
+**Files:**
+- Modify: `src/lib/tools.ts` — `societaDellaConversazione` (`:844`), `senzaConversazione` (`:860`), `contabile` (`:867`)
+- Test: `src/lib/tools.contabile-societa.test.ts` (creare)
+
+**Interfaces:**
+- Consumes: `leggiSocietaAttiva` da `./societa-attiva` (Task 2) — restituisce
+  `{ ok: true; codice; esplicita } | { ok: false; errore }`
+- Produces: nessuna interfaccia pubblica nuova. `contabile` guadagna un ramo di
+  rifiuto; la firma degli esecutori **non cambia**.
+
+**Il disegno.** `societaDellaConversazione` passa a `leggiSocietaAttiva` e
+restituisce un esito, non un codice:
+
+```ts
+async function societaDellaConversazione(
+  conversationId: string,
+): Promise<{ ok: true; codice: CodiceSocieta } | { ok: false; errore: string }> {
+  const { leggiSocietaAttiva } = await import('./societa-attiva')
+  const e = await leggiSocietaAttiva(conversationId)
+  return e.ok ? { ok: true, codice: e.codice } : { ok: false, errore: e.errore }
+}
+```
+
+e `contabile` rifiuta come già rifiuta senza conversazione — **stesso formato**,
+perché il modello e l'Ingegnere devono leggere la stessa forma per la stessa
+categoria di problema:
+
+```ts
+const contabile = (esecutore, appartiene) => async (name, input, conversationId?) => {
+  if (!appartiene(name)) return null
+  if (!conversationId) return senzaConversazione(name)
+  const s = await societaDellaConversazione(conversationId)
+  // Una lettura fallita NON e' una societa'. Vale qui esattamente il motivo
+  // scritto sopra per la conversazione assente: un'operazione contabile non
+  // ricade su un default, perche' equivale a sceglierla a caso. La differenza
+  // e' che quella strada era chiusa e questa era aperta.
+  if (!s.ok) return societaNonLeggibile(name, s.errore)
+  return esecutore(name, input, s.codice)
+}
+```
+
+con `societaNonLeggibile` accanto a `senzaConversazione`, nella stessa forma
+(`JSON.stringify({ ok: false, error: … })`), e un testo che **nomina il guasto**:
+`${name}: non riesco a leggere quale societa' e' attiva (${errore}). Non eseguo
+un'operazione contabile senza saperlo: dimmi su quale societa' stiamo lavorando.`
+
+⚠️ **Niente underscore nel messaggio** e **nessun nome di comando**: `/societa`
+esiste solo su Telegram, e su Markdown un `nome_con_underscore` arriva mutilato.
+Il messaggio esistente di `senzaConversazione` dice «Usa /societa per
+dichiararla»: **va corretto anche quello**, per la stessa ragione, ed è parte di
+questo task.
+
+- [ ] **Step 1: scrivere i test che falliscono**
+
+```ts
+// Lo stato del finto database vive fuori dal mock, come in societa-attiva.test.ts
+let esitoSocieta: unknown = { ok: true, codice: 'larealestate', esplicita: true }
+vi.mock('./societa-attiva', () => ({
+  leggiSocietaAttiva: async () => esitoSocieta,
+  getSocietaAttiva: async () => 'restruktura',
+  setSocietaAttiva: async () => ({ ok: true }),
+  bloccoSocietaAttiva: () => '',
+}))
+
+it('CONTROLLO POSITIVO — lettura della societa fallita: il tool contabile NON viene eseguito', async () => {
+  esitoSocieta = { ok: false, errore: 'connessione persa' }
+  const out = await executeTool('fic_lista_fatture', {}, 'conv-1')
+  const j = JSON.parse(String(out))
+  expect(j.ok).toBe(false)
+  expect(j.error).toContain('connessione persa')
+  // la prova che conta: l'esecutore non e' stato chiamato
+  expect(spiaEsecutore).not.toHaveBeenCalled()
+})
+
+it('CONTROLLO NEGATIVO — societa leggibile: il tool gira, e gira sulla societa GIUSTA', async () => {
+  esitoSocieta = { ok: true, codice: 'larealestate', esplicita: true }
+  await executeTool('fic_lista_fatture', {}, 'conv-1')
+  expect(spiaEsecutore).toHaveBeenCalledWith('fic_lista_fatture', {}, 'larealestate')
+})
+
+it('senza conversazione rifiuta come prima (comportamento invariato)', async () => {
+  const out = await executeTool('fic_lista_fatture', {}, undefined)
+  expect(JSON.parse(String(out)).ok).toBe(false)
+})
+
+it('un tool NON contabile non e\' toccato da questa guardia', async () => {
+  esitoSocieta = { ok: false, errore: 'connessione persa' }
+  // cerca_documenti non e' contabile: deve funzionare anche se la societa' non si legge
+})
+
+it('i messaggi di rifiuto non contengono underscore ne comandi slash', async () => {
+  // su Telegram il Markdown mangia gli underscore, e /societa non esiste sul web
+  esitoSocieta = { ok: false, errore: 'x' }
+  const a = String(await executeTool('fic_lista_fatture', {}, 'conv-1'))
+  const b = String(await executeTool('fic_lista_fatture', {}, undefined))
+  for (const msg of [JSON.parse(a).error, JSON.parse(b).error]) {
+    expect(msg).not.toMatch(/_/)
+    expect(msg).not.toMatch(/\/[a-z]+/)
+  }
+})
+```
+
+- [ ] **Step 2: eseguire, verificare che FALLISCANO**
+
+Run: `npx vitest run src/lib/tools.contabile-societa.test.ts`
+
+- [ ] **Step 3: implementare** come sopra. **Cinque** esecutori passano da
+  `contabile`: verificare che tutti e cinque siano coperti dal rifiuto (basta il
+  wrapper, ma va **verificato**, non assunto — elencarli nel rapporto).
+
+- [ ] **Step 4: correggere anche `senzaConversazione`** — via `/societa`, via
+  gli underscore se ce ne sono.
+
+- [ ] **Step 5: suite intera + typecheck**
+
+- [ ] **Step 6: mutazione** — far restituire `{ ok: true, codice: 'restruktura' }`
+  al ramo d'errore di `societaDellaConversazione`, cioè **rimettere il difetto**.
+  Deve morire il controllo positivo. `cp` di backup, `perl -0pi`, `grep -c` che
+  provi il morso, `md5sum` identico dopo il ripristino.
+
+- [ ] **Step 7: commit** — `git commit -m "una fattura non si emette sull'azienda indovinata"`
