@@ -1665,3 +1665,137 @@ it('le letture vanno a gruppi, non tutte insieme', async () => {
   fallisce, cioè **confondere il dato col guasto**. Deve morire il controllo positivo dei tre
   esiti. È la mutazione che conta più di ogni altra in questo task.
 - [ ] **Step 8: commit** — `git commit -m "scremare le fatture per la modalita' che ha scritto il fornitore, distinguendo 'non l'ha messa' da 'non l'ho letta'"`
+
+---
+
+### Task 16: i comandi di conferma FIC non sono toccabili — il buco era dichiarato nel commento
+
+**Segnalazione di Raffaele, 12 set 2026, dopo il rilascio della correzione sui codici:**
+
+> *«i codici che mi dava per la doppia conferma comunque non erano toccabili. E quindi deve
+> essere che fa il tap, tocca e si copia negli appunti. Comunque non era così, se vai a
+> controllare la conversazione lo vedi, e credo che ancora non sia risolto.»*
+
+**Ha ragione.** Dal registro di produzione, messaggio delle 17:39:
+
+```
+**Per confermare:** `/fic_ok_3f3fc82f-4daa-408e-9308-78effecc338e`
+**Per annullare:** `/fic_no_3f3fc82f-4daa-408e-9308-78effecc338e`
+```
+
+Tre difetti sovrapposti in due righe:
+
+1. **UUID intero con i trattini.** Telegram tronca l'entità comando al **primo trattino**:
+   toccando arriva `/fic_ok_3f3fc82f`, che non risolve nulla. È il difetto chiuso stamattina
+   per tutte le altre famiglie, **e non per questa**.
+2. **39 caratteri.** `/fic_ok_` (7) + 32 cifre = 39, oltre il limite di **32** caratteri che
+   Telegram impone a un `bot_command`. Anche senza trattini non sarebbe toccabile.
+3. **Dentro i backtick.** Il modello li ha aggiunti da sé. Un messaggio che contiene un
+   comando viene spedito in **testo semplice** (`parseModePer` lo decide dal contenuto),
+   quindi i backtick compaiono **letteralmente** e appiccicati allo slash.
+
+**E il buco era NOTO.** `src/lib/comandi-risolvi.ts:88`:
+
+```ts
+if (!origine) continue // famiglia non risolvibile (i `fic_*`): non emette codici corti
+```
+
+Il commento **nomina** la famiglia esclusa. Non è un difetto di ignoranza: è una lacuna
+**dichiarata e non chiusa**, scritta la mattina stessa in cui Raffaele ci è andato a
+sbattere. *Una correzione applicata a metà è il difetto della giornata* — quarta ricorrenza
+del 12 set.
+
+**La buona notizia: l'infrastruttura c'è già tutta.** Entrambi i canali chiamano
+`espandiCodiceBreve` **prima** di leggere il comando (`telegram/route.ts:659`,
+`chat/route.ts:238`), e la risoluzione per prefisso è generica. Manca solo l'anagrafica.
+
+**Files:**
+- Modify: `src/lib/comandi-uuid.ts` — tre voci in `ORIGINE_CODICE`
+- Modify: `src/lib/comandi-risolvi.ts:88` — il commento diventa falso
+- Modify: `src/lib/fic-write-tools.ts` — **10** comandi costruiti a mano
+- Modify: `src/lib/conferma-fic.ts:93` — l'undicesimo
+- Modify: `src/lib/prompts.ts` — la regola sui backtick
+- Test: `src/lib/comandi-uuid.fic.test.ts`, più un test per canale
+
+**Il lavoro, per punti:**
+
+1. **`ORIGINE_CODICE` guadagna tre voci.** Verificato sul database vero (non sul codice):
+   `cervellone_fic_pending.id` è di tipo `uuid`, `NOT NULL`. Quindi:
+   ```ts
+   fic_ok2: { tabella: 'cervellone_fic_pending', colonna: 'id' },
+   fic_ok:  { tabella: 'cervellone_fic_pending', colonna: 'id' },
+   fic_no:  { tabella: 'cervellone_fic_pending', colonna: 'id' },
+   ```
+   ⚠️ La colonna si chiama davvero `id` — **verificata con
+   `information_schema.columns`**, non dedotta dal codice: è il difetto A2 della lista di
+   controllo (un nome di colonna scritto a mano che non esiste), e su questo repo è già
+   costato tre mesi di conferme mail che non funzionavano.
+
+2. **Gli 11 comandi a mano passano da `comandoDaMostrare`.** Sono gli unici 11 rimasti in
+   tutto il repo (misurato: ogni altro percorso la usa già). Trovali con:
+   ```bash
+   grep -rnoE "/(fic_ok2|fic_ok|fic_no)_\\\$\{[^}]+\}" src --include=*.ts | grep -v "\.test\."
+   ```
+   e al termine **lo stesso comando deve dare zero righe**: è la prova che non ne è rimasto
+   uno. Incolla l'output nel rapporto.
+
+3. **Il commento a `comandi-risolvi.ts:88` va riscritto.** Dopo questo task la sua
+   affermazione è falsa, e un commento falso è peggio di nessun commento: dice al prossimo
+   lettore che una cosa è impossibile mentre è già fatta.
+
+4. **La regola sui backtick nel prompt.** Accanto alle altre regole sui comandi. Il testo
+   deve dire **il perché**, non solo la proibizione:
+   ```
+   Quando mostri un comando (/invia_…, /fic_ok_…, /sal_ok_…) scrivilo NUDO: nessun
+   backtick, nessun grassetto, nessuna parentesi attaccata. Telegram rende toccabile
+   solo un comando nudo, e un comando dentro i backtick arriva all'Ingegnere con i
+   backtick visibili e non si tocca — lui lavora dal telefono e quel comando e' il
+   modo per confermare.
+   ```
+   E un test che provi che la regola arriva nel prompt **vivo di entrambi i canali**
+   (`getChatSystemPrompt` **e** `getTelegramSystemPrompt`): questo repo ha già pagato una
+   regola in un file che nessuno importava.
+
+- [ ] **Step 1: i test che falliscono**
+
+```ts
+it('IL DIFETTO: oggi fic_ok emette 32 cifre, oltre il limite di Telegram', () => {
+  // prima: codiceDaEmettere('fic_ok', uuid).length === 32  → /fic_ok_ + 32 = 39 caratteri
+  // dopo:  === 16                                          → 7 + 16 = 23 caratteri
+})
+
+it('il comando sta sotto i 32 caratteri di Telegram', () => {
+  expect(comandoDaMostrare('fic_ok', UUID).length).toBeLessThanOrEqual(32)
+  expect(comandoDaMostrare('fic_ok2', UUID).length).toBeLessThanOrEqual(32)
+})
+
+it('nessun trattino: Telegram troncherebbe al primo', () => {
+  expect(comandoDaMostrare('fic_no', UUID)).not.toMatch(/-/)
+})
+
+it('il codice corto si RISOLVE: emesso e riletto danno lo stesso uuid', async () => {
+  // emetti con comandoDaMostrare, rileggi con espandiCodiceBreve + comandoUuid,
+  // e verifica che torni l'uuid canonico. E' la prova che il giro si chiude:
+  // emettere un codice che nessuno sa rileggere sarebbe peggio di oggi.
+})
+
+it('CONTROLLO POSITIVO — un prefisso ambiguo NON viene risolto a caso', async () => {
+  // due righe in cervellone_fic_pending con lo stesso prefisso di 16 cifre:
+  // deve dichiarare l'ambiguita', non scegliere
+})
+```
+
+- [ ] **Step 2: eseguire, verificare il fallimento**
+- [ ] **Step 3: le tre voci in `ORIGINE_CODICE`**
+- [ ] **Step 4: gli 11 comandi da `comandoDaMostrare`** + il `grep` di chiusura a zero
+- [ ] **Step 5: il commento a `comandi-risolvi.ts:88`**
+- [ ] **Step 6: la regola nel prompt** + il test su entrambi i prompt vivi
+- [ ] **Step 7: un test per canale** — con un codice corto `fic_ok` in arrivo, il canale lo
+  espande, trova il pending e procede. **Su Telegram** verifica anche che il messaggio che
+  porta il comando sia spedito **senza `parse_mode`** (lo decide `contieneComandoConCodice`
+  dal contenuto: non passarlo a mano).
+- [ ] **Step 8: suite + typecheck**
+- [ ] **Step 9: mutazione** — togli `fic_ok` da `ORIGINE_CODICE`: devono morire il test dei
+  32 caratteri **e** quello del giro che si chiude. `cp`, `perl -0pi`, **`grep -c` che provi
+  il morso**, `md5sum` identico dopo il ripristino.
+- [ ] **Step 10: commit** — `git commit -m "i comandi di conferma FIC diventano toccabili: il buco era scritto nel commento"`
