@@ -1003,7 +1003,12 @@ export async function executeStudioTecnico(name: string, input: Record<string, u
         for (const doc of docsToSave) {
           const verifica = await verificaSalvabile(doc.content, conversationId)
           if (!verifica.ok) {
-            return `PREVENTIVO NON SALVATO (${doc.doc_type}).\n\n${verifica.esito.messaggio}\n\nNessuno dei tre documenti (preventivo, CME, quadro economico) e' stato consegnato: si fermano insieme, per non lasciarne fuori uno con la partita IVA sbagliata.`
+            // Il nome del documento che ha fallito la verifica va detto ESATTO:
+            // "PREVENTIVO NON SALVATO (quadro_economico)" nomina la cosa
+            // sbagliata a colpo d'occhio, e un messaggio che si legge male e'
+            // un messaggio che non dice il vero — che e' il difetto che questo
+            // intero lavoro chiude.
+            return `DOCUMENTI NON SALVATI — la verifica non e' passata su ${NOME_DOC_TYPE[doc.doc_type] ?? doc.doc_type}.\n\n${verifica.esito.messaggio}\n\nNessuno dei tre documenti (preventivo, CME, quadro economico) e' stato consegnato: si fermano insieme, per non lasciarne fuori uno con la partita IVA sbagliata.`
           }
         }
 
