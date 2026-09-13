@@ -669,16 +669,52 @@ export interface EsitoTurno {
   tool_chiamati: string[]
 }
 
+/**
+ * Il perimetro di uno specialista: gli attrezzi che ha in mano, e nessun altro.
+ *
+ * Opzionale, e **assente per i due canali di produzione**: il coordinatore ha
+ * tutta l'officina, come sempre.
+ */
+export interface PerimetroSpecialista {
+  /**
+   * I soli tool che questo turno puo' vedere ED eseguire.
+   *
+   * Serve in tutti e due i posti, ed e' importante capire perche':
+   * - nelle **definizioni**, perche' il modello non sprechi giri cercando roba
+   *   che non avra';
+   * - all'**esecuzione**, perche' quella e' la guardia. La vista non lo e': un
+   *   modello puo' chiedere un tool mai dichiarato, gli basta indovinarne il
+   *   nome.
+   */
+  toolConsentiti: ReadonlySet<string>
+}
+
 export async function runAgentTurn(
   request: ClaudeRequest,
   sink: ChannelSink,
   policy: ChannelPolicy,
+  perimetro?: PerimetroSpecialista,
 ): Promise<EsitoTurno> {
   const { systemPrompt, userQuery, conversationId } = request
 
-  const opzioniTool = opzioniToolDaAmbiente()
+  // Con un perimetro il differimento non si applica: gli attrezzi sono pochi e
+  // stanno tutti caricati. V. `OpzioniTool.soloQuesti`.
+  const opzioniTool = perimetro
+    ? { soloQuesti: perimetro.toolConsentiti }
+    : opzioniToolDaAmbiente()
   const memoryContext = await searchMemory(userQuery).catch(() => '')
-  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext, request.workingContext, opzioniTool !== undefined)
+  // ⚠️ `perimetro === undefined`, non `opzioniTool !== undefined`. L'avviso dice
+  // «gli altri strumenti esistono, cercali con tool_search_tool_bm25». Per uno
+  // specialista sarebbe FALSO due volte: non ha altri strumenti, e
+  // `tool_search_tool_bm25` non gli viene nemmeno dichiarato (v.
+  // `OpzioniTool.soloQuesti`). Manderebbe la contabile a cercare un attrezzo
+  // che non esiste, e l'avviso e' nel blocco CACHATO: se lo pagherebbe intero
+  // a ogni giro.
+  //
+  // E' lo stesso difetto gia' visto sulla mappa dell'officina — un'istruzione
+  // che indica uno strumento assente e' peggio di nessuna istruzione.
+  const differimentoAcceso = perimetro === undefined && opzioniTool !== undefined
+  const systemBlocks = buildCachedSystem(systemPrompt, memoryContext, request.workingContext, differimentoAcceso)
 
   if (policy.persistUserMessage && conversationId && userQuery) {
     saveMessageWithEmbedding(conversationId, 'user', userQuery).catch(() => {})
@@ -1016,32 +1052,23 @@ export async function runAgentTurn(
       // interrompeva PRIMA di eseguirli: incatenare due tool senza scrivere testo
       // in mezzo — leggi intestazione del Registro, poi scrivi la riga — e'
       // comportamento normale del modello, e faceva morire il turno in silenzio.
-      const toolResults = await executeToolBlocks(toolBlocks, conversationId)
-      // ⚠️ Dai RISULTATI, non dai blocchi richiesti.
+      // ⚠️ L'elenco degli eseguiti lo dichiara `executeToolBlocks`, che e'
+      // l'unica a saperlo: salta i tool server-side e rifiuta quelli fuori
+      // perimetro. Chiederlo a lei ha chiuso due bugie in un giorno —
+      // la prima stesura leggeva i blocchi RICHIESTI (audit del 13 set: con
+      // l'esecuzione sterilizzata il test restava verde), la seconda
+      // ricostruiva dai `tool_use_id` dei risultati e contava come eseguito
+      // anche un tool RIFIUTATO, perche' il rifiuto e' un `tool_result` come
+      // gli altri.
       //
-      // Prima questo ciclo scorreva `toolBlocks` e il commento diceva «dopo
-      // l'esecuzione». Era falso, e l'audit del 13 set 2026 l'ha provato
-      // sterilizzando `executeToolBlocks`: nessun tool eseguito, e il test
-      // restava verde. Registrava cosa il modello aveva CHIESTO.
-      //
-      // Non e' una sfumatura: `executeToolBlocks` salta `web_search` e
-      // `code_execution` (li esegue Anthropic, non noi), quindi un blocco
-      // server-side finiva in `tool_chiamati` senza essere mai passato di qui.
-      // E su un campo che esiste per rispondere a «cosa hai provato davvero»,
-      // credere alla richiesta invece che all'esito e' lo stesso difetto del 12
-      // set — il racconto scambiato per la prova — rifatto dentro l'attrezzo
-      // costruito per non rifarlo.
-      //
-      // `tool_use_id` e' il legame: un risultato esiste solo per un blocco che
-      // e' stato eseguito davvero.
-      const nomePerId = new Map<string, string>()
-      for (const b of toolBlocks) {
-        if (b.type === 'tool_use' && typeof b.name === 'string') nomePerId.set(b.id, b.name)
-      }
-      for (const r of toolResults) {
-        const nome = nomePerId.get((r as { tool_use_id?: string }).tool_use_id ?? '')
-        if (nome) toolChiamati.push(nome)
-      }
+      // Su un campo che esiste per rispondere a «cosa hai provato davvero»,
+      // chiedere a chi l'ha fatto e' l'unica versione che non puo' mentire.
+      const { results: toolResults, eseguiti } = await executeToolBlocks(
+        toolBlocks,
+        conversationId,
+        perimetro?.toolConsentiti,
+      )
+      toolChiamati.push(...eseguiti)
       if (toolResults.length === 0) break
       if (archiveToolSucceededIn(toolBlocks, toolResults)) archiveToolSucceeded = true
 
@@ -1385,12 +1412,61 @@ export async function callClaudeStreamTelegram(
 
 // ── Helpers ──
 
-async function executeToolBlocks(toolBlocks: any[], conversationId?: string): Promise<any[]> {
+async function executeToolBlocks(
+  toolBlocks: any[],
+  conversationId?: string,
+  /**
+   * Se c'e', **nessun altro tool viene eseguito**. E' la guardia vera del
+   * perimetro di uno specialista.
+   *
+   * `OpzioniTool.soloQuesti` toglie gli altri dalla VISTA del modello, e non
+   * basta: un modello puo' chiedere un tool che non gli e' stato dichiarato,
+   * gli basta indovinarne il nome — e i nomi di questo progetto sono parole
+   * italiane ovvie (`send_email`, `conferma_bozza_fic`). Senza questa riga, la
+   * contabile «limitata» potrebbe mandare una mail al primo tentativo.
+   *
+   * Il rifiuto torna al modello come `tool_result`, non come eccezione: deve
+   * LEGGERLO e cambiare strada, non morire. E il testo gli dice a chi
+   * appartiene l'attrezzo, cosi' puo' riferirlo al coordinatore invece di
+   * concludere «non si puo' fare» — il principio fondamentale vale anche per
+   * gli specialisti.
+   */
+  consentiti?: ReadonlySet<string>,
+): Promise<{ results: any[]; eseguiti: string[] }> {
   const results: any[] = []
+  /**
+   * I nomi dei tool che questa funzione ha ESEGUITO davvero — non quelli che le
+   * sono stati chiesti.
+   *
+   * Li dichiara lei perche' e' l'unica che lo sa: salta i tool server-side, e
+   * rifiuta quelli fuori perimetro. Prima il chiamante ricostruiva l'elenco
+   * incrociando i `tool_use_id` dei risultati, e **un tool rifiutato risultava
+   * eseguito** — il rifiuto e' un `tool_result` come gli altri. Trovato dal
+   * test del perimetro il 13 set 2026, ed e' il secondo modo in cui
+   * `tool_chiamati` ha provato a mentire in una giornata.
+   */
+  const eseguiti: string[] = []
   for (const block of toolBlocks) {
     if (block.type !== 'tool_use') continue
     if (block.name === 'web_search' || block.name === 'code_execution') continue // server-side
+    if (consentiti && !consentiti.has(block.name)) {
+      console.warn(`TOOL RIFIUTATO fuori perimetro: ${block.name}`)
+      results.push({
+        type: 'tool_result',
+        tool_use_id: block.id,
+        content:
+          `Rifiutato: "${block.name}" non fa parte dei tuoi attrezzi. ` +
+          'Non e\' un guasto e non e\' un divieto assoluto: appartiene a un altro specialista. ' +
+          'Fai quello che puoi coi tuoi attrezzi e scrivi nella risposta che per questo pezzo serve chi di dovere.',
+      })
+      continue
+    }
 
+    // Da qui in giu' il tool viene eseguito: registrato PRIMA della chiamata,
+    // perche' un tool che fallisce a meta' ha comunque agito — e uno
+    // specialista che dice «non l'ho toccato» su una mail gia' partita e'
+    // peggio di uno che dice «ci ho provato».
+    eseguiti.push(block.name)
     try {
       const result = await executeTool(block.name, block.input as Record<string, unknown>, conversationId)
       if (block.name === 'rivedi_immagine') {
@@ -1417,7 +1493,7 @@ async function executeToolBlocks(toolBlocks: any[], conversationId?: string): Pr
       results.push({ type: 'tool_result', tool_use_id: block.id, content: `Errore: ${(err as Error).message}` })
     }
   }
-  return results
+  return { results, eseguiti }
 }
 
 // cost-control 5 giu 2026: 500K char ≈ 125K token di input A OGNI messaggio web.

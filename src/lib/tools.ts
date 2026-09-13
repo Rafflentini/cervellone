@@ -926,6 +926,23 @@ const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI
 const EXECUTORS = [executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeModelloTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions(opzioni?: OpzioniTool) {
+  // `soloQuesti` vince su tutto: e' uno specialista, e i suoi attrezzi sono
+  // pochi e tutti caricati. Niente differimento (non c'e' massa da alleggerire)
+  // e niente `tool_search_tool_bm25` (non deve trovare altro: v. OpzioniTool).
+  if (opzioni?.soloQuesti) {
+    const suoi = opzioni.soloQuesti
+    return [
+      // I due server tool restano: l'API rifiuta con 400 una richiesta senza
+      // alcuno strumento, e sono 124 byte.
+      { type: 'web_search_20250305' as const, name: 'web_search', max_uses: 5 },
+      { type: 'code_execution_20260120' as const, name: 'code_execution' },
+      ...ALL_TOOLS.filter(({ name }) => suoi.has(name)).map(({ name, description, input_schema }) => ({
+        name,
+        description,
+        input_schema,
+      })),
+    ]
+  }
   const nucleo = opzioni?.nucleo
   const custom = ALL_TOOLS.map(({ name, description, input_schema }) =>
     nucleo && !nucleo.has(name)
