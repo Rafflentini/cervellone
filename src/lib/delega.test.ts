@@ -129,6 +129,22 @@ describe('lo specialista lavora zitto, e solo coi suoi attrezzi', () => {
     expect(perimetro.toolConsentiti.has('send_email')).toBe(false)
   })
 
+  it('⭐ lo specialista ha un budget SUO, molto piu piccolo del coordinatore', async () => {
+    // ⚠️ Aperto dall'audit del 13 set 2026. Un turno delegato gira DENTRO
+    // quello del coordinatore ma con il proprio `accUsage`: i suoi token NON
+    // entrano nel budget del coordinatore. Con i 200k pieni, un turno
+    // dell'Ingegnere poteva costarne 400 — e con due deleghe 600 — senza che
+    // nessun tetto se ne accorgesse.
+    const { MAX_RUN_TOKENS, MAX_SPECIALISTA_RUN_TOKENS } = await import('./run-budget')
+    await delega(contabile, { compito: 'x' }, 'prompt')
+    const [richiesta] = mockRunAgentTurn.mock.calls[0]
+    expect(richiesta.maxRunTokens).toBe(MAX_SPECIALISTA_RUN_TOKENS)
+    // La proprieta' che rende difendibile il numero: TRE deleghe stanno sotto
+    // UN budget di coordinatore. Anche il caso peggiore immaginabile non
+    // raddoppia la spesa di un turno.
+    expect(MAX_SPECIALISTA_RUN_TOKENS * 3).toBeLessThan(MAX_RUN_TOKENS)
+  })
+
   it("l'incarico NON viene scritto nella cronologia dell'Ingegnere", async () => {
     // E' un messaggio fra due macchine. Scriverlo riempirebbe la conversazione
     // di monologhi interni, e la memoria semantica se li ritroverebbe come se

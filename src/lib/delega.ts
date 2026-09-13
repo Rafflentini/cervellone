@@ -26,6 +26,7 @@
  */
 import { runAgentTurn, sinkMuto, type EsitoTurno } from './claude'
 import { perimetroDiLavoro, type Specialista } from './specialisti'
+import { MAX_SPECIALISTA_RUN_TOKENS } from './run-budget'
 
 // Ri-esportato per comodita' di chi delega. L'implementazione sta nel registro
 // (`specialisti.ts`): e' calcolo sui dati del registro, e li' i test possono
@@ -166,6 +167,10 @@ export async function delega(
         userQuery: incarico.compito,
         messages: [{ role: 'user', content: messaggio }],
         conversationId: incarico.conversationId,
+        // ⚠️ Senza questa riga lo specialista prendeva i 200k pieni, e i suoi
+        // token NON entrano nel budget del coordinatore: un turno
+        // dell'Ingegnere poteva costarne 400. V. MAX_SPECIALISTA_RUN_TOKENS.
+        maxRunTokens: MAX_SPECIALISTA_RUN_TOKENS,
       },
       // Muto: la voce che parla all'Ingegnere è una sola.
       sinkMuto(),
