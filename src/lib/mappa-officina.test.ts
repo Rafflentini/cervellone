@@ -6,7 +6,7 @@
  * nessuna mappa (vedi mappa-officina.ts): il modello si fida e conclude che un
  * attrezzo non catalogato non esiste.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // tools.ts importa moltissimi moduli con client Supabase a load-time (drive,
 // gmail, fatture-in-cloud, ...): mock di @supabase/supabase-js così ogni
@@ -79,6 +79,36 @@ describe('la mappa dell\'officina — guardia anti-buco (test che conta piu\' di
     const esistenti = new Set((getToolDefinitions() as { name?: string }[]).map((t) => t.name).filter(Boolean) as string[])
     const fantasmi = DOMINI.flatMap((d) => d.tool.filter((n) => !esistenti.has(n)).map((n) => `${n} (${d.nome})`))
     expect(fantasmi, `tool sulla mappa ma spariti dal registro: ${fantasmi.join(', ')}`).toEqual([])
+  })
+})
+
+/**
+ * ⚠️ La mappa esiste SOLO a interruttore acceso, e questi test lo accendono.
+ *
+ * A `TOOL_DEFER` spento il blocco direbbe «questi strumenti esistono e NON sono
+ * caricati» mentre sono caricati tutti e 131, e manderebbe il modello a cercare
+ * con `tool_search_tool_bm25`, che a interruttore spento non esiste fra i tool.
+ * Un'istruzione che indica uno strumento assente e' peggio di nessuna
+ * istruzione — e un test che la pretendesse sempre presente **proteggerebbe una
+ * bugia**.
+ */
+beforeEach(() => {
+  process.env.TOOL_DEFER = '1'
+})
+afterEach(() => {
+  delete process.env.TOOL_DEFER
+})
+
+describe('a interruttore SPENTO la mappa non c\'e\' — perche direbbe il falso', () => {
+  it('mappaOfficina() e vuota senza TOOL_DEFER', () => {
+    delete process.env.TOOL_DEFER
+    expect(mappaOfficina()).toBe('')
+  })
+
+  it('CONTROLLO POSITIVO — il prompt vivo NON la contiene a interruttore spento', async () => {
+    delete process.env.TOOL_DEFER
+    expect(await getChatSystemPrompt('ciao', [])).not.toContain('DOVE STANNO GLI ATTREZZI')
+    expect(await getTelegramSystemPrompt('ciao', [])).not.toContain('DOVE STANNO GLI ATTREZZI')
   })
 })
 

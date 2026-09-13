@@ -230,8 +230,24 @@ const INTESTAZIONE = [
   '',
 ].join('\n')
 
-/** Il blocco da iniettare nel prompt. ~318 token. */
+/**
+ * Il blocco da iniettare nel prompt. ~318 token — **e solo quando e' vero**.
+ *
+ * ⚠️ A interruttore SPENTO questo blocco MENTIREBBE: dice «questi strumenti
+ * esistono e NON sono caricati», mentre con `TOOL_DEFER` spento sono caricati
+ * tutti e 131, e `tool_search_tool_bm25` — che il blocco dice di usare — non
+ * esiste nemmeno fra i tool. Un'istruzione che indica uno strumento assente e'
+ * peggio di nessuna istruzione.
+ *
+ * Stessa condizione di `AVVISO_STRUMENTI_CERCABILI` (`claude.ts:386`), che era
+ * gia' legata all'interruttore **proprio per non mentire**. Qui mancava: e' un
+ * difetto nato dal brief del Task 17, che faceva chiamare il prompt senza leva.
+ *
+ * Vuoto a interruttore spento. Non «quasi vuoto»: vuoto, cosi' non costa
+ * nemmeno i 318 token a vuoto.
+ */
 export function mappaOfficina(): string {
+  if (process.env.TOOL_DEFER !== '1') return ''
   const righe = DOMINI.map((d) => `- ${d.nome}: ${d.contiene}`)
   return INTESTAZIONE + righe.join('\n')
 }
