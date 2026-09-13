@@ -526,3 +526,72 @@ export async function getTelegramSystemPrompt(userQuery: string, precedenti: str
   }
   return staticPart + SYSTEM_CACHE_SPLIT + variable
 }
+
+// ── IL PROMPT DI UNO SPECIALISTA (Decollo, passo 4) ──
+
+/**
+ * Il blocco «principio fondamentale», ESTRATTO da `BASE_PROMPT`.
+ *
+ * ⚠️ Estratto, non ricopiato. È la regola che dice al bot di non fermarsi
+ * davanti a un attrezzo che manca e di non dichiarare assente un dato che non
+ * ha guardato — cioè esattamente il difetto del 12 set 2026, la fattura con
+ * «MP01 Contanti» dichiarata vuota. Uno specialista ne ha bisogno **più** del
+ * coordinatore, perché ha meno attrezzi e quindi più occasioni di arrendersi.
+ *
+ * Una seconda copia divergerebbe: fra sei mesi il coordinatore avrebbe la
+ * regola aggiornata e la contabile quella vecchia, e nessuno se ne
+ * accorgerebbe. Un test prova che sono davvero lo stesso testo.
+ */
+export function principioFondamentale(): string {
+  const inizio = BASE_PROMPT.indexOf('=== IL PRINCIPIO FONDAMENTALE ===')
+  const fine = BASE_PROMPT.indexOf('=== fine principio fondamentale ===')
+  // Se i marcatori sparissero non si restituisce mezza regola: meglio niente
+  // che un principio troncato a meta' frase.
+  if (inizio === -1 || fine === -1 || fine < inizio) return ''
+  return BASE_PROMPT.slice(inizio, fine).trimEnd()
+}
+
+/**
+ * Il prompt con cui gira uno specialista.
+ *
+ * Corto per disegno: uno specialista non ha bisogno di sapere come si impagina
+ * un preventivo o quali sono le due società — sa il suo mestiere e ha i suoi
+ * attrezzi. Il pavimento di 17.371 token del coordinatore qui non si paga.
+ *
+ * Le tre cose che DEVE sapere, e che il coordinatore non deve dirgli a voce:
+ * 1. non parla all'Ingegnere — la sua risposta va al coordinatore;
+ * 2. prepara, non esegue le azioni che non si disfano;
+ * 3. se non ce la fa, lo dice E dice cosa ha provato.
+ */
+export function getPromptSpecialista(chi: {
+  nome: string
+  quando: string
+  toolDisponibili: readonly string[]
+}): string {
+  return [
+    `Sei ${chi.nome}, uno specialista del Cervellone (Restruktura SRL, Ing. Raffaele Lentini).`,
+    `Il tuo mestiere: ${chi.quando}.`,
+    '',
+    principioFondamentale(),
+    '',
+    '=== COME LAVORI, CHE E DIVERSO DAL COORDINATORE ===',
+    "NON stai parlando con l'Ingegnere. La tua risposta la legge il COORDINATORE, che poi",
+    "parlera' lui con l'Ingegnere. Quindi niente convenevoli e niente scuse: scrivi cosa hai",
+    'trovato e cosa hai fatto, in modo che possa essere riferito parola per parola.',
+    '',
+    'PREPARI, non esegui. Le azioni che non si disfano — inviare, trasmettere, confermare su',
+    "un gestionale fiscale — non sono fra i tuoi attrezzi, ed e' VOLUTO: le chiede il",
+    "coordinatore all'Ingegnere, che e' l'unico che le autorizza. Se il lavoro ne richiede",
+    'una, preparala e DILLO nella risposta.',
+    '',
+    'SE NON CE LA FAI, dillo E di anche COSA HAI PROVATO, con i nomi degli attrezzi che hai',
+    'usato. Un "non ci sono riuscito" senza il resto lascia il coordinatore al buio, e il',
+    "coordinatore lascia al buio l'Ingegnere.",
+    '',
+    'I TUOI ATTREZZI, tutti gia' + "' caricati: " + chi.toolDisponibili.join(', ') + '.',
+    "Non ne esistono altri per te, e non c'e' niente da cercare. Se ti serve qualcosa che qui",
+    "non c'e', NON e' un tuo limite e non e' un divieto: e' l'attrezzo di un altro",
+    'specialista. Fai tutto il resto e scrivi nella risposta quale pezzo manca e a chi serve',
+    'chiederlo.',
+  ].join('\n')
+}
