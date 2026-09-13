@@ -293,12 +293,22 @@ Più la guardia sul ciclo di import, che era una **lista nera di quattro nomi** 
 l'auditor l'ha aggirata due volte (con l'alias `@/lib/delega` e con `../tools`).
 Ora l'invariante è assoluta.
 
-### Cosa resta aperto dall'audit, dichiarato
+### Chiusi dopo l'audit
 
-- **Nessun tetto sul costo sommato.** Un turno delegato ha un budget **intero e
-  indipendente** da 200k token, e i suoi token non entrano in `accUsage` del
-  coordinatore. Un turno utente può costare 400k senza che nessun tetto se ne
-  accorga. La telemetria c'è (`entryPoint: specialista:*`), il **tetto no**.
+- ✅ **Il budget dello specialista.** `MAX_SPECIALISTA_RUN_TOKENS = 60_000`: il
+  meccanismo (`request.maxRunTokens`) c'era già, la delega non lo usava. Il
+  numero è scelto perché **tre deleghe stanno sotto un solo budget di
+  coordinatore** (180k < 200k), e un test inchioda quella proprietà.
+- ✅ **Senza conversazione non si delega affatto.** Tutti gli attrezzi della
+  contabile passano dal wrapper `contabile()`, che senza `conversationId`
+  rifiuta uno per uno: delegare bruciava un turno intero per farsi dire dieci
+  volte la stessa cosa.
+
+### Cosa resta aperto, dichiarato
+
+- **Non è un tetto sulla SOMMA.** Dieci deleghe sarebbero dieci budget da 60k.
+  Un tetto vero vorrebbe far passare il residuo dal coordinatore fin dentro
+  l'esecuzione del tool, che oggi non ha un canale per riceverlo.
 - **I tempi si sommano** dentro il `maxDuration = 800` della funzione, e il
   `try/catch` non intercetta una funzione uccisa dal runtime.
 - **Un rosso osservato una volta e non riprodotto** nei test dell'interruttore,
