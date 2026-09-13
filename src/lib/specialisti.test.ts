@@ -178,11 +178,23 @@ describe('il potere irreversibile si CALCOLA, non si dichiara', () => {
     expect(azioniIrreversibiliDi(segretaria)).toContain('send_email')
   })
 
-  it('il geometra NON ha potere irreversibile: un preventivo si rifa', () => {
+  it('il capocantiere NON ha potere irreversibile', () => {
     // Il controllo negativo che rende informativo quello sopra: se
     // `haPotereIrreversibile` restituisse sempre true, questo morirebbe.
-    expect(haPotereIrreversibile(specialista('geometra'))).toBe(false)
-    expect(azioniIrreversibiliDi(specialista('geometra'))).toEqual([])
+    // (Era il geometra: 🚨 falso, v. il test sotto.)
+    expect(haPotereIrreversibile(specialista('capocantiere'))).toBe(false)
+    expect(azioniIrreversibiliDi(specialista('capocantiere'))).toEqual([])
+  })
+
+  it("🚨 il geometra PUO' fare danni: importare un prezzario cancella quello vecchio", () => {
+    // Scelto come secondo specialista perche' «non puo' fare danni». L'audit
+    // del 13 set 2026 ha trovato che `importa_prezziario_da_url` cancella
+    // regione+anno e reinserisce senza transazione. L'unico potere e' quello,
+    // e il perimetro lo esclude: il geometra resta, senza l'import.
+    const geometra = specialista('geometra')
+    expect(azioniIrreversibiliDi(geometra)).toEqual(['importa_prezziario_da_url'])
+    expect(perimetroDiLavoro(geometra).has('importa_prezziario_da_url')).toBe(false)
+    expect(perimetroDiLavoro(geometra).size).toBeGreaterThan(0)
   })
 
   it("🚨 la signora delle case NON ha potere sulla Questura: la tabella del disegno diceva il falso", () => {
@@ -219,7 +231,7 @@ describe('il potere irreversibile si CALCOLA, non si dichiara', () => {
     const quadro = SPECIALISTI.map((s) => `${s.chiave}:${haPotereIrreversibile(s) ? 'SI' : 'no'}`)
     expect(quadro).toEqual([
       'contabile:SI',
-      'geometra:no',
+      'geometra:SI', // 🚨 era «no»: importa_prezziario_da_url cancella (audit 13 set)
       'capocantiere:no',
       'segretaria:SI',
       'archivista:SI',
@@ -231,10 +243,10 @@ describe('il potere irreversibile si CALCOLA, non si dichiara', () => {
   it('CONTROLLO POSITIVO — se un attrezzo irreversibile entra in mano a qualcuno, si vede', () => {
     // La prova che `haPotereIrreversibile` guarda davvero: allo stesso
     // specialista, con in piu' un attrezzo irreversibile, la risposta cambia.
-    const geometra = specialista('geometra')
-    expect(haPotereIrreversibile(geometra)).toBe(false)
-    const geometraArmato: Specialista = { ...geometra, toolDalNucleo: ['send_email'] }
-    expect(haPotereIrreversibile(geometraArmato)).toBe(true)
+    const capocantiere = specialista('capocantiere')
+    expect(haPotereIrreversibile(capocantiere)).toBe(false)
+    const armato: Specialista = { ...capocantiere, toolDalNucleo: ['send_email'] }
+    expect(haPotereIrreversibile(armato)).toBe(true)
   })
 })
 
@@ -265,9 +277,10 @@ describe('⭐ il perimetro di lavoro: la regola di Raffaele nel valore predefini
   it('CONTROLLO POSITIVO — quelle azioni ESISTONO nei loro attrezzi: e la regola a toglierle', () => {
     // Senza questo, il test sopra passerebbe anche se nessuno specialista
     // avesse mai avuto un attrezzo irreversibile: proverebbe zero. Sono
-    // quattro su sette ad averne — v. il quadro inchiodato qui sopra.
+    // cinque su sette ad averne — v. il quadro inchiodato qui sopra (erano
+    // quattro: il geometra si e' scoperto armato con l'audit del 13 set 2026).
     const conPotere = SPECIALISTI.filter((s) => azioniIrreversibiliDi(s).length > 0)
-    expect(conPotere.length).toBe(4)
+    expect(conPotere.length).toBe(5)
   })
 
   it('e il perimetro non e vuoto: si toglie il pericoloso, non il mestiere', () => {

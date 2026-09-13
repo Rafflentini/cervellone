@@ -122,6 +122,10 @@ export const AZIONI_IRREVERSIBILI: readonly string[] = [
   // Inoltra davvero le fatture estere se `prova` non e' true, e segna il mese
   // come fatto (il cron del 1° non lo rifa'). Trovato dall'audit del 13 set 2026.
   'raccogli_fatture_estere',
+  // Studio tecnico: CANCELLA tutte le voci di regione+anno e poi reinserisce a
+  // blocchi senza transazione; un blocco fallito non ferma niente. Le voci
+  // vecchie sono gia' perse (studio-tecnico.ts). Audit del 13 set 2026.
+  'importa_prezziario_da_url',
   // Contabilita': scrive su Fatture in Cloud, cioe' fuori di qui.
   'conferma_bozza_fic',
   'segna_fatture_ricevute_pagate',
@@ -161,10 +165,12 @@ export const SPECIALISTI: readonly Specialista[] = [
     nome: 'il geometra',
     dominio: 'Studio tecnico',
     quando: 'prezzari, preventivi, computi metrici, quadri economici, SAL',
-    // ⚠️ IL SECONDO, e scelto apposta perche' e' quello che NON puo' fare
-    // danni: `haPotereIrreversibile(geometra)` e' false, calcolato. Un
-    // preventivo si rifa'; una mail spedita no. Il secondo specialista serve a
-    // provare che il meccanismo generalizza, non ad alzare la posta.
+    // ⚠️ IL SECONDO, scelto perche' sembrava quello che NON puo' fare danni.
+    // 🚨 Falso: `importa_prezziario_da_url` cancella un prezzario prima di
+    // reimportarlo (audit del 13 set 2026). Ora e' fra le irreversibili, quindi
+    // fuori dal suo perimetro: il geometra CERCA e PREPARA, l'import resta al
+    // coordinatore. Il secondo specialista serve a provare che il meccanismo
+    // generalizza, non ad alzare la posta.
     porta: {
       tool: 'chiedi_al_geometra',
       usala_per:

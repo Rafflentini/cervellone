@@ -100,7 +100,10 @@ describe('i lettori degli interruttori accettano il valore vero di Vercel ("1\\n
 describe('nessuno legge gli interruttori a mano', () => {
   const { readdirSync, readFileSync, statSync } = require('fs') as typeof import('fs')
   const { join } = require('path') as typeof import('path')
-  const LETTURA_A_MANO = /process\.env(\.|\[\s*['"])(TOOL_DEFER|DECOLLO)\b/
+  // Tre forme: `process.env.X`, `process.env['X']` e la destrutturata
+  // `const { X } = process.env` (sopravvissuta a una mutazione dell'audit).
+  const LETTURA_A_MANO =
+    /process\.env(\.|\[\s*['"])(TOOL_DEFER|DECOLLO)\b|\{[^}]*\b(TOOL_DEFER|DECOLLO)\b[^}]*\}\s*=\s*process\.env/
 
   function sorgenti(dir: string): string[] {
     return readdirSync(dir).flatMap((n) => {
@@ -111,7 +114,11 @@ describe('nessuno legge gli interruttori a mano', () => {
   }
 
   it('solo interruttori.ts legge process.env per TOOL_DEFER e DECOLLO', () => {
-    const colpevoli = sorgenti(join(__dirname, '..'))
+    const tutti = sorgenti(join(__dirname, '..'))
+    // Un elenco vuoto farebbe passare la guardia senza guardare niente.
+    expect(tutti.length).toBeGreaterThan(100)
+    expect(tutti.some((p) => p.endsWith('claude.ts'))).toBe(true)
+    const colpevoli = tutti
       .filter((p) => !p.endsWith('interruttori.ts'))
       .filter((p) => LETTURA_A_MANO.test(readFileSync(p, 'utf8')))
     expect(colpevoli).toEqual([])
@@ -122,6 +129,8 @@ describe('nessuno legge gli interruttori a mano', () => {
     "process.env.TOOL_DEFER === '1'",
     "process.env['DECOLLO']",
     'process.env["TOOL_DEFER"]',
+    'const { DECOLLO: d } = process.env',
+    'const { A, TOOL_DEFER } = process.env',
   ])('il pattern vede %s', (riga) => {
     expect(LETTURA_A_MANO.test(riga)).toBe(true)
   })

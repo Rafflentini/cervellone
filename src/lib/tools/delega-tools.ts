@@ -46,7 +46,7 @@
  */
 import type { ToolDefinition } from './types'
 // ⚠️ `specialisti` e `mappa-officina` NON sono nel ciclo: il primo importa solo
-// il secondo, e il secondo non importa niente. Un test cammina il grafo degli
+// il secondo, e il secondo solo `interruttori` (che non importa niente). Un test cammina il grafo degli
 // import da questo file e verifica che non raggiunga MAI `tools.ts` — e' quella
 // la regola, non un elenco di nomi vietati.
 import { specialistiConPorta, specialistaDellaPorta, type Specialista } from '../specialisti'
