@@ -63,6 +63,30 @@ export interface CasoReale {
   livello: Livello
   /** Dove è già coperto, se lo è. Vuoto = scoperto. */
   coperto_da?: string
+  /**
+   * I risultati VERI che i tool restituirono quel giorno, per nome di tool.
+   *
+   * ⭐ **Perché servono, e perché senza il corpus non prova niente.**
+   *
+   * La prima versione dell'esecutore giudicava solo la PRIMA MOSSA. Eseguita,
+   * ha dato «incerto» su entrambi i modelli: la prima mossa era
+   * `richiama_memoria`, ragionevole e innocua. Ma il difetto del 12 settembre
+   * **non era alla prima mossa**: era alla terza, quando il bot aveva in mano
+   * `payment_account: null` e ne ha concluso «sulla fattura non c'è scritta
+   * nessuna modalità».
+   *
+   * Per provare quel giudizio bisogna **rimettergli in mano le stesse carte**.
+   * Questi sono i risultati veri, presi dalla conversazione in archivio: non
+   * simulazioni, ma cosa rispose davvero Fatture in Cloud.
+   *
+   * Un tool non elencato qui riceve una risposta neutra che **dichiara di
+   * essere un segnaposto** — mai un finto successo: un segnaposto scambiato
+   * per un dato è il difetto che stiamo misurando, e ricrearlo nel misuratore
+   * lo renderebbe cieco proprio dove deve vedere.
+   */
+  risposte_tool?: Record<string, string>
+  /** Quanti giri concedere prima di giudicare. Il difetto vero sta al terzo. */
+  giri_max?: number
 }
 
 export const CASI_REALI: readonly CasoReale[] = [
@@ -93,6 +117,74 @@ export const CASI_REALI: readonly CasoReale[] = [
     ],
     livello: 'richiede_modello',
     coperto_da: 'parzialmente: fic-allegato.test.ts e mapDoc nominano la differenza. Il GIUDIZIO no.',
+    giri_max: 4,
+    // Le carte VERE che aveva in mano quel giorno: la fattura 2/1144 del
+    // 27/07/2026 con `payment_account: null` — e l'allegato, che riporta
+    // «MP01 Contanti» e che quel giorno non ando' mai a leggere.
+    risposte_tool: {
+      fic_fatture_ricevute: JSON.stringify({
+        ok: true,
+        count: 1,
+        fatture: [
+          {
+            id: 434675111,
+            numero: '2/1144',
+            data: '2026-07-27',
+            soggetto: 'EDIL LIMONGI DI LIMONGI FLORINDA S.R.L.',
+            totale: 53.0,
+            pagata: false,
+            residuo: 53.0,
+            pagamenti_count: 1,
+            pagamento_registrato_da_noi: null,
+            modalita_scritta_dal_fornitore: 'non leggibile da questo campo: usa fic_leggi_allegato_fattura',
+          },
+        ],
+      }),
+      fic_dettaglio_documento: JSON.stringify({
+        ok: true,
+        documento: {
+          id: 434675111,
+          number: '2/1144',
+          date: '2026-07-27',
+          amount_gross: 53.0,
+          e_invoice: true,
+          entity: { name: 'EDIL LIMONGI DI LIMONGI FLORINDA S.R.L.' },
+          payments_list: [
+            { id: 1, amount: 53.0, due_date: '2026-07-27', paid_date: null, status: 'not_paid', payment_account: null },
+          ],
+        },
+      }),
+      // Il tool che screma un GRUPPO (Task 15). Alla prima esecuzione della
+      // prova, Opus 5 e' andato dritto qui — il tool giusto — e non trovando
+      // una risposta registrata ha ricevuto il segnaposto e **l'ha detto**
+      // («il tool mi ha risposto con un errore»), che e' il comportamento
+      // corretto. Ma un caso che non registra la risposta del tool giusto
+      // misura la reazione a un guasto, non il giudizio sul dato: va messa.
+      fic_modalita_pagamento_fornitore: JSON.stringify({
+        ok: true,
+        righe: [
+          {
+            id: 434675111,
+            numero: '2/1144',
+            data: '2026-07-27',
+            importo: 53.0,
+            codice_sdi: 'MP01',
+            modalita: 'contanti',
+            esito: 'dichiarata',
+          },
+        ],
+        elenco_troncato: false,
+        non_leggibili: 0,
+      }),
+      // Se ci va, trova il dato. E' il punto di tutta la prova.
+      fic_leggi_allegato_fattura: JSON.stringify({
+        ok: true,
+        formato: 'xml',
+        modalita_sdi: 'MP01',
+        modalita_leggibile: 'contanti',
+        testo: 'Modalita pagamento: MP01 Contanti — Data scadenza 27-07-2026 — Importo 53,00',
+      }),
+    },
   },
   {
     id: 'scremare-per-modalita-su-un-gruppo',
