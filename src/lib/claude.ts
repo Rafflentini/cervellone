@@ -550,8 +550,20 @@ export interface ChannelSink {
    *   **nessuna traccia del fallimento**.
    *
    * Quindi il testo non esce E il fallimento resta leggibile, in
-   * `EsitoTurno.troncato` e `EsitoTurno.outcome`. Chi delega legge quelli, non
-   * una frase scritta per un umano.
+   * `EsitoTurno.outcome` (sempre) e `EsitoTurno.troncato` (per le fermate da
+   * tetto). Chi delega legge quelli, non una frase scritta per un umano.
+   *
+   * ⚠️ **ZITTISCE IL LOOP, NON IL MODELLO.** I delta del modello continuano ad
+   * arrivare a `onText` e ad accumularsi in `fullResponse` — **e devono**: il
+   * testo del modello E' la risposta dello specialista, ed e' quello che torna
+   * in `EsitoTurno.testo`. Zittire anche quello renderebbe muti gli
+   * specialisti, non discreti.
+   *
+   * Quindi `sinkMuto()` scarta i delta col suo `onText` no-op, non col flag. Un
+   * chiamante che faccia `{ ...sinkMuto(), onText: mioHandler }` **ricevera'
+   * tutti i delta del modello**: e' voluto, ed e' la forma che usa il test per
+   * dimostrare che a zittire il loop e' il flag. Se ti serve il silenzio
+   * completo, usa `sinkMuto()` e basta.
    */
   muto?: boolean
 }
@@ -612,18 +624,47 @@ export function opzioniToolDaAmbiente(): OpzioniTool | undefined {
 export interface EsitoTurno {
   /** Quello che restituiva prima, identico: nessun chiamante cambia comportamento. */
   testo: string
-  /** La classificazione che gia' esisteva, ora visibile a chi delega. */
+  /**
+   * La classificazione che gia' esisteva, ora visibile a chi delega.
+   *
+   * ⚠️ **Chi delega legge SEMPRE questo, mai `troncato` da solo.** Un errore
+   * API lascia `troncato: false` — v. li' sotto.
+   */
   outcome: ModelOutcome
-  /** Vero se il motore si e' fermato per un TETTO (budget o iterazioni), non perche' il modello avesse finito. */
+  /**
+   * Vero se il motore ha smesso PRIMA che il modello avesse finito.
+   *
+   * Tre cause: budget di run superato, tetto di iterazioni esaurito col modello
+   * che chiedeva ancora tool, ciclo chiuso col modello ancora in pausa
+   * (`pause_turn`) — e quest'ultima puo' capitare anche al primo giro, senza
+   * nessun tetto di mezzo.
+   *
+   * ⚠️ **Non copre l'errore API.** Un turno che si schianta a meta' streaming
+   * lascia `troncato: false` e `outcome: 'api_error'`: chi guardasse solo
+   * questo campo prenderebbe una risposta parziale per completa. Per quello la
+   * regola e' leggere `outcome`, e `troncato` e' il di piu'.
+   */
   troncato: boolean
   /** Quanti giri ha fatto il ciclo. */
   iterazioni: number
   /**
-   * I tool eseguiti dal CICLO, in ordine, coi doppioni.
+   * I tool che il ciclo ha ESEGUITO, in ordine, coi doppioni.
    *
-   * Viene da `executeToolBlocks`, non dal testo del modello: un modello che
-   * racconta cosa ha provato e' la stessa autoaccusa che il 12 set 2026 ha
-   * fatto contare un difetto che non c'era.
+   * Derivato dai `tool_result` di `executeToolBlocks`, cioe' dall'esito: un
+   * risultato esiste solo per un blocco eseguito davvero. **Non** dai blocchi
+   * che il modello ha chiesto, e tantomeno dal suo testo.
+   *
+   * La differenza e' quella che conta: i tool server-side (`web_search`,
+   * `code_execution`) li esegue Anthropic e `executeToolBlocks` li salta,
+   * quindi **non compaiono qui**. Se ne avessi bisogno, il canale e'
+   * `sink.onServerTool`.
+   *
+   * ⚠️ La prima stesura di questo campo leggeva i blocchi richiesti mentre il
+   * commento prometteva l'esecuzione. L'audit del 13 set 2026 l'ha provato
+   * sterilizzando `executeToolBlocks`: nessun tool eseguito, test verde lo
+   * stesso. Su un campo che esiste per rispondere a «cosa hai provato
+   * davvero», credere alla richiesta invece che all'esito e' lo stesso difetto
+   * del 12 set — il racconto scambiato per la prova.
    */
   tool_chiamati: string[]
 }
@@ -730,10 +771,22 @@ export async function runAgentTurn(
     // qui, quindi basta questa riga — e coprirli uno per uno lascerebbe
     // scoperto il prossimo che qualcuno aggiunge.
     //
-    // Nessuna informazione si perde: ognuno dei cinque ha gia' scritto il
-    // proprio flag (runAbortedBudget, turnoTroncatoInPausa, apiErrorOccurred,
+    // Nessuna CAUSA si perde: ognuno dei cinque ha gia' scritto il proprio
+    // flag (runAbortedBudget, turnoTroncatoInPausa, apiErrorOccurred,
     // rispostaVuotaFallback) PRIMA di chiamare emit, e quei flag diventano
     // `outcome` e `troncato` in `EsitoTurno`.
+    //
+    // ⚠️ Ma qualche DETTAGLIO si perde, e va detto invece di prometterlo
+    // intero (l'audit del 13 set 2026 ha bocciato la versione precedente di
+    // questo commento, che diceva «nessuna informazione si perde»):
+    // - la classe dell'errore API (404, 529, crediti finiti, 429): la
+    //   distingue `messaggioErroreUtente`, che finisce solo nel testo;
+    //   `EsitoTurno` porta solo `outcome: 'api_error'`;
+    // - quale dei due fallback per risposta vuota e' scattato (con o senza
+    //   lavoro gia' fatto);
+    // - il marcatore «quanto sopra e' la risposta parziale prima dell'errore».
+    // Chi delega e ha bisogno di quei dettagli deve leggerli da `recordOutcome`
+    // o chiederli, non aspettarseli qui.
     if (sink.muto) {
       console.log(`STREAM(${policy.tag}) sink muto: testo del loop non consegnato (${testo.length} char)`)
       return
@@ -964,10 +1017,30 @@ export async function runAgentTurn(
       // in mezzo — leggi intestazione del Registro, poi scrivi la riga — e'
       // comportamento normale del modello, e faceva morire il turno in silenzio.
       const toolResults = await executeToolBlocks(toolBlocks, conversationId)
-      // Registrati QUI, dopo l'esecuzione: `tool_chiamati` dice cosa il ciclo ha
-      // fatto davvero, non cosa il modello ha chiesto o raccontato.
+      // ⚠️ Dai RISULTATI, non dai blocchi richiesti.
+      //
+      // Prima questo ciclo scorreva `toolBlocks` e il commento diceva «dopo
+      // l'esecuzione». Era falso, e l'audit del 13 set 2026 l'ha provato
+      // sterilizzando `executeToolBlocks`: nessun tool eseguito, e il test
+      // restava verde. Registrava cosa il modello aveva CHIESTO.
+      //
+      // Non e' una sfumatura: `executeToolBlocks` salta `web_search` e
+      // `code_execution` (li esegue Anthropic, non noi), quindi un blocco
+      // server-side finiva in `tool_chiamati` senza essere mai passato di qui.
+      // E su un campo che esiste per rispondere a «cosa hai provato davvero»,
+      // credere alla richiesta invece che all'esito e' lo stesso difetto del 12
+      // set — il racconto scambiato per la prova — rifatto dentro l'attrezzo
+      // costruito per non rifarlo.
+      //
+      // `tool_use_id` e' il legame: un risultato esiste solo per un blocco che
+      // e' stato eseguito davvero.
+      const nomePerId = new Map<string, string>()
       for (const b of toolBlocks) {
-        if (b.type === 'tool_use' && typeof b.name === 'string') toolChiamati.push(b.name)
+        if (b.type === 'tool_use' && typeof b.name === 'string') nomePerId.set(b.id, b.name)
+      }
+      for (const r of toolResults) {
+        const nome = nomePerId.get((r as { tool_use_id?: string }).tool_use_id ?? '')
+        if (nome) toolChiamati.push(nome)
       }
       if (toolResults.length === 0) break
       if (archiveToolSucceededIn(toolBlocks, toolResults)) archiveToolSucceeded = true

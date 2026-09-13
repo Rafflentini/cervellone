@@ -140,7 +140,7 @@ describe("il motore dice anche COM'E' andata", () => {
     expect(esito.testo).toContain('ok')
     expect(esito.outcome).toBe('success')
     expect(esito.troncato).toBe(false)
-    expect(esito.iterazioni).toBeGreaterThanOrEqual(1)
+    expect(esito.iterazioni).toBe(1)
   })
 
   it('tool_chiamati viene dal CICLO, non dal testo del modello', async () => {
@@ -167,6 +167,38 @@ describe("il motore dice anche COM'E' andata", () => {
     const { runAgentTurn } = await import('./claude')
     const esito = await runAgentTurn(richiesta, sinkInerte, policy)
     expect(esito.tool_chiamati).toContain('cerca_documenti')
+  })
+
+  it('CONTROLLO POSITIVO — un tool che il ciclo NON esegue non finisce in tool_chiamati', async () => {
+    // Il test qui sopra, da solo, non distingue «eseguito» da «richiesto»:
+    // l'audit del 13 set 2026 l'ha provato sterilizzando `executeToolBlocks` —
+    // zero tool eseguiti, test verde lo stesso.
+    //
+    // `web_search` e' il caso vero: `executeToolBlocks` lo SALTA, perche' lo
+    // esegue Anthropic e non noi. Se `tool_chiamati` venisse dai blocchi
+    // richiesti, comparirebbe qui pur non essendo mai passato per il ciclo.
+    let primoGiro = true
+    mockStream.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {},
+      finalMessage: async () => {
+        if (primoGiro) {
+          primoGiro = false
+          return {
+            content: [
+              { type: 'tool_use', id: 's1', name: 'web_search', input: {} },
+              { type: 'tool_use', id: 't1', name: 'cerca_documenti', input: {} },
+            ],
+            stop_reason: 'tool_use',
+            usage: usoPerGiro,
+          }
+        }
+        return { content: [{ type: 'text', text: 'fatto' }], stop_reason: 'end_turn', usage: usoPerGiro }
+      },
+    }))
+    const { runAgentTurn } = await import('./claude')
+    const esito = await runAgentTurn(richiesta, sinkInerte, policy)
+    expect(esito.tool_chiamati).toContain('cerca_documenti')
+    expect(esito.tool_chiamati).not.toContain('web_search')
   })
 
   it('CONTROLLO POSITIVO — un turno fermato dal budget dice troncato: true', async () => {
@@ -262,12 +294,27 @@ describe('uno specialista lavora in silenzio', () => {
     const { runAgentTurn, sinkMuto } = await import('./claude')
     const spia = vi.fn()
     // `muto` viene da sinkMuto(), ma `onText` e' una spia: cosi' il test prova
-    // che a zittire e' il FLAG, non il fatto che sinkMuto non faccia niente.
+    // che a zittire il LOOP e' il FLAG, non il fatto che sinkMuto non faccia
+    // niente. ⚠️ Vale solo per il testo del loop: qui il modello finto non
+    // emette delta, quindi la spia resterebbe ferma comunque per quelli. I
+    // delta del modello con `muto` passano ECCOME — v. il test ⭐ qui sopra.
     const esito = await runAgentTurn(richiesta, { ...sinkMuto(), onText: spia }, policy)
     expect(spia).not.toHaveBeenCalled()
     expect(esito.troncato).toBe(true)
     expect(esito.outcome).toBe('run_aborted')
     expect(esito.testo).not.toContain('budget')
+  })
+
+  it('⭐ col sink muto lo specialista RISPONDE COMUNQUE: muto non vuol dire muto', async () => {
+    // Il test che conta piu' di tutti in questo blocco. `muto` zittisce il
+    // LOOP, non il modello: il testo del modello E' la risposta dello
+    // specialista. Chi un domani "chiudesse il buco" zittendo anche i delta del
+    // modello renderebbe gli specialisti muti invece che discreti — e il
+    // coordinatore riceverebbe il vuoto da chi ha lavorato bene.
+    const { runAgentTurn, sinkMuto } = await import('./claude')
+    const esito = await runAgentTurn(richiesta, sinkMuto(), policy)
+    expect(esito.testo).toContain('ok')
+    expect(esito.outcome).toBe('success')
   })
 
   it('col sink muto il fallback per risposta vuota non esce, ma outcome resta empty', async () => {
