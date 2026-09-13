@@ -224,6 +224,66 @@ describe("il motore dice anche COM'E' andata", () => {
   })
 })
 
+/**
+ * Il modello finto che sfonda il budget al primo giro: chiede un tool e dichiara
+ * 10 milioni di token. E' lo scenario in cui il loop scrive al posto del
+ * modello.
+ */
+function modelloCheSfondaIlBudget() {
+  usoPerGiro = { input_tokens: 5_000_000, output_tokens: 5_000_000 }
+  mockStream.mockImplementation(() => ({
+    async *[Symbol.asyncIterator]() {},
+    finalMessage: async () => ({
+      content: [{ type: 'tool_use', id: 't1', name: 'cerca_documenti', input: {} }],
+      stop_reason: 'tool_use',
+      usage: usoPerGiro,
+    }),
+  }))
+}
+
+describe('uno specialista lavora in silenzio', () => {
+  it('CONTROLLO POSITIVO — con un sink NORMALE la frase sul budget esce davvero', async () => {
+    // Senza questo, il test qui sotto («col sink muto non esce») passerebbe
+    // anche se la frase non uscisse MAI, da nessun sink: proverebbe zero.
+    modelloCheSfondaIlBudget()
+    const detto: string[] = []
+    const { runAgentTurn } = await import('./claude')
+    await runAgentTurn(richiesta, { onText: (d) => { detto.push(d) } }, policy)
+    expect(detto.join('')).toContain('superato il budget')
+  })
+
+  it('col sink muto la frase NON esce, ma troncato resta true', async () => {
+    // Le due meta' contano tutte e due. Se uscisse, l'Ingegnere leggerebbe il
+    // monologo interno della contabile e poi la risposta del coordinatore: due
+    // messaggi per un evento. Se sparisse e basta, il coordinatore riceverebbe
+    // una stringa troncata senza alcun segnale di fallimento — il difetto
+    // peggiore che questo progetto conosce, ricreato dentro la difesa.
+    modelloCheSfondaIlBudget()
+    const { runAgentTurn, sinkMuto } = await import('./claude')
+    const spia = vi.fn()
+    // `muto` viene da sinkMuto(), ma `onText` e' una spia: cosi' il test prova
+    // che a zittire e' il FLAG, non il fatto che sinkMuto non faccia niente.
+    const esito = await runAgentTurn(richiesta, { ...sinkMuto(), onText: spia }, policy)
+    expect(spia).not.toHaveBeenCalled()
+    expect(esito.troncato).toBe(true)
+    expect(esito.outcome).toBe('run_aborted')
+    expect(esito.testo).not.toContain('budget')
+  })
+
+  it('col sink muto il fallback per risposta vuota non esce, ma outcome resta empty', async () => {
+    // Stessa sostanza, altro punto: il testo di scusa e' scritto per un umano.
+    // Chi delega legge `outcome`.
+    mockStream.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {},
+      finalMessage: async () => ({ content: [], stop_reason: 'end_turn', usage: usoPerGiro }),
+    }))
+    const { runAgentTurn, sinkMuto } = await import('./claude')
+    const esito = await runAgentTurn(richiesta, sinkMuto(), policy)
+    expect(esito.testo).toBe('')
+    expect(esito.outcome).toBe('empty')
+  })
+})
+
 describe('i chiamanti di produzione NON cambiano comportamento', () => {
   it('callClaudeStream restituisce ancora la STRINGA', async () => {
     const { callClaudeStream } = await import('./claude')

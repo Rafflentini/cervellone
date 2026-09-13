@@ -534,6 +534,36 @@ export interface ChannelSink {
   onTurnFailed?(motivo: MotivoFallimento): void
   /** Consegna finale, per i canali che riscrivono il messaggio invece di appendere. */
   onFinal?(text: string): void | Promise<void>
+  /**
+   * Questo sink non parla a un umano: dall'altra parte c'e' un altro agente.
+   *
+   * Cambia UNA cosa sola, ma è quella che conta: il loop smette di scrivere al
+   * posto del modello. Le frasi di cortesia — «mi fermo qui, ha superato il
+   * budget», «il lavoro si e' interrotto a meta'», il fallback per risposta
+   * vuota, il messaggio d'errore API — sono scritte per l'Ingegnere, non per un
+   * coordinatore. Con uno specialista annidato ci sono solo due esiti, ed
+   * entrambi sarebbero sbagliati:
+   *
+   * - stesso sink → il monologo interno dello specialista arriva all'Ingegnere
+   *   e poi il coordinatore ci scrive sopra: **due messaggi per un evento**;
+   * - sink muto senza segnale → il chiamante riceve una stringa troncata e
+   *   **nessuna traccia del fallimento**.
+   *
+   * Quindi il testo non esce E il fallimento resta leggibile, in
+   * `EsitoTurno.troncato` e `EsitoTurno.outcome`. Chi delega legge quelli, non
+   * una frase scritta per un umano.
+   */
+  muto?: boolean
+}
+
+/**
+ * Il sink di chi non parla all'Ingegnere: scarta tutto.
+ *
+ * Da usare per ogni turno annidato (specialisti, audit avversariali). Il
+ * chiamante legge `EsitoTurno`, non il testo di cortesia.
+ */
+export function sinkMuto(): ChannelSink {
+  return { onText: () => {}, muto: true }
 }
 
 /** Le uniche scelte per-canale che restano. Quattro, non trecento. */
@@ -694,6 +724,20 @@ export async function runAgentTurn(
   }
 
   const emit = async (testo: string) => {
+    // Un sink muto non riceve NIENTE di quello che scrive il loop, e il testo
+    // non finisce nemmeno in `fullResponse`: v. `ChannelSink.muto`. Tutti e
+    // cinque i punti in cui il loop scrive al posto del modello passano di
+    // qui, quindi basta questa riga — e coprirli uno per uno lascerebbe
+    // scoperto il prossimo che qualcuno aggiunge.
+    //
+    // Nessuna informazione si perde: ognuno dei cinque ha gia' scritto il
+    // proprio flag (runAbortedBudget, turnoTroncatoInPausa, apiErrorOccurred,
+    // rispostaVuotaFallback) PRIMA di chiamare emit, e quei flag diventano
+    // `outcome` e `troncato` in `EsitoTurno`.
+    if (sink.muto) {
+      console.log(`STREAM(${policy.tag}) sink muto: testo del loop non consegnato (${testo.length} char)`)
+      return
+    }
     fullResponse += testo
     await consegnaSicura('testo del loop', () => sink.onText(testo, fullResponse))
   }
@@ -1053,7 +1097,24 @@ export async function runAgentTurn(
   // cosa gia' fatta crea doppioni. Con `totalToolCalls > 0` si dice la verita'
   // e si chiede di verificare, mai di ripetere; a zero chiamate la frase
   // originale resta giusta.
-  if (fullResponse.length === 0) {
+  //
+  // ⚠️ `&& !causaGiaNota`. Il fallback e' per il caso «il loop e' finito e non
+  // sappiamo dire perche'»: se il motivo lo conosciamo gia' — budget, pausa
+  // troncata, errore API — questo blocco lo COPRIREBBE, marcando
+  // `rispostaVuotaFallback` e facendo vincere 'empty' nella classificazione
+  // qui sotto.
+  //
+  // In produzione non era visibile: con un sink normale ognuna di quelle tre
+  // fermate scrive la sua frase via `emit`, quindi `fullResponse` non e' mai
+  // vuoto e questo blocco non parte. Col sink muto — cioe' appena uno
+  // specialista comincia a lavorare — parte sempre, e un turno fermato dal
+  // budget verrebbe registrato 'empty'. Che NON e' un dettaglio di telemetria:
+  // 'run_aborted' e' escluso dal conteggio del circuit breaker, 'empty' no.
+  // Uno specialista che sfonda il budget tre volte di fila farebbe scattare il
+  // rollback su un modello perfettamente sano — lo stesso falso segnale gia'
+  // chiuso una volta su web_search e sulle promesse mantenute.
+  const causaGiaNota = apiErrorOccurred || runAbortedBudget || turnoTroncatoInPausa
+  if (fullResponse.length === 0 && !causaGiaNota) {
     console.warn(`STREAM(${policy.tag}) EMPTY: fullResponse vuoto dopo ${iterations} iter (totalToolCalls=${totalToolCalls}), applicato fallback`)
     segnalaFallimento('empty')
     rispostaVuotaFallback = true
