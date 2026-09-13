@@ -65,3 +65,9 @@ src/**/__sonda*.test.ts
 
 # script usa-e-getta del mutation testing e delle patch
 .[a-z][a-z0-9]*.mjs
+
+# I worktree degli agenti e lo scratch della sessione: mai nel repo.
+# Il 13 set 2026 un "git add -A" dalla radice ha committato due gitlink a
+# .claude/worktrees/ — cartelle che sono repository a se stanti. Annullato
+# prima del push; questa riga fa in modo che non serva accorgersene di nuovo.
+.claude/
