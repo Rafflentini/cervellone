@@ -79,8 +79,34 @@ group by entry_point
 order by turni desc;
 ```
 
-Annotare i numeri **qui sotto**, con la data. Un confronto a memoria non è un
-confronto.
+**⚠️ La colonna del tempo si chiama `ts`, non `created_at`** — verificato su
+`information_schema`. La prima stesura di questa query usava `created_at` e
+sarebbe esplosa. E `entry_point` è `text` senza vincoli: le righe
+`specialista:*` si scriveranno (controllato: l'unico vincolo della tabella è la
+chiave primaria).
+
+### 📊 La misura di partenza — **eseguita il 13 set 2026**, 7 giorni
+
+| entry_point | turni | input medio | output medio | **cache letta media** | costo totale |
+|---|---|---|---|---|---|
+| `chat` | 141 | 31.795 | 3.270 | 290.301 | **$49,83** |
+| `telegram` | 96 | 25.048 | 3.689 | 339.429 | **$100,64** |
+| `cron:memoria` | 5 | 32.779 | 3.877 | 0 | $0,78 |
+| `cron:audit` | 1 | 372 | 247 | 0 | $0,00 |
+
+**Il numero che salta all'occhio, e che nessuno aveva guardato: Telegram costa
+tre volte la chat, a turno.** $1,05 contro $0,35. Non è l'output (3.689 contro
+3.270, praticamente uguale) e non è l'input (25.048, addirittura *meno* della
+chat): è la **cache letta**, 339k contro 290k. Su Telegram il contesto
+ricaricato a ogni turno è più grosso.
+
+Quindi: **$151 in sette giorni**, e due terzi vengono da Telegram — il canale
+con meno turni.
+
+⚠️ Questa è un'**osservazione**, non una diagnosi: il perché quelle 339k si
+ricarichino va indagato, non indovinato. Ma dice dove guardare, e dice che il
+criterio n. 1 del pilota va misurato **per canale**: un miglioramento medio
+nasconderebbe il canale che costa.
 
 ### 2. Accendere
 
@@ -106,15 +132,29 @@ quattro non vale la pena misurarli.
 ```sql
 -- I turni degli specialisti si riconoscono dall'entry_point: `delega.ts` li
 -- scrive come `specialista:<chiave>` (es. `specialista:contabile`).
--- `outcome` e `iterations` stanno dentro `meta`, che è JSON: quelli sì.
+-- `outcome`, `iterations` e `totalToolCalls` stanno dentro `meta` (jsonb):
+-- verificati su claude.ts, dove logApiUsage li scrive.
 select entry_point,
        meta->>'outcome'        as esito,
        meta->>'iterations'     as giri,
        meta->>'totalToolCalls' as tool,
-       input_tokens, output_tokens, estimated_cost_usd, created_at
+       input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd, ts
 from api_usage
 where entry_point like 'specialista:%'
-order by created_at desc limit 20;
+order by ts desc limit 20;
+```
+
+E il confronto che conta davvero — **il costo di una richiesta intera**,
+coordinatore più specialisti:
+
+```sql
+-- Tutto quello che è successo in una finestra di 5 minuti, in ordine.
+-- Le righe `specialista:*` vanno SOMMATE a quella del coordinatore.
+select entry_point, meta->>'outcome' as esito,
+       input_tokens, output_tokens, cache_read_tokens, estimated_cost_usd, ts
+from api_usage
+where ts > now() - interval '5 minutes'
+order by ts;
 ```
 
 ⚠️ **Il costo di un turno delegato si SOMMA a quello del coordinatore.** Per il
