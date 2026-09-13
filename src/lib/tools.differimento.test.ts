@@ -80,11 +80,26 @@ describe('differimento delle definizioni dei tool', () => {
   // guardie anti-buco della mappa dell'officina — si spegnerebbe la difesa
   // insieme alla funzione, che e' il modo in cui un interruttore diventa un
   // buco. Il numero sale da 132 a 133 di proposito.
+  //
+  // LA DECISIONE, 13 settembre 2026 (audit del Decollo). Il NUMERO NON CAMBIA
+  // — restano 133 — ma l'impronta sì, da `21a1fc15f6632aa8756c066c4e041138`.
+  // E' cambiata la DESCRIZIONE di `chiedi_alla_contabile`, per un bloccante:
+  // aveva un parametro `societa` che non commutava niente. Gli attrezzi della
+  // contabile passano dal wrapper `contabile()`, che ricava la societa' dalla
+  // CONVERSAZIONE e non guarda mai l'input: il coordinatore avrebbe potuto
+  // scrivere «La Real Estate», la contabile leggere Restruktura e riferirle
+  // come La Real Estate, senza che se ne accorgesse nessuno. Il parametro e'
+  // stato TOLTO dallo schema e la descrizione ora dice di cambiare societa'
+  // attiva prima di chiamare.
+  //
+  // ⚠️ Un'impronta che cambia SENZA che cambi il numero e' esattamente il caso
+  // per cui questa asserzione porta l'md5 e non solo il conteggio: un tool
+  // ritoccato non si vede contando.
   it('senza opzioni: 133 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
     expect(defs).toHaveLength(133)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('21a1fc15f6632aa8756c066c4e041138')
+      .toBe('7f67d1145e7198ec7aac24abe0532c57')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

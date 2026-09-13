@@ -94,19 +94,44 @@ chiave primaria).
 | `cron:memoria` | 5 | 32.779 | 3.877 | 0 | $0,78 |
 | `cron:audit` | 1 | 372 | 247 | 0 | $0,00 |
 
-**Il numero che salta all'occhio, e che nessuno aveva guardato: Telegram costa
-tre volte la chat, a turno.** $1,05 contro $0,35. Non è l'output (3.689 contro
-3.270, praticamente uguale) e non è l'input (25.048, addirittura *meno* della
-chat): è la **cache letta**, 339k contro 290k. Su Telegram il contesto
-ricaricato a ogni turno è più grosso.
+**Telegram costa tre volte la chat, a turno: $1,05 contro $0,35.** $151 in
+sette giorni, e due terzi vengono dal canale con **meno** turni.
 
-Quindi: **$151 in sette giorni**, e due terzi vengono da Telegram — il canale
-con meno turni.
+### ⚠️ La causa NON è quella che sembrava. Spaccare per modello
 
-⚠️ Questa è un'**osservazione**, non una diagnosi: il perché quelle 339k si
-ricarichino va indagato, non indovinato. Ma dice dove guardare, e dice che il
-criterio n. 1 del pilota va misurato **per canale**: un miglioramento medio
-nasconderebbe il canale che costa.
+La prima lettura di questa tabella diceva «è la cache letta, 339k contro 290k».
+**Era sbagliata**, e va detto perché l'errore è istruttivo: un aggregato per
+canale **nascondeva la variabile vera**. Spaccato per modello:
+
+| entry_point | modello | turni | cache media | **costo/turno** | costo totale |
+|---|---|---|---|---|---|
+| `chat` | Sonnet 5 | 141 | 290.301 | $0,353 | $49,83 |
+| `telegram` | **Opus 5** | **30** | 405.245 | **$2,649** | **$79,47** |
+| `telegram` | Sonnet 5 | 45 | 296.799 | $0,346 | $15,55 |
+| `telegram` | Sonnet 4.6 | 21 | 336.756 | $0,267 | $5,61 |
+
+**A parità di modello i due canali costano identico** — $0,353 contro $0,346 su
+Sonnet 5. Non c'è nessuna inefficienza di Telegram.
+
+🚨 **Il 53% della spesa dell'intera settimana viene da 30 turni Telegram su
+Opus 5.** Trenta turni su 237 totali — il 13% — fanno $79,47 su $151.
+
+**Cosa questo dice al Decollo, e non è poco.** Il disegno prevede che il
+coordinatore giri su Opus o Fable, «perché deve controllare il lavoro degli
+specialisti». Questa misura ne dà il prezzo: **$2,65 a turno**, contro $0,35.
+Se il coordinatore stesse *sempre* su Opus, la settimana passerebbe da $151 a
+circa $630. La delega ha senso solo se il coordinatore su Opus fa **meno**
+giri, non gli stessi.
+
+⚠️ **Perché quei 30 turni girino su Opus non lo so, e non lo indovino.** Può
+essere `imposta_modello`, può essere il circuit breaker, può essere il cheap
+routing che su Telegram non scatta. Va guardato — è la prima cosa da guardare
+lunedì.
+
+Il ciclo rilegge la cache **a ogni giro**, quindi anche i giri contano:
+Telegram ne fa 4,21 di media contro 3,33 della chat, con 5,36 chiamate a tool
+contro 3,04. Ma la cache **per giro** su Telegram è più *bassa* (80.656 contro
+87.090): i giri spiegano la differenza di cache, **non** quella di costo.
 
 ### 2. Accendere
 

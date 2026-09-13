@@ -39,12 +39,24 @@ vi.mock('../specialisti', () => ({
   }),
 }))
 vi.mock('../prompts', () => ({ getPromptSpecialista: () => 'prompt-finto' }))
+const societaAttivaFinta = vi.fn()
+vi.mock('../societa-attiva', () => ({
+  leggiSocietaAttiva: (...a: unknown[]) => societaAttivaFinta(...a),
+}))
+vi.mock('../societa', () => ({
+  listaSocieta: () => [
+    { codice: 'restruktura', denominazione: 'Restruktura Srl' },
+    { codice: 'la_real_estate', denominazione: 'La Real Estate Srl' },
+  ],
+}))
 
 import { DELEGA_TOOLS, executeDelegaTool, decolloAcceso } from './delega-tools'
 
 beforeEach(() => {
   mockDelega.mockReset()
   mockDelega.mockResolvedValue({ ok: true, risposta: 'due fatture', azioni_fatte: ['fic_fatture_ricevute'] })
+  societaAttivaFinta.mockReset()
+  societaAttivaFinta.mockResolvedValue({ ok: true, codice: 'restruktura', esplicita: true })
   delete process.env.DECOLLO
 })
 afterEach(() => {
@@ -120,17 +132,55 @@ describe('⭐ un interruttore spento toglie una scorciatoia, non una capacita', 
 })
 
 describe('gli identificativi passano, la descrizione lo pretende', () => {
-  it('riferimenti e societa arrivano alla delega', async () => {
+  it('riferimenti e conversazione arrivano alla delega', async () => {
     process.env.DECOLLO = '1'
     await executeDelegaTool(
       'chiedi_alla_contabile',
-      { compito: 'segnale pagate', riferimenti: ['2/1144', '2/1145'], societa: 'Restruktura' },
+      { compito: 'segnale pagate', riferimenti: ['2/1144', '2/1145'] },
       'conv-1',
     )
     const [, incarico] = mockDelega.mock.calls[0]
     expect(incarico.riferimenti).toEqual(['2/1144', '2/1145'])
-    expect(incarico.societa).toBe('Restruktura')
     expect(incarico.conversationId).toBe('conv-1')
+  })
+
+  it("🚨 la societa NON e un parametro: si LEGGE dalla conversazione", async () => {
+    // Bloccante trovato dall'audit del 13 set 2026. Un parametro `societa` non
+    // commutava NIENTE: gli attrezzi della contabile passano dal wrapper
+    // `contabile()`, che ricava la societa' dalla CONVERSAZIONE e non guarda
+    // mai l'input. Il coordinatore avrebbe potuto scrivere «La Real Estate»,
+    // la contabile leggere Restruktura, e riferirle come La Real Estate —
+    // senza che se ne accorgesse nessuno.
+    //
+    // Ora la societa' si legge dalla stessa fonte che useranno i suoi
+    // attrezzi: quello che le si dice e quello che leggera' non possono
+    // divergere.
+    expect(Object.keys((DELEGA_TOOLS[0].input_schema as { properties: object }).properties)).toEqual([
+      'compito',
+      'riferimenti',
+    ])
+    process.env.DECOLLO = '1'
+    await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }, 'conv-1')
+    const [, incarico] = mockDelega.mock.calls[0]
+    expect(incarico.societa).toBe('Restruktura Srl')
+  })
+
+  it('CONTROLLO POSITIVO — se la societa NON si legge, NON si delega', async () => {
+    // Un lavoro contabile sulla societa' sbagliata e' peggio di un lavoro non
+    // fatto. E senza questo controllo il test sopra proverebbe solo che una
+    // lettura riuscita funziona.
+    process.env.DECOLLO = '1'
+    societaAttivaFinta.mockResolvedValue({ ok: false, errore: 'tabella non leggibile' })
+    const r = JSON.parse((await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }, 'conv-1'))!)
+    expect(r.ok).toBe(false)
+    expect(r.motivo).toMatch(/quale societa/i)
+    expect(mockDelega).not.toHaveBeenCalled()
+  })
+
+  it("la descrizione dice che si lavora sulla societa ATTIVA e come cambiarla", () => {
+    const d = DELEGA_TOOLS[0].description
+    expect(d).toMatch(/societa' ATTIVA/)
+    expect(d).toMatch(/imposta_societa_attiva/)
   })
 
   it("la descrizione VIETA le descrizioni tipo 'quelle di prima'", () => {
@@ -164,32 +214,62 @@ describe('🚨 il ciclo di import non deve tornare', () => {
     // ⚠️ E' il peggior tipo di guasto: si manifesta o no a seconda di quale
     // file viene caricato per primo. Puo' funzionare in locale e non su Vercel,
     // o funzionare per settimane e rompersi il giorno che qualcuno aggiunge un
-    // import altrove. Per questo la guardia legge il SORGENTE: un test di
-    // comportamento non lo vedrebbe tornare.
+    // import altrove.
+    //
+    // ⚠️ E questa guardia NON e' l'unica rete, ne' la prima a mordere — la
+    // versione precedente di questo commento lo sosteneva ed era rovesciata dai
+    // fatti (audit 13 set 2026). A mordere per prima e' il COMPORTAMENTO: il
+    // `vi.mock('../delega')` in cima a questo file forza l'ordine di
+    // caricamento cattivo, quindi rimettendo l'import statico il file esplode
+    // gia' in fase di raccolta con «DELEGA_TOOLS is not iterable», e questa
+    // guardia non arriva nemmeno a girare.
+    //
+    // Serve lo stesso, per due ragioni: dice PERCHE' con parole invece di un
+    // TypeError, e regge il giorno in cui questo file smettesse di mockare
+    // `../delega` — e allora l'ordine cattivo non sarebbe piu' forzato.
     const { readFileSync } = await import('fs')
     const { fileURLToPath } = await import('url')
     const percorso = fileURLToPath(new URL('./delega-tools.ts', import.meta.url))
     const sorgente = readFileSync(percorso, 'utf8')
-    const importStatici = sorgente
+    // ⚠️ NESSUN import statico a runtime, punto — non una lista nera di nomi.
+    //
+    // La prima stesura vietava `'../delega'`, `'../claude'`, `'../prompts'`,
+    // `'../specialisti'`. L'audit del 13 set 2026 l'ha aggirata due volte:
+    // - con l'alias **`'@/lib/delega'`**, che in `src/lib` e' usato in 21 file
+    //   (p.es. `agent-job.ts` importa cosi' `@/lib/claude`);
+    // - con **`'../tools'`**, cioe' il modulo al centro del ciclo, quello che
+    //   esplode — e che la lista nera non nominava nemmeno.
+    //
+    // Una lista di nomi si aggira cambiando grafia. L'invariante vera e' piu'
+    // semplice e non si aggira: da qui non si importa NIENTE a runtime, solo
+    // tipi (che spariscono a compilazione) e `./types`, che e' un modulo di
+    // soli tipi.
+    const vietati = sorgente
       .split(/\r?\n/)
-      .filter((r) => /^\s*import\s/.test(r) && !/^\s*import\s+type\s/.test(r))
-    const vietati = importStatici.filter((r) => /['"]\.\.\/(delega|claude|prompts|specialisti)['"]/.test(r))
+      .filter((r) => /^\s*import\s/.test(r))
+      .filter((r) => !/^\s*import\s+type\s/.test(r))
+      .filter((r) => !/['"]\.\/types['"]/.test(r))
     expect(
       vietati,
-      `import statici che rimettono il ciclo: ${vietati.join(' | ')}`,
+      `import statici a runtime (rimettono il ciclo): ${vietati.join(' | ')}`,
     ).toEqual([])
   })
 
-  it('CONTROLLO POSITIVO — il filtro riconoscerebbe un import statico vietato', () => {
-    // Senza, il test sopra passerebbe anche con una regex che non riconosce
+  it('CONTROLLO POSITIVO — il filtro riconosce anche le grafie che aggiravano la lista nera', () => {
+    // Senza, il test sopra passerebbe anche con un filtro che non riconosce
     // niente: l'11 set 2026 un commento dichiarava «controllo positivo» un test
     // che non controllava nulla.
-    const finto = "import { delega } from '../delega'"
-    expect(/['"]\.\.\/(delega|claude|prompts|specialisti)['"]/.test(finto)).toBe(true)
-    expect(/^\s*import\s/.test(finto)).toBe(true)
-    // E NON deve morsicare gli import di tipo, che il ciclo non lo creano.
-    const tipo = "import type { ToolDefinition } from './types'"
-    expect(/^\s*import\s+type\s/.test(tipo)).toBe(true)
+    const vietato = (r: string) =>
+      /^\s*import\s/.test(r) && !/^\s*import\s+type\s/.test(r) && !/['"]\.\/types['"]/.test(r)
+    // I due che avevano aggirato la lista nera:
+    expect(vietato("import { delega } from '@/lib/delega'")).toBe(true)
+    expect(vietato("import { getToolDefinitions } from '../tools'")).toBe(true)
+    // E quello che la lista nera prendeva:
+    expect(vietato("import { delega } from '../delega'")).toBe(true)
+    // Quelli leciti restano leciti: i tipi spariscono a compilazione, e
+    // './types' e' un modulo di soli tipi.
+    expect(vietato("import type { ToolDefinition } from './types'")).toBe(false)
+    expect(vietato("import { qualcosa } from './types'")).toBe(false)
   })
 
   it(

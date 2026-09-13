@@ -52,8 +52,21 @@
  * ci infilasse dentro un tool di mestiere per far tacere la guardia, un test
  * glielo direbbe.
  *
- * Non entrano nel testo iniettato nel prompt: il coordinatore li vede gia',
- * perche' non sono differiti.
+ * ⚠️ **Entrano nel testo iniettato nel prompt, ed e' obbligatorio.** La prima
+ * stesura diceva «il coordinatore li vede gia', non sono differiti»: FALSO,
+ * misurato dall'audit del 13 set 2026. Con `TOOL_DEFER=1` questi tool non sono
+ * nel nucleo, quindi vengono **differiti** come tutti gli altri — e non
+ * essendo su nessuno scaffale non comparivano nemmeno sulla mappa. Erano
+ * invisibili in tutti e due i posti, **proprio nel regime per cui il Decollo
+ * esiste**.
+ *
+ * E il coordinatore non li avrebbe trovati cercando: le parole di
+ * `chiedi_alla_contabile` sono le stesse dei tool FIC veri («fatture»,
+ * «contabilita'», «pagamento»), quindi la porta e gli attrezzi si farebbero
+ * concorrenza nella ricerca BM25.
+ *
+ * E' lo stesso difetto che questa mappa e' nata per chiudere, applicato alla
+ * porta stessa.
  */
 export const TOOL_DEL_COORDINATORE: readonly string[] = [
   // Decollo, passo 4. Spento finche' DECOLLO=1 (v. tools/delega-tools.ts): il
@@ -276,5 +289,12 @@ const INTESTAZIONE = [
 export function mappaOfficina(): string {
   if (process.env.TOOL_DEFER !== '1') return ''
   const righe = DOMINI.map((d) => `- ${d.nome}: ${d.contiene}`)
-  return INTESTAZIONE + righe.join('\n')
+  // I tool del coordinatore vanno NOMINATI, non descritti per dominio: sono
+  // suoi, non stanno su uno scaffale, e sono cosi' pochi che il nome costa meno
+  // di una perifrasi. Senza questa riga resterebbero invisibili — differiti e
+  // fuori dalla mappa — proprio con l'interruttore acceso (v. sopra).
+  const suoi = TOOL_DEL_COORDINATORE.length
+    ? `\nI TUOI (non di uno scaffale, chiamali per nome): ${TOOL_DEL_COORDINATORE.join(', ')}.`
+    : ''
+  return INTESTAZIONE + righe.join('\n') + suoi
 }

@@ -45,6 +45,7 @@ vi.mock('./skills', () => ({
 import { getToolDefinitions } from './tools'
 import { NUCLEO_TOOL, SERVER_TOOLS } from './tool-nucleo'
 import { DOMINI, mappaOfficina, TOOL_DEL_COORDINATORE } from './mappa-officina'
+import { DELEGA_TOOLS } from './tools/delega-tools'
 import { getChatSystemPrompt, getTelegramSystemPrompt } from './prompts'
 
 describe('la mappa dell\'officina — guardia anti-buco (test che conta piu\' di tutti)', () => {
@@ -56,8 +57,10 @@ describe('la mappa dell\'officina — guardia anti-buco (test che conta piu\' di
     // ce l'ha — e il modello del mondo di questo test non lo prevedeva.
     //
     // Non e' una maglia allargata: e' una categoria in piu', chiusa e
-    // sorvegliata dai due test qui sotto. Allargare la guardia avrebbe spento
-    // la difesa insieme al problema.
+    // sorvegliata dai test qui sotto — primo fra tutti quello che la LEGA a
+    // `DELEGA_TOOLS`, senza il quale l'esenzione era una scappatoia vera
+    // (provato con una mutazione, audit 13 set 2026). Allargare la guardia
+    // avrebbe spento la difesa insieme al problema.
     const fuoriNucleo = tutti.filter(
       (n) => !NUCLEO_TOOL.has(n) && !SERVER_TOOLS.includes(n) && !TOOL_DEL_COORDINATORE.includes(n),
     )
@@ -99,6 +102,25 @@ describe('la mappa dell\'officina — guardia anti-buco (test che conta piu\' di
  * l'esenzione deve pagare per esistere.
  */
 describe("gli attrezzi del coordinatore: un'esenzione, quindi sorvegliata", () => {
+  it("🚨 L'ESENZIONE E' ESATTAMENTE DELEGA_TOOLS: non un elenco a mano", () => {
+    // ⚠️ Questo test nasce da una MUTAZIONE SOPRAVVISSUTA, audit del 13 set
+    // 2026. Le altre guardie di questo blocco non chiudevano il buco che il
+    // commento in `mappa-officina.ts` prometteva di chiudere: bastava togliere
+    // un tool VERO dal suo scaffale e infilarlo qui, e la suite intera restava
+    // verde. `length <= 3` ✓, `esiste davvero` ✓ (esiste, e' proprio il
+    // problema), `non sta anche su uno scaffale` ✓ (l'avevi tolto).
+    //
+    // L'effetto in produzione era silenzioso e cattivo: il tool usciva dal
+    // perimetro del suo specialista, che se lo vedeva rifiutare, e la mappa
+    // taceva — esattamente come prima che l'esenzione esistesse.
+    //
+    // La cura non e' un'altra guardia a mano ma DERIVARE: l'esenzione vale per
+    // i tool della delega, e per nessun altro. Se domani qualcuno ci infila un
+    // nome, questo test lo dice — e se aggiunge un tool di delega vero, basta
+    // che lo registri dove va.
+    expect([...TOOL_DEL_COORDINATORE].sort()).toEqual(DELEGA_TOOLS.map((t) => t.name).sort())
+  })
+
   it('resta minuscola: se cresce, non e piu un eccezione ma una scappatoia', () => {
     expect(TOOL_DEL_COORDINATORE.length).toBeLessThanOrEqual(3)
   })
@@ -109,6 +131,33 @@ describe("gli attrezzi del coordinatore: un'esenzione, quindi sorvegliata", () =
     const esistenti = new Set((getToolDefinitions() as { name?: string }[]).map((t) => t.name).filter(Boolean) as string[])
     const fantasmi = TOOL_DEL_COORDINATORE.filter((n) => !esistenti.has(n))
     expect(fantasmi, `esentati che non esistono piu': ${fantasmi.join(', ')}`).toEqual([])
+  })
+
+  it("🚨 con l'interruttore ACCESO la mappa li NOMINA: altrimenti sono invisibili", () => {
+    // ⚠️ Bloccante trovato dall'audit del 13 set 2026. Con `TOOL_DEFER=1`
+    // questi tool NON sono nel nucleo, quindi vengono differiti come tutti gli
+    // altri; e non stando su nessuno scaffale non comparivano nemmeno sulla
+    // mappa. Invisibili in tutti e due i posti — proprio nel regime per cui il
+    // Decollo esiste.
+    //
+    // E non li avrebbe trovati cercando: le parole di `chiedi_alla_contabile`
+    // sono quelle dei tool FIC veri, quindi la porta e gli attrezzi si fanno
+    // concorrenza nella ricerca BM25.
+    process.env.TOOL_DEFER = '1'
+    const m = mappaOfficina()
+    for (const n of TOOL_DEL_COORDINATORE) {
+      expect(m, `la mappa non nomina ${n}: sarebbe invisibile`).toContain(n)
+    }
+  })
+
+  it('CONTROLLO POSITIVO — sono DIFFERITI: e per questo che vanno nominati', () => {
+    // La prova del fatto su cui poggia il test qui sopra. Se un domani
+    // finissero nel nucleo, questo morirebbe e direbbe che la riga sulla mappa
+    // e' diventata superflua — che e' un'informazione, non un guasto.
+    const defs = getToolDefinitions({ nucleo: NUCLEO_TOOL, ricerca: true }) as { name: string; defer_loading?: boolean }[]
+    for (const n of TOOL_DEL_COORDINATORE) {
+      expect(defs.find((d) => d.name === n)?.defer_loading, `${n} non risulta differito`).toBe(true)
+    }
   })
 
   it('nessuno di loro sta ANCHE su uno scaffale: o e del coordinatore o e di un mestiere', () => {

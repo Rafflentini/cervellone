@@ -1285,12 +1285,35 @@ export async function runAgentTurn(
 
   if (outcome === 'success') resetAnthropicBillingAlertIfNeeded()
 
-  recordOutcome(modelConfig.model, outcome, {
-    fullLen: fullResponse.length,
-    consecutiveNoText,
-    requestId: conversationId,
-    details: apiErrorOccurred ? apiErrorRecordDetails.slice(0, 500) : undefined,
-  }).catch(err => console.error(`[CB] recordOutcome(${policy.tag}) failed:`, err))
+  // 🚨 UN TURNO DI SPECIALISTA NON VOTA SULLA SALUTE DEL MODELLO.
+  //
+  // `recordOutcome` alimenta il circuit breaker: `empty`, `force_text`,
+  // `hallucination`, `timeout` e `api_error` sono imputati al MODELLO, e tre
+  // fallimenti negli ultimi cinque campioni fanno scattare il rollback — per
+  // i turni veri dell'Ingegnere.
+  //
+  // Un turno delegato gira con un altro prompt, altri attrezzi e un compito
+  // scritto da una macchina: i suoi fallimenti dicono che la delega non ha
+  // funzionato, NON che il modello e' rotto. Contarli vorrebbe dire far
+  // degradare il bot dell'Ingegnere per colpa di tre deleghe andate male.
+  //
+  // E c'e' il secondo effetto, peggiore: con la delega si scrivono DUE righe
+  // per turno utente, quindi la finestra di cinque campioni si riempie il
+  // doppio piu' in fretta e il breaker diventa piu' nervoso proprio mentre il
+  // modello sta bene. Trovato dall'audit del 13 set 2026.
+  //
+  // L'esito NON si perde: resta in `api_usage` sotto `entryPoint:
+  // specialista:*`, dove si legge per capire come va la delega.
+  if (perimetro) {
+    console.log(`[CB] turno specialista (${policy.tag}): outcome=${outcome} NON registrato sul breaker`)
+  } else {
+    recordOutcome(modelConfig.model, outcome, {
+      fullLen: fullResponse.length,
+      consecutiveNoText,
+      requestId: conversationId,
+      details: apiErrorOccurred ? apiErrorRecordDetails.slice(0, 500) : undefined,
+    }).catch(err => console.error(`[CB] recordOutcome(${policy.tag}) failed:`, err))
+  }
 
   await logApiUsage({
     entryPoint: request.entryPoint ?? policy.entryPoint,
