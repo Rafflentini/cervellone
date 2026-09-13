@@ -101,16 +101,22 @@ const CAMPI_NON_SCRIVIBILI = new Set([
 ])
 
 /**
- * Campi di sola lettura di `IssuedDocument` (schema ufficiale): oltre a quelli
- * delle ricevute, gli importi — che su una fattura EMESSA sono CALCOLATI dalle
- * righe, non scritti — e i campi che vivono dopo l'emissione (`ei_status`,
- * `seen_date`, `permanent_token`, gli url).
+ * Campi di sola lettura di `IssuedDocument` (schema ufficiale, verificato
+ * sull'openapi il 14 set 2026): oltre a quelli delle ricevute, gli importi —
+ * che su una fattura EMESSA sono CALCOLATI dalle righe (`amount_net`,
+ * `amount_vat`, ritenute, cassa, rivalsa), non scritti — e i campi che vivono
+ * dopo l'emissione (`ei_status`, `seen_date`, `permanent_token`, gli url).
+ * `amount_due_discount` invece e' SCRIVIBILE e si rispedisce com'e'.
  */
 const CAMPI_NON_SCRIVIBILI_EMESSA = new Set([
   ...CAMPI_NON_SCRIVIBILI,
   'amount_net',
   'amount_vat',
-  'amount_due_discount',
+  'amount_withholding_tax',
+  'amount_other_withholding_tax',
+  'amount_cassa',
+  'amount_cassa2',
+  'amount_rivalsa',
   'url',
   'ei_status',
   'seen_date',
@@ -582,6 +588,87 @@ function invarianti(doc: Record<string, unknown>, verso: Verso): Record<string, 
 export type Verifica = { ok: true } | { ok: false; motivo: string }
 
 /**
+ * Campi che la rilettura puo' legittimamente mostrare diversi: il piano
+ * pagamenti (che e' cio' che abbiamo scritto, e si controlla a parte), le
+ * date di sistema, gli url temporanei, i flag che FIC deriva dal pagamento.
+ */
+const VOLATILI = new Set([
+  'payments_list',
+  'created_at',
+  'updated_at',
+  'next_due_date',
+  'url',
+  'attachment_url',
+  'attachment_preview_url',
+  'dn_url',
+  'ai_url',
+  'seen_date',
+  'permanent_token',
+  'has_ts_pay_pending_payment',
+  'show_tspay_button',
+  'is_marked',
+])
+
+/**
+ * Forma canonica per il confronto: chiavi ordinate, `null`/`undefined`/''
+ * assenti, numeri (anche scritti come stringa) arrotondati al centesimo, date
+ * di sistema tolte a ogni profondita'. Serve a confrontare cio' che CONTA,
+ * non come FIC lo serializza.
+ */
+function canonico(v: unknown): unknown {
+  if (v === null || v === undefined || v === '') return undefined
+  if (typeof v === 'number') return Math.round(v * 100) / 100
+  if (typeof v === 'string') {
+    return /^-?\d+([.,]\d+)?$/.test(v.trim()) ? Math.round(Number(v.trim().replace(',', '.')) * 100) / 100 : v
+  }
+  if (Array.isArray(v)) return v.map(canonico)
+  if (typeof v === 'object') {
+    const o: Record<string, unknown> = {}
+    for (const k of Object.keys(v as object).sort()) {
+      if (k === 'created_at' || k === 'updated_at') continue
+      const c = canonico((v as Record<string, unknown>)[k])
+      if (c !== undefined) o[k] = c
+    }
+    return o
+  }
+  return v
+}
+
+/**
+ * Tutto cio' che e' cambiato fra prima e dopo FUORI dal pagamento scritto.
+ *
+ * La semantica del PUT non e' documentata: la rilettura e' l'unica prova, e
+ * sette campi nominati non bastano — una riga sparita con totali uguali, o
+ * `ei_data` alterato, passerebbero. Qui si confronta il documento INTERO,
+ * meno i volatili, e del piano pagamenti le voci NON toccate.
+ */
+export function campiCambiati(
+  prima: Record<string, unknown>,
+  dopo: Record<string, unknown>,
+  voce: number | null,
+): string[] {
+  const cambiati: string[] = []
+  const chiavi = new Set([...Object.keys(prima), ...Object.keys(dopo)].filter((k) => !VOLATILI.has(k)))
+  for (const k of [...chiavi].sort()) {
+    if (JSON.stringify(canonico(prima[k])) !== JSON.stringify(canonico(dopo[k]))) cambiati.push(k)
+  }
+  const p = voci(prima)
+  const d = voci(dopo)
+  if (voce === null) {
+    if (p.length !== 0 || d.length !== 1) cambiati.push(`payments_list (voci: ${p.length} → ${d.length}, attese 0 → 1)`)
+  } else if (p.length !== d.length) {
+    cambiati.push(`payments_list (voci: ${p.length} → ${d.length})`)
+  } else {
+    p.forEach((v, i) => {
+      if (i !== voce && JSON.stringify(canonico(v)) !== JSON.stringify(canonico(d[i]))) {
+        cambiati.push(`payments_list[${i + 1}] (voce non toccata)`)
+      }
+    })
+  }
+  return cambiati
+}
+
+/**
  * La parte più importante di tutto il tool: l'esito si legge dalla RILETTURA,
  * non dalla risposta della PUT.
  *
@@ -606,6 +693,15 @@ export function verificaPagamento(
         ok: false,
         motivo: `l'API ha risposto ok ma rileggendo il documento è CAMBIATO ${campo}: era "${prima[campo]}", ora "${dopo[campo]}". Controlla la fattura su Fatture in Cloud.`,
       }
+    }
+  }
+
+  const altro = campiCambiati(primaDoc, dopoDoc, fattura.voce)
+  if (altro.length > 0) {
+    return {
+      ok: false,
+      motivo: `l'API ha risposto ok ma rileggendo il documento è CAMBIATO fuori dal pagamento: ${altro.join(', ')}. `
+        + 'Controlla la fattura su Fatture in Cloud (righe, totali, dati SdI).',
     }
   }
 

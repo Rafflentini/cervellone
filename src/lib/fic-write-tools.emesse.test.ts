@@ -211,3 +211,76 @@ describe('annullare un incasso non deve CANCELLARE la fattura emessa', () => {
     expect(stato.eliminate).toEqual([])
   })
 })
+
+describe('la conferma a parole riconosce anche il verbo INCASSI', () => {
+  // 🚨 Trovato dall'audit del 14 set 2026: riconosceva solo «PAGAMENTI
+  // REGISTRATI», quindi un incasso RIUSCITO veniva riferito come «NON
+  // riuscita» — la stessa bugia gia' chiusa per le ricevute, rifatta sull'altro verso.
+  beforeEach(() => {
+    stato.riga = {
+      id: 'pend-1',
+      tipo: 'pagamento_emessa',
+      payload: {
+        conto: { id: 333, nome: 'Intesa Sanpaolo' },
+        data_pagamento: '2026-06-15',
+        documenti: [{ id: 533024661, fornitore: 'Condominio Residence Vallina II', numero: '19-ED', data: '2026-06-15', importo: 501.05, data_pagamento: '2026-06-15', importo_pagamento: 501.05, voce: 0, voci: 1 }],
+      },
+      conferme: 1,
+      stato: 'in_attesa',
+      societa: 'restruktura',
+      created_at: new Date().toISOString(),
+      updated_at: new Date(Date.now() - 60_000).toISOString(),
+      descrizione: 'Segno INCASSATE 1 fatture EMESSE su Fatture in Cloud',
+    }
+  })
+
+  it('un incasso riuscito NON viene riferito come fallito', async () => {
+    stato.esitiEmesse.set(533024661, { ok: true })
+    const out = JSON.parse(String(await executeFicWriteTool('conferma_bozza_fic', { id: 'pend-1' }, 'restruktura')))
+    expect(out.passo).toBe(2)
+    expect(String(out.messaggio)).toContain('INCASSI REGISTRATI')
+    expect(out.documento_creato).toBe(true)
+    expect(out.avviso).toBeNull()
+  })
+
+  it('un incasso fallito viene detto fallito (controllo positivo)', async () => {
+    stato.esitiEmesse.set(533024661, { ok: false, motivo: 'no' })
+    const out = JSON.parse(String(await executeFicWriteTool('conferma_bozza_fic', { id: 'pend-1' }, 'restruktura')))
+    expect(out.documento_creato).toBe(false)
+    expect(String(out.avviso)).toContain('NON e riuscita')
+  })
+})
+
+describe('l importo del bonifico deve combaciare al centesimo', () => {
+  it('un bonifico diverso dalla voce ESCLUDE la fattura e lo dice', async () => {
+    stato.letture.set(533024661, emessa())
+    const out = JSON.parse(String(await executeFicWriteTool('segna_fatture_emesse_pagate', { ...INPUT, importo_bonifico: 500 }, 'restruktura')))
+    expect(out.ok).toBe(false)
+    expect(JSON.stringify(out.escluse)).toContain('non combaciano al centesimo')
+    expect(stato.inserita).toBeNull()
+  })
+
+  it('un bonifico uguale alla voce passa (controllo positivo)', async () => {
+    stato.letture.set(533024661, emessa())
+    const out = JSON.parse(String(await executeFicWriteTool('segna_fatture_emesse_pagate', { ...INPUT, importo_bonifico: 501.05 }, 'restruktura')))
+    expect(out.ok).toBe(true)
+    expect(out.da_scrivere).toBe(1)
+  })
+
+  it('senza id non si puo indicare', async () => {
+    const out = JSON.parse(String(await executeFicWriteTool('segna_fatture_emesse_pagate', { cliente: 'Vallina', anno: 2026, modalita_pagamento: 'Intesa', data_pagamento: '2026-06-15', importo_bonifico: 501.05 }, 'restruktura')))
+    expect(out.ok).toBe(false)
+    expect(String(out.error)).toContain('solo su UNA fattura')
+  })
+})
+
+describe('l anteprima mostra l importo che verra SCRITTO quando non e il lordo', () => {
+  it('con ritenuta d acconto la voce vale meno del lordo, e l anteprima lo dice', async () => {
+    // Condominio: lordo 501,05, ritenuta 4% sul netto → la voce del piano e' 484,62.
+    stato.letture.set(533024661, emessa({ payments_list: [{ id: 91, amount: 484.62, due_date: '2026-07-15', status: 'not_paid' }] }))
+    const out = JSON.parse(String(await executeFicWriteTool('segna_fatture_emesse_pagate', INPUT, 'restruktura')))
+    expect(out.ok).toBe(true)
+    expect(String(out.anteprima)).toContain('si scrive 484,62')
+    expect(String(out.anteprima)).toContain('totale 484,62')
+  })
+})

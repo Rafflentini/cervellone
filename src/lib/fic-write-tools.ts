@@ -672,8 +672,19 @@ interface PagamentiPayload {
   documenti: FatturaDaSegnarePagata[]
 }
 
+/**
+ * Quando la voce del piano NON vale il lordo (ritenuta d'acconto, rate) va
+ * detto nell'anteprima: l'Ingegnere conferma l'importo che verra' SCRITTO,
+ * non il totale della fattura (audit del 14 set 2026).
+ */
+function notaImporto(f: FatturaDaSegnarePagata): string {
+  return Math.abs(f.importo_pagamento - f.importo) > 0.005
+    ? ` (si scrive ${euro(f.importo_pagamento)}: la voce del piano, non il lordo)`
+    : ''
+}
+
 function rigaFattura(f: FatturaDaSegnarePagata): string {
-  return `- [${f.id}] ${f.fornitore} — n.${f.numero} del ${f.data} — ${euro(f.importo)} → pagamento il ${f.data_pagamento}`
+  return `- [${f.id}] ${f.fornitore} — n.${f.numero} del ${f.data} — ${euro(f.importo)} → pagamento il ${f.data_pagamento}${notaImporto(f)}`
 }
 
 function intestazioneFattura(f: { id: number; fornitore: string; numero: string; data: string }, verso: Verso): string {
@@ -704,7 +715,8 @@ function descriviPagamenti(input: {
   verso: Verso
 }): string {
   const s = getSocieta(input.societa)
-  const totale = input.daScrivere.reduce((somma, f) => somma + f.importo, 0)
+  // Il totale e' quello che verra' SCRITTO (le voci), non la somma dei lordi.
+  const totale = input.daScrivere.reduce((somma, f) => somma + f.importo_pagamento, 0)
   const emessa = input.verso === 'emessa'
   return [
     emessa
@@ -782,6 +794,18 @@ async function segnaFatturePagate(
   const dataImposta = cleanString(input.data_pagamento)
   if (dataImposta && !/^\d{4}-\d{2}-\d{2}$/.test(dataImposta)) {
     return fail(`data_pagamento "${dataImposta}" non valida: serve il formato YYYY-MM-DD`)
+  }
+  // L'importo del bonifico, se l'Ingegnere lo passa, deve combaciare AL
+  // CENTESIMO con la voce che verra' scritta: un bonifico parziale non segna
+  // pagata l'intera voce (audit del 14 set 2026). Solo sul caso singolo.
+  const importoBonifico = input.importo_bonifico === undefined || input.importo_bonifico === null || input.importo_bonifico === ''
+    ? undefined
+    : Number(input.importo_bonifico)
+  if (importoBonifico !== undefined && !Number.isFinite(importoBonifico)) {
+    return fail(`importo_bonifico "${String(input.importo_bonifico)}" non e' un numero`)
+  }
+  if (importoBonifico !== undefined && idSingolo === undefined) {
+    return fail('importo_bonifico si puo indicare solo su UNA fattura: passa anche id')
   }
   // Un incasso ha la data del bonifico e nessun predefinito: si rifiuta QUI,
   // prima di leggere e prima del pending, cosi' non nasce un'anteprima con una
@@ -906,6 +930,15 @@ async function segnaFatturePagate(
   const escluse: FatturaEsclusa[] = []
   for (const doc of documenti) {
     const c = classificaFattura(doc, { data_pagamento: dataImposta, voce }, verso)
+    if (c.stato === 'da_scrivere' && importoBonifico !== undefined
+      && Math.abs(c.fattura.importo_pagamento - importoBonifico) > 0.005) {
+      escluse.push({
+        ...c.fattura,
+        motivo: `il bonifico e' di ${euro(importoBonifico)} e la voce da segnare pagata e' di ${euro(c.fattura.importo_pagamento)}: `
+          + 'non combaciano al centesimo, e non segno pagata una voce con un importo diverso da quello arrivato',
+      })
+      continue
+    }
     if (c.stato === 'da_scrivere') daScrivere.push(c.fattura)
     else escluse.push(c.fattura)
   }
@@ -1014,7 +1047,7 @@ async function eseguiPagamenti(
       const intestazione = intestazioneFattura(f, verso)
       if (esito.ok) {
         ids.push(f.id)
-        riuscite.push(`✅ ${intestazione} — ${euro(f.importo)} pagata il ${f.data_pagamento} su ${dati.conto.nome}`)
+        riuscite.push(`✅ ${intestazione} — ${euro(f.importo_pagamento)} pagata il ${f.data_pagamento} su ${dati.conto.nome}`)
       } else {
         fallite.push(`❌ ${intestazione} — ${esito.motivo}`)
       }
@@ -1310,8 +1343,12 @@ async function confermaBozzaFic(
   // scrivere: senza riconoscere anche il secondo, un pagamento riuscito
   // veniva riferito come «NON riuscito» — cioe' il codice avrebbe mentito
   // all'Ingegnere sull'esito di una scrittura contabile.
-  const parziale = messaggio.startsWith('PAGAMENTI REGISTRATI IN PARTE')
-  const eseguita = messaggio.startsWith('BOZZA creata su FIC') || messaggio.startsWith('PAGAMENTI REGISTRATI')
+  //
+  // Il verbo cambia col verso (PAGAMENTI sulle ricevute, INCASSI sulle
+  // emesse): riconoscere un solo verbo rifaceva la stessa bugia sull'altro
+  // (audit del 14 set 2026).
+  const parziale = /^(PAGAMENTI|INCASSI) REGISTRATI IN PARTE/.test(messaggio)
+  const eseguita = messaggio.startsWith('BOZZA creata su FIC') || /^(PAGAMENTI|INCASSI) REGISTRATI/.test(messaggio)
   return ok({
     id: riga.id,
     passo: 2,
@@ -1438,6 +1475,7 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
         mese: { type: 'integer', description: 'Mese 1-12, insieme ad anno.' },
         modalita_pagamento: { type: 'string', description: 'Nome o id del conto di pagamento di Fatture in Cloud su cui e arrivato l incasso, es. "Intesa Sanpaolo". Se omesso o non riconosciuto, il tool torna l elenco vero dei conti: chiedi all Ingegnere quale e richiama.' },
         data_pagamento: { type: 'string', description: 'OBBLIGATORIA. Data del bonifico YYYY-MM-DD, presa dall estratto conto o dallo screenshot della banca. Vale per tutte le fatture della selezione.' },
+        importo_bonifico: { type: 'number', description: 'Importo del bonifico arrivato, in euro (es. 501.05). PASSALO SEMPRE quando lo conosci: se non combacia al centesimo con la voce da segnare pagata, la fattura viene ESCLUSA e te lo dice — un bonifico parziale non chiude una fattura. Richiede id.' },
         voce: { type: 'integer', description: 'Quale voce del piano pagamenti segnare incassata (1 = la prima), solo quando la fattura ne ha piu di una e l Ingegnere ha detto quale. Richiede id.' },
       },
       required: ['data_pagamento'],

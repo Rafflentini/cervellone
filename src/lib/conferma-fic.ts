@@ -128,7 +128,9 @@ async function avanzaUnPasso(righe: RigaPending[]): Promise<EsitoConfermaFic> {
     return {
       intercettato: true,
       message:
-        `${message}\n\n⚠️ *Conferma DEFINITIVA*: creo il documento su ${nome}? `
+        // Un pending puo' essere una bozza da creare o un pagamento/incasso da
+        // scrivere: la descrizione della riga inizia con «Segno» nel secondo caso.
+        `${message}\n\n⚠️ *Conferma DEFINITIVA*: ${(riga.descrizione ?? '').startsWith('Segno') ? 'scrivo il pagamento' : 'creo il documento'} su ${nome}? `
         + 'Mi risponda «confermo» un\'ultima volta.',
     }
   }

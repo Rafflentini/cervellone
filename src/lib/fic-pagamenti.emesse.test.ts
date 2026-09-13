@@ -146,7 +146,7 @@ describe('i dati che l Ingegnere legge: numero e cliente di una fattura emessa',
 describe('il corpo del PUT su una fattura emessa', () => {
   it('rispedisce il documento meno i campi di sola lettura di IssuedDocument', () => {
     const corpo = corpoModifica(emessa(), [voceIncassata()], 'emessa')
-    for (const k of ['id', 'amount_net', 'amount_vat', 'amount_gross', 'amount_due_discount', 'url', 'attachment_url', 'next_due_date', 'ei_status', 'seen_date', 'permanent_token', 'locked', 'created_at', 'updated_at']) {
+    for (const k of ['id', 'amount_net', 'amount_vat', 'amount_gross', 'amount_withholding_tax', 'url', 'attachment_url', 'next_due_date', 'ei_status', 'seen_date', 'permanent_token', 'locked', 'created_at', 'updated_at']) {
       expect(corpo, k).not.toHaveProperty(k)
     }
     // Quello che DEVE restare: e' un documento intero, non un frammento.
@@ -154,6 +154,8 @@ describe('il corpo del PUT su una fattura emessa', () => {
     expect(corpo.items_list).toEqual(emessa().items_list)
     expect(corpo.payments_list).toEqual([voceIncassata()])
     expect(corpo.entity).toEqual({ id: 9, name: 'Condominio "Residence Vallina II A1,A2,A3"' })
+    // amount_due_discount e' SCRIVIBILE nello schema (audit 14 set): resta.
+    expect(corpo).toHaveProperty('amount_due_discount')
   })
 
   // Controllo positivo: sulla ricevuta amount_net resta scrivibile, com'era.
@@ -179,7 +181,7 @@ describe('la verifica rilegge anche quello che NON doveva cambiare', () => {
     ['totale lordo', { amount_gross: 999 }],
     ['stato SdI', { ei_status: 'rejected' }],
   ])('se rileggendo e cambiato %s, lo dice invece di dire fatto', (_nome, over) => {
-    const v = verificaPagamento(prima, dopo() && emessa({ payments_list: [voceIncassata()], ...over }), daScrivere(), INTESA, 'emessa')
+    const v = verificaPagamento(prima, emessa({ payments_list: [voceIncassata()], ...over }), daScrivere(), INTESA, 'emessa')
     expect(v.ok).toBe(false)
     if (v.ok) return
     expect(v.motivo).toContain('CAMBIATO')
@@ -269,5 +271,46 @@ describe('lettura e scrittura: endpoint delle fatture EMESSE, poi rilettura', ()
     const r = await segnaPagataFatturaEmessa(533024661, INTESA, { data_pagamento: BONIFICO }, 'restruktura')
     expect(r.ok).toBe(false)
     expect(fetchFinto).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('la verifica confronta il documento INTERO, non sette campi', () => {
+  // Audit del 14 set 2026: una riga sparita con totali uguali, o ei_data
+  // alterato, passavano. La semantica del PUT non e' documentata: la
+  // rilettura e' l'unica prova, e deve guardare tutto.
+  const prima = emessa()
+  const conIncasso = (over: Record<string, unknown> = {}) => emessa({ payments_list: [voceIncassata()], ...over })
+
+  it.each([
+    ['items_list (riga sparita, totali uguali)', { items_list: [] }],
+    ['ei_data', { ei_data: { vat_kind: 'S' } }],
+    ['subject', { subject: 'ALTRO' }],
+    ['e_invoice', { e_invoice: false }],
+  ])('se rileggendo e cambiato %s, lo dice', (_n, over) => {
+    const v = verificaPagamento(prima, conIncasso(over), daScrivere(), INTESA, 'emessa')
+    expect(v.ok).toBe(false)
+    if (v.ok) return
+    expect(v.motivo).toContain('CAMBIATO fuori dal pagamento')
+  })
+
+  it('una voce del piano NON toccata che cambia viene vista', () => {
+    const due = emessa({ payments_list: [voceIncassata(), { id: 92, amount: 10, due_date: '2026-08-15', status: 'not_paid' }] })
+    const dopo = emessa({ payments_list: [voceIncassata(), { id: 92, amount: 99, due_date: '2026-08-15', status: 'not_paid' }] })
+    const v = verificaPagamento(due, dopo, daScrivere({ voci: 2 }), INTESA, 'emessa')
+    expect(v.ok).toBe(false)
+    if (v.ok) return
+    expect(v.motivo).toContain('payments_list[2]')
+  })
+
+  it('le differenze di sola forma (numeri come stringhe, null vs assente, url e date di sistema) NON contano', () => {
+    const dopo = conIncasso({
+      amount_gross: '501.05',
+      url: 'https://altro',
+      updated_at: '2026-09-14 01:00:00',
+      seen_date: '2026-09-14',
+      attachment_url: undefined,
+      entity: { id: 9, name: 'Condominio "Residence Vallina II A1,A2,A3"', created_at: 'z', updated_at: 'w', address_extra: null },
+    })
+    expect(verificaPagamento(prima, dopo, daScrivere(), INTESA, 'emessa')).toEqual({ ok: true })
   })
 })

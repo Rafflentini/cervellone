@@ -150,11 +150,19 @@ describe('differimento delle definizioni dei tool', () => {
   // 15/06, li ha abbinati, e poi ha dovuto dire all'Ingegnere che «non esiste
   // un tool che scriva pagata su una fattura EMESSA». Esisteva solo per le
   // ricevute (i contanti Limongi). Il numero sale da 135 a 136 di proposito.
+  //
+  // LA DECISIONE, 14 settembre 2026 (notte, seconda). Il NUMERO NON CAMBIA —
+  // restano 136 — ma l'impronta si', da `0e77f378c51bbd066553761b0161f8a2`.
+  // `segna_fatture_emesse_pagate` ha un parametro in piu', `importo_bonifico`:
+  // l'audit dell'accensione ha fatto notare che il prompt diceva «combacia al
+  // centesimo» e il tool non aveva modo di saperlo — un bonifico parziale
+  // avrebbe segnato pagata l'intera voce. Ora, se l'importo non combacia, la
+  // fattura viene ESCLUSA e lo dice.
   it('senza opzioni: 136 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
     expect(defs).toHaveLength(136)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('0e77f378c51bbd066553761b0161f8a2')
+      .toBe('bec89cf4b8eca133e2e64a6ee3f21d54')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
