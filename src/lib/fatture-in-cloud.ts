@@ -492,11 +492,21 @@ export const FIC_READ_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'fic_cerca_anagrafica',
-    description: 'Cerca un cliente o fornitore in Fatture in Cloud per nome (sola lettura).',
+    description:
+      'Cerca un cliente o fornitore in Fatture in Cloud (sola lettura), per NOME, per CODICE FISCALE o per PARTITA IVA. ' +
+      "USALO SEMPRE PRIMA di fatturare a qualcuno: se il cliente c'e' gia', prendi il suo id e passalo come cliente_id a " +
+      'compila_fattura_emessa. Se NON c\'e\', crealo con fic_crea_cliente e poi compila la fattura con l\'id che ti restituisce. ' +
+      'Cerca per codice fiscale o partita IVA quando ce li hai: sono chiavi CERTE, mentre il nome puo\' essere scritto in modi ' +
+      'diversi («Rossi Mario» e «Mario Rossi») e farti concludere che un cliente non c\'e\' quando invece c\'e\'.',
     input_schema: {
       type: 'object',
-      properties: { tipo: { type: 'string', enum: ['cliente', 'fornitore'] }, nome: { type: 'string' } },
-      required: ['tipo', 'nome'],
+      properties: {
+        tipo: { type: 'string', enum: ['cliente', 'fornitore'] },
+        nome: { type: 'string', description: 'Nome o parte del nome. Basta anche solo il cognome.' },
+        codice_fiscale: { type: 'string', description: 'Chiave certa: se combacia e\' la stessa persona, comunque sia scritto il nome.' },
+        partita_iva: { type: 'string', description: 'Chiave certa, come il codice fiscale.' },
+      },
+      required: ['tipo'],
     },
   },
 ]
@@ -578,14 +588,68 @@ export async function executeFicTool(
       })
     }
     if (name === 'fic_cerca_anagrafica') {
-      const nome = String(input.nome || '').trim()
-      if (!nome) return JSON.stringify({ ok: false, error: 'nome richiesto' })
+      const pulito = (v: unknown) => String(v ?? '').trim().replace(/[\\']/g, '')
+      const nome = pulito(input.nome)
+      // CF e P.IVA senza spazi e in maiuscolo: «rssmra…» e «RSSMRA…» sono la
+      // stessa persona, e un confronto letterale direbbe di no.
+      const cf = pulito(input.codice_fiscale).replace(/\s+/g, '').toUpperCase()
+      const piva = pulito(input.partita_iva).replace(/\s+/g, '').toUpperCase()
+      if (!nome && !cf && !piva) {
+        return JSON.stringify({ ok: false, error: 'serve almeno uno fra nome, codice_fiscale e partita_iva' })
+      }
       const seg = input.tipo === 'fornitore' ? 'suppliers' : 'clients'
-      const r = await ficGet(`/c/${cid}/entities/${seg}`, { q: `name contains '${nome.replace(/[\\']/g, '')}'`, per_page: 25 }, societa)
-      if (!r.ok) return JSON.stringify({ ok: false, error: r.error })
+
+      // ⚠️ Si cercano TUTTE le chiavi date, non la prima che c'e'.
+      //
+      // Fino al 13 set 2026 questo tool cercava SOLO per nome, e il nome e'
+      // la chiave meno affidabile: «Rossi Mario» e «Mario Rossi» sono la stessa
+      // persona e una ricerca `name contains` non li unisce. Su un ospite
+      // ricorrente de La Real Estate voleva dire concludere «non c'e'» e
+      // creargli la seconda scheda.
+      //
+      // Il codice fiscale e la partita IVA sono chiavi CERTE: se combaciano e'
+      // la stessa persona, comunque sia scritto il nome.
+      const query: string[] = []
+      if (cf) query.push(`tax_code = '${cf}'`)
+      if (piva) query.push(`vat_number = '${piva}'`)
+      if (nome) query.push(`name contains '${nome}'`)
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const list = (r.data?.data ?? []).map((e: any) => ({ id: e?.id, nome: e?.name, piva: e?.vat_number ?? e?.vatNumber, cf: e?.tax_code ?? e?.taxCode, email: e?.email }))
-      return JSON.stringify({ ok: true, count: list.length, anagrafiche: list })
+      const perId = new Map<string, any>()
+      const trovatoCon: string[] = []
+      for (const q of query) {
+        const r = await ficGet(`/c/${cid}/entities/${seg}`, { q, per_page: 25 }, societa)
+        if (!r.ok) return JSON.stringify({ ok: false, error: r.error })
+        const righe = r.data?.data ?? []
+        if (righe.length > 0) trovatoCon.push(q.split(' ')[0])
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for (const e of righe as any[]) {
+          if (e?.id === undefined || e?.id === null) continue
+          perId.set(String(e.id), {
+            id: e.id,
+            nome: e.name,
+            piva: e.vat_number ?? e.vatNumber,
+            cf: e.tax_code ?? e.taxCode,
+            email: e.email,
+          })
+        }
+      }
+      const list = [...perId.values()]
+      return JSON.stringify({
+        ok: true,
+        count: list.length,
+        cercato_per: query,
+        trovato_per: trovatoCon,
+        anagrafiche: list,
+        // ⚠️ Un elenco vuoto NON e' un guasto ed e' un'informazione precisa:
+        // dirlo esplicitamente evita che il modello lo legga come «non ho
+        // potuto cercare» e si fermi — «non c'e'» e «non l'ho letto» sono due
+        // cose diverse anche qui.
+        cosa_faccio_adesso:
+          list.length === 0
+            ? "Nessuno in anagrafica con queste chiavi. Se devi fatturargli, crealo con fic_crea_cliente e poi usa il cliente_id che ti restituisce."
+            : "Prendi l'id giusto e passalo come cliente_id a compila_fattura_emessa.",
+      })
     }
     return JSON.stringify({ ok: false, error: `tool FIC sconosciuto: ${name}` })
   } catch (err) {

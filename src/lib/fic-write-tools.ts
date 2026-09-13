@@ -1262,7 +1262,14 @@ async function confermaBozzaFic(
 export const FIC_WRITE_TOOLS: ToolDefinition[] = [
   {
     name: 'compila_fattura_emessa',
-    description: 'Compila una bozza di fattura emessa su Fatture in Cloud, senza trasmetterla. Richiede doppia conferma prima della creazione. Supporta il sezionale di numerazione (es. "ED" per l\'edilizia), il centro di ricavo delle righe e l\'azzeramento della cassa previdenziale/rivalsa INARCASSA impostata di default sul cliente (passa cassa_perc: 0).',
+    description:
+      'Compila una bozza di fattura emessa su Fatture in Cloud, senza trasmetterla. Richiede doppia conferma prima della creazione. ' +
+      'Supporta il sezionale di numerazione (es. "ED" per l\'edilizia), il centro di ricavo delle righe e l\'azzeramento della cassa ' +
+      'previdenziale/rivalsa INARCASSA impostata di default sul cliente (passa cassa_perc: 0). ' +
+      'PRIMA DI CHIAMARMI, IL CLIENTE VA IN ANAGRAFICA. Tre passi, in questo ordine: ' +
+      '1) fic_cerca_anagrafica per codice fiscale o partita IVA (chiavi certe) o per nome; ' +
+      "2) se NON c'e', fic_crea_cliente — per gli affitti brevi de La Real Estate e' il caso normale, quasi ogni ospite e' nuovo; " +
+      '3) passa qui il cliente_id ottenuto. Senza id cerco per nome e, se in anagrafica ci sono due persone simili, prendo il primo.',
     input_schema: {
       type: 'object',
       properties: {

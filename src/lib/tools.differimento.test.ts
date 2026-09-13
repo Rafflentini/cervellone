@@ -125,11 +125,27 @@ describe('differimento delle definizioni dei tool', () => {
   // Cambia anche la descrizione di `compila_fattura_emessa`, che ora accetta
   // `cliente_id`: col solo nome, se in anagrafica ci sono due persone simili,
   // veniva preso il PRIMO in silenzio.
+  //
+  // LA DECISIONE, 13 settembre 2026 (sera, seconda). Il NUMERO NON CAMBIA —
+  // restano 135 — ma l'impronta si', da `c015553b88cc656168e7cbdf3e0efe3b`.
+  // Sono cambiate DUE descrizioni, per chiudere l'ultimo anello del giro che
+  // Raffaele ha descritto:
+  //
+  // - `fic_cerca_anagrafica` ora cerca anche per CODICE FISCALE e PARTITA IVA,
+  //   non piu' solo per nome. Il nome e' la chiave meno affidabile: «Rossi
+  //   Mario» e «Mario Rossi» sono la stessa persona e `name contains` non li
+  //   unisce. Su un ospite ricorrente voleva dire concludere «non c'e'» e
+  //   creargli la seconda scheda — cioe' il doppione, esattamente il difetto
+  //   che `fic_crea_cliente` era appena nato per evitare.
+  //
+  // - `compila_fattura_emessa` ora porta scritta la PROCEDURA nei suoi tre
+  //   passi (cerca → se manca crea → passa il cliente_id). Il tool sapeva
+  //   farlo; nessuno gli diceva in che ordine.
   it('senza opzioni: 135 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
     expect(defs).toHaveLength(135)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('c015553b88cc656168e7cbdf3e0efe3b')
+      .toBe('99f55eff78f0e4b014d76ed7d9ef51e4')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
