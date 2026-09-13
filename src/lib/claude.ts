@@ -567,11 +567,42 @@ export function opzioniToolDaAmbiente(): OpzioniTool | undefined {
   return process.env.TOOL_DEFER === '1' ? { nucleo: NUCLEO_TOOL, ricerca: true } : undefined
 }
 
+/**
+ * Com'e' andato un turno, non solo cosa ha scritto.
+ *
+ * Il motore calcolava gia' tutto questo e lo passava SOLO a `recordOutcome` e
+ * `logApiUsage` — telemetria che nessuno legge. Il chiamante riceveva una
+ * stringa e basta: non poteva distinguere «ha finito» da «si e' fermato a
+ * meta' per il tetto di budget». Finche' l'unico chiamante e' il turno vero
+ * poco male, perche' il testo di cortesia lo legge l'Ingegnere. Con uno
+ * specialista annidato diventa il difetto peggiore che questo progetto
+ * conosce: un lavoro troncato che torna al coordinatore travestito da
+ * risposta.
+ */
+export interface EsitoTurno {
+  /** Quello che restituiva prima, identico: nessun chiamante cambia comportamento. */
+  testo: string
+  /** La classificazione che gia' esisteva, ora visibile a chi delega. */
+  outcome: ModelOutcome
+  /** Vero se il motore si e' fermato per un TETTO (budget o iterazioni), non perche' il modello avesse finito. */
+  troncato: boolean
+  /** Quanti giri ha fatto il ciclo. */
+  iterazioni: number
+  /**
+   * I tool eseguiti dal CICLO, in ordine, coi doppioni.
+   *
+   * Viene da `executeToolBlocks`, non dal testo del modello: un modello che
+   * racconta cosa ha provato e' la stessa autoaccusa che il 12 set 2026 ha
+   * fatto contare un difetto che non c'era.
+   */
+  tool_chiamati: string[]
+}
+
 export async function runAgentTurn(
   request: ClaudeRequest,
   sink: ChannelSink,
   policy: ChannelPolicy,
-): Promise<string> {
+): Promise<EsitoTurno> {
   const { systemPrompt, userQuery, conversationId } = request
 
   const opzioniTool = opzioniToolDaAmbiente()
@@ -613,6 +644,19 @@ export async function runAgentTurn(
    * fallback (con/senza lavoro svolto) smettono di condividere le prime parole.
    */
   let rispostaVuotaFallback = false
+  /** I nomi dei tool che il CICLO ha eseguito, in ordine. V. `EsitoTurno.tool_chiamati`. */
+  const toolChiamati: string[] = []
+  /**
+   * L'ultimo giro arrivato in fondo al corpo del ciclo, cioe' senza `break`.
+   * Se vale MAX_ITERATIONS il ciclo si e' ESAURITO: il modello chiedeva ancora
+   * tool e il tetto l'ha troncato.
+   *
+   * ⚠️ Non copre i giri che escono con `continue` (anti-bugia, force-action):
+   * se l'ultimo giro fosse uno di quelli il conteggio resterebbe indietro e il
+   * troncamento non verrebbe visto. E' un falso NEGATIVO noto, non un falso
+   * positivo: meglio tacere che dichiarare troncato un turno finito.
+   */
+  let giriCompletati = 0
 
   /**
    * Avvisa il canale che il turno non e' lavoro compiuto. Va chiamato in TUTTI
@@ -876,6 +920,11 @@ export async function runAgentTurn(
       // in mezzo — leggi intestazione del Registro, poi scrivi la riga — e'
       // comportamento normale del modello, e faceva morire il turno in silenzio.
       const toolResults = await executeToolBlocks(toolBlocks, conversationId)
+      // Registrati QUI, dopo l'esecuzione: `tool_chiamati` dice cosa il ciclo ha
+      // fatto davvero, non cosa il modello ha chiesto o raccontato.
+      for (const b of toolBlocks) {
+        if (b.type === 'tool_use' && typeof b.name === 'string') toolChiamati.push(b.name)
+      }
       if (toolResults.length === 0) break
       if (archiveToolSucceededIn(toolBlocks, toolResults)) archiveToolSucceeded = true
 
@@ -946,6 +995,10 @@ export async function runAgentTurn(
         }
         break
       }
+      // Ultima riga del corpo: ci si arriva SOLO se il giro non e' uscito con
+      // un `break`. Se il ciclo finisce con questo contatore a MAX_ITERATIONS,
+      // e' il tetto ad aver troncato un lavoro che continuava.
+      giriCompletati = i + 1
     }
     // Il ciclo e' finito con il modello ancora in pausa: il tetto di iterazioni
     // ha troncato un lavoro non finito. `run_aborted` lo dice al circuit
@@ -1096,7 +1149,18 @@ export async function runAgentTurn(
     // riuscita.
   }).catch(err => console.error('[api-usage] logApiUsage fallita:', err instanceof Error ? err.message : err))
 
-  return fullResponse
+  return {
+    testo: fullResponse,
+    outcome,
+    // Tre cause, tutte e tre gia' tracciate dal loop: budget di run superato,
+    // ciclo finito col modello ancora in pausa, tetto di iterazioni esaurito
+    // col modello che chiedeva ancora tool. Le prime due hanno gia' avvisato
+    // l'Ingegnere con una frase; la terza no, ed era muta anche per il
+    // chiamante.
+    troncato: runAbortedBudget || turnoTroncatoInPausa || giriCompletati >= MAX_ITERATIONS,
+    iterazioni: iterations,
+    tool_chiamati: toolChiamati,
+  }
 }
 
 // ── Gli adattatori: tutto quello che resta di specifico per canale ──
@@ -1115,7 +1179,10 @@ export async function callClaudeStream(
   request: ClaudeRequest,
   callbacks: ClaudeStreamCallbacks,
 ): Promise<string> {
-  return runAgentTurn(
+  // `.testo` e non l'oggetto: i due canali restituiscono la stringa da sempre e
+  // continuano a restituirla. Chi vuole sapere com'e' andata chiama
+  // `runAgentTurn` direttamente.
+  return (await runAgentTurn(
     request,
     {
       onText: (delta) => { callbacks.onText(delta) },
@@ -1133,7 +1200,7 @@ export async function callClaudeStream(
     // client PRIMA di partire, e cosi' sopravvive anche a una richiesta che non
     // parte affatto — cosa che da qui non potremmo fare.
     { tag: 'web', entryPoint: 'chat', persistUserMessage: false },
-  )
+  )).testo
 }
 
 /** Ogni quanto riscrivere il messaggio Telegram: sotto, si sbatte contro i rate limit. */
@@ -1153,7 +1220,8 @@ export async function callClaudeStreamTelegram(
 ): Promise<string> {
   let lastTextEdit = 0
   let lastThinkingEdit = 0
-  return runAgentTurn(
+  // Come sopra: la stringa, identica a prima.
+  return (await runAgentTurn(
     request,
     {
       onTurnFailed: (motivo) => { callbacks?.onTurnFailed?.(motivo) },
@@ -1178,7 +1246,7 @@ export async function callClaudeStreamTelegram(
       onFinal: async (testo) => { await onChunk(testo) },
     },
     { tag: 'tg', entryPoint: 'telegram', persistUserMessage: true },
-  )
+  )).testo
 }
 
 // ── Helpers ──
