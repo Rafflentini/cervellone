@@ -128,7 +128,7 @@ describe("l'interruttore: spento di default, come TOOL_DEFER", () => {
     expect(decolloAcceso()).toBe(false)
   })
 
-  it("acceso SOLO con '1' esatto: 'true' e 'si' non bastano", () => {
+  it("acceso SOLO con '1' (spazi ai bordi a parte): 'true' e 'si' non bastano", () => {
     process.env.DECOLLO = 'true'
     expect(decolloAcceso()).toBe(false)
     process.env.DECOLLO = '1'

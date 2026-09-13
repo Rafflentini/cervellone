@@ -311,7 +311,7 @@ del 10 settembre **sta in un file che nessun sorgente importa**. Il rimando è a
 | **Il risparmio si realizza davvero?** | Le misure di questo documento vengono da una configurazione costruita a mano. Che i 28.671 token si risparmino **con il codice vero** è una previsione finché non la si legge su un turno vero. | `usage.input_tokens` nei log |
 | **Il registro registra?** | Se la tabella non c'è, o RLS blocca, il registro tace. | l'avviso `tool_call_log:` nei log di Vercel |
 
-**Per tornare indietro:** `TOOL_DEFER` a qualunque valore diverso da `'1'` (o rimossa) più un
+**Per tornare indietro:** `TOOL_DEFER` a `'0'` (o rimossa; gli spazi ai bordi non contano, v. `src/lib/interruttori.ts`) più un
 redeploy. Non si tocca il codice, e la garanzia è misurata: senza opzioni `getToolDefinitions()`
 produce **esattamente** l'output di `main`, md5 identico, ordine compreso.
 

@@ -9,6 +9,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getToolDefinitions, executeTool } from './tools'
 import { NUCLEO_TOOL, AVVISO_STRUMENTI_CERCABILI } from './tool-nucleo'
 import { interruttoreAcceso } from './interruttori'
+import { porteAperte } from './specialisti'
 import type { OpzioniTool } from './tools/types'
 import { searchMemory, saveMessageWithEmbedding, saveMessageOnly, saveEmbeddingOnly } from './memory'
 import { logError } from './sanitize'
@@ -397,6 +398,21 @@ function buildCachedSystem(
   return blocks
 }
 
+/**
+ * Le carte di un turno — strumenti e system — costruite come le costruisce il
+ * bot, per chi deve giocare una mano FUORI dal bot (le prove del pilota,
+ * `prove/esegui.ts`). Senza, la prova rimontava a mano gli strumenti e
+ * dimenticava l'avviso dei cercabili: misurava un prompt che il bot non usa
+ * (audit del 13 set 2026). Senza memoria né contesto di lavoro.
+ */
+export function carteDelTurno(systemPrompt: string) {
+  const opzioni = opzioniToolDaAmbiente()
+  return {
+    tools: getToolDefinitions(opzioni),
+    system: buildCachedSystem(systemPrompt, '', undefined, opzioni !== undefined),
+  }
+}
+
 // ── Streaming (chat web) ──
 
 /**
@@ -607,7 +623,11 @@ export function messaggioErroreUtente(message: string, details: string): string 
  * le variabili d'ambiente sono legate al deployment, non al progetto.
  */
 export function opzioniToolDaAmbiente(): OpzioniTool | undefined {
-  return interruttoreAcceso('TOOL_DEFER') ? { nucleo: NUCLEO_TOOL, ricerca: true } : undefined
+  // Le porte aperte degli specialisti stanno nel nucleo: la mappa le nomina
+  // «chiamali per nome», e differite il modello non le avrebbe (audit 13 set).
+  return interruttoreAcceso('TOOL_DEFER')
+    ? { nucleo: new Set([...NUCLEO_TOOL, ...porteAperte()]), ricerca: true }
+    : undefined
 }
 
 /**

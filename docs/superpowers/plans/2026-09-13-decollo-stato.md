@@ -190,7 +190,7 @@ proprio perché una parte del lavoro è finita in un'altra riga.
 
 ### 5. Se qualcosa va storto
 
-`DECOLLO` a qualunque cosa diversa da `1` (o cancellata) → redeploy. Il tool
+`DECOLLO` a `0` (o cancellata; `" 1 "` resta ACCESO, gli spazi ai bordi non contano) → redeploy. Il tool
 resta nel registro e rifiuta, dicendo al coordinatore di fare il lavoro da sé:
 nessuna capacità si perde, si perde solo la scorciatoia.
 

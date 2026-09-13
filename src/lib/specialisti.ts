@@ -32,6 +32,7 @@
  * solo il giorno che il tool arrivera'.
  */
 import { DOMINI } from './mappa-officina'
+import { interruttoreAcceso } from './interruttori'
 
 export type ChiaveSpecialista =
   | 'contabile'
@@ -118,6 +119,9 @@ export const AZIONI_IRREVERSIBILI: readonly string[] = [
   'forward_email',
   'pack_emails_and_send',
   'send_email_with_attachments',
+  // Inoltra davvero le fatture estere se `prova` non e' true, e segna il mese
+  // come fatto (il cron del 1° non lo rifa'). Trovato dall'audit del 13 set 2026.
+  'raccogli_fatture_estere',
   // Contabilita': scrive su Fatture in Cloud, cioe' fuori di qui.
   'conferma_bozza_fic',
   'segna_fatture_ricevute_pagate',
@@ -302,4 +306,18 @@ export function specialista(chiave: ChiaveSpecialista): Specialista {
   // tolga una riga dal registro lasciando la chiave nel tipo.
   if (!trovato) throw new Error(`specialista sconosciuto: ${chiave}`)
   return trovato
+}
+
+/**
+ * Le porte che il coordinatore deve VEDERE: tutte con `DECOLLO` acceso,
+ * nessuna da spento. Le usano il nucleo dei tool (`claude.ts`, così non sono
+ * differite) e la mappa nel prompt (così sono nominate) — la stessa lista
+ * nei due punti, altrimenti la mappa nomina una porta che il modello non ha.
+ *
+ * Da spento niente: una porta che rifiuta mostrata al modello è un giro perso.
+ * Trovato dall'audit dell'accensione del 13 set 2026: le porte erano fuori dal
+ * nucleo, cioè differite, mentre la mappa diceva «chiamali per nome».
+ */
+export function porteAperte(): string[] {
+  return interruttoreAcceso('DECOLLO') ? toolDelCoordinatore() : []
 }

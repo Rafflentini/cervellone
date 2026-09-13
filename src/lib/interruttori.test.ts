@@ -41,6 +41,7 @@ describe('interruttoreAcceso', () => {
     interruttoreAcceso('TOOL_DEFER')
     expect(warn).toHaveBeenCalledTimes(1)
     expect(String(warn.mock.calls[0][0])).toContain('TOOL_DEFER')
+    expect(String(warn.mock.calls[0][0])).toContain('"1\\n"') // dice COSA c'era di sporco
   })
 
   it('un valore non riconosciuto lo DICE nei log: spento, ma non in silenzio', () => {
@@ -88,5 +89,51 @@ describe('i lettori degli interruttori accettano il valore vero di Vercel ("1\\n
     expect(decolloAcceso()).toBe(true)
     delete process.env.DECOLLO
     expect(decolloAcceso()).toBe(false)
+  })
+})
+
+/**
+ * La guardia che copre anche i lettori SENZA test (es. `prove/esegui.ts`,
+ * trovato dall'audit del 13 set 2026): nessun sorgente legge un interruttore
+ * a mano. Legge i SORGENTI, come `nessuno-trasmette-fatture.test.ts`.
+ */
+describe('nessuno legge gli interruttori a mano', () => {
+  const { readdirSync, readFileSync, statSync } = require('fs') as typeof import('fs')
+  const { join } = require('path') as typeof import('path')
+  const LETTURA_A_MANO = /process\.env(\.|\[\s*['"])(TOOL_DEFER|DECOLLO)\b/
+
+  function sorgenti(dir: string): string[] {
+    return readdirSync(dir).flatMap((n) => {
+      const p = join(dir, n)
+      if (statSync(p).isDirectory()) return sorgenti(p)
+      return /\.tsx?$/.test(n) && !/\.test\.tsx?$/.test(n) ? [p] : []
+    })
+  }
+
+  it('solo interruttori.ts legge process.env per TOOL_DEFER e DECOLLO', () => {
+    const colpevoli = sorgenti(join(__dirname, '..'))
+      .filter((p) => !p.endsWith('interruttori.ts'))
+      .filter((p) => LETTURA_A_MANO.test(readFileSync(p, 'utf8')))
+    expect(colpevoli).toEqual([])
+  })
+
+  // Controllo positivo: il pattern riconosce le letture a mano vere.
+  it.each([
+    "process.env.TOOL_DEFER === '1'",
+    "process.env['DECOLLO']",
+    'process.env["TOOL_DEFER"]',
+  ])('il pattern vede %s', (riga) => {
+    expect(LETTURA_A_MANO.test(riga)).toBe(true)
+  })
+})
+
+describe("l'avviso non stampa un valore lungo", () => {
+  it('oltre 8 caratteri dice solo la lunghezza', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.DECOLLO = 'sk-segreto-lunghissimo'
+    interruttoreAcceso('DECOLLO')
+    const msg = String(warn.mock.calls[0][0])
+    expect(msg).not.toContain('segreto')
+    expect(msg).toContain('22 caratteri')
   })
 })

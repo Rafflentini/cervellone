@@ -14,9 +14,12 @@ export function interruttoreAcceso(nome: string): boolean {
   if (grezzo === undefined) return false
   const valore = grezzo.trim()
   const acceso = valore === '1'
+  // Il valore si mostra solo se e' corto: chi un giorno usasse questa funzione
+  // su una variabile che contiene un segreto non deve ritrovarselo nei log.
+  const mostrato = grezzo.length <= 8 ? JSON.stringify(grezzo) : `(${grezzo.length} caratteri)`
   if (grezzo !== valore || !(acceso || valore === '0' || valore === '')) {
     console.warn(
-      `[interruttori] ${nome}=${JSON.stringify(grezzo)} non e' un valore pulito: ` +
+      `[interruttori] ${nome}=${mostrato} non e' un valore pulito: ` +
         `lo leggo come ${acceso ? 'ACCESO' : 'SPENTO'}. Valori ammessi: "1" o "0".`,
     )
   }

@@ -44,9 +44,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk'
 import { CASI_REALI, type CasoReale } from './casi-reali'
-import { getToolDefinitions } from '../lib/tools'
-import { NUCLEO_TOOL } from '../lib/tool-nucleo'
-import { interruttoreAcceso } from '../lib/interruttori'
+import { carteDelTurno } from '../lib/claude'
 import { getTelegramSystemPrompt } from '../lib/prompts'
 
 const client = new Anthropic()
@@ -82,7 +80,7 @@ function argomento(nome: string): string | undefined {
  * tool in mano. Una prova che si ferma prima del punto in cui il difetto nasce
  * non prova niente — e dava pure l'impressione di aver provato qualcosa.
  */
-async function giocaLeMani(caso: CasoReale, modello: string, system: string, tools: unknown[]) {
+async function giocaLeMani(caso: CasoReale, modello: string, system: Anthropic.TextBlockParam[], tools: unknown[]) {
   const giriMax = caso.giri_max ?? 1
   const messaggi: Anthropic.MessageParam[] = [{ role: 'user', content: caso.domanda }]
   const toolChiamati: string[] = []
@@ -251,10 +249,7 @@ async function main() {
   const esiti: Esito[] = []
   for (const caso of casi) {
     // Il prompt e gli strumenti sono quelli VERI: se cambiano, cambia la prova.
-    const system = await getTelegramSystemPrompt(caso.domanda, [])
-    const tools = getToolDefinitions(
-      interruttoreAcceso('TOOL_DEFER') ? { nucleo: NUCLEO_TOOL, ricerca: true } : undefined,
-    )
+    const { system, tools } = carteDelTurno(await getTelegramSystemPrompt(caso.domanda, []))
 
     for (const modello of modelli) {
       process.stdout.write(`  ${caso.id.padEnd(42)} ${modello.padEnd(20)} `)
