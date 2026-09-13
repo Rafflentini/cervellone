@@ -204,6 +204,34 @@ export function azioniIrreversibiliDi(s: Specialista): readonly string[] {
   return AZIONI_IRREVERSIBILI.filter((a) => suoi.has(a))
 }
 
+/**
+ * Il perimetro con cui uno specialista lavora **di default**: i suoi attrezzi
+ * **meno** quelli irreversibili.
+ *
+ * ⚠️ **La regola di Raffaele sta qui, nel valore predefinito, e non in una nota
+ * da ricordarsi.** Verbatim, 13 set 2026:
+ *
+ *   «Ne il coordinatore, ne la segretaria spedisce MAI una fattura, quello lo
+ *    faccio solo io!»
+ *
+ * E il disegno (§6): *lo specialista **prepara**; il **coordinatore** chiede e
+ * gira*. Uno specialista che potesse confermare una bozza FIC o mandare una
+ * mail da solo salterebbe l'unico punto sorvegliato — quello in cui l'Ingegnere
+ * dice «invia».
+ *
+ * Il default e' la forma giusta per una regola come questa: una guardia che si
+ * deve ricordare di accendere e' una guardia che un giorno resta spenta.
+ *
+ * ⚠️ Sta QUI e non in `delega.ts` di proposito: e' calcolo sul registro, e qui
+ * i test possono guardarlo con i DOMINI veri. In `delega.ts` la mappa e'
+ * mockata, e un test la' proverebbe che la funzione viene chiamata — non che
+ * protegga davvero tutti e sette.
+ */
+export function perimetroDiLavoro(chi: Specialista): ReadonlySet<string> {
+  const irreversibili = new Set(AZIONI_IRREVERSIBILI)
+  return new Set(toolDi(chi).filter((t) => !irreversibili.has(t)))
+}
+
 export function specialista(chiave: ChiaveSpecialista): Specialista {
   const trovato = SPECIALISTI.find((s) => s.chiave === chiave)
   // Il tipo lo garantisce a compilazione; questo copre il caso in cui qualcuno

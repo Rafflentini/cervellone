@@ -35,6 +35,7 @@ import {
   toolDi,
   haPotereIrreversibile,
   azioniIrreversibiliDi,
+  perimetroDiLavoro,
   specialista,
   type Specialista,
 } from './specialisti'
@@ -198,6 +199,35 @@ describe('il potere irreversibile si CALCOLA, non si dichiara', () => {
     expect(haPotereIrreversibile(signora)).toBe(false)
   })
 
+  it("🚨 IL QUADRO INTERO, inchiodato: la tabella del disegno ne sbagliava TRE su sette", () => {
+    // ⚠️ Misurato il 13 set 2026 con `haPotereIrreversibile` sugli attrezzi
+    // veri. La tabella §4 del disegno sbagliava:
+    // - la signora delle case, segnata «si' (Questura)» → in realta' NO;
+    // - il capocantiere, segnato «si' (INPS)» → in realta' NO;
+    // - 🚨 l'archivista, segnato «no» → in realta' SI'.
+    //
+    // Le prime due sbagliavano per eccesso di prudenza e si sarebbero notate.
+    // La TERZA toglieva una sorveglianza a chi ne aveva bisogno, e non si
+    // sarebbe notata mai: `gestisci_accesso_cartelle` e
+    // `genera_link_condivisione` pubblicano, e un link generato e' un link che
+    // qualcuno puo' avere gia' in mano quando ci si ripensa.
+    //
+    // Questo test tiene il quadro INTERO, non una riga per volta: cosi' il
+    // giorno che uno specialista acquista o perde un potere, il cambiamento va
+    // DICHIARATO qui invece di passare inosservato. E' la stessa forma
+    // dell'impronta md5 del registro tool.
+    const quadro = SPECIALISTI.map((s) => `${s.chiave}:${haPotereIrreversibile(s) ? 'SI' : 'no'}`)
+    expect(quadro).toEqual([
+      'contabile:SI',
+      'geometra:no',
+      'capocantiere:no',
+      'segretaria:SI',
+      'archivista:SI',
+      'signora-delle-case:no',
+      'tecnico-di-se:SI',
+    ])
+  })
+
   it('CONTROLLO POSITIVO — se un attrezzo irreversibile entra in mano a qualcuno, si vede', () => {
     // La prova che `haPotereIrreversibile` guarda davvero: allo stesso
     // specialista, con in piu' un attrezzo irreversibile, la risposta cambia.
@@ -205,6 +235,47 @@ describe('il potere irreversibile si CALCOLA, non si dichiara', () => {
     expect(haPotereIrreversibile(geometra)).toBe(false)
     const geometraArmato: Specialista = { ...geometra, toolDalNucleo: ['send_email'] }
     expect(haPotereIrreversibile(geometraArmato)).toBe(true)
+  })
+})
+
+describe('⭐ il perimetro di lavoro: la regola di Raffaele nel valore predefinito', () => {
+  it('NESSUNO dei sette ha un azione irreversibile nel perimetro di lavoro', () => {
+    // ⚠️ Nasce da un errore trovato il 13 set 2026 NELLA TABELLA DEL DISEGNO.
+    // §4 segnava «l'archivista → no» sulla colonna irreversibile: FALSO. Ha in
+    // mano `gestisci_accesso_cartelle` e `genera_link_condivisione` —
+    // condividere e' pubblicare, e un link generato e' un link che qualcuno
+    // puo' avere gia' in mano quando ci si ripensa.
+    //
+    // Quell'errore sbagliava nella direzione PERICOLOSA — toglieva una
+    // sorveglianza a chi ne aveva bisogno — e non si sarebbe notato mai. Il
+    // default lo copre lo stesso, perche' CALCOLA invece di fidarsi della
+    // tabella.
+    //
+    // E sta QUI, dove DOMINI e' quello vero: in `delega.test.ts` la mappa e'
+    // mockata con un dominio solo, e lo stesso test avrebbe trovato sei
+    // specialisti su sette a mani vuote — sarebbe passato senza guardare
+    // niente.
+    const armati = SPECIALISTI.flatMap((s) => {
+      const suo = perimetroDiLavoro(s)
+      return AZIONI_IRREVERSIBILI.filter((a) => suo.has(a)).map((a) => `${a} (${s.nome})`)
+    })
+    expect(armati, `specialisti con un'azione irreversibile in mano: ${armati.join(', ')}`).toEqual([])
+  })
+
+  it('CONTROLLO POSITIVO — quelle azioni ESISTONO nei loro attrezzi: e la regola a toglierle', () => {
+    // Senza questo, il test sopra passerebbe anche se nessuno specialista
+    // avesse mai avuto un attrezzo irreversibile: proverebbe zero. Sono
+    // quattro su sette ad averne — v. il quadro inchiodato qui sopra.
+    const conPotere = SPECIALISTI.filter((s) => azioniIrreversibiliDi(s).length > 0)
+    expect(conPotere.length).toBe(4)
+  })
+
+  it('e il perimetro non e vuoto: si toglie il pericoloso, non il mestiere', () => {
+    // Una guardia che blocca il caso normale e' peggio del buco che chiude.
+    // La contabile senza `conferma_bozza_fic` deve comunque poter LEGGERE le
+    // fatture, o la delega non serve a niente.
+    const aManiVuote = SPECIALISTI.filter((s) => perimetroDiLavoro(s).size === 0).map((s) => s.nome)
+    expect(aManiVuote, `specialisti resi inutili dalla guardia: ${aManiVuote.join(', ')}`).toEqual([])
   })
 })
 

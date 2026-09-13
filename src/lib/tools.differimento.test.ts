@@ -67,11 +67,24 @@ describe('differimento delle definizioni dei tool', () => {
   // non_leggibile (un GUASTO). Nasce dalle parole di Raffaele il 12 set 2026:
   // «se io ti dico di controllare, se c'e', tu devi saperlo fare e dirmelo, in
   // modo da scremare le fatture». Il numero sale da 131 a 132 di proposito.
-  it('senza opzioni: 132 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 13 settembre 2026 (Decollo, passo 4). Era 132 con impronta
+  // `fd64fdae3ab2fc6c39e7d6fe1a54fc22`. E' stato aggiunto UN tool custom:
+  // `chiedi_alla_contabile` — la porta con cui il coordinatore gira un lavoro
+  // di contabilita' alla contabile, uno specialista che ha in mano SOLO
+  // Fatture in Cloud, prima nota, movimenti e riconciliazioni.
+  //
+  // ⚠️ Il tool sta nel registro anche a DECOLLO SPENTO, ed e' voluto: da spento
+  // l'esecutore rifiuta e spiega perche', ma la definizione resta. Un tool che
+  // compare e scompare a seconda di una variabile d'ambiente sfuggirebbe alle
+  // guardie anti-buco della mappa dell'officina — si spegnerebbe la difesa
+  // insieme alla funzione, che e' il modo in cui un interruttore diventa un
+  // buco. Il numero sale da 132 a 133 di proposito.
+  it('senza opzioni: 133 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(132)
+    expect(defs).toHaveLength(133)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('fd64fdae3ab2fc6c39e7d6fe1a54fc22')
+      .toBe('21a1fc15f6632aa8756c066c4e041138')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

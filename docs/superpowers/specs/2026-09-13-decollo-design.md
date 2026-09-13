@@ -119,7 +119,46 @@ I sette domini **diventeranno** i sette specialisti: la mappa non si butta, si t
 
 ## 4. Gli specialisti
 
-| Specialista | Cosa ha in mano | Irreversibile? |
+> 🚨 **CORREZIONE, 13 set 2026 — questa tabella è già stata smentita dal codice,
+> ed è la prova che serviva il registro.**
+>
+> La colonna «Irreversibile?» descriveva il potere che ogni specialista *avrà*,
+> non quello che ha. **Tre righe su sette erano false** il giorno stesso in cui
+> sono state scritte — misurate con `haPotereIrreversibile()` sugli attrezzi
+> veri:
+>
+> - **La signora delle case → «sì (Questura)»: FALSO.** Nessun tool trasmette
+>   alla Questura. `checkin_prepara_foglio` prepara un foglio, e basta.
+> - **Il capocantiere → «sì (INPS)»: FALSO** per la stessa ragione. Nessun tool
+>   invia niente a INPS: quelli delle pratiche compilano modelli.
+> - 🚨 **L'archivista → «no»: FALSO, e questo sbaglia nella direzione
+>   PERICOLOSA.** Ha in mano `gestisci_accesso_cartelle` e
+>   `genera_link_condivisione`: **condividere è pubblicare**, e un link
+>   generato è un link che qualcuno può avere già in mano quando ci si ripensa.
+>   La tabella lo dava per innocuo.
+>
+> Le prime due sbagliavano per eccesso di prudenza — descrivevano un potere non
+> ancora esistente — e si sarebbero notate. La terza toglieva una sorveglianza
+> a chi ne aveva bisogno, e **non si sarebbe notata mai**: è la forma di errore
+> che questa tabella, scritta a mano, produrrà sempre.
+>
+> Il quadro vero, oggi: contabile **sì** (4 azioni FIC) · geometra no ·
+> capocantiere no · segretaria **sì** (5 mail + 2 calendario) · archivista
+> **sì** (2) · signora delle case no · tecnico di sé stesso **sì** (3).
+>
+> **La tabella resta qui com'era, non corretta a mano, di proposito.** Corretta
+> tornerebbe falsa fra due settimane, e sarebbe di nuovo prosa da credere sulla
+> parola. La verità vive in `src/lib/specialisti.ts`, dove
+> `haPotereIrreversibile()` la **calcola** intersecando gli attrezzi veri con
+> `AZIONI_IRREVERSIBILI` — e cambia da sola il giorno che un tool di
+> trasmissione arriverà. C'è un test che contraddice apposta la riga della
+> signora delle case: morirà quel giorno, ed è il segnale che va messa sotto
+> conferma.
+>
+> Da leggere insieme al §4.1 qui sotto: *«la tabella qui sopra è testo in un
+> documento. Il testo marcisce»*. Ha marcito in un giorno.
+
+| Specialista | Cosa ha in mano | Irreversibile? (⚠️ v. correzione sopra) |
 |---|---|---|
 | **La contabile** | Fatture in Cloud (lettura e scrittura, entrambe le società), prima nota, movimenti, riconciliazione, note spese | **sì** |
 | **Il geometra** | Prezzari, preventivi, computi, quadri economici, SAL | no |

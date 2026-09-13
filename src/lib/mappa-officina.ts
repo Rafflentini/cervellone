@@ -35,6 +35,33 @@
  * domini; questo registro porta i nomi, e serve solo ai test.
  */
 
+/**
+ * Gli attrezzi che sono del COORDINATORE, non di uno scaffale.
+ *
+ * ⚠️ Categoria nata il 13 set 2026, e nata perche' una guardia ha morso. Con il
+ * Decollo esiste un tool — `chiedi_alla_contabile` — che non appartiene a
+ * nessun mestiere: **serve a girare il lavoro a chi il mestiere ce l'ha**. La
+ * guardia «ogni tool fuori dal nucleo sta in esattamente un dominio» l'ha
+ * segnalato subito come orfano, e aveva ragione: il suo modello del mondo non
+ * prevedeva un attrezzo del coordinatore.
+ *
+ * La cura giusta non era allargare le maglie della guardia — sarebbe stato
+ * spegnere la difesa insieme al problema — ma dire la verita' in piu': questi
+ * attrezzi esistono, non stanno su nessuno scaffale, **e sono questi**.
+ * L'elenco e' chiuso e sorvegliato (v. `mappa-officina.test.ts`): se qualcuno
+ * ci infilasse dentro un tool di mestiere per far tacere la guardia, un test
+ * glielo direbbe.
+ *
+ * Non entrano nel testo iniettato nel prompt: il coordinatore li vede gia',
+ * perche' non sono differiti.
+ */
+export const TOOL_DEL_COORDINATORE: readonly string[] = [
+  // Decollo, passo 4. Spento finche' DECOLLO=1 (v. tools/delega-tools.ts): il
+  // tool resta nel registro anche da spento, o sparirebbe dalle guardie
+  // proprio quando serve sorvegliarlo.
+  'chiedi_alla_contabile',
+]
+
 /** Un dominio = uno scaffale. Diventera' uno specialista nel Decollo. */
 export type Dominio = {
   nome: string

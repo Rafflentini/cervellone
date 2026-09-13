@@ -108,6 +108,12 @@ describe('lo specialista lavora zitto, e solo coi suoi attrezzi', () => {
     expect(perimetro.toolConsentiti.has('conferma_bozza_fic')).toBe(false)
   })
 
+  // ⚠️ La prova che la difesa vale per TUTTI E SETTE gli specialisti sta in
+  // `specialisti.test.ts`, non qui. Qui `./mappa-officina` e' mockata con un
+  // dominio solo: un test scritto in questo file avrebbe trovato sei
+  // specialisti su sette a mani vuote e sarebbe passato senza guardare niente —
+  // il cavo invece del comportamento.
+
   it('CONTROLLO POSITIVO — quel tool E nei suoi attrezzi: e la regola a toglierlo, non la sua assenza', async () => {
     // Senza questo, il test sopra passerebbe anche se `conferma_bozza_fic` non
     // fosse mai stato nel dominio della contabile: proverebbe zero.
