@@ -99,6 +99,7 @@ export const DOMINI: readonly Dominio[] = [
       'fic_leggi_allegato_fattura',
       'fic_modalita_pagamento_fornitore',
       'fic_cerca_anagrafica',
+      'fic_crea_cliente',
       'compila_fattura_emessa',
       'compila_rapporto_intervento',
       'conferma_bozza_fic',

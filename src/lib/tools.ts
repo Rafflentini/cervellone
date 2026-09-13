@@ -24,6 +24,7 @@ import { LEGGI_ALLEGATO_TOOLS, executeLeggiAllegatoTool } from './scadenza-extra
 import { DRIVE_POLICY_TOOLS, executeDrivePolicyTool } from './drive-policy-actions'
 import { FOTO_ARCHIVE_TOOLS, executeFotoArchiveTool } from './foto-archive-tools'
 import { FIC_READ_TOOLS, executeFicTool } from './fatture-in-cloud'
+import { ANAGRAFICA_TOOLS, executeAnagraficaTool } from './fic-anagrafica'
 import { MOVIMENTI_TOOLS, executeMovimentiTool } from './movimenti-extract'
 import { RICONCILIAZIONE_TOOLS, executeRiconciliazioneTool } from './riconciliazione-tools'
 import { PRIMA_NOTA_TOOLS, executePrimaNotaTool } from './prima-nota-tools'
@@ -816,6 +817,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...MOVIMENTI_TOOLS, // 2026-05-26 Contabilità B: ingest estratti conto
   ...RICONCILIAZIONE_TOOLS, // 2026-05-26 Contabilita C: riconciliazione incassi/fatture
   ...PRIMA_NOTA_TOOLS, // 2026-05-26 Contabilita D: Prima Nota Google Sheet
+  ...ANAGRAFICA_TOOLS, // 2026-09-13: crea il cliente su FIC prima di fatturargli (affitti brevi: quasi tutti nuovi)
   ...FIC_WRITE_TOOLS, // 2026-05-26 Contabilita F: compilazione bozze FIC con doppia conferma
   ...GMAIL_TOOLS, // 2026-05-05 Gmail R+W: 16 tool (account restruktura.drive@gmail.com via Google API)
   ...CALENDAR_TOOLS, // 2026-07-22 Google Calendar R+W: 5 tool (stesso account/OAuth, richiede ri-consent scope calendar)
@@ -921,11 +923,15 @@ const nomiDi = (tools: ToolDefinition[]) => {
 
 const executeFicWrapper = contabile(executeFicTool, (n) => n.startsWith('fic_'))
 const executeFicWriteWrapper = contabile(executeFicWriteTool, nomiDi(FIC_WRITE_TOOLS))
+// Stesso wrapper degli altri tool contabili: la societa' la decide la
+// CONVERSAZIONE, mai l'input. Senza, si creerebbe il cliente sull'azienda
+// sbagliata — e un'anagrafica finita nella societa' sbagliata non si nota.
+const executeAnagraficaWrapper = contabile(executeAnagraficaTool, nomiDi(ANAGRAFICA_TOOLS))
 const executeRiconciliazioneWrapper = contabile(executeRiconciliazioneTool, nomiDi(RICONCILIAZIONE_TOOLS))
 const executePrimaNotaWrapper = contabile(executePrimaNotaTool, nomiDi(PRIMA_NOTA_TOOLS))
 const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI_TOOLS))
 
-const EXECUTORS = [executeDelegaTool, executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeModelloTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
+const EXECUTORS = [executeDelegaTool, executeAnagraficaWrapper, executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeModelloTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper]
 
 export function getToolDefinitions(opzioni?: OpzioniTool) {
   // `soloQuesti` vince su tutto: e' uno specialista, e i suoi attrezzi sono

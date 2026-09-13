@@ -110,11 +110,26 @@ describe('differimento delle definizioni dei tool', () => {
   // Il geometra e' scelto apposta come secondo perche' e' l'unico che NON puo'
   // fare danni: `haPotereIrreversibile(geometra)` e' false, calcolato. Un
   // preventivo si rifa'; una mail spedita no.
-  it('senza opzioni: 134 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 13 settembre 2026 (sera). Era 134 con impronta
+  // `33ab554e57979b33aceb46cfbab47f43`. E' stato aggiunto UN tool custom:
+  // `fic_crea_cliente` — crea l'anagrafica cliente su Fatture in Cloud, su
+  // entrambe le societa'.
+  //
+  // Nasce da un buco trovato rispondendo a una domanda di Raffaele: il bot NON
+  // sapeva creare un'anagrafica. In tutto il codice c'era una sola chiamata a
+  // `entities/clients`, ed era una LETTURA. Per La Real Estate e' il caso
+  // NORMALE — affitti brevi, quasi ogni ospite e' nuovo — quindi senza questo
+  // tool la fatturazione di lunedi' si sarebbe fermata al primo cliente.
+  //
+  // Cambia anche la descrizione di `compila_fattura_emessa`, che ora accetta
+  // `cliente_id`: col solo nome, se in anagrafica ci sono due persone simili,
+  // veniva preso il PRIMO in silenzio.
+  it('senza opzioni: 135 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(134)
+    expect(defs).toHaveLength(135)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('33ab554e57979b33aceb46cfbab47f43')
+      .toBe('c015553b88cc656168e7cbdf3e0efe3b')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

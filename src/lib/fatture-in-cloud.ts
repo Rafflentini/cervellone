@@ -64,6 +64,44 @@ export async function ficGet(
 }
 
 /**
+ * Crea una risorsa su Fatture in Cloud.
+ *
+ * Usata per l'anagrafica clienti. **Non** per i documenti: quelli hanno una
+ * strada loro (`creaDocumentoFic`) con la doppia conferma, e non devono poter
+ * passare da una funzione generica.
+ */
+export async function ficPost(
+  path: string,
+  body: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<FicResult> {
+  const s = getSocieta(societa)
+  const token = getFicToken(societa)
+  if (!token) return { ok: false, error: `${s.ficTokenEnv} non configurato su Vercel (${s.denominazione}).` }
+
+  console.log(`[FIC] POST ${path}`) // audit (mai loggare il token)
+  try {
+    const res = await fetch(FIC_BASE + path, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ data: body }),
+    })
+    if (res.status === 401) return { ok: false, error: 'Token FIC non valido/revocato: rigeneralo nelle Applicazioni collegate.' }
+    if (res.status === 429) return { ok: false, error: 'Troppe richieste a Fatture in Cloud, riprova tra poco.' }
+    // 600 caratteri: il testo di FIC dice QUALE campo e' in errore, e troncarlo
+    // a 200 cancellava esattamente quella parte.
+    if (!res.ok) return { ok: false, error: `Errore FIC ${res.status}: ${(await res.text()).slice(0, 600)}` }
+    return { ok: true, data: await res.json() }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
  * Modifica di una risorsa FIC. `PUT` e non `PATCH`: nell'OpenAPI ufficiale
  * (https://developers.fattureincloud.it/api-reference/ — spec in
  * fattureincloud/openapi-fattureincloud, `/c/{company_id}/received_documents/{document_id}`)

@@ -270,9 +270,32 @@ function normalizeRighe(
 async function resolveClientEntity(
   cliente: string,
   societa: CodiceSocieta,
-): Promise<{ ok: true; entity: Record<string, unknown> } | { ok: false; error: string }> {
+  clienteId?: number,
+): Promise<
+  | { ok: true; entity: Record<string, unknown>; descrizione: string }
+  | { ok: false; error: string }
+> {
   const company = await getCompanyId(societa)
   if (!company.ok) return { ok: false, error: company.error }
+
+  // ⭐ Se il chiamante ha l'ID — perche' l'ha appena creato con
+  // `fic_crea_cliente`, o perche' l'ha cercato — si punta QUELLO e non si cerca
+  // per nome. E' la strada che Raffaele ha descritto il 13 set 2026: prima
+  // l'anagrafica, poi la fattura che seleziona quel cliente. Cercare per nome
+  // quando si ha l'id vorrebbe dire buttare via una certezza per rifare una
+  // scelta ambigua.
+  //
+  // Si rilegge comunque la scheda: serve la denominazione VERA (FIC rifiuta il
+  // documento senza `entity.name`) e serve accorgersi di un id che non esiste
+  // piu', invece di scoprirlo a fattura in creazione.
+  if (clienteId !== undefined) {
+    const r = await ficGet(`/c/${company.id}/entities/clients/${clienteId}`, undefined, societa)
+    if (!r.ok) return { ok: false, error: `cliente_id ${clienteId} non leggibile: ${r.error}` }
+    const scheda = (r.data?.data ?? r.data) as Record<string, unknown> | undefined
+    const nome = cleanString(scheda?.name)
+    if (!nome) return { ok: false, error: `cliente_id ${clienteId} non trovato in anagrafica.` }
+    return { ok: true, entity: { id: clienteId, name: nome }, descrizione: `${nome} (id ${clienteId})` }
+  }
 
   const r = await ficGet(`/c/${company.id}/entities/clients`, {
     q: `name contains '${escapeFicQuery(cliente)}'`,
@@ -281,11 +304,30 @@ async function resolveClientEntity(
   if (!r.ok) return { ok: false, error: r.error }
 
   const list = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
-  const first = list.find(row => row?.id)
+  const conId = list.filter(row => row?.id)
+  const first = conId[0]
   if (first?.id) {
-    return { ok: true, entity: { id: first.id, name: cleanString(first.name) ?? cliente } }
+    const nome = cleanString(first.name) ?? cliente
+    // ⚠️ Se la ricerca ha pescato PIU' di un'anagrafica, l'Ingegnere deve
+    // saperlo PRIMA di confermare: `name contains` su «Rossi» trova tutti i
+    // Rossi, e qui si prende il primo. Senza questa riga la scelta e' muta.
+    const altri = conId.length > 1
+      ? ` ⚠️ ATTENZIONE: in anagrafica ce ne sono ALTRI ${conId.length - 1} che contengono «${cliente}» (${conId
+          .slice(1)
+          .map(x => cleanString(x.name) ?? '?')
+          .join(', ')}). Ho preso il primo: se non e' questo, annulla e scrivi il nome per esteso.`
+      : ''
+    return { ok: true, entity: { id: first.id, name: nome }, descrizione: `${nome} (id ${first.id})${altri}` }
   }
-  return { ok: true, entity: { name: cliente } }
+  // ⚠️ Nessuna corrispondenza. Il documento si compila lo stesso, col solo
+  // nome: e' voluto (FIC accetta un'anagrafica al volo), ma l'Ingegnere deve
+  // LEGGERLO, perche' una fattura intestata a un nome scritto a mano non ha ne'
+  // P.IVA ne' indirizzo, e su un'anagrafica sbagliata non si torna indietro.
+  return {
+    ok: true,
+    entity: { name: cliente },
+    descrizione: `«${cliente}» — ⚠️ NON risulta in anagrafica clienti: nessuna P.IVA, nessun indirizzo. Verifica prima di confermare.`,
+  }
 }
 
 function descriviDocumento(input: {
@@ -405,7 +447,11 @@ async function compilaDocumento(
   )
   if (parsedRighe.error || !parsedRighe.righe) return fail(parsedRighe.error ?? 'righe non valide')
 
-  const entity = await resolveClientEntity(cliente, societa)
+  // `cliente_id` vince sul nome quando c'e': v. `resolveClientEntity`.
+  const grezzo = input.cliente_id
+  const clienteId = typeof grezzo === 'number' ? grezzo : typeof grezzo === 'string' && grezzo.trim() !== '' ? Number(grezzo) : undefined
+  if (clienteId !== undefined && !Number.isFinite(clienteId)) return fail('cliente_id non e\' un numero')
+  const entity = await resolveClientEntity(cliente, societa, clienteId)
   if (!entity.ok) return fail(entity.error)
 
   const itemsList: RigaDocumentoPayload[] = []
@@ -441,7 +487,9 @@ async function compilaDocumento(
   const pending = await salvaPending({
     tipo,
     payload,
-    cliente,
+    // ⚠️ La descrizione RISOLTA, non la stringa cercata: e' quella che
+    // l'Ingegnere legge prima di confermare.
+    cliente: entity.descrizione,
     data,
     righe: parsedRighe.righe,
     note,
@@ -1218,7 +1266,14 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        cliente: { type: 'string' },
+        cliente: { type: 'string', description: "Nome del cliente. Se hai il cliente_id usa QUELLO: il nome serve solo a ritrovarlo." },
+        cliente_id: {
+          type: 'number',
+          description:
+            "Id dell'anagrafica su Fatture in Cloud. USALO SEMPRE quando ce l'hai — te lo restituisce fic_crea_cliente " +
+            "o fic_cerca_anagrafica. Con l'id la fattura punta il cliente giusto senza ambiguita'; col solo nome, se in " +
+            'anagrafica ci sono due persone simili, viene preso il primo.',
+        },
         righe: {
           type: 'array',
           items: {
