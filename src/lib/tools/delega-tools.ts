@@ -50,10 +50,11 @@ import type { ToolDefinition } from './types'
 // import da questo file e verifica che non raggiunga MAI `tools.ts` — e' quella
 // la regola, non un elenco di nomi vietati.
 import { specialistiConPorta, specialistaDellaPorta, type Specialista } from '../specialisti'
+import { interruttoreAcceso } from '../interruttori'
 
-/** L'interruttore. Spento finché non vale esattamente '1'. */
+/** L'interruttore. Spento finché non vale '1' (gli spazi ai bordi non contano, v. `interruttori.ts`). */
 export function decolloAcceso(): boolean {
-  return process.env.DECOLLO === '1'
+  return interruttoreAcceso('DECOLLO')
 }
 
 /**

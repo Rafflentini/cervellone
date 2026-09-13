@@ -34,6 +34,7 @@
  * della mappa grande che si e' scelto di non spendere. Il blocco porta i
  * domini; questo registro porta i nomi, e serve solo ai test.
  */
+import { interruttoreAcceso } from './interruttori'
 
 /**
  * Gli attrezzi che sono del COORDINATORE, non di uno scaffale.
@@ -293,7 +294,7 @@ const INTESTAZIONE = [
  * nemmeno i 318 token a vuoto.
  */
 export function mappaOfficina(toolDelCoordinatore: readonly string[] = []): string {
-  if (process.env.TOOL_DEFER !== '1') return ''
+  if (!interruttoreAcceso('TOOL_DEFER')) return ''
   const righe = DOMINI.map((d) => `- ${d.nome}: ${d.contiene}`)
   // I tool del coordinatore vanno NOMINATI, non descritti per dominio: sono
   // suoi, non stanno su uno scaffale, e sono cosi' pochi che il nome costa meno

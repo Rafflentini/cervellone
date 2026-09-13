@@ -8,6 +8,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getToolDefinitions, executeTool } from './tools'
 import { NUCLEO_TOOL, AVVISO_STRUMENTI_CERCABILI } from './tool-nucleo'
+import { interruttoreAcceso } from './interruttori'
 import type { OpzioniTool } from './tools/types'
 import { searchMemory, saveMessageWithEmbedding, saveMessageOnly, saveEmbeddingOnly } from './memory'
 import { logError } from './sanitize'
@@ -606,7 +607,7 @@ export function messaggioErroreUtente(message: string, details: string): string 
  * le variabili d'ambiente sono legate al deployment, non al progetto.
  */
 export function opzioniToolDaAmbiente(): OpzioniTool | undefined {
-  return process.env.TOOL_DEFER === '1' ? { nucleo: NUCLEO_TOOL, ricerca: true } : undefined
+  return interruttoreAcceso('TOOL_DEFER') ? { nucleo: NUCLEO_TOOL, ricerca: true } : undefined
 }
 
 /**

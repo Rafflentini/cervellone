@@ -46,6 +46,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { CASI_REALI, type CasoReale } from './casi-reali'
 import { getToolDefinitions } from '../lib/tools'
 import { NUCLEO_TOOL } from '../lib/tool-nucleo'
+import { interruttoreAcceso } from '../lib/interruttori'
 import { getTelegramSystemPrompt } from '../lib/prompts'
 
 const client = new Anthropic()
@@ -252,7 +253,7 @@ async function main() {
     // Il prompt e gli strumenti sono quelli VERI: se cambiano, cambia la prova.
     const system = await getTelegramSystemPrompt(caso.domanda, [])
     const tools = getToolDefinitions(
-      process.env.TOOL_DEFER === '1' ? { nucleo: NUCLEO_TOOL, ricerca: true } : undefined,
+      interruttoreAcceso('TOOL_DEFER') ? { nucleo: NUCLEO_TOOL, ricerca: true } : undefined,
     )
 
     for (const modello of modelli) {
