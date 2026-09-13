@@ -9,6 +9,7 @@ import { matchSkills } from './skills'
 import { SYSTEM_CACHE_SPLIT } from './system-prompt-split'
 import { supabase } from './supabase'
 import { buildRegoleContext } from './regole-proposte'
+import { mappaOfficina } from './mappa-officina'
 
 // ─── Config cache (prompt_extra, TTL 60 s) ───────────────────────────────────
 
@@ -451,7 +452,9 @@ export async function getChatSystemPrompt(userQuery: string, precedenti: string[
   ])
   // STATICO (cachato 1h) | SYSTEM_CACHE_SPLIT | VARIABILE (data/ora/skill/prompt_extra, NON cachato).
   // Audit 10 giu: data+ora+skill dentro il blocco cachato lo bustavano ~ogni minuto.
-  let variable = currentDateTimeContext() + skillContext
+  // La mappa dell'officina (Task 17) va accanto al blocco SOCIETA ATTIVA: dice
+  // dove cercare gli attrezzi differiti PRIMA di concludere di non saperli fare.
+  let variable = currentDateTimeContext() + '\n\n' + mappaOfficina() + skillContext
   // Le regole che il bot ha proposto e l'Ingegnere ha confermato. Stanno nel
   // blocco VARIABILE (non cachato) come prompt_extra: una regola appena
   // confermata deve valere dal messaggio dopo, non dopo un'ora di cache.
@@ -477,7 +480,9 @@ export async function getTelegramSystemPrompt(userQuery: string, precedenti: str
   ])
   // STATICO (BASE_PROMPT + nota Telegram, immutabile) | split | VARIABILE (non cachato).
   const staticPart = BASE_PROMPT + '\nStai comunicando via Telegram. Rispondi conciso.'
-  let variable = currentDateTimeContext() + skillContext
+  // La mappa dell'officina (Task 17): stesso blocco, stesso testo, entrambi i
+  // canali — equipollenza web/Telegram dichiarata da Raffaele.
+  let variable = currentDateTimeContext() + '\n\n' + mappaOfficina() + skillContext
   // Le regole che il bot ha proposto e l'Ingegnere ha confermato. Stanno nel
   // blocco VARIABILE (non cachato) come prompt_extra: una regola appena
   // confermata deve valere dal messaggio dopo, non dopo un'ora di cache.

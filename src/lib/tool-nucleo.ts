@@ -60,6 +60,15 @@ export const NUCLEO_TOOL: ReadonlySet<string> = new Set([...NUCLEO_DISEGNO, ...N
  * situazione. Per questo compare SOLO quando il differimento e' acceso — a
  * interruttore spento sarebbe una bugia.
  */
+/**
+ * I due tool eseguiti da Anthropic, non dal nostro registro. Non appartengono a
+ * nessun dominio della mappa dell'officina (mappa-officina.ts): non sono nostri
+ * attrezzi, sono forniti dal fornitore. `tool_search_tool_bm25` non entra qui
+ * perche' getToolDefinitions() lo aggiunge SOLO quando il differimento e' attivo
+ * (opzioni.ricerca) e in quel caso non e' mai "fuori nucleo" da catalogare.
+ */
+export const SERVER_TOOLS: readonly string[] = ['web_search', 'code_execution']
+
 export const AVVISO_STRUMENTI_CERCABILI =
   '\n\nI TUOI STRUMENTI: ne vedi solo una parte. Gli altri esistono ma non ti sono stati ' +
   'caricati. Per trovarli usa tool_search_tool_bm25 con una query in italiano che descriva ' +
