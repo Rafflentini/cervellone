@@ -91,14 +91,28 @@ describe('lo specialista lavora zitto, e solo coi suoi attrezzi', () => {
     expect(sink.muto).toBe(true)
   })
 
-  it('il perimetro e esattamente i suoi attrezzi: dominio + nucleo', async () => {
+  it('⭐ il perimetro sono i suoi attrezzi MENO quelli irreversibili', async () => {
+    // «Ne il coordinatore, ne la segretaria spedisce MAI una fattura, quello lo
+    // faccio solo io!» — e il disegno §6: lo specialista PREPARA, il
+    // coordinatore chiede e gira.
+    //
+    // `conferma_bozza_fic` e' nel dominio della contabile ed e' in
+    // AZIONI_IRREVERSIBILI: non deve arrivarle. Se ci arrivasse, salterebbe
+    // l'unico punto sorvegliato — quello in cui l'Ingegnere dice «invia».
     await delega(contabile, { compito: 'x' }, 'prompt')
     const [, , , perimetro] = mockRunAgentTurn.mock.calls[0]
     expect([...perimetro.toolConsentiti].sort()).toEqual([
-      'conferma_bozza_fic',
       'fic_fatture_ricevute',
       'riconcilia_automatico',
     ])
+    expect(perimetro.toolConsentiti.has('conferma_bozza_fic')).toBe(false)
+  })
+
+  it('CONTROLLO POSITIVO — quel tool E nei suoi attrezzi: e la regola a toglierlo, non la sua assenza', async () => {
+    // Senza questo, il test sopra passerebbe anche se `conferma_bozza_fic` non
+    // fosse mai stato nel dominio della contabile: proverebbe zero.
+    const { toolDi } = await import('./specialisti')
+    expect(toolDi(contabile)).toContain('conferma_bozza_fic')
   })
 
   it("la posta NON e' nel perimetro della contabile", async () => {

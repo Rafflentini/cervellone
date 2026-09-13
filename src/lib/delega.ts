@@ -25,7 +25,32 @@
  *    coordinatore, dove diventa «il bot è rotto».
  */
 import { runAgentTurn, sinkMuto, type EsitoTurno } from './claude'
-import { toolDi, type Specialista } from './specialisti'
+import { toolDi, AZIONI_IRREVERSIBILI, type Specialista } from './specialisti'
+
+/**
+ * Il perimetro con cui uno specialista lavora **di default**: i suoi attrezzi
+ * **meno** quelli irreversibili.
+ *
+ * ⚠️ **La regola di Raffaele sta qui, nel valore predefinito, e non in una nota
+ * da ricordarsi.** Verbatim, 13 set 2026:
+ *
+ *   «Ne il coordinatore, ne la segretaria spedisce MAI una fattura, quello lo
+ *    faccio solo io!»
+ *
+ * E il disegno (§6): *lo specialista **prepara**; il **coordinatore** chiede e
+ * gira*. Uno specialista che potesse confermare una bozza FIC o mandare una
+ * mail da solo salterebbe l'unico punto sorvegliato — quello in cui l'Ingegnere
+ * dice «invia».
+ *
+ * Il default e' la forma giusta per una regola come questa: una guardia che si
+ * deve ricordare di accendere e' una guardia che un giorno resta spenta. Chi
+ * volesse il contrario deve scriverlo, e chi legge quella riga sa cosa sta
+ * concedendo.
+ */
+export function perimetroDiLavoro(chi: Specialista): ReadonlySet<string> {
+  const irreversibili = new Set(AZIONI_IRREVERSIBILI)
+  return new Set(toolDi(chi).filter((t) => !irreversibili.has(t)))
+}
 
 /**
  * Quello che il coordinatore passa allo specialista.
@@ -169,7 +194,7 @@ export async function delega(
       // riempirebbe la cronologia di monologhi interni, e la memoria semantica
       // se li ritroverebbe come se fossero conoscenza.
       { tag: `spec:${chi.chiave}`, entryPoint: `specialista:${chi.chiave}`, persistUserMessage: false },
-      { toolConsentiti: new Set(toolDi(chi)) },
+      { toolConsentiti: perimetroDiLavoro(chi) },
     )
     return leggiEsito(turno, chi.nome)
   } catch (err) {
