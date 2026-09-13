@@ -137,18 +137,29 @@ export async function executeDelegaTool(
   //
   // Se non si riesce a leggerla NON si tira a indovinare e non si delega: un
   // lavoro contabile sulla societa' sbagliata e' peggio di un lavoro non fatto.
-  let nomeSocieta: string | undefined
-  if (conversationId) {
-    const attiva = await leggiSocietaAttiva(conversationId)
-    if (!attiva.ok) {
-      return JSON.stringify({
-        ok: false,
-        motivo: `Non riesco a leggere quale societa' e' attiva (${attiva.errore}). Non delego un lavoro contabile senza saperlo.`,
-        cosa_faccio_adesso: "Chiedi all'Ingegnere su quale societa' state lavorando, poi riprova.",
-      })
-    }
-    nomeSocieta = listaSocieta().find((s) => s.codice === attiva.codice)?.denominazione ?? attiva.codice
+  //
+  // ⚠️ Senza conversazione non si delega AFFATTO, e non e' pedanteria: TUTTI
+  // gli attrezzi della contabile passano dal wrapper `contabile()`, che senza
+  // `conversationId` rifiuta uno per uno. Delegare lo stesso vorrebbe dire
+  // bruciare un turno intero — modello, token, secondi — per farsi dire dieci
+  // volte «non so su quale societa' stiamo lavorando». Meglio dirlo subito e
+  // gratis. Rilevato dall'audit del 13 set 2026.
+  if (!conversationId) {
+    return JSON.stringify({
+      ok: false,
+      motivo: "Non posso delegare senza conversazione: la contabile non saprebbe su quale societa' lavorare.",
+      cosa_faccio_adesso: 'Fai tu il lavoro con i tuoi attrezzi.',
+    })
   }
+  const attiva = await leggiSocietaAttiva(conversationId)
+  if (!attiva.ok) {
+    return JSON.stringify({
+      ok: false,
+      motivo: `Non riesco a leggere quale societa' e' attiva (${attiva.errore}). Non delego un lavoro contabile senza saperlo.`,
+      cosa_faccio_adesso: "Chiedi all'Ingegnere su quale societa' state lavorando, poi riprova.",
+    })
+  }
+  const nomeSocieta = listaSocieta().find((s) => s.codice === attiva.codice)?.denominazione ?? attiva.codice
 
   const contabile = specialista('contabile')
   const esito = await delega(

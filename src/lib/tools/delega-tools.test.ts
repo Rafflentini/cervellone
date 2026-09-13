@@ -84,7 +84,7 @@ describe("l'interruttore: spento di default, come TOOL_DEFER", () => {
   })
 
   it('da spento NON delega: la contabile non viene nemmeno svegliata', async () => {
-    await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' })
+    await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }, 'conv-1')
     expect(mockDelega).not.toHaveBeenCalled()
   })
 
@@ -92,14 +92,14 @@ describe("l'interruttore: spento di default, come TOOL_DEFER", () => {
     // Senza, il test sopra passerebbe anche se `delega` non venisse chiamata
     // MAI, in nessuna condizione.
     process.env.DECOLLO = '1'
-    await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' })
+    await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }, 'conv-1')
     expect(mockDelega).toHaveBeenCalled()
   })
 })
 
 describe('⭐ un interruttore spento toglie una scorciatoia, non una capacita', () => {
   it("da spento il rifiuto dice al coordinatore DI FARLO LUI", async () => {
-    const risposta = JSON.parse((await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }))!)
+    const risposta = JSON.parse((await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }, 'conv-1'))!)
     expect(risposta.ok).toBe(false)
     expect(risposta.cosa_faccio_adesso).toMatch(/Fai tu il lavoro/i)
     // La riga che conta: senza, il coordinatore riferirebbe «non si puo'» —
@@ -114,7 +114,7 @@ describe('⭐ un interruttore spento toglie una scorciatoia, non una capacita', 
       motivo: 'la contabile si è fermata a metà',
       cosa_ho_provato: ['fic_fatture_ricevute'],
     })
-    const risposta = JSON.parse((await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }))!)
+    const risposta = JSON.parse((await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }, 'conv-1'))!)
     expect(risposta.ok).toBe(false)
     // `cosa_ho_provato` deve sopravvivere fino al coordinatore: e' la meta' che
     // gli permette di riferire qualcosa di utile invece di un muro.
@@ -125,7 +125,7 @@ describe('⭐ un interruttore spento toglie una scorciatoia, non una capacita', 
 
   it("su un successo NON si aggiunge nessuna istruzione: non serve", async () => {
     process.env.DECOLLO = '1'
-    const risposta = JSON.parse((await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }))!)
+    const risposta = JSON.parse((await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }, 'conv-1'))!)
     expect(risposta.ok).toBe(true)
     expect(risposta.cosa_faccio_adesso).toBeUndefined()
   })
@@ -163,6 +163,20 @@ describe('gli identificativi passano, la descrizione lo pretende', () => {
     await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }, 'conv-1')
     const [, incarico] = mockDelega.mock.calls[0]
     expect(incarico.societa).toBe('Restruktura Srl')
+  })
+
+  it('senza conversazione NON si delega: si direbbe dieci volte «non so su quale societa»', async () => {
+    // TUTTI gli attrezzi della contabile passano dal wrapper `contabile()`,
+    // che senza conversationId rifiuta uno per uno. Delegare lo stesso
+    // brucerebbe un turno intero — modello, token, secondi — per farsi dire
+    // dieci volte la stessa cosa. Rilevato dall'audit del 13 set 2026.
+    process.env.DECOLLO = '1'
+    // ⚠️ Terzo argomento OMESSO di proposito: è il punto del test.
+    const r = JSON.parse((await executeDelegaTool('chiedi_alla_contabile', { compito: 'x' }))!)
+    expect(r.ok).toBe(false)
+    expect(mockDelega).not.toHaveBeenCalled()
+    // E non si scomoda nemmeno il database.
+    expect(societaAttivaFinta).not.toHaveBeenCalled()
   })
 
   it('CONTROLLO POSITIVO — se la societa NON si legge, NON si delega', async () => {
