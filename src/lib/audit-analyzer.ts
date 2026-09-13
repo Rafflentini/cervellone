@@ -261,7 +261,14 @@ export function analyze(input: AnalysisInput): AnalysisResult {
         // "2 giornate" e "927 messaggi" non sono la stessa perdita, e senza
         // quel numero l'audit le annuncerebbe con la stessa voce.
         description: `${giornateVuote.length} giornate con messaggi non hanno prodotto alcun riassunto (${d.messaggi_senza_riassunto ?? 0} messaggi archiviati come "nessuna attività"): ${giornateVuote.slice(0, 3).join(', ')}${giornateVuote.length > 3 ? '...' : ''}.`,
-        proposed_action: 'Chiedi al bot "quali giornate sono da rielaborare" e poi "rielabora <data>", una per volta (tool memoria_giornate_da_rielaborare / memoria_rielabora).',
+        // ⚠️ I due nomi vanno fra backtick, e non e' estetica: questo testo
+        // finisce nel rapporto settimanale di autodiagnosi, che dal 12 set 2026
+        // viene DAVVERO consegnato su Telegram con `parse_mode: 'Markdown'`.
+        // Nudi, i due underscore della prima parola si accoppiano con quelli
+        // della seconda e il Markdown mangia tutto quello che sta in mezzo:
+        // l'Ingegnere leggerebbe due nomi inesistenti in una riga che serve
+        // proprio a dirgli quale tool usare. → voce A11 della lista tarata.
+        proposed_action: 'Chiedi al bot "quali giornate sono da rielaborare" e poi "rielabora <data>", una per volta (tool `memoria_giornate_da_rielaborare` / `memoria_rielabora`).',
         raw: { giornate: giornateVuote.slice(0, 20), messaggi: d.messaggi_senza_riassunto ?? 0 },
       })
     }

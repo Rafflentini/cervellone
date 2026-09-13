@@ -85,10 +85,16 @@ export async function GET(req: NextRequest) {
         // LO ZERO DEVE FARE RUMORE. Per quattro mesi il messaggio diceva
         // "0 inoltrate" e sembrava un mese senza fatture.
         result.nessun_risultato
-          ? `🚨 ZERO fatture riconosciute su ${result.esaminati} messaggi del mese. Non e' normale: di solito ce ne sono. Probabile whitelist mittenti da aggiornare (cervellone_email_senders).`
+          ? `🚨 ZERO fatture riconosciute su ${result.esaminati} messaggi del mese. Non e' normale: di solito ce ne sono. Probabile whitelist mittenti da aggiornare (\`cervellone_email_senders\`).`
           : '',
         result.whitelist_vuota
-          ? '🚨 Nessun mittente configurato in cervellone_email_senders: il filtro non poteva far passare nulla.'
+          // I backtick NON sono decorazione: questo testo va su Telegram con
+          // `parse_mode: 'Markdown'`, dove `_` delimita il corsivo. Nudo,
+          // `cervellone_email_senders` arriva all'Ingegnere come
+          // «cervelloneemailsenders» — un nome che non esiste, in un avviso il
+          // cui unico scopo e' dirgli DOVE guardare. Dentro un code span il
+          // Markdown non tocca gli underscore. → voce A11 della lista tarata.
+          ? '🚨 Nessun mittente configurato in `cervellone_email_senders`: il filtro non poteva far passare nulla.'
           : '',
         result.troncato
           ? `⚠️ Lettura parziale: ${result.totale_in_casella} messaggi nel mese, oltre il limite di lettura. Alcune fatture potrebbero non essere state viste.`
@@ -112,7 +118,7 @@ export async function GET(req: NextRequest) {
           ? `⚠️ ${result.errori_registro.length} inoltri riusciti ma non registrati: il mese prossimo potrebbero ripartire doppi (${result.errori_registro.map((e) => `${e.casella}/${e.chiave}`).join(', ')}).`
           : '',
         result.fallback_warnings.length > 0
-          ? `⚠️ ${result.fallback_warnings.length} mail con allegato e parola "fattura" ma mittente NON riconosciuto: ${[...new Set(result.fallback_warnings.map((f) => f.from))].slice(0, 6).join(', ')}. Aggiungili a cervellone_email_senders se è il caso.`
+          ? `⚠️ ${result.fallback_warnings.length} mail con allegato e parola "fattura" ma mittente NON riconosciuto: ${[...new Set(result.fallback_warnings.map((f) => f.from))].slice(0, 6).join(', ')}. Aggiungili a \`cervellone_email_senders\` se è il caso.`
           : '',
         result.skipped_already_done.length > 0
           ? `Già fatte in un giro precedente: ${result.skipped_already_done.length}`
