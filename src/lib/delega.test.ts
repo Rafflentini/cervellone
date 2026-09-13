@@ -139,10 +139,12 @@ describe('lo specialista lavora zitto, e solo coi suoi attrezzi', () => {
     await delega(contabile, { compito: 'x' }, 'prompt')
     const [richiesta] = mockRunAgentTurn.mock.calls[0]
     expect(richiesta.maxRunTokens).toBe(MAX_SPECIALISTA_RUN_TOKENS)
-    // La proprieta' che rende difendibile il numero: TRE deleghe stanno sotto
-    // UN budget di coordinatore. Anche il caso peggiore immaginabile non
-    // raddoppia la spesa di un turno.
-    expect(MAX_SPECIALISTA_RUN_TOKENS * 3).toBeLessThan(MAX_RUN_TOKENS)
+    // La proprieta' che rende difendibile il numero: DUE deleghe stanno sotto
+    // UN budget di coordinatore (erano tre, con 60k: ma la prima delega vera,
+    // 13 set 2026, ha consumato 71.5k per una richiesta normale — v.
+    // run-budget.ts). E il tetto deve contenere quella richiesta.
+    expect(MAX_SPECIALISTA_RUN_TOKENS * 2).toBeLessThanOrEqual(MAX_RUN_TOKENS)
+    expect(MAX_SPECIALISTA_RUN_TOKENS).toBeGreaterThan(71_500)
   })
 
   it("l'incarico NON viene scritto nella cronologia dell'Ingegnere", async () => {

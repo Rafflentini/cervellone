@@ -351,4 +351,83 @@ export const CASI_REALI: readonly CasoReale[] = [
     livello: 'richiede_modello',
     coperto_da: 'prompts.principio-fondamentale.test.ts prova che la REGOLA c\'è. Non che la segua.',
   },
+  {
+    id: 'abbinare-il-bonifico-alla-fattura-aperta',
+    quando: '2026-09-14 00:17',
+    // Le parole vere, mandate mentre il bot elaborava lo screenshot dell'app
+    // della banca (file_449.jpg). L'immagine qui non c'e': il suo contenuto,
+    // letto CORRETTAMENTE dal bot quella notte, e' trascritto fra parentesi
+    // quadre — il difetto non stava nella lettura, stava dopo.
+    domanda:
+      'Questo pagamento ti dice nulla? ' +
+      '[screenshot dell\'app Intesa Sanpaolo, lista movimenti filtrata per «Vallina», conto 1000/00004802: ' +
+      '25/06/2026 Condominio Residence Va… +1.100,00 € · 20/06/2026 Condominio Residence Val… +1.270,17 € · ' +
+      '15/06/2026 Condominio Residence Val… +501,05 € (cerchiato in verde) · 08/06/2026 Condominio Vallina I +325,94 € · ' +
+      '03/06/2026 Condominio Residence Val… +947,67 € · 01/06/2026 Condominio Residence Va… +700,00 €]',
+    contesto:
+      'Cinque minuti prima, alla domanda «quante fatture per Vallina 1 e 2 non sono pagate», il bot aveva ' +
+      'elencato LUI le 5 fatture scoperte — fra cui la n. 19 del 15/06/2026 da € 501,05 al Condominio ' +
+      'Residence Vallina II. Poi Raffaele gli mostra i bonifici arrivati da Vallina, con quello da € 501,05 ' +
+      'del 15/06 cerchiato.',
+    cosa_fece:
+      'Lesse lo screenshot bene, lo trascrisse in tabella, e chiese: «Cosa devo fare con questo dato, ' +
+      'Ingegnere?». Aveva tutte e due le meta' + '\' in mano, scritte da lui, e non le ha messe insieme. ' +
+      'L\'abbinamento lo ha fatto solo dopo che Raffaele gli ha mandato ANCHE lo screenshot della fattura.',
+    cosa_era_vero:
+      'Il bonifico da € 501,05 del 15/06/2026 e\' l\'incasso della fattura 19-ED (id 533024661), stesso ' +
+      'importo al centesimo e stessa data. Raffaele: «non è vero, non l\'ha trovata, ho dovuto segnalarglielo io!».',
+    classe: 'il mestiere, non l\'attrezzo: un bonifico mostrato senza abbinamento e\' un lavoro lasciato a meta\'',
+    deve: [
+      'nominare da solo la fattura n. 19 del 15/06/2026 da € 501,05 come corrispondente al bonifico cerchiato',
+      'proporre di segnarla incassata (segna_fatture_emesse_pagate, data 2026-06-15, conto Intesa) chiedendo la conferma',
+      'dire che gli altri bonifici NON combaciano con le fatture aperte elencate (importi diversi), senza inventare abbinamenti',
+    ],
+    non_deve: [
+      'chiedere «cosa devo fare con questo dato?» avendo gia\' in mano le fatture aperte',
+      'registrare l\'incasso senza la doppia conferma',
+      'abbinare per approssimazione un bonifico a una fattura di importo diverso',
+    ],
+    livello: 'richiede_modello',
+    coperto_da: 'prompts.ts porta la regola «ABBINA TU» (14 set 2026). Che la segua, lo misura solo questa prova.',
+    giri_max: 3,
+    // Le carte: l'elenco delle 5 fatture aperte come le aveva riferite il bot
+    // cinque minuti prima (dalla contabile), e il dettaglio della 19-ED come
+    // lo restituisce FIC. Ricostruite dalla conversazione in archivio.
+    risposte_tool: {
+      fic_fatture_emesse: JSON.stringify({
+        ok: true,
+        count: 5,
+        nota: 'Solo le NON pagate dei condomini Vallina I e II (Restruktura).',
+        fatture: [
+          { id: 530001070, numero: '70', data: '2025-12-30', cliente: 'Condominio Residence Vallina I', totale: 1023.0, pagata: false, residuo: 1023.0 },
+          { id: 530001071, numero: '71', data: '2025-12-30', cliente: 'Condominio Residence Vallina I', totale: 165.0, pagata: false, residuo: 165.0 },
+          { id: 529000059, numero: '59', data: '2025-10-25', cliente: 'Condominio Residence Vallina II A1,A2,A3', totale: 1898.6, pagata: false, residuo: 1898.6 },
+          { id: 529000061, numero: '61', data: '2025-10-27', cliente: 'Condominio Residence Vallina II A1,A2,A3', totale: 1248.5, pagata: false, residuo: 1248.5 },
+          { id: 533024661, numero: '19-ED', data: '2026-06-15', cliente: 'Condominio Residence Vallina II A1,A2,A3', totale: 501.05, pagata: false, residuo: 501.05 },
+        ],
+      }),
+      chiedi_alla_contabile: JSON.stringify({
+        ok: true,
+        risposta:
+          'Restruktura, fatture non pagate: Vallina I n.70 del 30/12/2025 € 1.023,00; n.71 del 30/12/2025 € 165,00. ' +
+          'Vallina II n.59 del 25/10/2025 € 1.898,60; n.61 del 27/10/2025 € 1.248,50; n.19-ED (id 533024661) del 15/06/2026 € 501,05. ' +
+          'Totale scoperto € 4.836,15. Nessun pagamento parziale.',
+      }),
+      fic_dettaglio_documento: JSON.stringify({
+        ok: true,
+        documento: {
+          id: 533024661,
+          number: 19,
+          numeration: '-ED',
+          date: '2026-06-15',
+          amount_gross: 501.05,
+          entity: { name: 'Condominio "Residence Vallina II A1,A2,A3"' },
+          ei_status: 'accepted',
+          payments_list: [{ id: 91, amount: 501.05, due_date: '2026-07-15', paid_date: null, status: 'not_paid', payment_account: null }],
+        },
+      }),
+      lista_movimenti: JSON.stringify({ ok: true, count: 0, nota: 'Nessun movimento importato per giugno 2026: l\'estratto conto di quel mese non e\' mai stato caricato.' }),
+      riconcilia_automatico: JSON.stringify({ ok: true, abbinate: 0, nota: 'Nessun movimento importato per il periodo.' }),
+    },
+  },
 ] as const
