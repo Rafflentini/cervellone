@@ -129,6 +129,7 @@ export const AZIONI_IRREVERSIBILI: readonly string[] = [
   // Contabilita': scrive su Fatture in Cloud, cioe' fuori di qui.
   'conferma_bozza_fic',
   'segna_fatture_ricevute_pagate',
+  'segna_fatture_emesse_pagate',
   'conferma_riconciliazione',
   'elimina_bozza_fic',
   // Archivio: condividere e' pubblicare. Un link generato e' un link che

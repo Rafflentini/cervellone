@@ -141,11 +141,20 @@ describe('differimento delle definizioni dei tool', () => {
   // - `compila_fattura_emessa` ora porta scritta la PROCEDURA nei suoi tre
   //   passi (cerca → se manca crea → passa il cliente_id). Il tool sapeva
   //   farlo; nessuno gli diceva in che ordine.
-  it('senza opzioni: 135 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 14 settembre 2026 (notte). Era 135 con impronta
+  // `99f55eff78f0e4b014d76ed7d9ef51e4`. E' stato aggiunto UN tool custom:
+  // `segna_fatture_emesse_pagate` — segnare INCASSATA una fattura EMESSA,
+  // alla data del bonifico. Nasce alle 00:20 dello stesso giorno: il bot aveva
+  // in mano la fattura 19-ED (€501,05 del 15/06) e il bonifico da €501,05 del
+  // 15/06, li ha abbinati, e poi ha dovuto dire all'Ingegnere che «non esiste
+  // un tool che scriva pagata su una fattura EMESSA». Esisteva solo per le
+  // ricevute (i contanti Limongi). Il numero sale da 135 a 136 di proposito.
+  it('senza opzioni: 136 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(135)
+    expect(defs).toHaveLength(136)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('99f55eff78f0e4b014d76ed7d9ef51e4')
+      .toBe('0e77f378c51bbd066553761b0161f8a2')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

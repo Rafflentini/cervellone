@@ -100,6 +100,60 @@ const CAMPI_NON_SCRIVIBILI = new Set([
   'locked',
 ])
 
+/**
+ * Campi di sola lettura di `IssuedDocument` (schema ufficiale): oltre a quelli
+ * delle ricevute, gli importi — che su una fattura EMESSA sono CALCOLATI dalle
+ * righe, non scritti — e i campi che vivono dopo l'emissione (`ei_status`,
+ * `seen_date`, `permanent_token`, gli url).
+ */
+const CAMPI_NON_SCRIVIBILI_EMESSA = new Set([
+  ...CAMPI_NON_SCRIVIBILI,
+  'amount_net',
+  'amount_vat',
+  'amount_due_discount',
+  'url',
+  'ei_status',
+  'seen_date',
+  'permanent_token',
+  'has_ts_pay_pending_payment',
+  'show_tspay_button',
+  'dn_url',
+  'ai_url',
+])
+
+/**
+ * Il VERSO di una fattura: ricevuta da un fornitore o emessa a un cliente.
+ *
+ * Lo stesso motore serve tutti e due (14 set 2026: alle 00:20 il bot aveva
+ * abbinato la fattura 19-ED al bonifico da €501,05 e non aveva il verbo per
+ * scriverlo). Cambiano tre cose, e stanno tutte qui: l'endpoint, i campi di
+ * sola lettura, e la DATA — una ricevuta in contanti si paga al ritiro (data
+ * della fattura), un incasso ha la data del BONIFICO e nessun predefinito.
+ */
+export type Verso = 'ricevuta' | 'emessa'
+
+const VERSI = {
+  ricevuta: {
+    endpoint: 'received_documents',
+    tipo: 'expense',
+    controparte: 'fornitore',
+    nonScrivibili: CAMPI_NON_SCRIVIBILI,
+    dataPredefinita: true,
+  },
+  emessa: {
+    endpoint: 'issued_documents',
+    tipo: 'invoice',
+    controparte: 'cliente',
+    nonScrivibili: CAMPI_NON_SCRIVIBILI_EMESSA,
+    dataPredefinita: false,
+  },
+} as const
+
+/** «fornitore» o «cliente»: la parola con cui si nomina la controparte. */
+export function controparteDi(verso: Verso): string {
+  return VERSI[verso].controparte
+}
+
 /** Lo stato che, su una voce del piano pagamenti, significa «pagata». */
 export const STATO_PAGATO = 'paid'
 
@@ -133,12 +187,21 @@ function chiave(s: string): string {
   return s.toLowerCase().replace(/\s+/g, ' ').trim()
 }
 
-/** Estrae dal documento i quattro dati che l'Ingegnere legge prima di confermare. */
-export function datiFattura(doc: Record<string, unknown>): FatturaRicevuta {
+/**
+ * Estrae dal documento i quattro dati che l'Ingegnere legge prima di confermare.
+ *
+ * Il campo si chiama `fornitore` per storia (il motore è nato per le ricevute);
+ * su una fattura EMESSA contiene il CLIENTE. Il numero di una emessa è
+ * `number` + `numeration` (19 + "-ED" = "19-ED"), non `invoice_number`.
+ */
+export function datiFattura(doc: Record<string, unknown>, verso: Verso = 'ricevuta'): FatturaRicevuta {
+  const num = verso === 'emessa'
+    ? `${testo(doc.number)}${testo(doc.numeration)}`
+    : testo(doc.invoice_number)
   return {
     id: numero(doc.id) ?? 0,
-    fornitore: testo(oggetto(doc.entity).name) || '(fornitore non indicato)',
-    numero: testo(doc.invoice_number) || '(senza numero)',
+    fornitore: testo(oggetto(doc.entity).name) || `(${controparteDi(verso)} non indicato)`,
+    numero: num || '(senza numero)',
     data: testo(doc.date),
     importo: arrotonda(numero(doc.amount_gross) ?? 0),
   }
@@ -210,28 +273,39 @@ export function risolviContoPagamento(
   return { ok: false, error: `"${richiesta}" non è fra i conti di pagamento di Fatture in Cloud. Disponibili: ${elenco}` }
 }
 
-/** Rilegge una fattura ricevuta, fieldset detailed. */
-export async function leggiFatturaRicevuta(
+/** Rilegge una fattura, fieldset detailed, dall'endpoint del suo verso. */
+export async function leggiFattura(
   id: number,
   societa: CodiceSocieta,
+  verso: Verso,
 ): Promise<EsitoFic<Record<string, unknown>>> {
   const company = await getCompanyId(societa)
   if (!company.ok) return { ok: false, error: company.error }
 
+  const v = VERSI[verso]
   const r = await ficGet(
-    `/c/${company.id}/received_documents/${id}`,
-    { type: 'expense', fieldset: 'detailed' },
+    `/c/${company.id}/${v.endpoint}/${id}`,
+    { type: v.tipo, fieldset: 'detailed' },
     societa,
   )
+  const nonEsiste = `la fattura ${verso} ${id} non esiste su Fatture in Cloud`
   if (!r.ok) {
     // Un 404 non è un guasto: è «quella fattura non c'è». Va detto così,
     // perché un «errore FIC 404» manda a cercare un problema che non esiste.
-    if (r.error.includes('404')) return { ok: false, error: `la fattura ricevuta ${id} non esiste su Fatture in Cloud` }
+    if (r.error.includes('404')) return { ok: false, error: nonEsiste }
     return { ok: false, error: r.error }
   }
   const doc = oggetto(r.data?.data ?? r.data)
-  if (!doc.id) return { ok: false, error: `la fattura ricevuta ${id} non esiste su Fatture in Cloud` }
+  if (!doc.id) return { ok: false, error: nonEsiste }
   return { ok: true, valore: doc }
+}
+
+export function leggiFatturaRicevuta(id: number, societa: CodiceSocieta) {
+  return leggiFattura(id, societa, 'ricevuta')
+}
+
+export function leggiFatturaEmessa(id: number, societa: CodiceSocieta) {
+  return leggiFattura(id, societa, 'emessa')
 }
 
 export interface FiltriRicerca {
@@ -284,9 +358,10 @@ function filtroData(anno?: number, mese?: number): string | undefined {
  * `elenco_troncato` guarda la nostra completezza — è vero solo se il tetto di
  * pagine è stato raggiunto E FIC ne dichiara ancora oltre.
  */
-export async function cercaFattureRicevute(
+export async function cercaFatture(
   filtri: FiltriRicerca,
   societa: CodiceSocieta,
+  verso: Verso,
 ): Promise<EsitoFic<{
   documenti: Record<string, unknown>[]
   /** Vero solo se abbiamo esaurito il tetto di pagine SENZA finire l'elenco. */
@@ -302,9 +377,10 @@ export async function cercaFattureRicevute(
   let pagineLette = 0
   let ultimaPagina = 1
 
+  const v = VERSI[verso]
   for (let pagina = 1; pagina <= MAX_PAGINE; pagina++) {
-    const r = await ficGet(`/c/${company.id}/received_documents`, {
-      type: 'expense',
+    const r = await ficGet(`/c/${company.id}/${v.endpoint}`, {
+      type: v.tipo,
       q: filtroData(filtri.anno, filtri.mese),
       per_page: PER_PAGE,
       page: pagina,
@@ -325,6 +401,14 @@ export async function cercaFattureRicevute(
 
   const elenco_troncato = pagineLette >= MAX_PAGINE && ultimaPagina > MAX_PAGINE
   return { ok: true, valore: { documenti, elenco_troncato, pagine_lette: pagineLette } }
+}
+
+export function cercaFattureRicevute(filtri: FiltriRicerca, societa: CodiceSocieta) {
+  return cercaFatture(filtri, societa, 'ricevuta')
+}
+
+export function cercaFattureEmesse(filtri: FiltriRicerca, societa: CodiceSocieta) {
+  return cercaFatture(filtri, societa, 'emessa')
 }
 
 export interface OpzioniClassifica {
@@ -350,11 +434,12 @@ export type Classifica =
  * ritiro, cioè il giorno della fattura. Scrivere «oggi» falserebbe la data di
  * un movimento contabile, ed è un dato inventato, non un default comodo.
  */
-export function classificaFatturaRicevuta(
+export function classificaFattura(
   doc: Record<string, unknown>,
   opzioni: OpzioniClassifica = {},
+  verso: Verso = 'ricevuta',
 ): Classifica {
-  const dati = datiFattura(doc)
+  const dati = datiFattura(doc, verso)
   const escludi = (motivo: string): Classifica => ({ stato: 'esclusa', fattura: { ...dati, motivo } })
 
   if (doc.locked === true) {
@@ -371,9 +456,13 @@ export function classificaFatturaRicevuta(
     )
   }
 
-  const dataPagamento = testo(opzioni.data_pagamento) || dati.data
+  // Un incasso su una fattura EMESSA ha la data del bonifico, e nessun
+  // predefinito: la data della fattura sarebbe un dato inventato.
+  const dataPagamento = testo(opzioni.data_pagamento) || (VERSI[verso].dataPredefinita ? dati.data : '')
   if (!dataPagamento) {
-    return escludi('non ha data documento e non mi è stata data una data di pagamento: non la invento')
+    return escludi(verso === 'emessa'
+      ? 'manca la data del bonifico (data_pagamento): un incasso si registra alla data in cui e\' arrivato, non la invento'
+      : 'non ha data documento e non mi è stata data una data di pagamento: non la invento')
   }
 
   if (piano.length > 1) {
@@ -423,6 +512,10 @@ export function classificaFatturaRicevuta(
   }
 }
 
+export function classificaFatturaRicevuta(doc: Record<string, unknown>, opzioni: OpzioniClassifica = {}): Classifica {
+  return classificaFattura(doc, opzioni, 'ricevuta')
+}
+
 /** Il piano pagamenti da spedire, col pagamento registrato sulla voce scelta. */
 export function pianoConPagamento(
   doc: Record<string, unknown>,
@@ -453,10 +546,12 @@ export function pianoConPagamento(
 export function corpoModifica(
   doc: Record<string, unknown>,
   piano: Record<string, unknown>[],
+  verso: Verso = 'ricevuta',
 ): Record<string, unknown> {
   const corpo: Record<string, unknown> = {}
+  const nonScrivibili: ReadonlySet<string> = VERSI[verso].nonScrivibili
   for (const [k, v] of Object.entries(doc)) {
-    if (!CAMPI_NON_SCRIVIBILI.has(k)) corpo[k] = v
+    if (!nonScrivibili.has(k)) corpo[k] = v
   }
   const entity = oggetto(doc.entity)
   if (Object.keys(entity).length > 0) {
@@ -469,14 +564,18 @@ export function corpoModifica(
 }
 
 /** I campi che la scrittura di un pagamento NON deve cambiare. */
-function invarianti(doc: Record<string, unknown>): Record<string, string> {
+function invarianti(doc: Record<string, unknown>, verso: Verso): Record<string, string> {
+  const dati = datiFattura(doc, verso)
   return {
-    fornitore: testo(oggetto(doc.entity).name),
-    numero: testo(doc.invoice_number),
-    data: testo(doc.date),
+    [controparteDi(verso)]: dati.fornitore,
+    numero: dati.numero,
+    data: dati.data,
     totale_netto: String(arrotonda(numero(doc.amount_net) ?? 0)),
     totale_iva: String(arrotonda(numero(doc.amount_vat) ?? 0)),
     totale_lordo: String(arrotonda(numero(doc.amount_gross) ?? 0)),
+    // Su una emessa lo stato verso lo SdI e' la cosa che NON deve muoversi:
+    // un PUT che lo cambiasse avrebbe toccato la fattura, non il pagamento.
+    ...(verso === 'emessa' ? { stato_sdi: testo(doc.ei_status) } : {}),
   }
 }
 
@@ -497,9 +596,10 @@ export function verificaPagamento(
   dopoDoc: Record<string, unknown>,
   fattura: FatturaDaSegnarePagata,
   conto: ContoPagamentoFic,
+  verso: Verso = 'ricevuta',
 ): Verifica {
-  const prima = invarianti(primaDoc)
-  const dopo = invarianti(dopoDoc)
+  const prima = invarianti(primaDoc, verso)
+  const dopo = invarianti(dopoDoc, verso)
   for (const campo of Object.keys(prima)) {
     if (prima[campo] !== dopo[campo]) {
       return {
@@ -544,16 +644,17 @@ export type EsitoScrittura = { ok: true } | { ok: false; motivo: string }
  * fattura può essere stata pagata da FIC o dall'Ingegnere. La classificazione
  * si rifà su ciò che c'è ADESSO.
  */
-export async function segnaPagataFatturaRicevuta(
+export async function segnaPagataFattura(
   id: number,
   conto: ContoPagamentoFic,
   opzioni: OpzioniClassifica,
   societa: CodiceSocieta,
+  verso: Verso,
 ): Promise<EsitoScrittura & { fattura?: FatturaRicevuta }> {
-  const prima = await leggiFatturaRicevuta(id, societa)
+  const prima = await leggiFattura(id, societa, verso)
   if (!prima.ok) return { ok: false, motivo: prima.error }
 
-  const classifica = classificaFatturaRicevuta(prima.valore, opzioni)
+  const classifica = classificaFattura(prima.valore, opzioni, verso)
   if (classifica.stato === 'esclusa') {
     return { ok: false, motivo: classifica.fattura.motivo, fattura: classifica.fattura }
   }
@@ -564,14 +665,14 @@ export async function segnaPagataFatturaRicevuta(
 
   const piano = pianoConPagamento(prima.valore, fattura, conto)
   const scritto = await ficPut(
-    `/c/${company.id}/received_documents/${id}`,
-    corpoModifica(prima.valore, piano),
+    `/c/${company.id}/${VERSI[verso].endpoint}/${id}`,
+    corpoModifica(prima.valore, piano, verso),
     societa,
   )
   if (!scritto.ok) return { ok: false, motivo: scritto.error, fattura }
 
   // La risposta della PUT NON e' la prova: si rilegge.
-  const dopo = await leggiFatturaRicevuta(id, societa)
+  const dopo = await leggiFattura(id, societa, verso)
   if (!dopo.ok) {
     return {
       ok: false,
@@ -580,7 +681,15 @@ export async function segnaPagataFatturaRicevuta(
     }
   }
 
-  const verifica = verificaPagamento(prima.valore, dopo.valore, fattura, conto)
+  const verifica = verificaPagamento(prima.valore, dopo.valore, fattura, conto, verso)
   if (!verifica.ok) return { ok: false, motivo: verifica.motivo, fattura }
   return { ok: true, fattura }
+}
+
+export function segnaPagataFatturaRicevuta(id: number, conto: ContoPagamentoFic, opzioni: OpzioniClassifica, societa: CodiceSocieta) {
+  return segnaPagataFattura(id, conto, opzioni, societa, 'ricevuta')
+}
+
+export function segnaPagataFatturaEmessa(id: number, conto: ContoPagamentoFic, opzioni: OpzioniClassifica, societa: CodiceSocieta) {
+  return segnaPagataFattura(id, conto, opzioni, societa, 'emessa')
 }

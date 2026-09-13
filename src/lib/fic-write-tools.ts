@@ -4,17 +4,50 @@ import { getSocieta, type CodiceSocieta } from './societa'
 import { comandoDaMostrare } from './comandi-uuid'
 import { modalitaPerDocumenti } from './fic-allegato'
 import {
+  cercaFattureEmesse,
   cercaFattureRicevute,
-  classificaFatturaRicevuta,
+  classificaFattura,
+  controparteDi,
   elencoContiPagamentoFic,
+  leggiFatturaEmessa,
   leggiFatturaRicevuta,
   risolviContoPagamento,
+  segnaPagataFatturaEmessa,
   segnaPagataFatturaRicevuta,
   TETTO_MASSIVO,
   type ContoPagamentoFic,
   type FatturaDaSegnarePagata,
   type FatturaEsclusa,
+  type Verso,
 } from './fic-pagamenti'
+
+/**
+ * Le tre operazioni di I/O per verso, prese per NOME dal modulo: i test le
+ * sostituiscono una per una (`vi.mock('./fic-pagamenti')`), e un riferimento
+ * preso al momento della chiamata e' quello che i test vedono.
+ */
+const IO_PAGAMENTI = {
+  ricevuta: {
+    leggi: (id: number, s: CodiceSocieta) => leggiFatturaRicevuta(id, s),
+    cerca: (f: Parameters<typeof cercaFattureRicevute>[0], s: CodiceSocieta) => cercaFattureRicevute(f, s),
+    segna: (...a: Parameters<typeof segnaPagataFatturaRicevuta>) => segnaPagataFatturaRicevuta(...a),
+    pending: 'pagamento_ricevuta' as const,
+    verbo: 'PAGAMENTI',
+  },
+  emessa: {
+    leggi: (id: number, s: CodiceSocieta) => leggiFatturaEmessa(id, s),
+    cerca: (f: Parameters<typeof cercaFattureEmesse>[0], s: CodiceSocieta) => cercaFattureEmesse(f, s),
+    segna: (...a: Parameters<typeof segnaPagataFatturaEmessa>) => segnaPagataFatturaEmessa(...a),
+    pending: 'pagamento_emessa' as const,
+    verbo: 'INCASSI',
+  },
+} as const
+
+function versoDelPending(tipo: PendingTipo): Verso | null {
+  if (tipo === 'pagamento_ricevuta') return 'ricevuta'
+  if (tipo === 'pagamento_emessa') return 'emessa'
+  return null
+}
 
 interface ToolDefinition {
   name: string
@@ -23,7 +56,7 @@ interface ToolDefinition {
 }
 
 type PendingStato = 'in_attesa' | 'creata' | 'annullata'
-type PendingTipo = 'fattura_emessa' | 'rapporto_intervento' | 'pagamento_ricevuta'
+type PendingTipo = 'fattura_emessa' | 'rapporto_intervento' | 'pagamento_ricevuta' | 'pagamento_emessa'
 
 interface PendingRow {
   id: string
@@ -561,12 +594,17 @@ async function eliminaBozzaFic(input: Record<string, unknown>, societa: CodiceSo
   // sotto chiamerebbe `eliminaDocumentoFIC` e CANCELLEREBBE quella fattura:
   // un «annulla» che distrugge un documento fiscale altrui. E' la stessa forma
   // del difetto del 10 set 2026, quando «ok annulla» CREAVA il documento.
-  if (row.tipo === 'pagamento_ricevuta') {
+  //
+  // Vale UGUALE per un incasso su fattura EMESSA (14 set 2026): li' il
+  // `fic_document_id` e' la NOSTRA fattura, magari gia' trasmessa allo SdI.
+  const versoPagamento = versoDelPending(row.tipo)
+  if (versoPagamento) {
     if (row.stato === 'creata') {
+      const chi = versoPagamento === 'ricevuta' ? 'le fatture del fornitore' : 'la fattura emessa al cliente'
       return fail(
-        'questo pending e\' un PAGAMENTO su fatture ricevute, gia\' scritto su Fatture in Cloud: non si annulla '
-        + 'da qui e non cancello le fatture del fornitore. Per togliere il pagamento, modifica la fattura su '
-        + 'Fatture in Cloud.',
+        `questo pending e' un ${versoPagamento === 'ricevuta' ? 'PAGAMENTO su fatture ricevute' : 'INCASSO su fatture emesse'}, `
+        + `gia' scritto su Fatture in Cloud: non si annulla da qui e non cancello ${chi}. `
+        + 'Per togliere il pagamento, modifica la fattura su Fatture in Cloud.',
         { id, ids_fatture: row.fic_document_id },
       )
     }
@@ -638,6 +676,10 @@ function rigaFattura(f: FatturaDaSegnarePagata): string {
   return `- [${f.id}] ${f.fornitore} — n.${f.numero} del ${f.data} — ${euro(f.importo)} → pagamento il ${f.data_pagamento}`
 }
 
+function intestazioneFattura(f: { id: number; fornitore: string; numero: string; data: string }, verso: Verso): string {
+  return `[${f.id}] ${controparteDi(verso)} ${f.fornitore} n.${f.numero} del ${f.data}`
+}
+
 function rigaEsclusa(f: FatturaEsclusa): string {
   return `- [${f.id}] ${f.fornitore} — n.${f.numero} del ${f.data} — ${f.motivo}`
 }
@@ -659,18 +701,24 @@ function descriviPagamenti(input: {
   conto: ContoPagamentoFic
   daScrivere: FatturaDaSegnarePagata[]
   escluse: FatturaEsclusa[]
+  verso: Verso
 }): string {
   const s = getSocieta(input.societa)
   const totale = input.daScrivere.reduce((somma, f) => somma + f.importo, 0)
+  const emessa = input.verso === 'emessa'
   return [
-    `Segno PAGATE ${input.daScrivere.length} fatture RICEVUTE su Fatture in Cloud`,
+    emessa
+      ? `Segno INCASSATE ${input.daScrivere.length} fatture EMESSE su Fatture in Cloud (cliente, data del bonifico)`
+      : `Segno PAGATE ${input.daScrivere.length} fatture RICEVUTE su Fatture in Cloud`,
     `SOCIETA: ${s.denominazione} (P.IVA ${s.piva})`,
     `Modalita di pagamento: ${input.conto.nome} (conto FIC id ${input.conto.id})`,
     `DA SCRIVERE: ${input.daScrivere.length} — totale ${euro(Math.round(totale * 100) / 100)}`,
     ...elencoTagliato(input.daScrivere, rigaFattura, 'fatture da scrivere'),
     input.escluse.length > 0 ? `ESCLUSE, non verranno toccate: ${input.escluse.length}` : null,
     ...(input.escluse.length > 0 ? elencoTagliato(input.escluse, rigaEsclusa, 'escluse') : []),
-    'Non si emette e non si trasmette niente: si scrive solo il pagamento sulle fatture di spesa.',
+    emessa
+      ? 'Non si emette, non si modifica e non si trasmette niente: si scrive solo l\'incasso sulla fattura gia\' emessa.'
+      : 'Non si emette e non si trasmette niente: si scrive solo il pagamento sulle fatture di spesa.',
     `1a conferma -> ${comandoDaMostrare('fic_ok', input.id)}`,
     `annulla -> ${comandoDaMostrare('fic_no', input.id)}`,
   ].filter(Boolean).join('\n')
@@ -680,11 +728,12 @@ async function salvaPendingPagamenti(
   payload: PagamentiPayload,
   descrivi: (id: string) => string,
   societa: CodiceSocieta,
+  tipo: PendingTipo,
 ): Promise<{ ok: true; id: string; descrizione: string } | { ok: false; error: string }> {
   const { data, error } = await supabase
     .from('cervellone_fic_pending')
     .insert({
-      tipo: 'pagamento_ricevuta',
+      tipo,
       payload: payload as unknown as Record<string, unknown>,
       descrizione: '',
       stato: 'in_attesa',
@@ -720,7 +769,10 @@ async function salvaPendingPagamenti(
 async function segnaFatturePagate(
   input: Record<string, unknown>,
   societa: CodiceSocieta,
+  verso: Verso = 'ricevuta',
 ): Promise<string> {
+  const io = IO_PAGAMENTI[verso]
+  const controparte = controparteDi(verso)
   const idSingolo = intero(input.id)
   const voce = intero(input.voce)
   if (voce !== undefined && idSingolo === undefined) {
@@ -731,23 +783,31 @@ async function segnaFatturePagate(
   if (dataImposta && !/^\d{4}-\d{2}-\d{2}$/.test(dataImposta)) {
     return fail(`data_pagamento "${dataImposta}" non valida: serve il formato YYYY-MM-DD`)
   }
+  // Un incasso ha la data del bonifico e nessun predefinito: si rifiuta QUI,
+  // prima di leggere e prima del pending, cosi' non nasce un'anteprima con una
+  // data che poi la classificazione escluderebbe fattura per fattura.
+  if (verso === 'emessa' && !dataImposta) {
+    return fail('manca la data del bonifico (data_pagamento, YYYY-MM-DD): un incasso si registra alla data in cui e\' arrivato, non la invento. Non ho scritto niente.')
+  }
 
   // 1) L'insieme. Si legge SEMPRE da Fatture in Cloud, mai dal testo.
   let documenti: Record<string, unknown>[] = []
   let elencoTroncato = false
   let pagineLette = 1
   if (idSingolo !== undefined) {
-    const letta = await leggiFatturaRicevuta(idSingolo, societa)
+    const letta = await io.leggi(idSingolo, societa)
     if (!letta.ok) return fail(letta.error)
     documenti.push(letta.valore)
   } else {
-    const fornitore = cleanString(input.fornitore)
+    // Sulle ricevute il filtro si chiama `fornitore`, sulle emesse `cliente`:
+    // e' la parola con cui l'Ingegnere lo chiederebbe.
+    const nomeControparte = cleanString(input[controparte])
     const anno = intero(input.anno)
     const mese = intero(input.mese)
-    if (!fornitore && !anno) {
-      return fail('serve almeno un criterio: id di una fattura, oppure fornitore e/o anno. Non segno pagate «tutte» le fatture di spesa.')
+    if (!nomeControparte && !anno) {
+      return fail(`serve almeno un criterio: id di una fattura, oppure ${controparte} e/o anno. Non segno pagate «tutte» le fatture ${verso === 'emessa' ? 'emesse' : 'di spesa'}.`)
     }
-    const trovate = await cercaFattureRicevute({ fornitore, anno, mese }, societa)
+    const trovate = await io.cerca({ fornitore: nomeControparte, anno, mese }, societa)
     if (!trovate.ok) return fail(trovate.error)
     documenti.push(...trovate.valore.documenti)
     elencoTroncato = trovate.valore.elenco_troncato
@@ -755,7 +815,7 @@ async function segnaFatturePagate(
   }
 
   if (documenti.length === 0) {
-    return fail('nessuna fattura ricevuta corrisponde alla selezione: non ho scritto niente')
+    return fail(`nessuna fattura ${verso} corrisponde alla selezione: non ho scritto niente`)
   }
 
   // 2) Il tetto e la completezza. Due cause DIVERSE di rifiuto, due messaggi
@@ -793,6 +853,9 @@ async function segnaFatturePagate(
   const soloModalita = Array.isArray(input.solo_modalita_fornitore)
     ? input.solo_modalita_fornitore.map((v) => cleanString(v)).filter((v): v is string => !!v)
     : []
+  if (soloModalita.length > 0 && verso === 'emessa') {
+    return fail('solo_modalita_fornitore vale per le fatture RICEVUTE: su una fattura emessa la modalita\' la scriviamo noi. Non ho scritto niente.')
+  }
   if (soloModalita.length > 0) {
     const letti = await modalitaPerDocumenti(documenti, societa)
     if (!letti.ok) return fail(letti.error)
@@ -842,7 +905,7 @@ async function segnaFatturePagate(
   const daScrivere: FatturaDaSegnarePagata[] = []
   const escluse: FatturaEsclusa[] = []
   for (const doc of documenti) {
-    const c = classificaFatturaRicevuta(doc, { data_pagamento: dataImposta, voce })
+    const c = classificaFattura(doc, { data_pagamento: dataImposta, voce }, verso)
     if (c.stato === 'da_scrivere') daScrivere.push(c.fattura)
     else escluse.push(c.fattura)
   }
@@ -862,8 +925,9 @@ async function segnaFatturePagate(
 
   const pending = await salvaPendingPagamenti(
     payload,
-    (id) => descriviPagamenti({ id, societa, conto: conto.valore, daScrivere, escluse }),
+    (id) => descriviPagamenti({ id, societa, conto: conto.valore, daScrivere, escluse, verso }),
     societa,
+    io.pending,
   )
   if (!pending.ok) return fail(pending.error)
 
@@ -916,10 +980,12 @@ interface EsitoPagamenti {
  * Se la scrittura si interrompe a metà, le fatture già scritte RESTANO
  * scritte: si dice quali, e non si tenta nessun rollback contabile.
  */
-async function eseguiPagamentiRicevute(
+async function eseguiPagamenti(
   payload: unknown,
   societa: CodiceSocieta,
+  verso: Verso,
 ): Promise<EsitoPagamenti> {
+  const io = IO_PAGAMENTI[verso]
   const dati = leggiPagamentiPayload(payload)
   if (!dati) {
     return {
@@ -938,14 +1004,14 @@ async function eseguiPagamentiRicevute(
 
   for (const f of dati.documenti) {
     try {
-      const esito = await segnaPagataFatturaRicevuta(
+      const esito = await io.segna(
         f.id,
         dati.conto,
         { data_pagamento: dati.data_pagamento, voce: dati.voce },
         societa,
       )
       trattate++
-      const intestazione = `[${f.id}] ${f.fornitore} n.${f.numero} del ${f.data}`
+      const intestazione = intestazioneFattura(f, verso)
       if (esito.ok) {
         ids.push(f.id)
         riuscite.push(`✅ ${intestazione} — ${euro(f.importo)} pagata il ${f.data_pagamento} su ${dati.conto.nome}`)
@@ -976,13 +1042,13 @@ async function eseguiPagamentiRicevute(
   }
   if (riuscite.length < totale) {
     return {
-      messaggio: `PAGAMENTI REGISTRATI IN PARTE su ${s.denominazione}: ${riuscite.length} su ${totale}.\n\n${coda}`,
+      messaggio: `${io.verbo} REGISTRATI IN PARTE su ${s.denominazione}: ${riuscite.length} su ${totale}.\n\n${coda}`,
       scritte: riuscite.length,
       ids,
     }
   }
   return {
-    messaggio: `PAGAMENTI REGISTRATI su ${s.denominazione}: ${riuscite.length} su ${totale}.\n\n${coda}`,
+    messaggio: `${io.verbo} REGISTRATI su ${s.denominazione}: ${riuscite.length} su ${totale}.\n\n${coda}`,
     scritte: riuscite.length,
     ids,
   }
@@ -1042,8 +1108,9 @@ export async function confirmFicStep2(id: string): Promise<string> {
   // stessa riga e gli stessi comandi /fic_ok_ e /fic_ok2_ — quindi funziona
   // identico su Telegram e sulla chat web senza toccare i due dispatch. Un
   // secondo meccanismo di conferma sarebbe un secondo posto dove sbagliare.
-  if (row.tipo === 'pagamento_ricevuta') {
-    const esito = await eseguiPagamentiRicevute(row.payload, row.societa)
+  const versoPagamento = versoDelPending(row.tipo)
+  if (versoPagamento) {
+    const esito = await eseguiPagamenti(row.payload, row.societa, versoPagamento)
 
     if (esito.scritte === 0) {
       // Niente e' stato scritto: la riga torna a una conferma, come quando la
@@ -1357,6 +1424,26 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    // Lo specchio del tool qui sopra, per le fatture EMESSE: l'incasso di un
+    // bonifico. Nato il 14 set 2026: il bot aveva abbinato la fattura al
+    // bonifico e non aveva il verbo per scriverlo.
+    name: 'segna_fatture_emesse_pagate',
+    description: 'Segna INCASSATA (pagata dal cliente) una fattura EMESSA su Fatture in Cloud, registrando il conto su cui e arrivato il bonifico e la DATA del bonifico: e il verbo con cui si chiude una fattura emessa che risulta ancora scaduta/non saldata quando il pagamento e arrivato in banca (es. un bonifico da un condominio che combacia per importo e data con una fattura aperta). Funziona su UNA fattura (passa id) o su un INSIEME (cliente e/o anno, mese). La modalita di pagamento si sceglie fra i conti che Fatture in Cloud espone (es. "Intesa Sanpaolo"): se non la passi, il tool ti restituisce l elenco vero e tu CHIEDI all Ingegnere quale. La data_pagamento e OBBLIGATORIA ed e la data del bonifico: non c e nessun predefinito, un incasso non si data a caso. REGOLE: (1) non scrive niente subito — prepara l anteprima e serve la doppia conferma /fic_ok_<id> poi /fic_ok2_<id>; (2) mostra l anteprima COM E, comprese le fatture ESCLUSE col motivo (gia incassate, o con piu voci nel piano pagamenti); (3) massimo 50 fatture per conferma; (4) l esito e PER FATTURA e viene da una RILETTURA: riporta quali si e quali no col motivo, e NON dire «fatte tutte». Non emette, non modifica e non trasmette nessuna fattura: scrive solo l incasso.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer', description: 'Id della singola fattura emessa su Fatture in Cloud (quello di fic_fatture_emesse / fic_dettaglio_documento). Alternativo ai filtri cliente/anno/mese.' },
+        cliente: { type: 'string', description: 'Nome (anche parziale) del cliente, per selezionare piu fatture. Es. "Vallina".' },
+        anno: { type: 'integer', description: 'Anno delle fatture da selezionare.' },
+        mese: { type: 'integer', description: 'Mese 1-12, insieme ad anno.' },
+        modalita_pagamento: { type: 'string', description: 'Nome o id del conto di pagamento di Fatture in Cloud su cui e arrivato l incasso, es. "Intesa Sanpaolo". Se omesso o non riconosciuto, il tool torna l elenco vero dei conti: chiedi all Ingegnere quale e richiama.' },
+        data_pagamento: { type: 'string', description: 'OBBLIGATORIA. Data del bonifico YYYY-MM-DD, presa dall estratto conto o dallo screenshot della banca. Vale per tutte le fatture della selezione.' },
+        voce: { type: 'integer', description: 'Quale voce del piano pagamenti segnare incassata (1 = la prima), solo quando la fattura ne ha piu di una e l Ingegnere ha detto quale. Richiede id.' },
+      },
+      required: ['data_pagamento'],
+    },
+  },
+  {
     name: 'lista_bozze_fic',
     description: 'Lista le bozze FIC pending, create o annullate registrate in cervellone_fic_pending.',
     input_schema: {
@@ -1383,7 +1470,8 @@ export async function executeFicWriteTool(
   try {
     if (name === 'compila_fattura_emessa') return compilaDocumento(input, 'fattura_emessa', societa)
     if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento', societa)
-    if (name === 'segna_fatture_ricevute_pagate') return segnaFatturePagate(input, societa)
+    if (name === 'segna_fatture_ricevute_pagate') return segnaFatturePagate(input, societa, 'ricevuta')
+    if (name === 'segna_fatture_emesse_pagate') return segnaFatturePagate(input, societa, 'emessa')
     if (name === 'conferma_bozza_fic') return confermaBozzaFic(input, societa)
     if (name === 'lista_bozze_fic') return listaBozzeFic(input, societa)
     if (name === 'elimina_bozza_fic') return eliminaBozzaFic(input, societa)

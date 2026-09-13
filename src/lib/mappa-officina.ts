@@ -105,6 +105,7 @@ export const DOMINI: readonly Dominio[] = [
       'compila_rapporto_intervento',
       'conferma_bozza_fic',
       'segna_fatture_ricevute_pagate',
+      'segna_fatture_emesse_pagate',
       'lista_bozze_fic',
       'elimina_bozza_fic',
       'genera_prima_nota',
