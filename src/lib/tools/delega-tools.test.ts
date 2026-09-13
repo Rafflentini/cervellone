@@ -29,14 +29,34 @@ vi.mock('../delega', () => ({
   delega: (...a: unknown[]) => mockDelega(...a),
   perimetroDiLavoro: () => new Set(['fic_fatture_ricevute']),
 }))
-vi.mock('../specialisti', () => ({
-  specialista: () => ({
+/**
+ * Registro finto con DUE porte: serve a provare che l'instradamento è
+ * derivato e non un `if` sul nome della contabile.
+ */
+// ⚠️ `vi.hoisted`: `vi.mock` viene issato in cima al file, prima delle `const`.
+// Senza, il mock esplode con «Cannot access before initialization».
+const { CONTABILE, GEOMETRA } = vi.hoisted(() => ({
+  CONTABILE: {
     chiave: 'contabile',
     nome: 'la contabile',
     dominio: 'Contabilita e fatture',
-    quando: 'fatture',
-    toolDalNucleo: [],
-  }),
+    quando: 'fatture, pagamenti, prima nota',
+    porta: { tool: 'chiedi_alla_contabile', usala_per: 'fatture pagate e non pagate' },
+    toolDalNucleo: [] as string[],
+  },
+  GEOMETRA: {
+    chiave: 'geometra',
+    nome: 'il geometra',
+    dominio: 'Studio tecnico',
+    quando: 'prezzari, preventivi, computi',
+    porta: { tool: 'chiedi_al_geometra', usala_per: 'prezzari e computi metrici' },
+    toolDalNucleo: [] as string[],
+  },
+}))
+vi.mock('../specialisti', () => ({
+  specialista: () => CONTABILE,
+  specialistiConPorta: () => [CONTABILE, GEOMETRA],
+  specialistaDellaPorta: (n: string) => [CONTABILE, GEOMETRA].find((s) => s.porta.tool === n),
 }))
 vi.mock('../prompts', () => ({ getPromptSpecialista: () => 'prompt-finto' }))
 const societaAttivaFinta = vi.fn()
@@ -50,7 +70,47 @@ vi.mock('../societa', () => ({
   ],
 }))
 
+import { readFileSync, existsSync } from 'fs'
+import { fileURLToPath } from 'url'
+import { dirname, resolve } from 'path'
+
 import { DELEGA_TOOLS, executeDelegaTool, decolloAcceso } from './delega-tools'
+
+/** La radice di `src/`, per sciogliere l'alias `@/`. */
+const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+/**
+ * Segue gli import STATICI a runtime (non i `import type`, che spariscono a
+ * compilazione, e non i `await import()`, che è proprio la cura al ciclo) e
+ * restituisce tutti i file raggiungibili.
+ *
+ * Volutamente semplice: legge i sorgenti con una regex invece di usare il
+ * compilatore. Se un giorno non bastasse, il sintomo sarebbe un falso VERDE —
+ * quindi il controllo positivo qui sotto, che pretende di arrivare davvero a
+ * `tools.ts` partendo da un file che ci porta, non è un di più: è quello che
+ * distingue «non c'è il ciclo» da «non ho guardato».
+ */
+function camminaGrafo(partenza: string, visti = new Set<string>()): Set<string> {
+  if (visti.has(partenza) || !existsSync(partenza)) return visti
+  visti.add(partenza)
+  const sorgente = readFileSync(partenza, 'utf8')
+  const righe = sorgente
+    .split(/\r?\n/)
+    .filter((r) => /^\s*import\s/.test(r) && !/^\s*import\s+type\s/.test(r))
+  for (const riga of righe) {
+    const m = riga.match(/from\s+['"]([^'"]+)['"]/)
+    if (!m) continue
+    const spec = m[1]
+    let base: string
+    if (spec.startsWith('@/')) base = resolve(SRC, spec.slice(2))
+    else if (spec.startsWith('.')) base = resolve(dirname(partenza), spec)
+    else continue // pacchetto di node_modules: non può riportare qui
+    for (const cand of [`${base}.ts`, `${base}.tsx`, resolve(base, 'index.ts')]) {
+      if (existsSync(cand)) { camminaGrafo(cand, visti); break }
+    }
+  }
+  return visti
+}
 
 beforeEach(() => {
   mockDelega.mockReset()
@@ -75,12 +135,43 @@ describe("l'interruttore: spento di default, come TOOL_DEFER", () => {
     expect(decolloAcceso()).toBe(true)
   })
 
-  it('⚠️ il tool resta nel registro anche da SPENTO', () => {
+  it('⚠️ i tool restano nel registro anche da SPENTO', () => {
     // Un tool che compare e scompare a seconda di una variabile d'ambiente
-    // sfuggirebbe alle guardie anti-buco della mappa dell'officina: si
-    // spegnerebbe la difesa insieme alla funzione, che e' il modo in cui un
+    // sfuggirebbe a qualunque guardia che legge il registro: si spegnerebbe la
+    // sorveglianza insieme alla funzione, che e' il modo in cui un
     // interruttore diventa un buco.
-    expect(DELEGA_TOOLS.map((t) => t.name)).toEqual(['chiedi_alla_contabile'])
+    expect(DELEGA_TOOLS.map((t) => t.name)).toEqual(['chiedi_alla_contabile', 'chiedi_al_geometra'])
+  })
+
+  it('⭐ le porte sono GENERATE dal registro: il secondo specialista costa una riga', () => {
+    // Il punto del passo 5. Non «un secondo specialista scritto a mano», ma la
+    // prova che il secondo costa quanto una riga: la definizione, il testo che
+    // il modello legge e l'instradamento vengono tutti dal registro.
+    //
+    // Con una copia per specialista, la seconda porta sarebbe nata gia'
+    // disallineata dalla prima — lo stesso marciume che `specialisti.ts`
+    // esiste per impedire, un piano piu' in basso.
+    const perNome = Object.fromEntries(DELEGA_TOOLS.map((t) => [t.name, t.description]))
+    // Le parti che valgono per TUTTI compaiono in TUTTE, identiche.
+    for (const d of Object.values(perNome)) {
+      expect(d).toMatch(/IDENTIFICATIVI esatti/)
+      expect(d).toMatch(/PREPARA ma non esegue/)
+      expect(d).toMatch(/societa' ATTIVA/)
+    }
+    // E quello che cambia e' solo il mestiere.
+    expect(perNome['chiedi_alla_contabile']).toMatch(/la contabile/)
+    expect(perNome['chiedi_alla_contabile']).toMatch(/fatture pagate e non pagate/)
+    expect(perNome['chiedi_al_geometra']).toMatch(/il geometra/)
+    expect(perNome['chiedi_al_geometra']).toMatch(/prezzari e computi metrici/)
+  })
+
+  it("⭐ l'instradamento e' derivato: la porta del geometra NON finisce alla contabile", async () => {
+    // Un `if (name === 'chiedi_alla_contabile')` sarebbe la terza copia dello
+    // stesso elenco, e la terza copia e' quella che un giorno resta indietro.
+    process.env.DECOLLO = '1'
+    await executeDelegaTool('chiedi_al_geometra', { compito: 'computo' }, 'conv-1')
+    const [chi] = mockDelega.mock.calls[0]
+    expect(chi.chiave).toBe('geometra')
   })
 
   it('da spento NON delega: la contabile non viene nemmeno svegliata', async () => {
@@ -241,49 +332,37 @@ describe('🚨 il ciclo di import non deve tornare', () => {
     // Serve lo stesso, per due ragioni: dice PERCHE' con parole invece di un
     // TypeError, e regge il giorno in cui questo file smettesse di mockare
     // `../delega` — e allora l'ordine cattivo non sarebbe piu' forzato.
-    const { readFileSync } = await import('fs')
-    const { fileURLToPath } = await import('url')
     const percorso = fileURLToPath(new URL('./delega-tools.ts', import.meta.url))
     const sorgente = readFileSync(percorso, 'utf8')
-    // ⚠️ NESSUN import statico a runtime, punto — non una lista nera di nomi.
+    // ⚠️ **SI CAMMINA IL GRAFO, non si elenca cosa è vietato.**
     //
-    // La prima stesura vietava `'../delega'`, `'../claude'`, `'../prompts'`,
-    // `'../specialisti'`. L'audit del 13 set 2026 l'ha aggirata due volte:
-    // - con l'alias **`'@/lib/delega'`**, che in `src/lib` e' usato in 21 file
-    //   (p.es. `agent-job.ts` importa cosi' `@/lib/claude`);
-    // - con **`'../tools'`**, cioe' il modulo al centro del ciclo, quello che
-    //   esplode — e che la lista nera non nominava nemmeno.
+    // Due stesure precedenti di questa guardia erano liste di nomi, e l'audit
+    // del 13 set 2026 le ha aggirate: con l'alias `'@/lib/delega'` (usato in
+    // 21 file di `src/lib`) e con `'../tools'`, cioè **il modulo al centro del
+    // ciclo**, che la lista non nominava nemmeno. Una lista di nomi si aggira
+    // cambiando grafia.
     //
-    // Una lista di nomi si aggira cambiando grafia. L'invariante vera e' piu'
-    // semplice e non si aggira: da qui non si importa NIENTE a runtime, solo
-    // tipi (che spariscono a compilazione) e `./types`, che e' un modulo di
-    // soli tipi.
-    const vietati = sorgente
-      .split(/\r?\n/)
-      .filter((r) => /^\s*import\s/.test(r))
-      .filter((r) => !/^\s*import\s+type\s/.test(r))
-      .filter((r) => !/['"]\.\/types['"]/.test(r))
+    // La regola vera è una sola: **da questo file, seguendo gli import statici,
+    // non si deve poter arrivare a `tools.ts`.** Quello è il ciclo, e questa è
+    // l'unica formulazione che non si aggira — copre gli alias, i percorsi
+    // relativi, e qualunque strada indiretta di domani.
+    const raggiunti = camminaGrafo(percorso)
+    const arrivo = [...raggiunti].filter((f) => /[\\/]lib[\\/]tools\.ts$/.test(f))
     expect(
-      vietati,
-      `import statici a runtime (rimettono il ciclo): ${vietati.join(' | ')}`,
+      arrivo,
+      `da delega-tools.ts si arriva a tools.ts: il ciclo e' tornato. Catena: ${[...raggiunti].join(' → ')}`,
     ).toEqual([])
   })
 
-  it('CONTROLLO POSITIVO — il filtro riconosce anche le grafie che aggiravano la lista nera', () => {
-    // Senza, il test sopra passerebbe anche con un filtro che non riconosce
-    // niente: l'11 set 2026 un commento dichiarava «controllo positivo» un test
-    // che non controllava nulla.
-    const vietato = (r: string) =>
-      /^\s*import\s/.test(r) && !/^\s*import\s+type\s/.test(r) && !/['"]\.\/types['"]/.test(r)
-    // I due che avevano aggirato la lista nera:
-    expect(vietato("import { delega } from '@/lib/delega'")).toBe(true)
-    expect(vietato("import { getToolDefinitions } from '../tools'")).toBe(true)
-    // E quello che la lista nera prendeva:
-    expect(vietato("import { delega } from '../delega'")).toBe(true)
-    // Quelli leciti restano leciti: i tipi spariscono a compilazione, e
-    // './types' e' un modulo di soli tipi.
-    expect(vietato("import type { ToolDefinition } from './types'")).toBe(false)
-    expect(vietato("import { qualcosa } from './types'")).toBe(false)
+  it('CONTROLLO POSITIVO — il camminatore ARRIVA davvero a tools.ts partendo da un file che ci porta', () => {
+    // La prova che il grafo viene percorso sul serio. Senza, il test sopra
+    // passerebbe anche con un camminatore che non segue nessun import — ed è
+    // esattamente l'errore dell'11 set 2026, un «controllo positivo» che non
+    // controllava niente.
+    //
+    // `delega.ts` importa `claude.ts`, che importa `tools.ts`: due salti.
+    const daDelega = camminaGrafo(fileURLToPath(new URL('../delega.ts', import.meta.url)))
+    expect([...daDelega].some((f) => /[\\/]lib[\\/]tools\.ts$/.test(f))).toBe(true)
   })
 
   it(

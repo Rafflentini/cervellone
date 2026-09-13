@@ -67,13 +67,18 @@
  *
  * E' lo stesso difetto che questa mappa e' nata per chiudere, applicato alla
  * porta stessa.
+ *
+ * ⚠️ **MA L'ELENCO NON STA PIU' QUI.** Era scritto a mano, e una mutazione del
+ * 13 set 2026 ne ha mostrato il prezzo: aggiungendo la porta di un terzo
+ * specialista, la guardia della mappa si lamentava di un orfano — perche'
+ * l'elenco era rimasto indietro. La seconda copia da tenere allineata a mano e'
+ * esattamente il marciume che il registro esiste per impedire.
+ *
+ * Ora si deriva: `toolDelCoordinatore()` in `specialisti.ts`, dove le porte
+ * sono definite. Non puo' stare qui perche' sarebbe un ciclo — `specialisti`
+ * importa questo file — quindi chi costruisce il prompt, che vede tutti e due,
+ * lo passa a `mappaOfficina()`.
  */
-export const TOOL_DEL_COORDINATORE: readonly string[] = [
-  // Decollo, passo 4. Spento finche' DECOLLO=1 (v. tools/delega-tools.ts): il
-  // tool resta nel registro anche da spento, o sparirebbe dalle guardie
-  // proprio quando serve sorvegliarlo.
-  'chiedi_alla_contabile',
-]
 
 /** Un dominio = uno scaffale. Diventera' uno specialista nel Decollo. */
 export type Dominio = {
@@ -286,15 +291,15 @@ const INTESTAZIONE = [
  * Vuoto a interruttore spento. Non «quasi vuoto»: vuoto, cosi' non costa
  * nemmeno i 318 token a vuoto.
  */
-export function mappaOfficina(): string {
+export function mappaOfficina(toolDelCoordinatore: readonly string[] = []): string {
   if (process.env.TOOL_DEFER !== '1') return ''
   const righe = DOMINI.map((d) => `- ${d.nome}: ${d.contiene}`)
   // I tool del coordinatore vanno NOMINATI, non descritti per dominio: sono
   // suoi, non stanno su uno scaffale, e sono cosi' pochi che il nome costa meno
   // di una perifrasi. Senza questa riga resterebbero invisibili — differiti e
   // fuori dalla mappa — proprio con l'interruttore acceso (v. sopra).
-  const suoi = TOOL_DEL_COORDINATORE.length
-    ? `\nI TUOI (non di uno scaffale, chiamali per nome): ${TOOL_DEL_COORDINATORE.join(', ')}.`
+  const suoi = toolDelCoordinatore.length
+    ? `\nI TUOI (non di uno scaffale, chiamali per nome): ${toolDelCoordinatore.join(', ')}.`
     : ''
   return INTESTAZIONE + righe.join('\n') + suoi
 }

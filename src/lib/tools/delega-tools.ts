@@ -45,52 +45,83 @@
  * dopo che tutti i moduli si sono assestati.
  */
 import type { ToolDefinition } from './types'
+// ⚠️ `specialisti` e `mappa-officina` NON sono nel ciclo: il primo importa solo
+// il secondo, e il secondo non importa niente. Un test cammina il grafo degli
+// import da questo file e verifica che non raggiunga MAI `tools.ts` — e' quella
+// la regola, non un elenco di nomi vietati.
+import { specialistiConPorta, specialistaDellaPorta, type Specialista } from '../specialisti'
 
 /** L'interruttore. Spento finché non vale esattamente '1'. */
 export function decolloAcceso(): boolean {
   return process.env.DECOLLO === '1'
 }
 
-export const DELEGA_TOOLS: ToolDefinition[] = [
-  {
-    name: 'chiedi_alla_contabile',
-    description:
-      "Gira un lavoro di contabilita' alla contabile, uno specialista che ha in mano SOLO Fatture in Cloud, " +
-      'prima nota, movimenti e riconciliazioni, e che quindi ci lavora senza distrarsi. ' +
-      "Usala per: quali fatture non sono pagate, cosa c'e' scritto sull'allegato di una fattura, " +
-      'modalita di pagamento dichiarate dal fornitore, movimenti, riconciliazioni, prima nota. ' +
-      "IMPORTANTE: passale gli IDENTIFICATIVI esatti (numero fattura, id documento), MAI descrizioni " +
-      "tipo 'quelle di prima': senza gli id rifara' la ricerca e potrebbe trovare un insieme diverso dal tuo. " +
-      "La contabile PREPARA ma non esegue azioni irreversibili: se serve confermare o inviare qualcosa, " +
-      "torna a te e la conferma la chiedi TU all'Ingegnere. " +
-      "LAVORA SEMPRE sulla societa' ATTIVA della conversazione, e non la puoi cambiare da qui: se il lavoro " +
-      "riguarda l'altra societa', cambia prima societa' attiva con imposta_societa_attiva, poi chiamami.",
-    input_schema: {
-      type: 'object',
-      properties: {
-        compito: {
-          type: 'string',
-          description: "Il lavoro, in una frase. Es: 'quali fatture Limongi 2026 non sono pagate'.",
-        },
-        riferimenti: {
-          type: 'array',
-          items: { type: 'string' },
-          description:
-            "Gli identificativi esatti su cui lavorare: numeri fattura ('2/1144'), id documento. " +
-            "OBBLIGATORI quando il compito si riferisce a cose che hai gia' trovato tu.",
-        },
+/**
+ * La descrizione che il modello legge per decidere se delegare.
+ *
+ * ⚠️ **Generata, non scritta a mano.** Le parti che valgono per TUTTI gli
+ * specialisti — gli identificativi esatti, il «prepara ma non esegue», la
+ * società attiva — stanno scritte **una volta sola**, qui. Quello che cambia da
+ * uno all'altro è solo `usala_per`, e sta nel registro accanto ai suoi attrezzi.
+ *
+ * Con una copia per specialista, la seconda porta sarebbe nata già disallineata
+ * dalla prima: è lo stesso marciume che `specialisti.ts` esiste per impedire,
+ * un piano più in basso.
+ */
+function descrizione(s: Specialista): string {
+  return (
+    `Gira un lavoro a ${s.nome}, uno specialista che ha in mano SOLO gli attrezzi del suo mestiere ` +
+    `(${s.quando}) e che quindi ci lavora senza distrarsi. ` +
+    `Usalo per: ${s.porta!.usala_per}. ` +
+    "IMPORTANTE: passagli gli IDENTIFICATIVI esatti (numero fattura, id documento, codice voce), MAI descrizioni " +
+    "tipo 'quelle di prima': senza gli id rifara' la ricerca e potrebbe trovare un insieme diverso dal tuo. " +
+    "PREPARA ma non esegue azioni irreversibili: se serve confermare, inviare o trasmettere qualcosa, " +
+    "torna a te e la conferma la chiedi TU all'Ingegnere. " +
+    "LAVORA SEMPRE sulla societa' ATTIVA della conversazione, e non la puoi cambiare da qui: se il lavoro " +
+    "riguarda l'altra societa', cambia prima societa' attiva con imposta_societa_attiva, poi chiamalo."
+  )
+}
+
+/**
+ * Una porta per ogni specialista che ne ha una.
+ *
+ * ⚠️ **Derivate dal registro.** Aggiungere uno specialista al Decollo costa una
+ * riga in `specialisti.ts` (il campo `porta`): la definizione, il testo e
+ * l'instradamento vengono da lì. Questo è il punto del passo 5 — non «un
+ * secondo specialista scritto a mano», ma **la prova che il secondo costa
+ * quanto una riga**.
+ */
+export const DELEGA_TOOLS: ToolDefinition[] = specialistiConPorta().map((s) => ({
+  name: s.porta!.tool,
+  description: descrizione(s),
+  input_schema: {
+    type: 'object',
+    properties: {
+      compito: {
+        type: 'string',
+        description: "Il lavoro, in una frase. Es: 'quali fatture Limongi 2026 non sono pagate'.",
       },
-      required: ['compito'],
+      riferimenti: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          "Gli identificativi esatti su cui lavorare: numeri fattura ('2/1144'), id documento, codici voce. " +
+          "OBBLIGATORI quando il compito si riferisce a cose che hai gia' trovato tu.",
+      },
     },
+    required: ['compito'],
   },
-]
+}))
 
 export async function executeDelegaTool(
   name: string,
   input: Record<string, unknown>,
   conversationId?: string,
 ): Promise<string | null> {
-  if (name !== 'chiedi_alla_contabile') return null
+  // Instradamento DERIVATO: il registro sa di chi è questa porta. Un `if` per
+  // nome sarebbe la terza copia dello stesso elenco.
+  const chi = specialistaDellaPorta(name)
+  if (!chi) return null
 
   if (!decolloAcceso()) {
     // ⚠️ Il rifiuto dice al coordinatore COSA FARE, non solo che non si puo'.
@@ -106,10 +137,9 @@ export async function executeDelegaTool(
 
   // Import dinamici: v. la nota in cima al file. Qui il ciclo non esiste più,
   // perché siamo a runtime e i moduli sono tutti caricati.
-  const [{ delega, perimetroDiLavoro }, { specialista }, { getPromptSpecialista }, { leggiSocietaAttiva }, { listaSocieta }] =
+  const [{ delega, perimetroDiLavoro }, { getPromptSpecialista }, { leggiSocietaAttiva }, { listaSocieta }] =
     await Promise.all([
       import('../delega'),
-      import('../specialisti'),
       import('../prompts'),
       import('../societa-attiva'),
       import('../societa'),
@@ -138,16 +168,17 @@ export async function executeDelegaTool(
   // Se non si riesce a leggerla NON si tira a indovinare e non si delega: un
   // lavoro contabile sulla societa' sbagliata e' peggio di un lavoro non fatto.
   //
-  // ⚠️ Senza conversazione non si delega AFFATTO, e non e' pedanteria: TUTTI
-  // gli attrezzi della contabile passano dal wrapper `contabile()`, che senza
-  // `conversationId` rifiuta uno per uno. Delegare lo stesso vorrebbe dire
-  // bruciare un turno intero — modello, token, secondi — per farsi dire dieci
-  // volte «non so su quale societa' stiamo lavorando». Meglio dirlo subito e
-  // gratis. Rilevato dall'audit del 13 set 2026.
+  // ⚠️ Senza conversazione non si delega AFFATTO, e non e' pedanteria: gli
+  // attrezzi che toccano dati societari passano dal wrapper `contabile()` in
+  // `tools.ts`, che senza `conversationId` rifiuta uno per uno — e un documento
+  // ha comunque bisogno dell'intestazione giusta. Delegare lo stesso vorrebbe
+  // dire bruciare un turno intero — modello, token, secondi — per farsi dire
+  // dieci volte «non so su quale societa' stiamo lavorando». Meglio dirlo
+  // subito e gratis. Rilevato dall'audit del 13 set 2026.
   if (!conversationId) {
     return JSON.stringify({
       ok: false,
-      motivo: "Non posso delegare senza conversazione: la contabile non saprebbe su quale societa' lavorare.",
+      motivo: `Non posso delegare senza conversazione: ${chi.nome} non saprebbe su quale societa' lavorare.`,
       cosa_faccio_adesso: 'Fai tu il lavoro con i tuoi attrezzi.',
     })
   }
@@ -155,15 +186,14 @@ export async function executeDelegaTool(
   if (!attiva.ok) {
     return JSON.stringify({
       ok: false,
-      motivo: `Non riesco a leggere quale societa' e' attiva (${attiva.errore}). Non delego un lavoro contabile senza saperlo.`,
+      motivo: `Non riesco a leggere quale societa' e' attiva (${attiva.errore}). Non delego senza saperlo.`,
       cosa_faccio_adesso: "Chiedi all'Ingegnere su quale societa' state lavorando, poi riprova.",
     })
   }
   const nomeSocieta = listaSocieta().find((s) => s.codice === attiva.codice)?.denominazione ?? attiva.codice
 
-  const contabile = specialista('contabile')
   const esito = await delega(
-    contabile,
+    chi,
     {
       compito: String(input.compito ?? ''),
       riferimenti: Array.isArray(input.riferimenti) ? input.riferimenti.map(String) : undefined,
@@ -171,9 +201,9 @@ export async function executeDelegaTool(
       conversationId,
     },
     getPromptSpecialista({
-      nome: contabile.nome,
-      quando: contabile.quando,
-      toolDisponibili: [...perimetroDiLavoro(contabile)],
+      nome: chi.nome,
+      quando: chi.quando,
+      toolDisponibili: [...perimetroDiLavoro(chi)],
     }),
   )
 

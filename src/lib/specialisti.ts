@@ -55,6 +55,26 @@ export interface Specialista {
   /** Quando il coordinatore gli gira il lavoro. Una frase, non un manuale. */
   quando: string
   /**
+   * Il nome del tool con cui il coordinatore lo chiama, e le parole che gli
+   * dicono QUANDO usarlo.
+   *
+   * ⚠️ **Assente = questo specialista non ha una porta.** Non è una
+   * dimenticanza: il disegno dice di aprirne una alla volta e di provare il
+   * pilota prima del secondo. Uno specialista senza porta esiste nel registro
+   * — sorvegliato dalle stesse guardie — ma nessuno può girargli lavoro.
+   *
+   * Aggiungerne uno costa **questa riga**: la definizione del tool, il testo
+   * che il modello legge e l'instradamento si derivano da qui. Prima erano
+   * scritti a mano in `tools/delega-tools.ts`, e una seconda copia scritta a
+   * mano è il marciume che questo registro esiste per impedire.
+   */
+  porta?: {
+    /** Il nome del tool. Per convenzione `chiedi_a…`, così si riconoscono a colpo d'occhio. */
+    tool: string
+    /** Cosa sa fare, con le PAROLE che l'Ingegnere usa davvero. È quello che il modello legge per decidere. */
+    usala_per: string
+  }
+  /**
    * I tool del NUCLEO che appartengono a lui.
    *
    * `DOMINI` cataloga solo i tool differiti: quelli del nucleo restano sempre
@@ -122,6 +142,13 @@ export const SPECIALISTI: readonly Specialista[] = [
     nome: 'la contabile',
     dominio: 'Contabilita e fatture',
     quando: 'fatture, pagamenti, prima nota, movimenti, riconciliazioni, note spese',
+    porta: {
+      tool: 'chiedi_alla_contabile',
+      usala_per:
+        "quali fatture sono pagate e quali no, cosa c'e' scritto sull'allegato di una fattura, " +
+        'modalita di pagamento dichiarate dal fornitore (contanti, bonifico, assegno, carta), ' +
+        'movimenti di banca e carte, riconciliazioni, prima nota, note spese',
+    },
     // Trova da solo le corrispondenze fra movimenti e fatture: e' lavoro suo.
     toolDalNucleo: ['riconcilia_automatico'],
   },
@@ -130,6 +157,16 @@ export const SPECIALISTI: readonly Specialista[] = [
     nome: 'il geometra',
     dominio: 'Studio tecnico',
     quando: 'prezzari, preventivi, computi metrici, quadri economici, SAL',
+    // ⚠️ IL SECONDO, e scelto apposta perche' e' quello che NON puo' fare
+    // danni: `haPotereIrreversibile(geometra)` e' false, calcolato. Un
+    // preventivo si rifa'; una mail spedita no. Il secondo specialista serve a
+    // provare che il meccanismo generalizza, non ad alzare la posta.
+    porta: {
+      tool: 'chiedi_al_geometra',
+      usala_per:
+        'cercare voci nei prezzari regionali, preparare un preventivo o un computo metrico, ' +
+        'quadri economici, SAL (stato avanzamento lavori), importare un prezzario da un file o un link',
+    },
     toolDalNucleo: [],
   },
   {
@@ -230,6 +267,33 @@ export function azioniIrreversibiliDi(s: Specialista): readonly string[] {
 export function perimetroDiLavoro(chi: Specialista): ReadonlySet<string> {
   const irreversibili = new Set(AZIONI_IRREVERSIBILI)
   return new Set(toolDi(chi).filter((t) => !irreversibili.has(t)))
+}
+
+/** Gli specialisti a cui il coordinatore può girare lavoro, cioè quelli con una porta. */
+export function specialistiConPorta(): Specialista[] {
+  return SPECIALISTI.filter((s) => s.porta)
+}
+
+/**
+ * Gli attrezzi che sono del COORDINATORE e non di uno scaffale: le porte.
+ *
+ * ⚠️ **Derivato.** Stava in `mappa-officina.ts` come elenco scritto a mano, e
+ * aggiungere uno specialista voleva dire ricordarsi di aggiornarlo — cioè la
+ * seconda copia da tenere allineata, che è il marciume che questo registro
+ * esiste per impedire. Una mutazione l'ha mostrato: aggiunta una porta, la
+ * guardia della mappa si lamentava di un orfano. Ora la lista **è** le porte.
+ *
+ * Sta qui e non là perché `mappa-officina.ts` non può importare questo file:
+ * sarebbe un ciclo (questo importa quello). Il testo della mappa se lo fa
+ * passare da chi costruisce il prompt, che può vedere tutti e due.
+ */
+export function toolDelCoordinatore(): string[] {
+  return specialistiConPorta().map((s) => s.porta!.tool)
+}
+
+/** Da nome del tool allo specialista. `undefined` se quel tool non è una porta. */
+export function specialistaDellaPorta(nomeTool: string): Specialista | undefined {
+  return SPECIALISTI.find((s) => s.porta?.tool === nomeTool)
 }
 
 export function specialista(chiave: ChiaveSpecialista): Specialista {

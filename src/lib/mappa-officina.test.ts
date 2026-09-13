@@ -44,14 +44,16 @@ vi.mock('./skills', () => ({
 
 import { getToolDefinitions } from './tools'
 import { NUCLEO_TOOL, SERVER_TOOLS } from './tool-nucleo'
-import { DOMINI, mappaOfficina, TOOL_DEL_COORDINATORE } from './mappa-officina'
+import { DOMINI, mappaOfficina } from './mappa-officina'
+import { toolDelCoordinatore } from './specialisti'
+const TOOL_DEL_COORDINATORE_CALCOLATO: readonly string[] = toolDelCoordinatore()
 import { DELEGA_TOOLS } from './tools/delega-tools'
 import { getChatSystemPrompt, getTelegramSystemPrompt } from './prompts'
 
 describe('la mappa dell\'officina — guardia anti-buco (test che conta piu\' di tutti)', () => {
   it('CONTROLLO POSITIVO — ogni tool fuori dal nucleo sta in ESATTAMENTE un dominio', () => {
     const tutti = (getToolDefinitions() as { name?: string }[]).map((t) => t.name).filter(Boolean) as string[]
-    // ⚠️ `TOOL_DEL_COORDINATORE` aggiunto il 13 set 2026, e aggiunto perche'
+    // ⚠️ `TOOL_DEL_COORDINATORE_CALCOLATO` aggiunto il 13 set 2026, e aggiunto perche'
     // QUESTA guardia ha morso. Con il Decollo esiste un attrezzo che non
     // appartiene a nessun mestiere — serve a girare il lavoro a chi il mestiere
     // ce l'ha — e il modello del mondo di questo test non lo prevedeva.
@@ -62,7 +64,7 @@ describe('la mappa dell\'officina — guardia anti-buco (test che conta piu\' di
     // (provato con una mutazione, audit 13 set 2026). Allargare la guardia
     // avrebbe spento la difesa insieme al problema.
     const fuoriNucleo = tutti.filter(
-      (n) => !NUCLEO_TOOL.has(n) && !SERVER_TOOLS.includes(n) && !TOOL_DEL_COORDINATORE.includes(n),
+      (n) => !NUCLEO_TOOL.has(n) && !SERVER_TOOLS.includes(n) && !TOOL_DEL_COORDINATORE_CALCOLATO.includes(n),
     )
     const catalogati = DOMINI.flatMap((d) => d.tool)
     const senzaScaffale = fuoriNucleo.filter((n) => !catalogati.includes(n))
@@ -96,7 +98,7 @@ describe('la mappa dell\'officina — guardia anti-buco (test che conta piu\' di
 })
 
 /**
- * ⚠️ `TOOL_DEL_COORDINATORE` e' un'ESENZIONE dalla guardia principale, e ogni
+ * ⚠️ `TOOL_DEL_COORDINATORE_CALCOLATO` e' un'ESENZIONE dalla guardia principale, e ogni
  * esenzione e' una scorciatoia per chi un giorno avra' fretta: basta infilarci
  * dentro un nome per far tacere la mappa. Questi tre test sono il prezzo che
  * l'esenzione deve pagare per esistere.
@@ -118,18 +120,18 @@ describe("gli attrezzi del coordinatore: un'esenzione, quindi sorvegliata", () =
     // i tool della delega, e per nessun altro. Se domani qualcuno ci infila un
     // nome, questo test lo dice — e se aggiunge un tool di delega vero, basta
     // che lo registri dove va.
-    expect([...TOOL_DEL_COORDINATORE].sort()).toEqual(DELEGA_TOOLS.map((t) => t.name).sort())
+    expect([...TOOL_DEL_COORDINATORE_CALCOLATO].sort()).toEqual(DELEGA_TOOLS.map((t) => t.name).sort())
   })
 
   it('resta minuscola: se cresce, non e piu un eccezione ma una scappatoia', () => {
-    expect(TOOL_DEL_COORDINATORE.length).toBeLessThanOrEqual(3)
+    expect(TOOL_DEL_COORDINATORE_CALCOLATO.length).toBeLessThanOrEqual(3)
   })
 
   it('ognuno esiste davvero nel registro', () => {
     // Il verso opposto: un nome rimasto qui dopo che il tool e' sparito
     // esenterebbe un fantasma, e la mappa tacerebbe su un buco vero.
     const esistenti = new Set((getToolDefinitions() as { name?: string }[]).map((t) => t.name).filter(Boolean) as string[])
-    const fantasmi = TOOL_DEL_COORDINATORE.filter((n) => !esistenti.has(n))
+    const fantasmi = TOOL_DEL_COORDINATORE_CALCOLATO.filter((n) => !esistenti.has(n))
     expect(fantasmi, `esentati che non esistono piu': ${fantasmi.join(', ')}`).toEqual([])
   })
 
@@ -144,8 +146,8 @@ describe("gli attrezzi del coordinatore: un'esenzione, quindi sorvegliata", () =
     // sono quelle dei tool FIC veri, quindi la porta e gli attrezzi si fanno
     // concorrenza nella ricerca BM25.
     process.env.TOOL_DEFER = '1'
-    const m = mappaOfficina()
-    for (const n of TOOL_DEL_COORDINATORE) {
+    const m = mappaOfficina(TOOL_DEL_COORDINATORE_CALCOLATO)
+    for (const n of TOOL_DEL_COORDINATORE_CALCOLATO) {
       expect(m, `la mappa non nomina ${n}: sarebbe invisibile`).toContain(n)
     }
   })
@@ -155,7 +157,7 @@ describe("gli attrezzi del coordinatore: un'esenzione, quindi sorvegliata", () =
     // finissero nel nucleo, questo morirebbe e direbbe che la riga sulla mappa
     // e' diventata superflua — che e' un'informazione, non un guasto.
     const defs = getToolDefinitions({ nucleo: NUCLEO_TOOL, ricerca: true }) as { name: string; defer_loading?: boolean }[]
-    for (const n of TOOL_DEL_COORDINATORE) {
+    for (const n of TOOL_DEL_COORDINATORE_CALCOLATO) {
       expect(defs.find((d) => d.name === n)?.defer_loading, `${n} non risulta differito`).toBe(true)
     }
   })
@@ -165,7 +167,7 @@ describe("gli attrezzi del coordinatore: un'esenzione, quindi sorvegliata", () =
     // a rimetterlo sotto guardia — e la doppia catalogazione e' il modo in cui
     // una mappa comincia a mentire senza che nessuno se ne accorga.
     const catalogati = new Set(DOMINI.flatMap((d) => d.tool))
-    const doppi = TOOL_DEL_COORDINATORE.filter((n) => catalogati.has(n))
+    const doppi = TOOL_DEL_COORDINATORE_CALCOLATO.filter((n) => catalogati.has(n))
     expect(doppi, `esentati che stanno anche su uno scaffale: ${doppi.join(', ')}`).toEqual([])
   })
 })

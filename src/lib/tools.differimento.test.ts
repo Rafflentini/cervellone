@@ -95,11 +95,26 @@ describe('differimento delle definizioni dei tool', () => {
   // ⚠️ Un'impronta che cambia SENZA che cambi il numero e' esattamente il caso
   // per cui questa asserzione porta l'md5 e non solo il conteggio: un tool
   // ritoccato non si vede contando.
-  it('senza opzioni: 133 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 13 settembre 2026 (Decollo, passo 5). Era 133 con impronta
+  // `7f67d1145e7198ec7aac24abe0532c57`. E' stato aggiunto UN tool custom:
+  // `chiedi_al_geometra` — la seconda porta del Decollo.
+  //
+  // ⚠️ E cambia anche la descrizione della PRIMA (`chiedi_alla_contabile`),
+  // perche' le due porte ora sono GENERATE dal registro degli specialisti
+  // invece di essere scritte a mano: le parti comuni — identificativi esatti,
+  // «prepara ma non esegue», societa' attiva — stanno in un posto solo. Era
+  // questo il punto del passo 5: non «un secondo specialista scritto a mano»,
+  // ma la prova che il secondo costa **una riga** in `specialisti.ts`.
+  //
+  // Il geometra e' scelto apposta come secondo perche' e' l'unico che NON puo'
+  // fare danni: `haPotereIrreversibile(geometra)` e' false, calcolato. Un
+  // preventivo si rifa'; una mail spedita no.
+  it('senza opzioni: 134 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(133)
+    expect(defs).toHaveLength(134)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('7f67d1145e7198ec7aac24abe0532c57')
+      .toBe('33ab554e57979b33aceb46cfbab47f43')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
