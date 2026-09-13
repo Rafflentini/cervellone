@@ -262,6 +262,54 @@ il secondo chiamante.*
 
 ---
 
+## L'audit della porta: quattro bloccanti, tutti chiusi
+
+Un secondo audit avversariale, su `chiedi_alla_contabile` e il registro. Nessuno
+dei quattro l'avevo visto.
+
+1. 🚨 **La società era un parametro che non commutava niente.** Gli attrezzi
+   della contabile passano dal wrapper `contabile()`, che ricava la società
+   dalla **conversazione** e non guarda mai l'input. Il coordinatore avrebbe
+   potuto passare «La Real Estate», la contabile leggere Restruktura e riferirle
+   come La Real Estate — **senza che se ne accorgesse nessuno**. È il difetto
+   che `tools.ts` dichiara chiuso, riaperto un piano più su. Parametro tolto: la
+   società si legge dalla stessa fonte che useranno i suoi attrezzi.
+
+2. 🚨 **Gli esiti dello specialista votavano sul circuit breaker del modello
+   vero.** Tre deleghe andate male su cinque campioni → rollback del modello per
+   i turni dell'Ingegnere. E con la delega si scrivono due righe per turno
+   utente, quindi la finestra si riempiva il doppio più in fretta.
+
+3. 🚨 **La porta era invisibile proprio col Decollo acceso.** Con `TOOL_DEFER=1`
+   non è nel nucleo (differita) e non è su nessuno scaffale (fuori mappa). E non
+   l'avrebbe trovata cercando: le sue parole sono quelle dei tool FIC veri.
+
+4. 🚨 **L'esenzione era una scappatoia vera**, provata con una mutazione:
+   togliere un tool vero dal suo scaffale e infilarlo in
+   `TOOL_DEL_COORDINATORE` lasciava la **suite intera verde**. Chiusa
+   *derivando*: l'esenzione deve essere esattamente `DELEGA_TOOLS`.
+
+Più la guardia sul ciclo di import, che era una **lista nera di quattro nomi** e
+l'auditor l'ha aggirata due volte (con l'alias `@/lib/delega` e con `../tools`).
+Ora l'invariante è assoluta.
+
+### Cosa resta aperto dall'audit, dichiarato
+
+- **Nessun tetto sul costo sommato.** Un turno delegato ha un budget **intero e
+  indipendente** da 200k token, e i suoi token non entrano in `accUsage` del
+  coordinatore. Un turno utente può costare 400k senza che nessun tetto se ne
+  accorga. La telemetria c'è (`entryPoint: specialista:*`), il **tetto no**.
+- **I tempi si sommano** dentro il `maxDuration = 800` della funzione, e il
+  `try/catch` non intercetta una funzione uccisa dal runtime.
+- **Un rosso osservato una volta e non riprodotto** nei test dell'interruttore,
+  sotto contesa di CPU. Non risolto, solo non riprodotto.
+- **`chiedi_alla_contabile` finirà fra i tool più chiamati avendo rifiutato ogni
+  volta**, finché `DECOLLO` resta spento — e il **2 ottobre** è in agenda
+  «rifare il nucleo sui dati di `cervellone_tool_calls`». Da ricordare, o
+  entrerà nel nucleo per il motivo sbagliato.
+
+---
+
 ## Per tarare il prossimo audit
 
 Tre domande che avrebbero trovato questi difetti **in fase di creazione**:
