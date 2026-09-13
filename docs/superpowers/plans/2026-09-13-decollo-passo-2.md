@@ -93,7 +93,7 @@ il 12 set 2026 mi ha fatto contare un difetto che non c'era.
 
 **Files:** `src/lib/claude.ts`, `src/lib/claude.esito-turno.test.ts` (creare)
 
-- [ ] **Step 1: i test che falliscono**
+- [x] **Step 1: i test che falliscono**
 
 ```ts
 it('un turno riuscito restituisce outcome success e il testo di prima', async () => { … })
@@ -113,11 +113,11 @@ it("i chiamanti di produzione ricevono lo stesso testo di prima", async () => {
 })
 ```
 
-- [ ] **Step 2: eseguire, verificare il fallimento**
-- [ ] **Step 3: implementare** — `EsitoTurno`, e i tre chiamanti che leggono `esito.testo`
-- [ ] **Step 4: suite intera + typecheck.** ⚠️ **Nessun test esistente deve essere modificato.** Se ne modifichi uno, riferiscilo invece di procedere
-- [ ] **Step 5: mutazione** — far restituire sempre `outcome: 'success'`: deve morire il controllo positivo sul budget. `cp`, `perl -0pi`, **`grep -c` che provi il morso**, `md5sum` identico dopo il ripristino
-- [ ] **Step 6: commit** — `git commit -m "il motore dice anche COM'E' andata, non solo cosa ha scritto"`
+- [x] **Step 2: eseguire, verificare il fallimento**
+- [x] **Step 3: implementare** — `EsitoTurno`, e i tre chiamanti che leggono `esito.testo`
+- [x] **Step 4: suite intera + typecheck.** ⚠️ **Nessun test esistente deve essere modificato.** Se ne modifichi uno, riferiscilo invece di procedere
+- [x] **Step 5: mutazione** — far restituire sempre `outcome: 'success'`: deve morire il controllo positivo sul budget. `cp`, `perl -0pi`, **`grep -c` che provi il morso**, `md5sum` identico dopo il ripristino
+- [x] **Step 6: commit** — `git commit -m "il motore dice anche COM'E' andata, non solo cosa ha scritto"`
 
 ---
 
@@ -127,13 +127,47 @@ it("i chiamanti di produzione ricevono lo stesso testo di prima", async () => {
 
 Uno specialista deve poter girare **senza emettere nulla** verso l'utente.
 
-- [ ] **Step 1: il test che fallisce** — con un sink muto, un turno fermato dal budget
+- [x] **Step 1: il test che fallisce** — con un sink muto, un turno fermato dal budget
   **non** chiama `emit`, **e** restituisce `troncato: true`. Oggi la prima metà è
   impossibile, la seconda pure
-- [ ] **Step 2: eseguire, verificare il fallimento**
-- [ ] **Step 3: implementare** — `sinkMuto()` esportato, che scarta tutto. Il messaggio di
+- [x] **Step 2: eseguire, verificare il fallimento**
+- [x] **Step 3: implementare** — `sinkMuto()` esportato, che scarta tutto. Il messaggio di
   cortesia sul budget si emette **solo** se il sink non è muto: chi delega legge
   `troncato`, non una frase scritta per un umano
-- [ ] **Step 4: suite + typecheck**, nessun test esistente modificato
-- [ ] **Step 5: mutazione** — far emettere comunque il messaggio col sink muto: deve morire il test
-- [ ] **Step 6: commit** — `git commit -m "uno specialista lavora in silenzio: la voce che parla all'Ingegnere e' una sola"`
+- [x] **Step 4: suite + typecheck**, nessun test esistente modificato
+- [x] **Step 5: mutazione** — far emettere comunque il messaggio col sink muto: deve morire il test
+- [x] **Step 6: commit** — `git commit -m "uno specialista lavora in silenzio: la voce che parla all'Ingegnere e' una sola"`
+
+---
+
+## Esito, 13 set 2026
+
+Chiuso. Commit `ac7490f` (Task 1) e `c548553` (Task 2).
+
+**Cosa ha trovato il lavoro, che il piano non prevedeva.**
+
+1. **Il tetto di iterazioni non avvisava nessuno.** Il piano elencava due
+   fermate mute (budget, pausa troncata). Ce n'era una terza: il ciclo esaurito
+   a `MAX_ITERATIONS` col modello che chiedeva ancora tool. Quella non emetteva
+   **nessuna frase** — era muta anche per l'Ingegnere, non solo per il
+   chiamante. Ora è dentro `troncato`, con un controllo positivo dedicato.
+
+2. **Il fallback per risposta vuota copriva la causa vera.** Emerso solo
+   accendendo il sink muto: un turno fermato dal budget veniva classificato
+   `'empty'` invece di `'run_aborted'`. In produzione era invisibile — con un
+   sink normale la frase di cortesia riempie `fullResponse`, quindi quel blocco
+   non parte mai. Non è telemetria: `'run_aborted'` è **escluso** dal conteggio
+   del circuit breaker, `'empty'` no. Uno specialista che sfonda il budget tre
+   volte di fila avrebbe fatto scattare il rollback su un modello sano.
+
+**Per la prossima taratura degli audit.** Tutti e due i difetti stanno nella
+stessa famiglia: *un ramo di codice che in produzione non si percorre mai, e
+che si percorrerà sempre appena si aggiunge il secondo chiamante.* L'audit di
+un'estensione deve chiedersi, per ogni guardia esistente, **quale ipotesi
+taciuta la teneva a riposo** — qui era «`fullResponse` non è mai vuoto perché
+qualcuno ci scrive sempre sopra».
+
+**Falso negativo noto e accettato.** `giriCompletati` non conta i giri che
+escono con `continue` (anti-bugia, force-action): se l'ultimo giro fosse uno di
+quelli, il troncamento non verrebbe visto. È un falso **negativo**, non un
+falso positivo: meglio tacere che dichiarare troncato un turno finito.
