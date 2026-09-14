@@ -512,7 +512,23 @@ export async function executeGmailWrapper(
 
   try {
     const risultato = await eseguiLetturaGmail(name, caselle, get)
-    if (risultato === null) return `Tool gmail "${name}" non riconosciuto.`
+    // 🚨 `null` vuol dire «questo nome non e' mio», e va detto alla CATENA, non
+    // all'Ingegnere. Questo wrapper rivendica OGNI nome che comincia per
+    // `gmail_` (riga 491), ma i tool gmail non stanno tutti in questo file:
+    // `gmail_leggi_allegato` vive in `tools/gmail-allegati-tools.ts`, il cui
+    // esecutore in `EXECUTORS` (tools.ts:938) sta DOPO questo. Finche' qui si
+    // restituiva una stringa, `executeTool` si fermava al primo risultato non
+    // nullo — cioe' qui — e l'esecutore vero non veniva MAI raggiunto.
+    //
+    // Il 14 settembre 2026 e' costato una giornata. Il tool era scritto,
+    // registrato in `ALL_TOOLS` e nel perimetro della segretaria: il modello lo
+    // vedeva, lo chiamava, e si sentiva rispondere «non riconosciuto». Non
+    // sapendo spiegarselo ha incolpato il deploy di Vercel e ha proposto
+    // all'Ingegnere di inoltrarsi le sei fatture Booking a mano.
+    //
+    // Un nome che questo file non gestisce cade in fondo alla catena, dove
+    // `executeTool` (tools.ts:984) dice la stessa identica cosa: nulla si perde.
+    if (risultato === null) return null
     // Una casella richiesta ma non Google va detta ANCHE quando il risultato
     // è vuoto o è un errore: chi legge deve sapere che 'info' non è mai stata
     // guardata qui, non dedurlo dal silenzio.
