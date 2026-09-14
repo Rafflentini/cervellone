@@ -23,12 +23,7 @@ export const DERIVA_TOOLS: ToolDefinition[] = [
   },
 ]
 
-export async function executeDerivaTools(
-  name: string,
-  _input: Record<string, unknown>,
-): Promise<string | null> {
-  if (name !== 'verifica_deriva_schema') return null
-
+async function testoDeriva(elencoFile: 'completo' | 'sintetico'): Promise<string> {
   const esito = await fotografaSchema()
   if (!esito.ok) {
     // Non si degrada in «nessuna deriva»: un guardiano che tace quando non
@@ -37,5 +32,28 @@ export async function executeDerivaTools(
   }
 
   const deriva = confronta(ATTESI as unknown as OggettiAttesi, esito.foto)
-  return descriviDeriva(deriva)
+  return descriviDeriva(deriva, { elencoFile })
+}
+
+export async function executeDerivaTools(
+  name: string,
+  _input: Record<string, unknown>,
+): Promise<string | null> {
+  if (name !== 'verifica_deriva_schema') return null
+  // Il tool non passa da Telegram: qui l'elenco dei file non letti ci sta per
+  // intero, ed e' il posto dove l'Ingegnere lo puo' andare a prendere.
+  return testoDeriva('completo')
+}
+
+/**
+ * Lo stesso controllo, per il rapporto settimanale di autodiagnosi.
+ *
+ * Cambia solo l'elenco dei file con statement non letti: nel rapporto e' un
+ * numero piu' tre nomi. Il rapporto viene tagliato a 3.500 caratteri su 4.096
+ * e questa sezione sta in coda: i ~1.420 caratteri di nomi — gli stessi ogni
+ * settimana — facevano cadere il taglio esattamente sulla notizia.
+ * ⚠️ Le righe che dicono cosa MANCA non si accorciano mai: sono la notizia.
+ */
+export async function derivaPerIlRapporto(): Promise<string> {
+  return testoDeriva('sintetico')
 }

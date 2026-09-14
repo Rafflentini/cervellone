@@ -358,8 +358,25 @@ export function confronta(attesi: OggettiAttesi, foto: Fotografia): Deriva {
   }
 }
 
+export interface OpzioniDescrizione {
+  /**
+   * Come elencare i file con statement non letti.
+   *
+   * `completo` (predefinito) e' per il tool, che non passa da Telegram.
+   * `sintetico` e' per il rapporto settimanale: a deriva ZERO la sezione
+   * misurava 1.560 caratteri, di cui ~1.420 erano i 38 nomi di file — gli
+   * stessi ogni settimana. Il rapporto viene tagliato a 3.500 caratteri su
+   * 4.096 e la sezione sta in coda: con deriva vera il taglio cadeva
+   * esattamente sulla notizia.
+   */
+  elencoFile?: 'completo' | 'sintetico'
+}
+
+/** Quanti nomi di file stanno nella versione sintetica, prima di «e altri N». */
+const NOMI_NEL_RAPPORTO = 3
+
 /** Il rapporto in parole. Due numeri, sempre: verificati e non interpretati. */
-export function descriviDeriva(d: Deriva): string {
+export function descriviDeriva(d: Deriva, opzioni: OpzioniDescrizione = {}): string {
   const righe: string[] = []
   righe.push(
     d.mancanti.length === 0
@@ -378,7 +395,14 @@ export function descriviDeriva(d: Deriva): string {
   righe.push(`Statement non interpretati dal controllo: ${d.nonInterpretate.length}.`)
   if (d.nonInterpretate.length > 0) {
     const file = Array.from(new Set(d.nonInterpretate.map((s) => s.file)))
-    righe.push(`  (nei file: ${file.join(', ')} - il controllo NON copre queste forme)`)
+    if (opzioni.elencoFile === 'sintetico') {
+      const primi = file.slice(0, NOMI_NEL_RAPPORTO)
+      const altri = file.length - primi.length
+      const coda = altri > 0 ? ` e altri ${altri}` : ''
+      righe.push(`  (in ${file.length} file: ${primi.join(', ')}${coda} - il controllo NON copre queste forme; l'elenco per esteso lo da il tool verifica_deriva_schema)`)
+    } else {
+      righe.push(`  (nei file: ${file.join(', ')} - il controllo NON copre queste forme)`)
+    }
   }
   return righe.join('\n')
 }

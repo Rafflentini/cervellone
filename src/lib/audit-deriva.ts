@@ -1,5 +1,5 @@
 // src/lib/audit-deriva.ts
-import { executeDerivaTools } from '@/lib/tools/deriva-schema-tools'
+import { derivaPerIlRapporto } from '@/lib/tools/deriva-schema-tools'
 
 /**
  * La deriva fra quello che il repository promette e quello che il database ha.
@@ -11,8 +11,9 @@ import { executeDerivaTools } from '@/lib/tools/deriva-schema-tools'
 export async function sezioneDeriva(): Promise<string> {
   const intestazione = '— Deriva fra repository e database —'
   try {
-    const testo = await executeDerivaTools('verifica_deriva_schema', {})
-    return `${intestazione}\n${testo ?? 'il controllo non ha risposto niente.'}`
+    // `derivaPerIlRapporto` torna sempre una stringa: o il confronto, o il
+    // motivo per cui non e' riuscito a guardare. Non c'e' il caso «niente».
+    return `${intestazione}\n${await derivaPerIlRapporto()}`
   } catch (e) {
     return `${intestazione}\nNON sono riuscito a fare il controllo: ${e instanceof Error ? e.message : String(e)}`
   }

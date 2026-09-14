@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const { fotografaSchema } = vi.hoisted(() => ({ fotografaSchema: vi.fn() }))
 vi.mock('@/lib/deriva-schema-db', () => ({ fotografaSchema }))
 
-import { DERIVA_TOOLS, executeDerivaTools } from './deriva-schema-tools'
+import { DERIVA_TOOLS, executeDerivaTools, derivaPerIlRapporto } from './deriva-schema-tools'
 
 // ⚠️ CORPO A BLOCCO, non la freccia concisa: `mockReset()` restituisce la spia,
 // e vitest scambia un ritorno FUNZIONE per un teardown — richiamando la spia
@@ -91,5 +91,52 @@ describe('verifica_deriva_schema', () => {
     expect(testo).toContain(`manca la colonna ${tolta!.tabella}.${tolta!.colonna}`)
     // E il secondo numero c-e lo stesso: senza, non si sa quanto NON e stato guardato.
     expect(testo?.toLowerCase()).toContain('non interpretat')
+  })
+})
+
+describe('derivaPerIlRapporto - la versione che passa da Telegram (reperto 6)', () => {
+  function fotoCompleta(ATTESI: { oggetti: unknown[] }) {
+    const foto = {
+      tabelle: [] as string[], colonne: [] as string[],
+      chiaviPrimarie: {} as Record<string, string[]>, indici: [] as string[], chiaviConfig: [] as string[],
+    }
+    for (const o of ATTESI.oggetti) {
+      const x = o as { tipo: string; tabella?: string; colonna?: string; nome?: string; chiave?: string; colonne?: string[] }
+      if (x.tipo === 'tabella') foto.tabelle.push(x.tabella!)
+      if (x.tipo === 'colonna') foto.colonne.push(`${x.tabella}.${x.colonna}`)
+      if (x.tipo === 'indice') foto.indici.push(x.nome!)
+      if (x.tipo === 'config') foto.chiaviConfig.push(x.chiave!)
+      if (x.tipo === 'chiave_primaria') foto.chiaviPrimarie[x.tabella!] = x.colonne!
+    }
+    return foto
+  }
+
+  it('🚨 a deriva ZERO la sezione sta in poche centinaia di caratteri, non in millecinquecento', async () => {
+    // Il rapporto settimanale viene tagliato a 3.500 caratteri su 4.096 e
+    // questa sezione sta in coda. A deriva zero misurava 1.560 caratteri, di
+    // cui ~1.420 erano i 38 nomi di file — gli stessi ogni settimana: con
+    // deriva vera il taglio cadeva esattamente sulla notizia.
+    const ATTESI = (await import('@/lib/deriva-schema-attesi.json')).default
+    fotografaSchema.mockResolvedValue({ ok: true, foto: fotoCompleta(ATTESI as unknown as { oggetti: unknown[] }) })
+
+    const breve = await derivaPerIlRapporto()
+
+    expect(breve).toContain('Nessuna deriva')
+    // Il secondo numero resta: senza, «nessuna deriva» non significa niente.
+    expect(breve.toLowerCase()).toContain('non interpretat')
+    expect(breve).toContain('verifica_deriva_schema')
+    expect(breve.length).toBeLessThan(500)
+  })
+
+  it('CONTROLLO POSITIVO: il tool, che non passa da Telegram, resta lungo', async () => {
+    // Senza questo, un `descriviDeriva` che accorciasse SEMPRE passerebbe il
+    // test qui sopra e l'elenco per esteso non esisterebbe piu' da nessuna
+    // parte.
+    const ATTESI = (await import('@/lib/deriva-schema-attesi.json')).default
+    fotografaSchema.mockResolvedValue({ ok: true, foto: fotoCompleta(ATTESI as unknown as { oggetti: unknown[] }) })
+
+    const lungo = await executeDerivaTools('verifica_deriva_schema', {})
+
+    expect(lungo!.length).toBeGreaterThan(1000)
   })
 })

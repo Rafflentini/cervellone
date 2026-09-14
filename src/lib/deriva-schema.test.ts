@@ -261,3 +261,45 @@ describe('le colonne dichiarate DENTRO il CREATE TABLE (audit 14 set 2026)', () 
     expect(r.oggetti.filter((o) => o.tipo === 'colonna').length).toBeGreaterThan(300)
   })
 })
+
+describe('descriviDeriva - l elenco dei file non deve mangiare Telegram (reperto 6)', () => {
+  // A deriva ZERO la sezione misurava 1.560 caratteri, di cui ~1.420 erano
+  // l'elenco dei 38 nomi di file — identico ogni settimana. Il rapporto viene
+  // tagliato a 3.500 su 4.096, e la sezione sta in coda: con deriva vera il
+  // taglio cadeva esattamente sulla notizia.
+  const trentotto = Array.from({ length: 38 }, (_, i) => ({ file: `2026-0${(i % 9) + 1}-file-numero-${i}.sql`, testo: 'GRANT ...' }))
+  const derivaZero = confronta({ oggetti: [], nonInterpretate: trentotto }, FOTO_PIENA)
+
+  it('per il rapporto: un numero, al massimo tre nomi e un «e altri N»', () => {
+    const testo = descriviDeriva(derivaZero, { elencoFile: 'sintetico' })
+
+    expect(testo).toContain('Statement non interpretati dal controllo: 38.')
+    expect(testo).toContain('e altri 35')
+    // Tre nomi, non trentotto.
+    expect((testo.match(/\.sql/g) ?? []).length).toBe(3)
+    // La misura, non l'impressione: la sezione lunga stava a ~1.560 caratteri.
+    expect(testo.length).toBeLessThan(400)
+  })
+
+  it('CONTROLLO POSITIVO: per il tool l elenco resta INTERO', () => {
+    // Il tool non passa da Telegram: li' l'elenco per esteso serve, ed e' il
+    // posto dove l'Ingegnere lo puo' andare a prendere.
+    const testo = descriviDeriva(derivaZero)
+    expect((testo.match(/\.sql/g) ?? []).length).toBe(38)
+  })
+
+  it('con tre file o meno non dice «e altri»', () => {
+    const d = confronta({ oggetti: [], nonInterpretate: trentotto.slice(0, 2) }, FOTO_PIENA)
+    const testo = descriviDeriva(d, { elencoFile: 'sintetico' })
+    expect(testo).not.toContain('e altri')
+  })
+
+  it('la deriva VERA resta per intero anche nel rapporto: e la notizia', () => {
+    // Si accorcia l'elenco dei file non letti, che e' identico ogni settimana.
+    // Le righe che dicono cosa MANCA non si toccano: sono il motivo per cui il
+    // rapporto esiste.
+    const attesi = { oggetti: [{ tipo: 'colonna' as const, tabella: 'procedures', colonna: 'output_preferences' }], nonInterpretate: trentotto }
+    const testo = descriviDeriva(confronta(attesi, { ...FOTO_PIENA, colonne: [] }), { elencoFile: 'sintetico' })
+    expect(testo).toContain('manca la colonna procedures.output_preferences')
+  })
+})

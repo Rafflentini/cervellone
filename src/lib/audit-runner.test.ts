@@ -68,7 +68,7 @@ vi.mock('./audit-collector', () => ({
 // ── Mock del guardiano della deriva ───────────────────────────────────────────
 //
 // Senza questo mock la sezione sulla deriva tirava dentro il guardiano VERO:
-// `sezioneDeriva` -> `executeDerivaTools` -> `fotografaSchema` -> il client
+// `sezioneDeriva` -> `derivaPerIlRapporto` -> `fotografaSchema` -> il client
 // Supabase. Non arrivava in rete (`@/lib/supabase-server` e' gia' mockato qui
 // sopra, e la chiamata moriva su `.rpc is not a function`), ma il rapporto si
 // portava dentro un «NON sono riuscito a leggere la forma del database» che
@@ -78,8 +78,8 @@ vi.mock('./audit-collector', () => ({
 //
 // ⚠️ `vi.hoisted`: la factory di `vi.mock` e' issata sopra le `const` del
 // modulo, e dereferenzia subito la spia — senza `hoisted` esploderebbe in TDZ.
-const { executeDerivaTools } = vi.hoisted(() => ({ executeDerivaTools: vi.fn() }))
-vi.mock('@/lib/tools/deriva-schema-tools', () => ({ executeDerivaTools, DERIVA_TOOLS: [] }))
+const { derivaPerIlRapporto } = vi.hoisted(() => ({ derivaPerIlRapporto: vi.fn() }))
+vi.mock('@/lib/tools/deriva-schema-tools', () => ({ derivaPerIlRapporto, executeDerivaTools: vi.fn(), DERIVA_TOOLS: [] }))
 
 // ── Default mock values ───────────────────────────────────────────────────────
 
@@ -136,7 +136,7 @@ beforeEach(() => {
   // si vede se la sezione e' davvero accodata al rapporto, invece di
   // accontentarsi dell'intestazione (che c'e' anche quando il controllo
   // fallisce).
-  executeDerivaTools.mockResolvedValue('Nessuna deriva: 493 oggetti del repo sono presenti nel database.\nStatement non interpretati dal controllo: 115.')
+  derivaPerIlRapporto.mockResolvedValue('Nessuna deriva: 493 oggetti del repo sono presenti nel database.\nStatement non interpretati dal controllo: 115.')
 
   // Supabase INSERT audit_runs → run_id
   mockInsert.mockReturnValue({
