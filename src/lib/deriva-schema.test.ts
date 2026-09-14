@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { oggettiAttesi } from './deriva-schema'
+import { confronta, descriviDeriva, oggettiAttesi, type Fotografia } from './deriva-schema'
 
 describe('oggettiAttesi - cosa il repo PROMETTE che esista', () => {
   it('riconosce le cinque forme che sappiamo leggere', () => {
@@ -61,5 +61,68 @@ describe('oggettiAttesi - cosa il repo PROMETTE che esista', () => {
     const r = oggettiAttesi([{ nome: 'v.sql', sql: '   \n-- solo un commento\n' }])
     expect(r.oggetti).toEqual([])
     expect(r.nonInterpretate).toEqual([])
+  })
+})
+
+const FOTO_PIENA: Fotografia = {
+  tabelle: ['procedures', 'gmail_processed_messages'],
+  colonne: ['procedures.output_preferences'],
+  chiaviPrimarie: { gmail_processed_messages: ['message_id', 'bot_action'] },
+  indici: ['idx_prova'],
+  chiaviConfig: ['auto_debrief_enabled'],
+}
+
+const ATTESI = {
+  oggetti: [
+    { tipo: 'tabella', tabella: 'procedures' },
+    { tipo: 'colonna', tabella: 'procedures', colonna: 'output_preferences' },
+    { tipo: 'chiave_primaria', tabella: 'gmail_processed_messages', colonne: ['message_id', 'bot_action'] },
+    { tipo: 'indice', nome: 'idx_prova' },
+    { tipo: 'config', chiave: 'auto_debrief_enabled' },
+  ],
+  nonInterpretate: [],
+} as const
+
+describe('confronta - quello che manca davvero', () => {
+  it('CONTROLLO POSITIVO: se c-e tutto, la deriva e VUOTA', () => {
+    // Senza questo, un `confronta` che dice sempre "manca tutto" passerebbe
+    // ogni test qui sotto.
+    const d = confronta(ATTESI as never, FOTO_PIENA)
+    expect(d.mancanti).toEqual([])
+    expect(d.verificati).toBe(5)
+  })
+
+  it('la colonna che manca compare, ed e IL caso di output_preferences', () => {
+    const foto = { ...FOTO_PIENA, colonne: [] }
+    const d = confronta(ATTESI as never, foto)
+    expect(d.mancanti).toContainEqual({ tipo: 'colonna', tabella: 'procedures', colonna: 'output_preferences' })
+  })
+
+  it('la chiave primaria SBAGLIATA conta come mancante, ed e IL caso di gmail', () => {
+    // In produzione era `PRIMARY KEY (message_id)` invece di (message_id, bot_action):
+    // la tabella c-era, la colonna c-era, e l-upsert falliva lo stesso.
+    const foto = { ...FOTO_PIENA, chiaviPrimarie: { gmail_processed_messages: ['message_id'] } }
+    const d = confronta(ATTESI as never, foto)
+    expect(d.mancanti).toContainEqual({
+      tipo: 'chiave_primaria', tabella: 'gmail_processed_messages', colonne: ['message_id', 'bot_action'],
+    })
+  })
+
+  it('l-ordine delle colonne della chiave primaria NON conta', () => {
+    const foto = { ...FOTO_PIENA, chiaviPrimarie: { gmail_processed_messages: ['bot_action', 'message_id'] } }
+    expect(confronta(ATTESI as never, foto).mancanti).toEqual([])
+  })
+
+  it('gli statement non letti viaggiano fino in fondo', () => {
+    const attesi = { oggetti: [], nonInterpretate: [{ file: 'x.sql', testo: 'CREATE FUNCTION ...' }] }
+    const d = confronta(attesi, FOTO_PIENA)
+    expect(d.nonInterpretate).toHaveLength(1)
+  })
+
+  it('descriviDeriva dice SEMPRE due numeri, anche quando va tutto bene', () => {
+    // "nessuna deriva" senza il secondo numero e' indistinguibile da "non ho guardato".
+    const testo = descriviDeriva(confronta(ATTESI as never, FOTO_PIENA))
+    expect(testo).toContain('5')
+    expect(testo.toLowerCase()).toContain('non interpretat')
   })
 })

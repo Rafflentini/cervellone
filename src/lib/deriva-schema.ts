@@ -112,3 +112,68 @@ export function oggettiAttesi(file: Array<{ nome: string; sql: string }>): Ogget
 
   return { oggetti, nonInterpretate }
 }
+
+export interface Fotografia {
+  tabelle: string[]
+  colonne: string[]
+  chiaviPrimarie: Record<string, string[]>
+  indici: string[]
+  chiaviConfig: string[]
+}
+
+export interface Deriva {
+  mancanti: OggettoAtteso[]
+  verificati: number
+  nonInterpretate: StatementNonLetto[]
+}
+
+function presente(o: OggettoAtteso, f: Fotografia): boolean {
+  switch (o.tipo) {
+    case 'tabella': return f.tabelle.includes(o.tabella)
+    case 'colonna': return f.colonne.includes(`${o.tabella}.${o.colonna}`)
+    case 'indice': return f.indici.includes(o.nome)
+    case 'config': return f.chiaviConfig.includes(o.chiave)
+    case 'chiave_primaria': {
+      const vere = f.chiaviPrimarie[o.tabella]
+      if (!vere) return false
+      // L'ordine delle colonne in una PK non cambia il vincolo: confrontarlo
+      // genererebbe falsi allarmi e farebbe ignorare il guardiano.
+      const a = [...vere].sort().join(',')
+      const b = [...o.colonne].sort().join(',')
+      return a === b
+    }
+  }
+}
+
+export function confronta(attesi: OggettiAttesi, foto: Fotografia): Deriva {
+  return {
+    mancanti: attesi.oggetti.filter((o) => !presente(o, foto)),
+    verificati: attesi.oggetti.length,
+    nonInterpretate: attesi.nonInterpretate,
+  }
+}
+
+/** Il rapporto in parole. Due numeri, sempre: verificati e non interpretati. */
+export function descriviDeriva(d: Deriva): string {
+  const righe: string[] = []
+  righe.push(
+    d.mancanti.length === 0
+      ? `Nessuna deriva: ${d.verificati} oggetti del repo sono presenti nel database.`
+      : `DERIVA: ${d.mancanti.length} oggetti su ${d.verificati} promessi dal repo NON esistono nel database.`,
+  )
+  for (const m of d.mancanti) {
+    if (m.tipo === 'colonna') righe.push(`  - manca la colonna ${m.tabella}.${m.colonna}`)
+    else if (m.tipo === 'tabella') righe.push(`  - manca la tabella ${m.tabella}`)
+    else if (m.tipo === 'indice') righe.push(`  - manca l'indice ${m.nome}`)
+    else if (m.tipo === 'config') righe.push(`  - manca la chiave di configurazione ${m.chiave}`)
+    else righe.push(`  - ${m.tabella} non ha la chiave primaria (${m.colonne.join(', ')})`)
+  }
+  // Questa riga c'e' sempre, anche a zero: senza, "nessuna deriva" sarebbe
+  // indistinguibile da "non ho guardato".
+  righe.push(`Statement non interpretati dal controllo: ${d.nonInterpretate.length}.`)
+  if (d.nonInterpretate.length > 0) {
+    const file = Array.from(new Set(d.nonInterpretate.map((s) => s.file)))
+    righe.push(`  (nei file: ${file.join(', ')} - il controllo NON copre queste forme)`)
+  }
+  return righe.join('\n')
+}
