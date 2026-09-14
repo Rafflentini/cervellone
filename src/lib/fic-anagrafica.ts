@@ -78,9 +78,23 @@ export interface ClienteEsistente {
  * straniero spesso non c'è, e allora l'unica difesa contro il doppione è il
  * nome. Cercare solo per CF lascerebbe passare ogni straniero due volte.
  */
+/**
+ * Quale dei due elenchi di Fatture in Cloud: `clients` o `suppliers`.
+ *
+ * ⚠️ 14 settembre 2026. `fic_crea_cliente` creava SOLO fra i clienti, con
+ * l'endpoint cablato. Booking.com B.V. e' un FORNITORE: crearlo fra i clienti
+ * lo faceva "esistere" in un elenco e mancare nell'altro — e la fattura
+ * d'acquisto, che vuole un fornitore, non lo avrebbe trovato.
+ */
+export type SegmentoAnagrafica = 'clients' | 'suppliers'
+
 export async function cercaCliente(
   societa: CodiceSocieta,
   dati: { nome?: string; codice_fiscale?: string; partita_iva?: string },
+  // ⚠️ Su Fatture in Cloud clienti e fornitori sono DUE ELENCHI SEPARATI: un
+  // fornitore cercato fra i clienti non si trova MAI, e il doppione che ne
+  // nasce e' esattamente cio' che questa funzione esiste per impedire.
+  elenco: SegmentoAnagrafica = 'clients',
 ): Promise<{ ok: true; trovati: ClienteEsistente[] } | { ok: false; error: string }> {
   const company = await getCompanyId(societa)
   if (!company.ok) return { ok: false, error: company.error }
@@ -107,7 +121,7 @@ export async function cercaCliente(
     ['vat_number', chiaveFiscale(dati.partita_iva)],
   ] as const) {
     if (!valore) continue
-    const r = await ficGet(`/c/${company.id}/entities/clients`, { q: `${campo} = '${valore}'`, per_page: 10 }, societa)
+    const r = await ficGet(`/c/${company.id}/entities/${elenco}`, { q: `${campo} = '${valore}'`, per_page: 10 }, societa)
     if (!r.ok) return { ok: false, error: r.error }
     aggiungi(r.data?.data)
   }
@@ -120,7 +134,7 @@ export async function cercaCliente(
     const parola = nomeNormalizzato(nome).split(' ').sort((a, b) => b.length - a.length)[0] ?? ''
     if (parola.length >= 3) {
       const r = await ficGet(
-        `/c/${company.id}/entities/clients`,
+        `/c/${company.id}/entities/${elenco}`,
         { q: `name contains '${parola.replace(/'/g, "\\'")}'`, per_page: 50 },
         societa,
       )
@@ -138,7 +152,9 @@ export const ANAGRAFICA_TOOLS: ToolDefinition[] = [
   {
     name: 'fic_crea_cliente',
     description:
-      "Crea un CLIENTE NUOVO nell'anagrafica di Fatture in Cloud, sulla societa' attiva. " +
+      "Crea un CLIENTE o un FORNITORE nuovo nell'anagrafica di Fatture in Cloud, sulla societa' attiva. " +
+      "Con elenco: 'fornitore' lo crea fra i FORNITORI — serve per chi emette fatture verso di noi, come Booking.com B.V. o Airbnb: " +
+      "su Fatture in Cloud clienti e fornitori sono elenchi SEPARATI, e un fornitore creato fra i clienti non si trova poi sulla fattura d acquisto. " +
       'Serve PRIMA di fatturare a qualcuno che non e\' ancora in anagrafica — il caso normale per gli affitti brevi ' +
       'de La Real Estate, dove quasi ogni ospite e\' nuovo. ' +
       'Dopo averlo creato usa il cliente_id restituito in compila_fattura_emessa, cosi\' la fattura punta ' +
@@ -151,6 +167,11 @@ export const ANAGRAFICA_TOOLS: ToolDefinition[] = [
         nome: {
           type: 'string',
           description: "Nome e cognome della persona, o denominazione dell'azienda. Scrivilo per esteso e corretto: finisce sulla fattura.",
+        },
+        elenco: {
+          type: 'string',
+          enum: ['cliente', 'fornitore'],
+          description: "In quale dei due elenchi di Fatture in Cloud. 'fornitore' per chi EMETTE una fattura verso di noi (Booking.com, Airbnb, un fornitore estero): clienti e fornitori sono elenchi SEPARATI e un fornitore creato fra i clienti non si trova poi sulla fattura d acquisto. Default: cliente.",
         },
         tipo: {
           type: 'string',
@@ -191,7 +212,12 @@ export async function executeAnagraficaTool(
 
   // ⚠️ SEMPRE prima di creare. V. l'intestazione del file: su un via-vai di
   // ospiti il difetto che si accumula e' il doppione, non il refuso.
-  const gia = await cercaCliente(societa, { nome, codice_fiscale: codiceFiscale, partita_iva: partitaIva })
+  // Il fornitore va nel SUO elenco: su FIC clienti e fornitori non si vedono
+  // fra loro. Il predefinito resta `cliente` perche' e' il caso normale (gli
+  // ospiti degli affitti brevi), ma un fornitore estero come Booking.com B.V.
+  // deve arrivare qui con elenco: 'fornitore'.
+  const elenco: SegmentoAnagrafica = input.elenco === 'fornitore' ? 'suppliers' : 'clients'
+  const gia = await cercaCliente(societa, { nome, codice_fiscale: codiceFiscale, partita_iva: partitaIva }, elenco)
   if (!gia.ok) return JSON.stringify({ ok: false, error: gia.error })
   if (gia.trovati.length > 0) {
     return JSON.stringify({
@@ -227,7 +253,7 @@ export async function executeAnagraficaTool(
   ]
   for (const [campo, valore] of mappa) if (valore) corpo[campo] = valore
 
-  const r = await ficPost(`/c/${company.id}/entities/clients`, corpo, societa)
+  const r = await ficPost(`/c/${company.id}/entities/${elenco}`, corpo, societa)
   if (!r.ok) return JSON.stringify({ ok: false, error: r.error })
 
   const creato = (r.data?.data ?? r.data) as Record<string, unknown> | undefined

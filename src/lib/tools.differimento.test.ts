@@ -262,11 +262,20 @@ describe('differimento delle definizioni dei tool', () => {
   // Sommati fanno 142. E anche qui numero e impronta vengono DAL FALLIMENTO
   // del test: calcolarli a parte vorrebbe dire scrivere l'impronta di quello
   // che si crede, non di quello che c'e'.
+  //
+  // LA DECISIONE, 14 settembre 2026 (il fornitore nel suo elenco). Il NUMERO
+  // NON CAMBIA — restano 142 — ma l'impronta si', da
+  // `6d2b95c878cf6cdc4100f244971a8ce1`. `fic_crea_cliente` aveva
+  // `entities/clients` CABLATO e sapeva creare solo clienti: Booking.com B.V.
+  // e' un FORNITORE, e su Fatture in Cloud i due elenchi sono separati.
+  // Adesso accetta `elenco: 'fornitore'`, e siccome una capacita' che non e'
+  // nello schema per il modello NON ESISTE, la descrizione cambia con lui e
+  // paga il pedaggio dell'impronta.
   it('senza opzioni: 142 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
     expect(defs).toHaveLength(142)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('f3c01978ca10cae1b545b01c0fa5b3a9')
+      .toBe('6d2b95c878cf6cdc4100f244971a8ce1')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
