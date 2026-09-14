@@ -895,6 +895,18 @@
     {
       "file": "2026-09-12-guardia-autorizzazioni.sql",
       "testo": "comment on table public.cervellone_guardia_autorizzazioni is 'Autorizzazioni una tantum che sciolgono il blocco della guardia sui dati societari (src/lib/guardia-societa.ts) per UN documento preciso ("
+    },
+    {
+      "file": "2026-09-14-fotografia-schema.sql",
+      "testo": "CREATE OR REPLACE FUNCTION public.fotografia_schema() RETURNS jsonb LANGUAGE sql STABLE SECURITY INVOKER AS $$ SELECT jsonb_build_object( 'tabelle', ( SELECT coalesce(jsonb_agg(table_name ORDER BY tab"
+    },
+    {
+      "file": "2026-09-14-fotografia-schema.sql",
+      "testo": "REVOKE EXECUTE ON FUNCTION public.fotografia_schema() FROM PUBLIC, anon, authenticated"
+    },
+    {
+      "file": "2026-09-14-fotografia-schema.sql",
+      "testo": "GRANT EXECUTE ON FUNCTION public.fotografia_schema() TO service_role"
     }
   ]
 }
