@@ -331,3 +331,59 @@ describe('la verifica confronta il documento INTERO, non sette campi', () => {
     expect(verificaPagamento(prima, dopo, daScrivere(), INTESA, 'emessa')).toEqual({ ok: true })
   })
 })
+
+/**
+ * 🚨 LA RIGA CHE E' COSTATA DUE GIORNI.
+ *
+ * `classificaFattura` rifiutava QUALUNQUE documento `locked` con la frase «non
+ * è modificabile via API». Sembrava un fatto su Fatture in Cloud: era una
+ * nostra convinzione, e nessun test la difendeva in nessuno dei due sensi.
+ *
+ * Conseguenza: il tool nato apposta per registrare gli incassi delle fatture
+ * emesse si rifiutava su **tutte quelle vere** — una fattura a un cliente viene
+ * trasmessa allo SdI e da quel momento è `locked`. Il bot riportava
+ * all'Ingegnere «FIC impedisce ogni scrittura», diceva «verificato ora», e
+ * verificava quella riga. Una richiesta a FIC non è mai partita.
+ *
+ * Il blocco di FIC è reale ma è sul DOCUMENTO. Un incasso è un'altra cosa, e
+ * dal 14 set gliene mandiamo solo il piano pagamenti. Quindi sulle emesse si
+ * PROVA e si riporta la risposta vera.
+ */
+describe('una fattura emessa gia trasmessa allo SdI (locked)', () => {
+  it('🚨 NON viene esclusa a priori: si prova, e risponde FIC', () => {
+    const classifica = classificaFattura(emessa({ locked: true }), { data_pagamento: BONIFICO }, 'emessa')
+
+    // `da_scrivere` significa esattamente questo: il tool arrivera' a fare il
+    // PUT, e a rispondere sara' Fatture in Cloud con le sue parole.
+    expect(classifica.stato).toBe('da_scrivere')
+    if (classifica.stato !== 'da_scrivere') return
+    expect(classifica.fattura.importo_pagamento).toBe(501.05)
+    expect(classifica.fattura.data_pagamento).toBe(BONIFICO)
+  })
+
+  it('CONTROLLO POSITIVO: una RICEVUTA bloccata resta esclusa', () => {
+    // Lì si rispedisce il documento INTERO, cioè esattamente quello che su un
+    // documento bloccato non si può fare. Senza questo test, togliere la
+    // guardia per tutti passerebbe inosservato.
+    const classifica = classificaFatturaRicevuta({ id: 1, locked: true, payments_list: [] })
+
+    expect(classifica.stato).toBe('esclusa')
+    if (classifica.stato !== 'esclusa') return
+    expect(classifica.fattura.motivo).toContain('locked')
+  })
+
+  it('CONTROLLO POSITIVO: una emessa NON bloccata continua a passare', () => {
+    // Senza questo, una classificazione che accetta sempre passerebbe il primo
+    // test e avremmo tolto ogni filtro invece di correggerne uno.
+    const classifica = classificaFattura(emessa(), { data_pagamento: BONIFICO }, 'emessa')
+    expect(classifica.stato).toBe('da_scrivere')
+  })
+
+  it('e una emessa gia pagata resta esclusa anche se non bloccata', () => {
+    const gia = emessa({ payments_list: [{ id: 91, amount: 501.05, paid_date: '2026-06-15', status: 'paid' }] })
+    const classifica = classificaFattura(gia, { data_pagamento: BONIFICO }, 'emessa')
+    expect(classifica.stato).toBe('esclusa')
+    if (classifica.stato !== 'esclusa') return
+    expect(classifica.fattura.motivo).toContain('GIÀ pagata')
+  })
+})
