@@ -1,5 +1,6 @@
 import { comandoDaMostrare } from '@/lib/comandi-uuid'
 import { NextRequest, NextResponse } from 'next/server'
+import { rispostaSeFuoriDalCron } from '@/lib/cron-auth'
 import { supabase } from '@/lib/supabase'
 import { sendTelegramMessageChecked } from '@/lib/telegram-helpers'
 import { estraiScadenzaDaAllegato } from '@/lib/scadenza-extract'
@@ -322,10 +323,11 @@ async function autoMemorizePendingProposals(adminChat: number, errors: string[])
 }
 
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get('authorization')
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
-  }
+  // C43 — la porta dei cron e' UNA, in `src/lib/cron-auth.ts`: un segreto che
+  // MANCA chiude. Prima, con `CRON_SECRET` non configurata, il confronto
+  // diventava con la stringa `"Bearer undefined"`, che chiunque puo' scrivere.
+  const fuori = rispostaSeFuoriDalCron(req)
+  if (fuori) return fuori
 
   const adminChat = getAdminChatId()
   const errors: string[] = []

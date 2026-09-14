@@ -10,6 +10,7 @@
  *   ?dry=1          dry-run, NON inoltra, NON setta lock
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { rispostaSeFuoriDalCron } from '@/lib/cron-auth'
 import { supabase } from '@/lib/supabase'
 import { runMonthlyForeignInvoices } from '@/v19/routines/monthly-foreign-invoices'
 import { sendTelegramMessage, chatAdmin } from '@/lib/telegram-helpers'
@@ -28,10 +29,11 @@ export async function GET(req: NextRequest) {
   // Smoke test SOLO via:
   //   curl -H "Authorization: Bearer $CRON_SECRET" https://.../api/cron/monthly-foreign-invoices?dry=1
   // oppure aspettando lo scheduler reale alle 08:00 UTC del 1° del mese.
-  const auth = req.headers.get('authorization')
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
-  }
+  // C43 — la porta dei cron e' UNA, in `src/lib/cron-auth.ts`: un segreto che
+  // MANCA chiude. Prima, con `CRON_SECRET` non configurata, il confronto
+  // diventava con la stringa `"Bearer undefined"`, che chiunque puo' scrivere.
+  const fuori = rispostaSeFuoriDalCron(req)
+  if (fuori) return fuori
   // Risolta QUI e non a caricamento del modulo: le variabili d'ambiente di una
   // funzione serverless vanno lette quando serve, non una volta per sempre.
   const RAFFAELE_CHAT_ID = chatAdmin() || null

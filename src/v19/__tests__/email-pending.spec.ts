@@ -208,7 +208,13 @@ describe('confirmPendingSend — claim atomico chiude race SMTP', () => {
       to: 'cliente@esterno.it, altro@esterno.it',
       subject: 'Preventivo lavori',
     })
-  })
+  // ⚠️ MISURATO il 14 set 2026: `await import('../tools/email/telegram-confirm')`
+  // costa **1703 ms** da solo su macchina scarica. Qui l'import sta DENTRO il
+  // corpo (serve, per via dei `vi.doMock` che lo precedono), quindi il costo
+  // cade nel budget del test invece che nella fase di import del file — e
+  // questo e' il PRIMO dei quattro test che lo importano, cioe' quello che lo
+  // paga per tutti. Con un po' di contesa fra worker andava in TIMEOUT a 5s.
+  }, 20_000)
 
   it('pending SENZA conversation_id e status sent → recordSentMail NON chiamato, nessun crash', async () => {
     const fetchPendingMock = vi.fn(async () => ({

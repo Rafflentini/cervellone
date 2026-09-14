@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { rispostaSeFuoriDalCron } from '@/lib/cron-auth'
 import { supabase } from '@/lib/supabase'
 import { runMemoriaExtract } from '@/lib/memoria-extract'
 
 export const maxDuration = 120
 
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get('authorization')
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
-  }
+  // C43 — la porta dei cron e' UNA, in `src/lib/cron-auth.ts`: un segreto che
+  // MANCA chiude. Prima, con `CRON_SECRET` non configurata, il confronto
+  // diventava con la stringa `"Bearer undefined"`, che chiunque puo' scrivere.
+  const fuori = rispostaSeFuoriDalCron(req)
+  if (fuori) return fuori
 
   // Silent mode check
   const { data: silentRow } = await supabase
