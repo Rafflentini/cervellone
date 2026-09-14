@@ -44,7 +44,11 @@ describe('oggettiAttesi - cosa il repo PROMETTE che esista', () => {
       nome: 'c.sql',
       sql: `-- ALTER TABLE finta ADD COLUMN IF NOT EXISTS bugiarda text;\nCREATE TABLE vera (id int);`,
     }])
-    expect(r.oggetti).toEqual([{ tipo: 'tabella', tabella: 'vera' }])
+    // La tabella e la colonna del suo corpo, e NIENTE della riga commentata.
+    expect(r.oggetti).toEqual([
+      { tipo: 'tabella', tabella: 'vera' },
+      { tipo: 'colonna', tabella: 'vera', colonna: 'id' },
+    ])
   })
 
   it('DROP e ALTER ... DISABLE ROW LEVEL SECURITY non sono promesse: si dichiarano non lette', () => {
@@ -186,5 +190,74 @@ describe('statement riconosciuti ma letti a META (audit 14 set 2026)', () => {
       sql: 'ALTER TABLE procedures ADD COLUMN IF NOT EXISTS output_preferences text[];',
     }])
     expect(r.oggetti).toEqual([{ tipo: 'colonna', tabella: 'procedures', colonna: 'output_preferences' }])
+  })
+})
+
+describe('le colonne dichiarate DENTRO il CREATE TABLE (audit 14 set 2026)', () => {
+  it('🚨 il corpo del CREATE TABLE non si butta via: le colonne sono promesse', () => {
+    // Prima della cura si registrava `{tipo:"tabella"}` e si buttava via il
+    // corpo: 351 colonne su 365 (il 96%) non erano controllate da nessuno.
+    // Il caso reale che morde: un `CREATE TABLE IF NOT EXISTS` ri-emesso con
+    // una colonna in piu' su una tabella che esiste gia'. Postgres non fa
+    // nulla, in silenzio, e il guardiano diceva «Nessuna deriva».
+    const r = oggettiAttesi([migrazioneVera('2026-05-25-cervellone-scadenze.sql')])
+
+    expect(r.oggetti).toContainEqual({ tipo: 'tabella', tabella: 'cervellone_scadenze' })
+    expect(r.oggetti).toContainEqual({ tipo: 'colonna', tabella: 'cervellone_scadenze', colonna: 'soggetto' })
+    expect(r.oggetti).toContainEqual({ tipo: 'colonna', tabella: 'cervellone_scadenze', colonna: 'data_scadenza' })
+    // `recipients text[] not null default array['info@…','raffaele@…']`: le
+    // virgole dentro le parentesi quadre NON dividono le voci del corpo.
+    expect(r.oggetti).toContainEqual({ tipo: 'colonna', tabella: 'cervellone_scadenze', colonna: 'recipients' })
+    expect(r.oggetti).toContainEqual({ tipo: 'colonna', tabella: 'cervellone_scadenze', colonna: 'updated_at' })
+    // `stato text not null default 'attivo' check (stato in (…))`: la virgola
+    // dentro il CHECK non divide, e la voce resta una colonna sola.
+    expect(r.oggetti).toContainEqual({ tipo: 'colonna', tabella: 'cervellone_scadenze', colonna: 'stato' })
+  })
+
+  it('🚨 la PRIMARY KEY dichiarata in linea viene registrata', () => {
+    // `id uuid primary key default gen_random_uuid()`. Senza, una tabella che
+    // esiste ma ha perso la PK passerebbe per sana — ed e' il caso vero di
+    // gmail_processed_messages, dove tabella e colonne c'erano e l'upsert
+    // falliva lo stesso.
+    const r = oggettiAttesi([migrazioneVera('2026-05-25-cervellone-scadenze.sql')])
+    expect(r.oggetti).toContainEqual({ tipo: 'chiave_primaria', tabella: 'cervellone_scadenze', colonne: ['id'] })
+  })
+
+  it('i vincoli di tabella NON diventano colonne', () => {
+    const r = oggettiAttesi([{
+      nome: 'v.sql',
+      sql: `create table t (
+        importo numeric(10,2) not null,
+        nota text default 'a, b',
+        constraint t_uq unique (importo),
+        primary key (importo),
+        foreign key (importo) references altra(id),
+        check (importo > 0),
+        unique (nota)
+      );`,
+    }])
+    const colonne = r.oggetti.filter((o) => o.tipo === 'colonna')
+    expect(colonne).toEqual([
+      { tipo: 'colonna', tabella: 't', colonna: 'importo' },
+      { tipo: 'colonna', tabella: 't', colonna: 'nota' },
+    ])
+  })
+
+  it('una voce del corpo che non si sa leggere finisce fra i NON interpretati', () => {
+    // «non sparisce» e' il patto di tutto il file: se il parser non capisce
+    // una voce deve dirlo, non ingoiarla.
+    const r = oggettiAttesi([{ nome: 'x.sql', sql: 'create table t (id int, 42 + 7);' }])
+    expect(r.oggetti).toContainEqual({ tipo: 'colonna', tabella: 't', colonna: 'id' })
+    expect(r.nonInterpretate.some((s) => s.testo.includes('42'))).toBe(true)
+  })
+
+  it('la copertura vera: i corpi dei CREATE TABLE del repo valgono centinaia di colonne', () => {
+    // Misurato il 14 settembre 2026: 39 CREATE TABLE, 351 colonne nei corpi.
+    // Il pavimento e' basso apposta (una migrazione nuova non deve far morire
+    // la suite), ma un parser che tornasse a buttare via i corpi crollerebbe
+    // sotto a 300 all'istante.
+    const nomi = fs.readdirSync(MIGRAZIONI).filter((n) => n.endsWith('.sql')).sort()
+    const r = oggettiAttesi(nomi.map(migrazioneVera))
+    expect(r.oggetti.filter((o) => o.tipo === 'colonna').length).toBeGreaterThan(300)
   })
 })

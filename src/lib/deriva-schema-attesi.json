@@ -5,12 +5,111 @@
       "tabella": "google_oauth_credentials"
     },
     {
+      "tipo": "colonna",
+      "tabella": "google_oauth_credentials",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "google_oauth_credentials",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "google_oauth_credentials",
+      "colonna": "account_email"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "google_oauth_credentials",
+      "colonna": "refresh_token"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "google_oauth_credentials",
+      "colonna": "access_token"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "google_oauth_credentials",
+      "colonna": "access_token_expires_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "google_oauth_credentials",
+      "colonna": "scopes"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "google_oauth_credentials",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "google_oauth_credentials",
+      "colonna": "updated_at"
+    },
+    {
       "tipo": "indice",
       "nome": "idx_google_oauth_email"
     },
     {
       "tipo": "tabella",
       "tabella": "model_health"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "model_health",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "model_health",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "model_health",
+      "colonna": "ts"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "model_health",
+      "colonna": "model"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "model_health",
+      "colonna": "request_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "model_health",
+      "colonna": "is_canary"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "model_health",
+      "colonna": "outcome"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "model_health",
+      "colonna": "full_len"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "model_health",
+      "colonna": "consecutive_no_text"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "model_health",
+      "colonna": "details"
     },
     {
       "tipo": "indice",
@@ -33,6 +132,28 @@
       "tabella": "telegram_active_jobs"
     },
     {
+      "tipo": "colonna",
+      "tabella": "telegram_active_jobs",
+      "colonna": "chat_id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "telegram_active_jobs",
+      "colonne": [
+        "chat_id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_active_jobs",
+      "colonna": "started_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_active_jobs",
+      "colonna": "request_id"
+    },
+    {
       "tipo": "indice",
       "nome": "idx_telegram_active_jobs_started_at"
     },
@@ -41,12 +162,84 @@
       "tabella": "gmail_alert_rules"
     },
     {
+      "tipo": "colonna",
+      "tabella": "gmail_alert_rules",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "gmail_alert_rules",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_alert_rules",
+      "colonna": "rule_type"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_alert_rules",
+      "colonna": "pattern"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_alert_rules",
+      "colonna": "severity"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_alert_rules",
+      "colonna": "enabled"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_alert_rules",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_alert_rules",
+      "colonna": "notes"
+    },
+    {
       "tipo": "indice",
       "nome": "idx_gmail_alert_rules_enabled"
     },
     {
       "tipo": "tabella",
       "tabella": "gmail_processed_messages"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_processed_messages",
+      "colonna": "message_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_processed_messages",
+      "colonna": "thread_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_processed_messages",
+      "colonna": "from_address"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_processed_messages",
+      "colonna": "subject"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_processed_messages",
+      "colonna": "bot_action"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "gmail_processed_messages",
+      "colonna": "ts"
     },
     {
       "tipo": "indice",
@@ -69,6 +262,48 @@
       "tabella": "cervellone_anthropic_files"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_anthropic_files",
+      "colonna": "file_id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_anthropic_files",
+      "colonne": [
+        "file_id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_anthropic_files",
+      "colonna": "uploaded_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_anthropic_files",
+      "colonna": "original_filename"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_anthropic_files",
+      "colonna": "mime_type"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_anthropic_files",
+      "colonna": "size_bytes"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_anthropic_files",
+      "colonna": "conversation_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_anthropic_files",
+      "colonna": "expires_at"
+    },
+    {
       "tipo": "indice",
       "nome": "idx_anthropic_files_expires"
     },
@@ -87,6 +322,73 @@
     {
       "tipo": "tabella",
       "tabella": "cervellone_audit_runs"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "run_id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_audit_runs",
+      "colonne": [
+        "run_id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "iso_week"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "started_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "completed_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "status"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "anomalies_count"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "dimensions_json"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "anomalies_json"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "report_text"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "llm_tokens_used"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "llm_cost_estimate_usd"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_audit_runs",
+      "colonna": "error_message"
     },
     {
       "tipo": "indice",
@@ -113,6 +415,48 @@
       "tabella": "cervellone_gmail_categorie"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_gmail_categorie",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_gmail_categorie",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_gmail_categorie",
+      "colonna": "name"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_gmail_categorie",
+      "colonna": "description"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_gmail_categorie",
+      "colonna": "seed_examples"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_gmail_categorie",
+      "colonna": "enabled"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_gmail_categorie",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_gmail_categorie",
+      "colonna": "notes"
+    },
+    {
       "tipo": "indice",
       "nome": "idx_gmail_categorie_enabled"
     },
@@ -123,6 +467,43 @@
     {
       "tipo": "tabella",
       "tabella": "cervellone_memoria_esplicita"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_esplicita",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_memoria_esplicita",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_esplicita",
+      "colonna": "contenuto"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_esplicita",
+      "colonna": "conversation_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_esplicita",
+      "colonna": "tag"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_esplicita",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_esplicita",
+      "colonna": "source"
     },
     {
       "tipo": "indice",
@@ -137,6 +518,43 @@
       "tabella": "cervellone_summary_giornaliero"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_summary_giornaliero",
+      "colonna": "data"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_summary_giornaliero",
+      "colonne": [
+        "data"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_summary_giornaliero",
+      "colonna": "summary_text"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_summary_giornaliero",
+      "colonna": "message_count"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_summary_giornaliero",
+      "colonna": "conversations_json"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_summary_giornaliero",
+      "colonna": "llm_tokens_used"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_summary_giornaliero",
+      "colonna": "created_at"
+    },
+    {
       "tipo": "indice",
       "nome": "idx_summary_giornaliero_data"
     },
@@ -145,12 +563,89 @@
       "tabella": "cervellone_entita_menzionate"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_entita_menzionate",
+      "colonna": "name"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_entita_menzionate",
+      "colonna": "type"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_entita_menzionate",
+      "colonna": "last_seen_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_entita_menzionate",
+      "colonna": "mention_count"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_entita_menzionate",
+      "colonna": "contexts_json"
+    },
+    {
       "tipo": "indice",
       "nome": "idx_entita_lastseen"
     },
     {
       "tipo": "tabella",
       "tabella": "cervellone_memoria_extraction_runs"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_extraction_runs",
+      "colonna": "run_id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_memoria_extraction_runs",
+      "colonne": [
+        "run_id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_extraction_runs",
+      "colonna": "date_processed"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_extraction_runs",
+      "colonna": "conversations_count"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_extraction_runs",
+      "colonna": "entities_count"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_extraction_runs",
+      "colonna": "status"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_extraction_runs",
+      "colonna": "llm_cost_estimate_usd"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_extraction_runs",
+      "colonna": "started_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_extraction_runs",
+      "colonna": "completed_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_memoria_extraction_runs",
+      "colonna": "error_message"
     },
     {
       "tipo": "indice",
@@ -173,6 +668,88 @@
       "tabella": "agent_runs"
     },
     {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "agent_runs",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "conversation_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "parent_run_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "kind"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "intent"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "status"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "container_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "started_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "completed_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "iterations"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "tokens_input"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "tokens_output"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "thinking_tokens"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "error_message"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_runs",
+      "colonna": "summary"
+    },
+    {
       "tipo": "indice",
       "nome": "agent_runs_conversation_idx"
     },
@@ -189,8 +766,97 @@
       "tabella": "sub_agent_jobs"
     },
     {
+      "tipo": "colonna",
+      "tabella": "sub_agent_jobs",
+      "colonna": "run_id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "sub_agent_jobs",
+      "colonne": [
+        "run_id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "sub_agent_jobs",
+      "colonna": "task"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "sub_agent_jobs",
+      "colonna": "input_files"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "sub_agent_jobs",
+      "colonna": "artifacts"
+    },
+    {
       "tipo": "tabella",
       "tabella": "document_renders"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_renders",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "document_renders",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_renders",
+      "colonna": "conversation_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_renders",
+      "colonna": "run_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_renders",
+      "colonna": "kind"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_renders",
+      "colonna": "semantic_input"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_renders",
+      "colonna": "drive_file_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_renders",
+      "colonna": "drive_url"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_renders",
+      "colonna": "state"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_renders",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_renders",
+      "colonna": "signed_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_renders",
+      "colonna": "audit_log"
     },
     {
       "tipo": "indice",
@@ -205,8 +871,137 @@
       "tabella": "e2b_sandboxes"
     },
     {
+      "tipo": "colonna",
+      "tabella": "e2b_sandboxes",
+      "colonna": "conversation_id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "e2b_sandboxes",
+      "colonne": [
+        "conversation_id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "e2b_sandboxes",
+      "colonna": "sandbox_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "e2b_sandboxes",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "e2b_sandboxes",
+      "colonna": "last_used"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "e2b_sandboxes",
+      "colonna": "killed_at"
+    },
+    {
       "tipo": "tabella",
       "tabella": "cervellone_email_log"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_email_log",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "ts"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "account"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "action"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "direction"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "message_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "subject"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "from_addr"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "to_addrs"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "cc_addrs"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "bcc_addrs"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "attachments_count"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "attachments_summary"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "status"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "error"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "request_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "routine_name"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_log",
+      "colonna": "raw_meta"
     },
     {
       "tipo": "indice",
@@ -221,6 +1016,48 @@
       "tabella": "cervellone_email_senders"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_senders",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_email_senders",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_senders",
+      "colonna": "email"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_senders",
+      "colonna": "category"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_senders",
+      "colonna": "label"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_senders",
+      "colonna": "active"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_senders",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_senders",
+      "colonna": "notes"
+    },
+    {
       "tipo": "indice",
       "nome": "ix_email_senders_cat"
     },
@@ -229,8 +1066,147 @@
       "tabella": "cervellone_email_invoices_log"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_email_invoices_log",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "month_ref"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "source_uid"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "source_folder"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "from_addr"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "subject"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "received_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "forwarded_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "forwarded_message_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "attachments_filenames"
+    },
+    {
       "tipo": "tabella",
       "tabella": "cervellone_email_pending_send"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "uuid"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_email_pending_send",
+      "colonne": [
+        "uuid"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "expires_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "from_account"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "to_addrs"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "cc_addrs"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "bcc_addrs"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "subject"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "body_text"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "body_html"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "attachments"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "in_reply_to"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "status"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "sent_message_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "sent_at"
     },
     {
       "tipo": "indice",
@@ -241,12 +1217,181 @@
       "tabella": "cervellone_doc_proposte"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_doc_proposte",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "account"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "uid"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "folder"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "message_subject"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "attachment_filename"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "drive_url"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "tipo_documento"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "soggetto"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "data_scadenza"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "emittente"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "confidenza"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "stato"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "attempts"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "last_notified_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_doc_proposte",
+      "colonna": "updated_at"
+    },
+    {
       "tipo": "indice",
       "nome": "idx_proposte_stato"
     },
     {
       "tipo": "tabella",
       "tabella": "cervellone_scadenze"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_scadenze",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "soggetto"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "categoria"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "tipo_documento"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "data_scadenza"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "reminder_days"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "recipients"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "drive_file_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "drive_url"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "note"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "reminders_sent"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "stato"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "updated_at"
     },
     {
       "tipo": "indice",
@@ -261,6 +1406,68 @@
       "tabella": "telegram_recent_uploads"
     },
     {
+      "tipo": "colonna",
+      "tabella": "telegram_recent_uploads",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "telegram_recent_uploads",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_recent_uploads",
+      "colonna": "chat_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_recent_uploads",
+      "colonna": "telegram_file_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_recent_uploads",
+      "colonna": "drive_url"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_recent_uploads",
+      "colonna": "drive_file_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_recent_uploads",
+      "colonna": "filename"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_recent_uploads",
+      "colonna": "caption"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_recent_uploads",
+      "colonna": "mime_type"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_recent_uploads",
+      "colonna": "processed"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_recent_uploads",
+      "colonna": "inserted_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_recent_uploads",
+      "colonna": "processed_at"
+    },
+    {
       "tipo": "indice",
       "nome": "idx_recent_uploads_chat_unprocessed"
     },
@@ -269,12 +1476,168 @@
       "tabella": "cervellone_drive_policy"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_drive_policy",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy",
+      "colonna": "folder_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy",
+      "colonna": "folder_name"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy",
+      "colonna": "can_write"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy",
+      "colonna": "added_at"
+    },
+    {
       "tipo": "tabella",
       "tabella": "cervellone_drive_policy_pending"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy_pending",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_drive_policy_pending",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy_pending",
+      "colonna": "folder_query"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy_pending",
+      "colonna": "folder_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy_pending",
+      "colonna": "folder_name"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy_pending",
+      "colonna": "azione"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy_pending",
+      "colonna": "conferme"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy_pending",
+      "colonna": "stato"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_drive_policy_pending",
+      "colonna": "created_at"
+    },
+    {
       "tipo": "tabella",
       "tabella": "cervellone_foto_pending"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_foto_pending",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "chat_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "canale"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "drive_file_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "drive_url"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "filename"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "ambito"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "soggetto"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "lavorazione"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "data_lavorazione"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "target_folder_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "stato"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_pending",
+      "colonna": "updated_at"
     },
     {
       "tipo": "indice",
@@ -283,6 +1646,63 @@
     {
       "tipo": "tabella",
       "tabella": "api_usage"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "api_usage",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "api_usage",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "api_usage",
+      "colonna": "ts"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "api_usage",
+      "colonna": "entry_point"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "api_usage",
+      "colonna": "model"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "api_usage",
+      "colonna": "input_tokens"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "api_usage",
+      "colonna": "output_tokens"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "api_usage",
+      "colonna": "cache_read_tokens"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "api_usage",
+      "colonna": "cache_creation_tokens"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "api_usage",
+      "colonna": "estimated_cost_usd"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "api_usage",
+      "colonna": "meta"
     },
     {
       "tipo": "indice",
@@ -297,8 +1717,127 @@
       "tabella": "procedures"
     },
     {
+      "tipo": "colonna",
+      "tabella": "procedures",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "procedures",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "procedures",
+      "colonna": "task_type"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "procedures",
+      "colonna": "title"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "procedures",
+      "colonna": "checklist"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "procedures",
+      "colonna": "output_spec"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "procedures",
+      "colonna": "save_location"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "procedures",
+      "colonna": "lessons"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "procedures",
+      "colonna": "updated_at"
+    },
+    {
       "tipo": "tabella",
       "tabella": "project_state"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "project_state",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "conversation_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "channel"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "project_name"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "cliente"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "cantiere"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "task_type"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "status"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "key_files"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "done"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "pending"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "decisions"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "updated_at"
     },
     {
       "tipo": "indice",
@@ -336,8 +1875,132 @@
       "tabella": "cervellone_share_proposte"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_share_proposte",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_share_proposte",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_share_proposte",
+      "colonna": "document_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_share_proposte",
+      "colonna": "giorni"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_share_proposte",
+      "colonna": "stato"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_share_proposte",
+      "colonna": "created_at"
+    },
+    {
       "tipo": "tabella",
       "tabella": "document_templates"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "document_templates",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "slug"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "titolo"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "parole_chiave"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "tipo_sorgente"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "metodo"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "master_drive_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "html_template"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "campi"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "dati_fissi"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "formati_output"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "dove_salvare"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "mai_inviare"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "note"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "updated_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "updated_by"
     },
     {
       "tipo": "colonna",
@@ -378,6 +2041,48 @@
     },
     {
       "tipo": "colonna",
+      "tabella": "cervellone_sal_pending",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_sal_pending",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_sal_pending",
+      "colonna": "payload"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_sal_pending",
+      "colonna": "descrizione"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_sal_pending",
+      "colonna": "stato"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_sal_pending",
+      "colonna": "conferme"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_sal_pending",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_sal_pending",
+      "colonna": "updated_at"
+    },
+    {
+      "tipo": "colonna",
       "tabella": "cervellone_scadenze",
       "colonna": "calendar_event_id"
     },
@@ -409,12 +2114,113 @@
       "tabella": "cervellone_societa_attiva"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_societa_attiva",
+      "colonna": "conversation_id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_societa_attiva",
+      "colonne": [
+        "conversation_id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_societa_attiva",
+      "colonna": "societa"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_societa_attiva",
+      "colonna": "updated_at"
+    },
+    {
       "tipo": "tabella",
       "tabella": "cervellone_foto_contesto"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_contesto",
+      "colonna": "conversation_id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_foto_contesto",
+      "colonne": [
+        "conversation_id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_contesto",
+      "colonna": "cantiere"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_contesto",
+      "colonna": "ambito"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_contesto",
+      "colonna": "confermato_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_foto_contesto",
+      "colonna": "updated_at"
+    },
+    {
       "tipo": "tabella",
       "tabella": "cervellone_regole"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_regole",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_regole",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_regole",
+      "colonna": "testo"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_regole",
+      "colonna": "motivo"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_regole",
+      "colonna": "stato"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_regole",
+      "colonna": "proposta_da"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_regole",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_regole",
+      "colonna": "decisa_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_regole",
+      "colonna": "updated_at"
     },
     {
       "tipo": "indice",
@@ -429,12 +2235,81 @@
       "tabella": "telegram_coda"
     },
     {
+      "tipo": "colonna",
+      "tabella": "telegram_coda",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "telegram_coda",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_coda",
+      "colonna": "chat_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_coda",
+      "colonna": "testo"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_coda",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "telegram_coda",
+      "colonna": "consumato_at"
+    },
+    {
       "tipo": "indice",
       "nome": "idx_telegram_coda_da_leggere"
     },
     {
       "tipo": "tabella",
       "tabella": "cervellone_skills_versioni"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_skills_versioni",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_skills_versioni",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_skills_versioni",
+      "colonna": "skill_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_skills_versioni",
+      "colonna": "versione"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_skills_versioni",
+      "colonna": "istruzioni"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_skills_versioni",
+      "colonna": "updated_by"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_skills_versioni",
+      "colonna": "archiviata_il"
     },
     {
       "tipo": "indice",
@@ -468,6 +2343,43 @@
       "tabella": "cervellone_tool_calls"
     },
     {
+      "tipo": "colonna",
+      "tabella": "cervellone_tool_calls",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_tool_calls",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_tool_calls",
+      "colonna": "nome"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_tool_calls",
+      "colonna": "conversation_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_tool_calls",
+      "colonna": "durata_ms"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_tool_calls",
+      "colonna": "riconosciuto"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_tool_calls",
+      "colonna": "created_at"
+    },
+    {
       "tipo": "indice",
       "nome": "idx_tool_calls_created"
     },
@@ -478,6 +2390,53 @@
     {
       "tipo": "tabella",
       "tabella": "cervellone_guardia_autorizzazioni"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_guardia_autorizzazioni",
+      "colonna": "uuid"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_guardia_autorizzazioni",
+      "colonne": [
+        "uuid"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_guardia_autorizzazioni",
+      "colonna": "conversation_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_guardia_autorizzazioni",
+      "colonna": "impronta"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_guardia_autorizzazioni",
+      "colonna": "pive_accettate"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_guardia_autorizzazioni",
+      "colonna": "scadenza"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_guardia_autorizzazioni",
+      "colonna": "concessa_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_guardia_autorizzazioni",
+      "colonna": "usata_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_guardia_autorizzazioni",
+      "colonna": "created_at"
     },
     {
       "tipo": "indice",

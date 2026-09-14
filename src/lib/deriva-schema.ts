@@ -87,6 +87,114 @@ function chiaviDelleTuple(statement: string, da: number): { chiavi: string[]; tu
   return { chiavi, tutteLette }
 }
 
+/**
+ * Le parole con cui comincia un VINCOLO di tabella, non una colonna.
+ * `constraint t_uq unique (…)`, `primary key (a, b)`, `check (…)`, `like …`.
+ */
+const VINCOLI_DI_TABELLA = ['PRIMARY', 'FOREIGN', 'UNIQUE', 'CHECK', 'CONSTRAINT', 'EXCLUDE', 'LIKE']
+
+/** Il nome di una colonna: il primo identificatore della voce, anche fra virgolette. */
+const NOME_COLONNA = /^"?([A-Za-z_][A-Za-z0-9_$]*)"?/
+
+/**
+ * Le voci fra le parentesi di un `CREATE TABLE`, divise sulle virgole di
+ * PRIMO livello.
+ *
+ * Non dividono: le virgole dentro parentesi o quadre annidate
+ * (`numeric(10,2)`, `check (stato in ('a','b'))`, `default array['x','y']`)
+ * ne' quelle dentro un letterale fra apici.
+ *
+ * Torna `null` se il corpo non c'e' o non si chiude: il chiamante lo dichiara
+ * non letto invece di fingere di averlo guardato.
+ */
+function vociDelCorpo(statement: string): string[] | null {
+  const apre = statement.indexOf('(')
+  if (apre < 0) return null
+
+  const voci: string[] = []
+  let corrente = ''
+  let profondita = 0
+
+  for (let i = apre; i < statement.length; i += 1) {
+    const c = statement[i]
+    if (c === "'") {
+      corrente += c
+      i += 1
+      while (i < statement.length) {
+        corrente += statement[i]
+        if (statement[i] === "'") {
+          // Un apice raddoppiato (`''`) NON chiude il letterale.
+          if (statement[i + 1] === "'") { corrente += "'"; i += 2; continue }
+          break
+        }
+        i += 1
+      }
+      continue
+    }
+    if (c === '(' || c === '[') {
+      profondita += 1
+      if (profondita > 1) corrente += c
+      continue
+    }
+    if (c === ')' || c === ']') {
+      profondita -= 1
+      if (profondita === 0) { voci.push(corrente); return voci }
+      corrente += c
+      continue
+    }
+    if (c === ',' && profondita === 1) { voci.push(corrente); corrente = ''; continue }
+    corrente += c
+  }
+
+  return null
+}
+
+/**
+ * Le colonne (e la chiave primaria in linea) promesse dal corpo di un
+ * `CREATE TABLE`.
+ *
+ * Perche' esiste (audit del 14 settembre 2026): il corpo veniva buttato via e
+ * delle 365 colonne promesse dal repo se ne controllavano 14 — il 4%. Il caso
+ * che morde e' un `CREATE TABLE IF NOT EXISTS` ri-emesso con una colonna in
+ * piu' su una tabella che esiste gia': Postgres non fa nulla, in silenzio, e
+ * il guardiano rispondeva «Nessuna deriva».
+ *
+ * ⚠️ Una `PRIMARY KEY (a, b)` dichiarata come vincolo di tabella NON viene
+ * registrata: e' un limite noto e dichiarato, non una protezione.
+ */
+function colonneDelCorpo(tabella: string, statement: string): Lettura {
+  const voci = vociDelCorpo(statement)
+  if (voci === null) return { oggetti: [], nonLetti: [statement] }
+
+  const oggetti: OggettoAtteso[] = []
+  const nonLetti: string[] = []
+
+  for (const voce of voci) {
+    const v = voce.trim()
+    if (!v) continue
+
+    const prima = /^[A-Za-z_]+/.exec(v)
+    if (prima && VINCOLI_DI_TABELLA.includes(prima[0].toUpperCase())) continue
+
+    const nome = NOME_COLONNA.exec(v)
+    if (!nome) {
+      // Non si ingoia: una voce illeggibile va dichiarata, altrimenti sparisce
+      // da entrambi i numeri del rapporto.
+      nonLetti.push(v)
+      continue
+    }
+
+    oggetti.push({ tipo: 'colonna', tabella, colonna: nome[1] })
+    // `id uuid primary key default gen_random_uuid()`: la chiave primaria in
+    // linea e' una promessa quanto la colonna. In produzione e' successo che
+    // tabella e colonne ci fossero e l'upsert fallisse lo stesso, per una PK
+    // diversa da quella promessa.
+    if (/\bPRIMARY\s+KEY\b/i.test(v)) oggetti.push({ tipo: 'chiave_primaria', tabella, colonne: [nome[1]] })
+  }
+
+  return { oggetti, nonLetti }
+}
+
 const FORME: Array<{ re: RegExp; leggi: (m: RegExpExecArray, statement: string) => Lettura }> = [
   {
     re: new RegExp(`^ALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${ID}\\s+ADD\\s+COLUMN\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${ID}`, 'i'),
@@ -117,7 +225,13 @@ const FORME: Array<{ re: RegExp; leggi: (m: RegExpExecArray, statement: string) 
   },
   {
     re: new RegExp(`^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${ID}`, 'i'),
-    leggi: (m) => ({ oggetti: [{ tipo: 'tabella', tabella: m[1] }], nonLetti: [] }),
+    leggi: (m, statement) => {
+      const dalCorpo = colonneDelCorpo(m[1], statement)
+      return {
+        oggetti: [{ tipo: 'tabella', tabella: m[1] } as OggettoAtteso].concat(dalCorpo.oggetti),
+        nonLetti: dalCorpo.nonLetti,
+      }
+    },
   },
   {
     re: new RegExp(`^CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?${ID}`, 'i'),
