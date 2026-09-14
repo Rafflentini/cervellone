@@ -155,4 +155,38 @@ describe('markGoogleTokenDead', () => {
     const { markGoogleTokenDead } = await import('./google-token-health')
     await expect(markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)).resolves.toBeUndefined()
   })
+
+  // LA DECISIONE, 14 settembre 2026 (audit avversariale): fino a qui il testo
+  // dell'alert era cablato su restruktura.drive@gmail.com — se moriva l'altro
+  // account, l'Ingegnere avrebbe riautorizzato quello sbagliato.
+  it('🚨 CONTROLLO POSITIVO: il testo nomina QUESTO account, non un altro', async () => {
+    const { markGoogleTokenDead } = await import('./google-token-health')
+    await markGoogleTokenDead('dead', 'larealestate.amministrazione@gmail.com')
+
+    const [, text] = mockSend.mock.calls[0] as [number, string]
+    expect(text).toContain('larealestate.amministrazione@gmail.com')
+    expect(text).not.toContain('restruktura.drive@gmail.com')
+  })
+
+  // Fino al 14 settembre 2026 `lastNotifyAt` era UN numero globale: il primo
+  // account moriva, il secondo entro l'ora veniva INGHIOTTITO dal throttle —
+  // nessun send, nessuna scrittura del flag, nessuna traccia.
+  it('🚨 il throttle e PER ACCOUNT: un secondo account morto entro l\'ora manda comunque il SUO alert', async () => {
+    const { markGoogleTokenDead } = await import('./google-token-health')
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
+    await markGoogleTokenDead('dead', 'larealestate.amministrazione@gmail.com')
+
+    expect(mockSend).toHaveBeenCalledTimes(2)
+    expect(mockUpsert).toHaveBeenCalledTimes(2)
+    const testi = mockSend.mock.calls.map((c) => c[1] as string)
+    expect(testi[0]).toContain(TEST_ACCOUNT_EMAIL)
+    expect(testi[1]).toContain('larealestate.amministrazione@gmail.com')
+  })
+
+  it('lo stesso account due volte nell\'ora resta throttlato (il throttle per-account non e diventato "mai")', async () => {
+    const { markGoogleTokenDead } = await import('./google-token-health')
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
+    expect(mockSend).toHaveBeenCalledTimes(1)
+  })
 })

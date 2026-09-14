@@ -22,6 +22,7 @@
 
 import { getSupabaseServer } from './supabase-server'
 import { sendTelegramMessageChecked } from './telegram-helpers'
+import { listaCaselle, getCasella, CASELLA_FILE_E_CALENDARIO } from './caselle'
 
 export type GoogleErrorKind = 'dead' | 'scope' | 'config' | 'transient' | 'other'
 
@@ -40,13 +41,41 @@ export function chiaveTokenMorto(accountEmail: string): string {
 }
 
 /**
- * Testo unico dell'errore. Deve contenere: cosa è successo, cosa NON è
- * successo (i file ci sono ancora) e il gesto esatto per rimediare.
+ * Cosa smette di funzionare per QUESTO account — non sempre "Drive, Gmail e
+ * Calendar" tutti e tre: solo la casella `drive` serve anche Drive/Calendar
+ * (`CASELLA_FILE_E_CALENDARIO`); l'altra casella Google serve SOLO Gmail. Dire
+ * "Drive, Gmail e Calendar" quando muore il token de La Real Estate sarebbe
+ * falso quanto tacere quale account è morto — un allarme deve dire cosa NON
+ * funziona, non un elenco generico.
  */
-export const GOOGLE_TOKEN_DEAD_MESSAGE =
-  '⚠️ Token Google scaduto o revocato — non posso accedere a Drive, Gmail e Calendar. ' +
-  'Non è un problema di file mancanti. Riautorizza aprendo in incognito: ' +
-  'https://cervellone-five.vercel.app/api/auth/google (login restruktura.drive@gmail.com → Consenti).'
+function servizioAffetto(accountEmail?: string): string {
+  if (!accountEmail || accountEmail === getCasella(CASELLA_FILE_E_CALENDARIO).accountEmail) {
+    return 'Drive, Gmail e Calendar'
+  }
+  const casella = listaCaselle().find((c) => c.accountEmail === accountEmail)
+  return `Gmail (${casella?.indirizzo ?? accountEmail})`
+}
+
+/**
+ * Testo unico dell'errore. Deve contenere: cosa è successo, cosa NON è
+ * successo (i file ci sono ancora), QUALE account e il gesto esatto per
+ * rimediare.
+ *
+ * ⚠️ Fino al 14 settembre 2026 nominava SEMPRE `restruktura.drive@gmail.com`,
+ * anche quando l'account morto era quello de La Real Estate: l'Ingegnere
+ * avrebbe riautorizzato l'account SBAGLIATO, azzerando la bandierina di
+ * `drive` mentre quella dell'account davvero morto restava `true` — ogni
+ * allarme successivo sarebbe stato bloccato dal latch, per sempre. `chi`
+ * senza `accountEmail` (nessuno lo passa piu' in produzione, resta solo per
+ * compatibilità nei test) non nomina nessun account: mai indovinare.
+ */
+export function buildGoogleTokenDeadMessage(accountEmail?: string): string {
+  const chi = accountEmail ? ` per **${accountEmail}**` : ''
+  const login = accountEmail ? `login ${accountEmail}` : "login con l'account Google che risulta morto"
+  return `⚠️ Token Google scaduto o revocato${chi} — non posso accedere a ${servizioAffetto(accountEmail)} con quella credenziale. ` +
+    'Non è un problema di file mancanti. Riautorizza aprendo in incognito: ' +
+    `https://cervellone-five.vercel.app/api/auth/google (${login} → Consenti).`
+}
 
 const KIND_NOTE: Partial<Record<GoogleErrorKind, string>> = {
   scope: ' (Nota: mancano scope OAuth — il re-consent li concede.)',
@@ -54,16 +83,16 @@ const KIND_NOTE: Partial<Record<GoogleErrorKind, string>> = {
     'vanno corretti GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET.)',
 }
 
-function buildDeadMessage(kind: GoogleErrorKind, detail?: string): string {
+function buildDeadMessage(kind: GoogleErrorKind, accountEmail?: string): string {
   const note = KIND_NOTE[kind] ?? ''
-  return `${GOOGLE_TOKEN_DEAD_MESSAGE}${note}${detail ? ` [${detail}]` : ''}`
+  return `${buildGoogleTokenDeadMessage(accountEmail)}${note}`
 }
 
 export class GoogleAuthDeadError extends Error {
   readonly kind: GoogleErrorKind
 
-  constructor(kind: GoogleErrorKind = 'dead', detail?: string) {
-    super(buildDeadMessage(kind, detail))
+  constructor(kind: GoogleErrorKind = 'dead', accountEmail?: string) {
+    super(buildDeadMessage(kind, accountEmail))
     this.name = 'GoogleAuthDeadError'
     this.kind = kind
     // preserva instanceof anche se il target di compilazione è ES5
@@ -218,19 +247,29 @@ export function isFatalGoogleAuthKind(kind: GoogleErrorKind): kind is FatalGoogl
 
 // ── Alert (latch DB + guardia in-memory) ──
 
-const ALERT_TEXT: Record<FatalGoogleAuthKind, string> = {
-  dead:
-    '⚠️ *Token Google scaduto o revocato* — non posso accedere a Drive, Gmail e Calendar. ' +
-    'Non è un problema di file mancanti. Riautorizza aprendo in incognito: ' +
-    'https://cervellone-five.vercel.app/api/auth/google (login restruktura.drive@gmail.com → Consenti).',
-  scope:
-    '⚠️ *Autorizzazione Google incompleta* — mancano scope OAuth, alcune API rispondono 403. ' +
-    'Riautorizza aprendo in incognito: https://cervellone-five.vercel.app/api/auth/google ' +
-    '(login restruktura.drive@gmail.com → Consenti).',
-  config:
-    '⚠️ *Configurazione OAuth Google errata* — client_id/client_secret rifiutati. ' +
-    'Il re-consent NON risolve: vanno corretti GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET su Vercel. ' +
-    'Poi riautorizza: https://cervellone-five.vercel.app/api/auth/google',
+/**
+ * Il testo Telegram, per ACCOUNT: fino al 14 settembre 2026 era una mappa
+ * statica cablata su `restruktura.drive@gmail.com` — corretta per l'unico
+ * account che esisteva allora, sbagliata (e muta) per il secondo. Stesso
+ * difetto del messaggio di `GoogleAuthDeadError` qui sopra, stessa cura: si
+ * nomina l'account morto, non si indovina quale sia.
+ */
+function buildAlertText(kind: FatalGoogleAuthKind, accountEmail: string): string {
+  switch (kind) {
+    case 'dead':
+      return `⚠️ *Token Google scaduto o revocato per ${accountEmail}* — non posso accedere a ` +
+        `${servizioAffetto(accountEmail)} con quella credenziale. ` +
+        'Non è un problema di file mancanti. Riautorizza aprendo in incognito: ' +
+        `https://cervellone-five.vercel.app/api/auth/google (login ${accountEmail} → Consenti).`
+    case 'scope':
+      return `⚠️ *Autorizzazione Google incompleta per ${accountEmail}* — mancano scope OAuth, alcune API rispondono 403. ` +
+        'Riautorizza aprendo in incognito: https://cervellone-five.vercel.app/api/auth/google ' +
+        `(login ${accountEmail} → Consenti).`
+    case 'config':
+      return `⚠️ *Configurazione OAuth Google errata per ${accountEmail}* — client_id/client_secret rifiutati. ` +
+        'Il re-consent NON risolve: vanno corretti GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET su Vercel. ' +
+        'Poi riautorizza: https://cervellone-five.vercel.app/api/auth/google'
+  }
 }
 
 // Copia locale (deliberata) di resolveAdminChatId: la funzione è duplicata in 6
@@ -249,7 +288,13 @@ const NOTIFY_THROTTLE_MS = 60 * 60 * 1000
 // Il latch DB sopravvive ai cold start; questa guardia copre la concorrenza
 // DENTRO la stessa istanza lambda (due chiamate partite prima che il flag sia
 // scritto vedrebbero entrambe il flag a false).
-let lastNotifyAt = 0
+//
+// ⚠️ PER ACCOUNT, non globale: fino al 14 settembre 2026 era un unico
+// `lastNotifyAt`, e la morte del secondo account entro l'ora dalla prima
+// veniva INGHIOTTITA dal throttle — nessun send, nessuna scrittura del flag,
+// nessuna traccia. Con la mappa, gli account si throttlano l'uno indipendente
+// dall'altro.
+const lastNotifyAtPerAccount = new Map<string, number>()
 
 /**
  * Alert una-tantum "token Google morto".
@@ -272,11 +317,12 @@ export async function markGoogleTokenDead(kind: GoogleErrorKind, accountEmail: s
   if (!isFatalGoogleAuthKind(kind)) return
 
   const now = Date.now()
-  if (now - lastNotifyAt < NOTIFY_THROTTLE_MS) {
-    console.log('[GOOGLE-HEALTH] alert throttled (in-memory guard)')
+  const ultimoInvio = lastNotifyAtPerAccount.get(accountEmail) ?? 0
+  if (now - ultimoInvio < NOTIFY_THROTTLE_MS) {
+    console.log(`[GOOGLE-HEALTH] alert throttled (in-memory guard) per ${accountEmail}`)
     return
   }
-  lastNotifyAt = now
+  lastNotifyAtPerAccount.set(accountEmail, now)
 
   try {
     const supabase = getSupabaseServer()
@@ -298,13 +344,13 @@ export async function markGoogleTokenDead(kind: GoogleErrorKind, accountEmail: s
 
     let delivered = false
     try {
-      delivered = await sendTelegramMessageChecked(adminChat, ALERT_TEXT[kind])
+      delivered = await sendTelegramMessageChecked(adminChat, buildAlertText(kind, accountEmail))
     } catch (err) {
       console.error('[GOOGLE-HEALTH] alert send failed:', err instanceof Error ? err.message : String(err))
     }
     if (!delivered) {
       console.error('[GOOGLE-HEALTH] alert NON recapitato: flag non scritto, si riproverà')
-      lastNotifyAt = 0 // send fallito: il prossimo tentativo deve poter riprovare
+      lastNotifyAtPerAccount.delete(accountEmail) // send fallito: il prossimo tentativo deve poter riprovare
       return
     }
 

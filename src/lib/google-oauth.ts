@@ -278,7 +278,7 @@ export async function getAuthorizedClient(accountEmail: string): Promise<OAuth2C
       if (isFatalGoogleAuthKind(kind)) {
         console.error(`[OAUTH] credenziale non valida (${kind}): ${detail}`)
         await markGoogleTokenDead(kind, accountEmail)
-        throw new GoogleAuthDeadError(kind)
+        throw new GoogleAuthDeadError(kind, accountEmail)
       }
       // transient/other: rete ballerina o credenziali assenti. Nessun alert,
       // si restituisce comunque il client e si lascia decidere alla vera chiamata.
