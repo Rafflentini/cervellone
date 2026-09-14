@@ -477,7 +477,39 @@ export function classificaFattura(
   const dati = datiFattura(doc, verso)
   const escludi = (motivo: string): Classifica => ({ stato: 'esclusa', fattura: { ...dati, motivo } })
 
-  if (doc.locked === true) {
+  /**
+   * 🚨 `locked` ESCLUDE SOLO LE RICEVUTE, e questa riga costa due giorni.
+   *
+   * Qui, fino al 14 settembre 2026, c'era un rifiuto secco per QUALUNQUE
+   * documento bloccato: «non è modificabile via API». Sembrava un fatto su
+   * Fatture in Cloud. **Era una nostra convinzione mai provata.**
+   *
+   * Cosa ha combinato: il tool nato apposta per registrare gli incassi delle
+   * fatture emesse si rifiutava su **tutte quelle vere** — perché una fattura
+   * emessa a un cliente viene trasmessa allo SdI, e da quel momento è `locked`.
+   * Il bot riportava all'Ingegnere «FIC impedisce ogni scrittura via API»
+   * dicendo «verificato ora», e verificava **questa riga**, non il gestionale.
+   * Una richiesta a FIC non è mai partita.
+   *
+   * ⚠️ Il blocco di FIC è REALE, ma è sul DOCUMENTO: una fattura elettronica
+   * trasmessa non si modifica. Registrare un incasso è un'altra cosa — dalla
+   * sua interfaccia FIC lo fa senza problemi — e dal 14 set gliene mandiamo
+   * solo il piano pagamenti (v. `soloPagamenti` in VERSI), non il documento.
+   *
+   * Quindi sulle EMESSE si PROVA, e si riporta la risposta VERA di FIC. Se
+   * rifiuta, lo dirà lui con le sue parole: sarà una misura, non un'ipotesi
+   * travestita da certezza. Se accetta, l'Ingegnere ha indietro un verbo che
+   * credeva impossibile.
+   *
+   * Sulle RICEVUTE l'esclusione resta: lì si rispedisce il documento intero,
+   * cioè esattamente quello che su un documento bloccato non si può fare. E una
+   * ricevuta `locked` è comunque un caso che nessuno ha mai visto.
+   *
+   * ⚠️ Provarci non può rovinare niente: il blocco lo fa rispettare FIC, e dopo
+   * il PUT la fattura si rilegge (`verificaPagamento`) per accertare che non sia
+   * cambiato nient'altro.
+   */
+  if (doc.locked === true && verso === 'ricevuta') {
     return escludi('è bloccata su Fatture in Cloud (locked): non è modificabile via API')
   }
 
