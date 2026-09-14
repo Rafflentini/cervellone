@@ -59,3 +59,46 @@ export async function leggiSuTutteLeGoogle<T>(
 
   return { risultati, caselleFallite }
 }
+
+/**
+ * I tool Gmail che TOCCANO la posta (bozza, invio, label, archivia, cestina,
+ * segna letta): per loro la casella e' obbligatoria, sempre. Un tool
+ * dimenticato qui e' una porta aperta che nessuno nota finche' una mail non
+ * parte dall'indirizzo sbagliato.
+ */
+export const TOOL_GMAIL_CHE_SCRIVONO: readonly string[] = [
+  'gmail_create_draft', 'gmail_send_draft', 'gmail_delete_draft',
+  'gmail_apply_label', 'gmail_remove_label',
+  'gmail_archive', 'gmail_trash', 'gmail_mark_read',
+]
+
+/**
+ * La casella su cui scrivere. NESSUN predefinito, nemmeno «quella dove ho
+ * letto».
+ *
+ * ⚠️ Rispondere da La Real Estate a una mail trovata su La Real Estate sembra
+ * ovvio — ma il giorno in cui il bot ha letto in piu' caselle, la scelta
+ * l'avrebbe fatta lui e non l'avrebbe vista nessuno, finche' una mail non
+ * fosse partita firmata dalla societa' sbagliata: non si richiama indietro.
+ * Qui si chiede, sempre — questa e' la difesa che sta nel CODICE, non nel
+ * prompt: tiene anche il giorno in cui il modello legge male la sua regola.
+ */
+export function casellaPerScrittura(
+  input: Record<string, unknown>,
+): { ok: true; casella: ChiaveCasella } | { ok: false; messaggio: string } {
+  const grezzo = input.casella
+  const google = caselleDiTrasporto('google')
+  const valide = google.map((c) => c.chiave) as string[]
+
+  if (typeof grezzo === 'string' && valide.includes(grezzo)) {
+    return { ok: true, casella: grezzo as ChiaveCasella }
+  }
+
+  const elenco = google.map((c) => `${c.chiave} (${c.indirizzo})`).join(' oppure ')
+  return {
+    ok: false,
+    messaggio:
+      "Non scrivo senza sapere da quale casella: non la deduco e non ne ho una predefinita. "
+      + `CHIEDI all'Ingegnere quale usare fra: ${elenco}.`,
+  }
+}

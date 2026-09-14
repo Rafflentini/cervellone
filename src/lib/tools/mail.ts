@@ -10,16 +10,10 @@ import { buildDailySummary } from '../gmail-summary'
 import { MAIL_TOOL_EXECUTORS } from '@/v19/tools/email'
 import { recordSentMail } from '@/lib/sent-mail'
 import type { ChiaveCasella } from '../caselle'
-import { leggiSuTutteLeGoogle, type EsitoLettura } from '../politica-caselle'
-
-/**
- * I tool `gmail_*` di SCRITTURA (bozza, invio, label, archivia, cestina)
- * operano ancora tutti sulla casella di Restruktura — politica esplicita
- * provvisoria del Task 2. In lettura questa costante non serve più: da qui in
- * poi si guarda su TUTTE le caselle Google (vedi `leggiSuTutteLeGoogle`), e
- * sarà il Task 4 a dare anche alla scrittura la scelta della casella giusta.
- */
-const CASELLA_TOOL_GMAIL: ChiaveCasella = 'drive'
+import {
+  leggiSuTutteLeGoogle, casellaPerScrittura, TOOL_GMAIL_CHE_SCRIVONO,
+  type EsitoLettura,
+} from '../politica-caselle'
 
 /** Le sole caselle indicate dal modello (se valide), o `undefined` = tutte. */
 function caselleRichieste(input: Record<string, unknown>): ChiaveCasella[] | undefined {
@@ -77,6 +71,15 @@ const SCHEMA_CASELLE = {
   type: 'array' as const,
   items: { type: 'string' as const, enum: ['drive', 'larealestate'] },
   description: 'Quali caselle Google guardare. Se non lo dici, le guarda TUTTE e ti dice da quale viene ogni risultato.',
+}
+
+// Per la SCRITTURA (bozza, invio, label, archivia, cestina) non c'e' un
+// default: a differenza di SCHEMA_CASELLE, qui il parametro e' OBBLIGATORIO —
+// vedi `casellaPerScrittura` in `politica-caselle.ts`, che rifiuta se manca.
+const SCHEMA_CASELLA_SCRITTURA = {
+  type: 'string' as const,
+  enum: ['drive', 'larealestate'],
+  description: 'OBBLIGATORIA: da quale casella. Non viene dedotta.',
 }
 
 // 2026-05-24 V19 Mail (TopHost IMAP/SMTP per info@/raffaele.lentini@):
@@ -246,8 +249,9 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
         body: { type: 'string', description: 'Corpo testo (italiano formale per Restruktura)' },
         in_reply_to: { type: 'string', description: 'Message-ID a cui rispondere' },
         thread_id: { type: 'string', description: 'Thread ID per risposta in catena' },
+        casella: SCHEMA_CASELLA_SCRITTURA,
       },
-      required: ['to', 'subject', 'body'],
+      required: ['to', 'subject', 'body', 'casella'],
     },
   },
   {
@@ -275,8 +279,8 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
     description: 'INVIA UNA BOZZA. Usa SOLO dopo conferma esplicita dell\'utente (es. "/conferma", "manda", "invia"). Mai senza approvazione esplicita. Anti-loop: rifiuta se thread ha già una recente reply del bot.',
     input_schema: {
       type: 'object' as const,
-      properties: { draft_id: { type: 'string' } },
-      required: ['draft_id'],
+      properties: { draft_id: { type: 'string' }, casella: SCHEMA_CASELLA_SCRITTURA },
+      required: ['draft_id', 'casella'],
     },
   },
   {
@@ -284,8 +288,8 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
     description: 'Cancella una bozza non inviata (utente ha detto /annulla).',
     input_schema: {
       type: 'object' as const,
-      properties: { draft_id: { type: 'string' } },
-      required: ['draft_id'],
+      properties: { draft_id: { type: 'string' }, casella: SCHEMA_CASELLA_SCRITTURA },
+      required: ['draft_id', 'casella'],
     },
   },
   {
@@ -296,8 +300,9 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
       properties: {
         message_id: { type: 'string' },
         label_name: { type: 'string', description: 'Nome label es. "Cliente Rossi" o "Urgente"' },
+        casella: SCHEMA_CASELLA_SCRITTURA,
       },
-      required: ['message_id', 'label_name'],
+      required: ['message_id', 'label_name', 'casella'],
     },
   },
   {
@@ -308,8 +313,9 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
       properties: {
         message_id: { type: 'string' },
         label_name: { type: 'string' },
+        casella: SCHEMA_CASELLA_SCRITTURA,
       },
-      required: ['message_id', 'label_name'],
+      required: ['message_id', 'label_name', 'casella'],
     },
   },
   {
@@ -325,8 +331,8 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
     description: 'Segna una mail come letta (rimuove label UNREAD).',
     input_schema: {
       type: 'object' as const,
-      properties: { message_id: { type: 'string' } },
-      required: ['message_id'],
+      properties: { message_id: { type: 'string' }, casella: SCHEMA_CASELLA_SCRITTURA },
+      required: ['message_id', 'casella'],
     },
   },
   {
@@ -334,8 +340,8 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
     description: 'Archivia una mail (rimuove dall\'inbox, recuperabile via search). NIENTE delete permanente.',
     input_schema: {
       type: 'object' as const,
-      properties: { message_id: { type: 'string' } },
-      required: ['message_id'],
+      properties: { message_id: { type: 'string' }, casella: SCHEMA_CASELLA_SCRITTURA },
+      required: ['message_id', 'casella'],
     },
   },
   {
@@ -343,8 +349,8 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
     description: 'Sposta una mail nel cestino Gmail (recuperabile 30 giorni). Chiedi conferma esplicita all\'utente prima di chiamare.',
     input_schema: {
       type: 'object' as const,
-      properties: { message_id: { type: 'string' } },
-      required: ['message_id'],
+      properties: { message_id: { type: 'string' }, casella: SCHEMA_CASELLA_SCRITTURA },
+      required: ['message_id', 'casella'],
     },
   },
   {
@@ -395,6 +401,24 @@ export async function executeGmailWrapper(
   const get = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '')
   const caselle = caselleRichieste(input)
 
+  // 🚨 La difesa sta QUI, nel codice, PRIMA di chiamare qualunque funzione di
+  // gmail-tools — non in una regola di prompt che tiene solo se il modello la
+  // legge bene. Per la scrittura non c'e' predefinito, nemmeno la casella
+  // dove si e' letto: chi chiama deve DIRLA, sempre (vedi casellaPerScrittura).
+  let casellaScrittura: ChiaveCasella | undefined
+  if (TOOL_GMAIL_CHE_SCRIVONO.includes(name)) {
+    const esito = casellaPerScrittura(input)
+    if (!esito.ok) return esito.messaggio
+    casellaScrittura = esito.casella
+  }
+  // Se questo scatta, non e' un input dell'Ingegnere da rifiutare con
+  // garbo: e' un `case` dello switch qui sotto uscito da TOOL_GMAIL_CHE_SCRIVONO
+  // senza portarsi dietro la guardia — un bug nel codice, non nell'uso.
+  const casellaObbligata = (): ChiaveCasella => {
+    if (!casellaScrittura) throw new Error(`bug: "${name}" scrive senza essere passato da casellaPerScrittura`)
+    return casellaScrittura
+  }
+
   try {
     switch (name) {
       case 'gmail_list_inbox': {
@@ -421,7 +445,7 @@ export async function executeGmailWrapper(
         return formatGmailPerIdMulti('Thread', esito)
       }
       case 'gmail_create_draft': {
-        const res = await createDraft(CASELLA_TOOL_GMAIL, {
+        const res = await createDraft(casellaObbligata(), {
           to: get('to'),
           subject: get('subject'),
           body: get('body'),
@@ -443,19 +467,19 @@ export async function executeGmailWrapper(
         return formatGmailPerIdMulti('Bozza', esito)
       }
       case 'gmail_send_draft': {
-        const res = await sendDraft(CASELLA_TOOL_GMAIL, get('draft_id'))
+        const res = await sendDraft(casellaObbligata(), get('draft_id'))
         return `📤 Inviata. message_id=${res.messageId} thread_id=${res.threadId}`
       }
       case 'gmail_delete_draft': {
-        await deleteDraft(CASELLA_TOOL_GMAIL, get('draft_id'))
+        await deleteDraft(casellaObbligata(), get('draft_id'))
         return `🗑 Bozza cancellata.`
       }
       case 'gmail_apply_label': {
-        await applyLabel(CASELLA_TOOL_GMAIL, get('message_id'), get('label_name'))
+        await applyLabel(casellaObbligata(), get('message_id'), get('label_name'))
         return `🏷 Label "${get('label_name')}" applicata.`
       }
       case 'gmail_remove_label': {
-        await removeLabel(CASELLA_TOOL_GMAIL, get('message_id'), get('label_name'))
+        await removeLabel(casellaObbligata(), get('message_id'), get('label_name'))
         return `🏷 Label rimossa.`
       }
       case 'gmail_list_labels': {
@@ -466,15 +490,15 @@ export async function executeGmailWrapper(
         return corpo + formatCaselleFallite(esito.caselleFallite)
       }
       case 'gmail_mark_read': {
-        await markAsRead(CASELLA_TOOL_GMAIL, get('message_id'))
+        await markAsRead(casellaObbligata(), get('message_id'))
         return `✓ Segnata come letta.`
       }
       case 'gmail_archive': {
-        await archive(CASELLA_TOOL_GMAIL, get('message_id'))
+        await archive(casellaObbligata(), get('message_id'))
         return `📦 Archiviata.`
       }
       case 'gmail_trash': {
-        await trash(CASELLA_TOOL_GMAIL, get('message_id'))
+        await trash(casellaObbligata(), get('message_id'))
         return `🗑 Spostata nel cestino (recuperabile 30 giorni).`
       }
       case 'gmail_summary_inbox': {
