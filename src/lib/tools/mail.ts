@@ -15,12 +15,29 @@ import {
   type EsitoLettura,
 } from '../politica-caselle'
 
-/** Le sole caselle indicate dal modello (se valide), o `undefined` = tutte. */
-function caselleRichieste(input: Record<string, unknown>): ChiaveCasella[] | undefined {
+interface CaselleRichieste {
+  /** Le sole caselle Google valide indicate dal modello, o `undefined` = tutte. */
+  valide: ChiaveCasella[] | undefined
+  /**
+   * Richieste dal modello ma NON caselle Google (es. 'info', 'pippo'): questo
+   * trasporto non può guardarle, e NON deve sparire in silenzio guardando
+   * "tutte le Google" come se la richiesta non ci fosse mai stata — e' la
+   * stessa perdita silenziosa che `leggiSuTutteLeGoogle` esiste per chiudere
+   * dal lato opposto (audit avversariale, 14 settembre 2026).
+   */
+  scartate: unknown[]
+}
+
+function caselleRichieste(input: Record<string, unknown>): CaselleRichieste {
   const raw = input.caselle
-  if (!Array.isArray(raw)) return undefined
-  const valide = raw.filter((c): c is ChiaveCasella => c === 'drive' || c === 'larealestate')
-  return valide.length > 0 ? valide : undefined
+  if (!Array.isArray(raw)) return { valide: undefined, scartate: [] }
+  const valide: ChiaveCasella[] = []
+  const scartate: unknown[] = []
+  for (const c of raw) {
+    if (c === 'drive' || c === 'larealestate') valide.push(c)
+    else scartate.push(c)
+  }
+  return { valide: valide.length > 0 ? valide : undefined, scartate }
 }
 
 /** Il testo che avverte il modello delle caselle su cui NON si è potuto guardare. */
@@ -29,6 +46,14 @@ function formatCaselleFallite(caselleFallite: EsitoLettura<unknown>['caselleFall
   return '\n\n' + caselleFallite
     .map((f) => `⚠️ NON ho potuto guardare in ${f.casella}: ${f.errore}`)
     .join('\n')
+}
+
+/** Il testo che avverte il modello delle caselle richieste ma NON consultate perché non Google. */
+function formatCaselleScartate(scartate: unknown[]): string {
+  if (scartate.length === 0) return ''
+  return '\n\n⚠️ Richieste ma NON consultate qui (non sono caselle Google): ' +
+    scartate.map((c) => String(c)).join(', ') +
+    '. Le caselle Google sono: drive, larealestate — per info@ e raffaele.lentini@ usa i tool V19 (read_email/send_email).'
 }
 
 /**
@@ -392,6 +417,73 @@ function formatGmailMessage(m: GmailMessage & { casella?: ChiaveCasella }): stri
   return lines.join('\n')
 }
 
+/**
+ * I tool Gmail che SCRIVONO, eseguiti con una casella GIA' verificata.
+ *
+ * `casella` e' `ChiaveCasella`, non opzionale: non e' un parametro che si
+ * possa dimenticare di passare, e non c'e' `??` che possa farla franca in
+ * silenzio. Fino al 14 settembre 2026 questa garanzia stava a runtime, in una
+ * funzione `casellaObbligata()` che lanciava se la casella mancava — ma quel
+ * ramo era irraggiungibile da QUALSIASI input reale (`TOOL_GMAIL_CHE_SCRIVONO`
+ * e questo switch coincidono sempre, per costruzione): un audit avversariale
+ * ha mutato `casellaObbligata()` in un default silenzioso (`?? 'drive'`) e la
+ * suite e' rimasta verde, perche' nessun test poteva raggiungere quel ramo.
+ * Portando `casella` come parametro tipato invece che come variabile
+ * opzionale nello scope esterno, quel default silenzioso non e' piu'
+ * esprimibile con una singola mutazione: il compilatore lo impedisce.
+ */
+async function eseguiScritturaGmail(
+  name: string,
+  casella: ChiaveCasella,
+  get: (k: string) => string,
+): Promise<string> {
+  switch (name) {
+    case 'gmail_create_draft': {
+      const res = await createDraft(casella, {
+        to: get('to'),
+        subject: get('subject'),
+        body: get('body'),
+        inReplyTo: get('in_reply_to') || undefined,
+        threadId: get('thread_id') || undefined,
+      })
+      return `✅ Bozza creata. draft_id=${res.draftId}\nUsa gmail_show_draft per anteprima, poi gmail_send_draft DOPO conferma utente.`
+    }
+    case 'gmail_send_draft': {
+      const res = await sendDraft(casella, get('draft_id'))
+      return `📤 Inviata. message_id=${res.messageId} thread_id=${res.threadId}`
+    }
+    case 'gmail_delete_draft': {
+      await deleteDraft(casella, get('draft_id'))
+      return `🗑 Bozza cancellata.`
+    }
+    case 'gmail_apply_label': {
+      await applyLabel(casella, get('message_id'), get('label_name'))
+      return `🏷 Label "${get('label_name')}" applicata.`
+    }
+    case 'gmail_remove_label': {
+      await removeLabel(casella, get('message_id'), get('label_name'))
+      return `🏷 Label rimossa.`
+    }
+    case 'gmail_mark_read': {
+      await markAsRead(casella, get('message_id'))
+      return `✓ Segnata come letta.`
+    }
+    case 'gmail_archive': {
+      await archive(casella, get('message_id'))
+      return `📦 Archiviata.`
+    }
+    case 'gmail_trash': {
+      await trash(casella, get('message_id'))
+      return `🗑 Spostata nel cestino (recuperabile 30 giorni).`
+    }
+    default:
+      // Non e' un input dell'Ingegnere da rifiutare con garbo: e' TOOL_GMAIL_CHE_SCRIVONO
+      // (politica-caselle.ts) che nomina un tool senza il suo case qui sopra —
+      // un bug nel codice, non nell'uso.
+      throw new Error(`bug: "${name}" e' in TOOL_GMAIL_CHE_SCRIVONO ma non ha un case in eseguiScritturaGmail`)
+  }
+}
+
 export async function executeGmailWrapper(
   name: string,
   input: Record<string, unknown>,
@@ -399,120 +491,94 @@ export async function executeGmailWrapper(
   if (!name.startsWith('gmail_')) return null
 
   const get = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '')
-  const caselle = caselleRichieste(input)
 
   // 🚨 La difesa sta QUI, nel codice, PRIMA di chiamare qualunque funzione di
   // gmail-tools — non in una regola di prompt che tiene solo se il modello la
   // legge bene. Per la scrittura non c'e' predefinito, nemmeno la casella
   // dove si e' letto: chi chiama deve DIRLA, sempre (vedi casellaPerScrittura).
-  let casellaScrittura: ChiaveCasella | undefined
+  // La casella verificata passa a `eseguiScritturaGmail` come parametro
+  // OBBLIGATORIO — vedi il commento in testa a quella funzione.
   if (TOOL_GMAIL_CHE_SCRIVONO.includes(name)) {
     const esito = casellaPerScrittura(input)
     if (!esito.ok) return esito.messaggio
-    casellaScrittura = esito.casella
-  }
-  // Se questo scatta, non e' un input dell'Ingegnere da rifiutare con
-  // garbo: e' un `case` dello switch qui sotto uscito da TOOL_GMAIL_CHE_SCRIVONO
-  // senza portarsi dietro la guardia — un bug nel codice, non nell'uso.
-  const casellaObbligata = (): ChiaveCasella => {
-    if (!casellaScrittura) throw new Error(`bug: "${name}" scrive senza essere passato da casellaPerScrittura`)
-    return casellaScrittura
+    try {
+      return await eseguiScritturaGmail(name, esito.casella, get)
+    } catch (err) {
+      return `Errore Gmail: ${err instanceof Error ? err.message : err}`
+    }
   }
 
+  const { valide: caselle, scartate } = caselleRichieste(input)
+
   try {
-    switch (name) {
-      case 'gmail_list_inbox': {
-        const esito = await leggiSuTutteLeGoogle(caselle, (c) => listInbox(c, {
-          maxResults: parseInt(get('max_results') || '20', 10),
-          onlyUnread: get('only_unread') === 'true',
-          sinceDays: parseInt(get('since_days') || '0', 10) || undefined,
-        }))
-        return formatGmailListMulti(esito)
-      }
-      case 'gmail_search': {
-        const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
-          searchGmail(c, get('query'), parseInt(get('max_results') || '20', 10)))
-        return formatGmailListMulti(esito)
-      }
-      case 'gmail_read_message': {
-        const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
-          readMessage(c, get('message_id')).then((m) => [m]), { nonTrovato: e404Gmail })
-        return formatGmailPerIdMulti('Messaggio', esito)
-      }
-      case 'gmail_read_thread': {
-        const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
-          readThread(c, get('thread_id')), { nonTrovato: e404Gmail })
-        return formatGmailPerIdMulti('Thread', esito)
-      }
-      case 'gmail_create_draft': {
-        const res = await createDraft(casellaObbligata(), {
-          to: get('to'),
-          subject: get('subject'),
-          body: get('body'),
-          inReplyTo: get('in_reply_to') || undefined,
-          threadId: get('thread_id') || undefined,
-        })
-        return `✅ Bozza creata. draft_id=${res.draftId}\nUsa gmail_show_draft per anteprima, poi gmail_send_draft DOPO conferma utente.`
-      }
-      case 'gmail_list_drafts': {
-        const esito = await leggiSuTutteLeGoogle(caselle, (c) => listDrafts(c, 20))
-        const corpo = esito.risultati.length === 0
-          ? 'Nessuna bozza pendente.'
-          : esito.risultati.map(d => `📝 [${d.casella}] ${d.draftId}: A: ${d.to} | Oggetto: ${d.subject}`).join('\n')
-        return corpo + formatCaselleFallite(esito.caselleFallite)
-      }
-      case 'gmail_show_draft': {
-        const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
-          showDraft(c, get('draft_id')).then((d) => [d]), { nonTrovato: e404Gmail })
-        return formatGmailPerIdMulti('Bozza', esito)
-      }
-      case 'gmail_send_draft': {
-        const res = await sendDraft(casellaObbligata(), get('draft_id'))
-        return `📤 Inviata. message_id=${res.messageId} thread_id=${res.threadId}`
-      }
-      case 'gmail_delete_draft': {
-        await deleteDraft(casellaObbligata(), get('draft_id'))
-        return `🗑 Bozza cancellata.`
-      }
-      case 'gmail_apply_label': {
-        await applyLabel(casellaObbligata(), get('message_id'), get('label_name'))
-        return `🏷 Label "${get('label_name')}" applicata.`
-      }
-      case 'gmail_remove_label': {
-        await removeLabel(casellaObbligata(), get('message_id'), get('label_name'))
-        return `🏷 Label rimossa.`
-      }
-      case 'gmail_list_labels': {
-        const esito = await leggiSuTutteLeGoogle(caselle, (c) => listLabels(c))
-        const corpo = esito.risultati.length === 0
-          ? 'Nessuna label trovata.'
-          : esito.risultati.map(l => `- [${l.casella}] ${l.name} (id=${l.id})`).join('\n')
-        return corpo + formatCaselleFallite(esito.caselleFallite)
-      }
-      case 'gmail_mark_read': {
-        await markAsRead(casellaObbligata(), get('message_id'))
-        return `✓ Segnata come letta.`
-      }
-      case 'gmail_archive': {
-        await archive(casellaObbligata(), get('message_id'))
-        return `📦 Archiviata.`
-      }
-      case 'gmail_trash': {
-        await trash(casellaObbligata(), get('message_id'))
-        return `🗑 Spostata nel cestino (recuperabile 30 giorni).`
-      }
-      case 'gmail_summary_inbox': {
-        const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
-          buildDailySummary(c, parseInt(get('since_days') || '1', 10)).then((s) => [s]))
-        const corpo = esito.risultati.length === 0
-          ? 'Nessuna casella disponibile per il riassunto.'
-          : esito.risultati.map(s => `--- ${s.casella} ---\n${s.digest}`).join('\n\n')
-        return corpo + formatCaselleFallite(esito.caselleFallite)
-      }
-      default:
-        return `Tool gmail "${name}" non riconosciuto.`
-    }
+    const risultato = await eseguiLetturaGmail(name, caselle, get)
+    if (risultato === null) return `Tool gmail "${name}" non riconosciuto.`
+    // Una casella richiesta ma non Google va detta ANCHE quando il risultato
+    // è vuoto o è un errore: chi legge deve sapere che 'info' non è mai stata
+    // guardata qui, non dedurlo dal silenzio.
+    return risultato + formatCaselleScartate(scartate)
   } catch (err) {
     return `Errore Gmail: ${err instanceof Error ? err.message : err}`
+  }
+}
+
+async function eseguiLetturaGmail(
+  name: string,
+  caselle: ChiaveCasella[] | undefined,
+  get: (k: string) => string,
+): Promise<string | null> {
+  switch (name) {
+    case 'gmail_list_inbox': {
+      const esito = await leggiSuTutteLeGoogle(caselle, (c) => listInbox(c, {
+        maxResults: parseInt(get('max_results') || '20', 10),
+        onlyUnread: get('only_unread') === 'true',
+        sinceDays: parseInt(get('since_days') || '0', 10) || undefined,
+      }))
+      return formatGmailListMulti(esito)
+    }
+    case 'gmail_search': {
+      const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
+        searchGmail(c, get('query'), parseInt(get('max_results') || '20', 10)))
+      return formatGmailListMulti(esito)
+    }
+    case 'gmail_read_message': {
+      const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
+        readMessage(c, get('message_id')).then((m) => [m]), { nonTrovato: e404Gmail })
+      return formatGmailPerIdMulti('Messaggio', esito)
+    }
+    case 'gmail_read_thread': {
+      const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
+        readThread(c, get('thread_id')), { nonTrovato: e404Gmail })
+      return formatGmailPerIdMulti('Thread', esito)
+    }
+    case 'gmail_list_drafts': {
+      const esito = await leggiSuTutteLeGoogle(caselle, (c) => listDrafts(c, 20))
+      const corpo = esito.risultati.length === 0
+        ? 'Nessuna bozza pendente.'
+        : esito.risultati.map(d => `📝 [${d.casella}] ${d.draftId}: A: ${d.to} | Oggetto: ${d.subject}`).join('\n')
+      return corpo + formatCaselleFallite(esito.caselleFallite)
+    }
+    case 'gmail_show_draft': {
+      const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
+        showDraft(c, get('draft_id')).then((d) => [d]), { nonTrovato: e404Gmail })
+      return formatGmailPerIdMulti('Bozza', esito)
+    }
+    case 'gmail_list_labels': {
+      const esito = await leggiSuTutteLeGoogle(caselle, (c) => listLabels(c))
+      const corpo = esito.risultati.length === 0
+        ? 'Nessuna label trovata.'
+        : esito.risultati.map(l => `- [${l.casella}] ${l.name} (id=${l.id})`).join('\n')
+      return corpo + formatCaselleFallite(esito.caselleFallite)
+    }
+    case 'gmail_summary_inbox': {
+      const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
+        buildDailySummary(c, parseInt(get('since_days') || '1', 10)).then((s) => [s]))
+      const corpo = esito.risultati.length === 0
+        ? 'Nessuna casella disponibile per il riassunto.'
+        : esito.risultati.map(s => `--- ${s.casella} ---\n${s.digest}`).join('\n\n')
+      return corpo + formatCaselleFallite(esito.caselleFallite)
+    }
+    default:
+      return null
   }
 }
