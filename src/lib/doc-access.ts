@@ -35,9 +35,36 @@ export function isAuthedCookie(cookieToken: string | undefined): boolean {
   return validateAuth(cookieToken)
 }
 
-/** Segreto share separato dalla sessione (un token share non vale come cookie e viceversa). */
+/**
+ * Segreto share, separato dalla sessione (un token share non vale come cookie
+ * e viceversa). NESSUN ripiego.
+ *
+ * ⚠️ Qui, fino al 14 settembre 2026, c'era
+ *
+ *     (process.env.AUTH_SECRET || 'cervellone') + ':doc_share'
+ *
+ * ed e' il TERZO ripiego della stessa famiglia: la bonifica del 6 settembre ne
+ * tolse due (v. il commento di `segretoSessione` in auth.ts) e si lascio'
+ * dietro questo. Era il peggiore dei tre, perche' non degrada a `undefined` ma
+ * a una costante SCRITTA NEL SORGENTE di un repository PUBBLICO: mancando
+ * `AUTH_SECRET`, chiunque avesse letto il codice poteva firmarsi da solo il
+ * collegamento per qualunque documento di cui conoscesse l'id — e gli id
+ * girano nelle chat, non sono un segreto.
+ *
+ * Peggio ancora, l'incoerenza stava DENTRO QUESTO FILE: `getAuthToken()` qui
+ * sopra si rifiuta di firmare un token di sessione senza segreto, e venti
+ * righe piu' giu' si firmava un collegamento di condivisione lo stesso.
+ *
+ * Ora si comporta come `getAuthToken`: se il segreto manca, non si firma
+ * niente. Chi verifica (`verifyShareToken`) nega invece di sollevare, cosi' un
+ * ospite con un collegamento vede «non valido» e non un 500.
+ */
 function shareSecret(): string {
-  return (process.env.AUTH_SECRET || 'cervellone') + ':doc_share'
+  const s = segretoSessione()
+  if (!s) {
+    throw new Error('AUTH_SECRET non configurato: non firmo un collegamento di condivisione indovinabile.')
+  }
+  return s + ':doc_share'
 }
 
 export function signShareToken(docId: string, expSec: number): string {
@@ -50,6 +77,12 @@ export function signShareToken(docId: string, expSec: number): string {
 export function verifyShareToken(docId: string, token: string | undefined, expSec: number): boolean {
   if (!token || !Number.isFinite(expSec)) return false
   if (expSec <= Math.floor(Date.now() / 1000)) return false // scaduto
+  // Senza segreto non si verifica NIENTE: si nega. Il controllo sta qui e non
+  // dentro un try/catch perche' `shareSecret()` ora ALZA, e un'eccezione che
+  // risale fin qui diventerebbe un 500 in faccia all'ospite invece di un
+  // «collegamento non valido». Negare e' anche la risposta giusta nel merito:
+  // se il server non ha il segreto, nessun token puo' essere legittimo.
+  if (!segretoSessione()) return false
   return safeEqualHex(token, signShareToken(docId, expSec))
 }
 
