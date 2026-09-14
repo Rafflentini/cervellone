@@ -24,10 +24,22 @@ export interface EsitoLettura<T> {
  * quattro mesi di fatture estere a zero, sei rapporti di autodiagnosi mai
  * consegnati. Un elenco parziale che sembra completo e' il difetto di
  * famiglia — qui non si ripete.
+ *
+ * `opts.nonTrovato`, se dato, riconosce il caso «la casella ha risposto, ma
+ * quell'oggetto non c'e'» (una lettura per ID: un id sta in UNA casella sola,
+ * l'altra dira' sempre «non trovato»). Quel caso NON e' un fallimento — non
+ * finisce in `caselleFallite`, semplicemente non produce risultati.
+ *
+ * 🚨 Chi passa `nonTrovato` deve riconoscere SOLO il «non c'e'», mai
+ * indovinarlo su una stringa a caso nel messaggio d'errore: un token morto, un
+ * 401, un 403 devono continuare a finire in `caselleFallite`. Un predicato
+ * troppo largo spegne la guardia che questa funzione esiste per accendere —
+ * il difetto peggiore, al contrario: la perdita silenziosa.
  */
 export async function leggiSuTutteLeGoogle<T>(
   caselle: ChiaveCasella[] | undefined,
   leggi: (c: ChiaveCasella) => Promise<T[]>,
+  opts?: { nonTrovato?: (e: unknown) => boolean },
 ): Promise<EsitoLettura<T>> {
   const scelte = caselle && caselle.length > 0
     ? caselle
@@ -40,6 +52,7 @@ export async function leggiSuTutteLeGoogle<T>(
     try {
       for (const r of await leggi(casella)) risultati.push({ ...r, casella })
     } catch (e) {
+      if (opts?.nonTrovato?.(e)) continue
       caselleFallite.push({ casella, errore: e instanceof Error ? e.message : String(e) })
     }
   }

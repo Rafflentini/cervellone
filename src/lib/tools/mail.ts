@@ -37,6 +37,42 @@ function formatCaselleFallite(caselleFallite: EsitoLettura<unknown>['caselleFall
     .join('\n')
 }
 
+/**
+ * True se l'errore e' un 404 "non trovato" dell'API Google — MAI indovinato
+ * su una stringa a caso nel messaggio (vedi il monito in `leggiSuTutteLeGoogle`):
+ * guarda lo status HTTP vero, nei tre punti dove gaxios/googleapis lo mettono
+ * (`.status`, `.response.status`, `.code` numerico — stesso schema gia'
+ * provato in `google-token-health.ts`). Un 401/403/500 non torna mai true da
+ * qui: restano fallimenti.
+ */
+function e404Gmail(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false
+  const rec = err as Record<string, unknown>
+  if (rec.status === 404) return true
+  if (rec.code === 404) return true
+  const response = rec.response
+  if (typeof response === 'object' && response !== null) {
+    if ((response as Record<string, unknown>).status === 404) return true
+  }
+  return false
+}
+
+/**
+ * Formatta l'esito di una lettura per ID (messaggio/thread/bozza): a
+ * differenza di una lista o una ricerca, zero risultati e zero fallimenti qui
+ * e' un DATO ("quell'ID non sta in nessuna delle caselle guardate"), non un
+ * buco — e va detto cosi', non con l'avviso di guasto.
+ */
+function formatGmailPerIdMulti(cosa: string, esito: EsitoLettura<GmailMessage>): string {
+  if (esito.risultati.length === 0 && esito.caselleFallite.length === 0) {
+    return `${cosa} non trovato in nessuna casella.`
+  }
+  const corpo = esito.risultati.length === 0
+    ? 'Nessun messaggio trovato.'
+    : esito.risultati.map(formatGmailMessage).join('\n\n---\n\n')
+  return corpo + formatCaselleFallite(esito.caselleFallite)
+}
+
 const SCHEMA_CASELLE = {
   type: 'array' as const,
   items: { type: 'string' as const, enum: ['drive', 'larealestate'] },
@@ -350,14 +386,6 @@ function formatGmailMessage(m: GmailMessage & { casella?: ChiaveCasella }): stri
   return lines.join('\n')
 }
 
-/** Formatta uno o più messaggi trovati su più caselle, con l'avviso di quelle fallite. */
-function formatGmailMessagesMulti(esito: EsitoLettura<GmailMessage>): string {
-  const corpo = esito.risultati.length === 0
-    ? 'Nessun messaggio trovato.'
-    : esito.risultati.map(formatGmailMessage).join('\n\n---\n\n')
-  return corpo + formatCaselleFallite(esito.caselleFallite)
-}
-
 export async function executeGmailWrapper(
   name: string,
   input: Record<string, unknown>,
@@ -384,12 +412,13 @@ export async function executeGmailWrapper(
       }
       case 'gmail_read_message': {
         const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
-          readMessage(c, get('message_id')).then((m) => [m]))
-        return formatGmailMessagesMulti(esito)
+          readMessage(c, get('message_id')).then((m) => [m]), { nonTrovato: e404Gmail })
+        return formatGmailPerIdMulti('Messaggio', esito)
       }
       case 'gmail_read_thread': {
-        const esito = await leggiSuTutteLeGoogle(caselle, (c) => readThread(c, get('thread_id')))
-        return formatGmailMessagesMulti(esito)
+        const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
+          readThread(c, get('thread_id')), { nonTrovato: e404Gmail })
+        return formatGmailPerIdMulti('Thread', esito)
       }
       case 'gmail_create_draft': {
         const res = await createDraft(CASELLA_TOOL_GMAIL, {
@@ -410,8 +439,8 @@ export async function executeGmailWrapper(
       }
       case 'gmail_show_draft': {
         const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
-          showDraft(c, get('draft_id')).then((d) => [d]))
-        return formatGmailMessagesMulti(esito)
+          showDraft(c, get('draft_id')).then((d) => [d]), { nonTrovato: e404Gmail })
+        return formatGmailPerIdMulti('Bozza', esito)
       }
       case 'gmail_send_draft': {
         const res = await sendDraft(CASELLA_TOOL_GMAIL, get('draft_id'))
