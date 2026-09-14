@@ -201,6 +201,19 @@ describe('differimento delle definizioni dei tool', () => {
   // Fatture in Cloud), la serie di numerazione dedicata, e il fatto che TD17 e
   // i «dati fattura collegata» vanno controllati a mano su FIC. Il numero sale
   // da 138 a 139 di proposito. Impronta presa DAL FALLIMENTO del test.
+  //
+  // LA DECISIONE, 14 settembre 2026 (TD17 in `ei_raw`). Il NUMERO NON CAMBIA —
+  // restano 139 — ma l'impronta si', da `c6223d7324d60e1fa1667ad676987cba`.
+  // La documentazione ufficiale di Fatture in Cloud dice che il codice TD17
+  // NON sta nel campo `type` ma in `ei_raw.FatturaElettronicaBody.DatiGenerali.
+  // DatiGeneraliDocumento.TipoDocumento`. Il tool ora lo imposta, e la regola
+  // (9) della descrizione cambia di conseguenza: prima diceva «il tool NON
+  // imposta il codice tipo documento», adesso dice che lo imposta e che resta
+  // da controllare solo il campo «dati fattura collegata».
+  //
+  // ⚠️ Un tool che dice di NON fare una cosa che invece fa e' altrettanto
+  // sbagliato del contrario: e' per questo che il cambio di descrizione paga
+  // il pedaggio dell'impronta anche senza un tool in piu'.
   it('senza opzioni: 139 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
     expect(defs).toHaveLength(139)
@@ -210,7 +223,7 @@ describe('differimento delle definizioni dei tool', () => {
   // da mesi e NESSUN tool la esponeva: il bot ha risposto all Ingegnere «non
   // ho un tool che apra un allegato di Gmail» mentre il codice era in casa.
   // Impronta presa DAL FALLIMENTO del test, non calcolata a parte.
-      .toBe('c6223d7324d60e1fa1667ad676987cba')
+      .toBe('93f6ae81748d7a925e78644b6512493b')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

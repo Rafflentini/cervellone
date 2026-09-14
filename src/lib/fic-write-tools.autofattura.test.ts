@@ -215,6 +215,24 @@ describe('il payload spedito a Fatture in Cloud', () => {
     }
   })
 
+  it('🚨 il codice TD17 sta in `ei_raw`, NON nel campo `type`', async () => {
+    // Senza questa struttura il documento non e' un'integrazione TD17: e' una
+    // normale autofattura, corretta in apparenza e sbagliata nella sostanza.
+    // E' il punto su cui il lavoro poteva essere silenziosamente sbagliato.
+    await compila({ fatture: BOOKING, vat_id: 21, numerazione: SERIE })
+
+    const payload = (stato.inserite[0].payload as { documenti: Array<{ payload: Record<string, unknown> }> })
+    for (const d of payload.documenti) {
+      const eiRaw = d.payload.ei_raw as {
+        FatturaElettronicaBody: { DatiGenerali: { DatiGeneraliDocumento: { TipoDocumento: string } } }
+      }
+      expect(eiRaw.FatturaElettronicaBody.DatiGenerali.DatiGeneraliDocumento.TipoDocumento).toBe('TD17')
+      // Il `type` resta quello della FORMA del documento su Fatture in Cloud:
+      // sono due cose diverse, e confonderle e' esattamente il difetto.
+      expect(d.payload.type).toBe('self_supplier_invoice')
+    }
+  })
+
   it('🚨 la data dell integrazione e quella di RICEZIONE, una per fattura — non oggi', async () => {
     await compila({ fatture: BOOKING, vat_id: 21, numerazione: SERIE })
 
@@ -439,6 +457,49 @@ describe('la seconda conferma crea i documenti, e l esito viene dalla RILETTURA'
     expect(out).toContain('DA VERIFICARE A MANO')
     expect(out).toContain('invoice')
   })
+
+  it('🚨 un documento che risulta TD01 invece di TD17 viene dichiarato sospetto', async () => {
+    // Il documento c'e', ma non e' l'integrazione che l'Ingegnere ha
+    // confermato: contarlo fra le riuscite sarebbe la bugia peggiore.
+    stato.riga = pendingConfermato([DUE[0]])
+    stato.riletture.set('doc-1', {
+      id: 'doc-1',
+      type: 'self_supplier_invoice',
+      ei_raw: { FatturaElettronicaBody: { DatiGenerali: { DatiGeneraliDocumento: { TipoDocumento: 'TD01' } } } },
+    })
+
+    const out = await confirmFicStep2('pend-1')
+
+    expect(out).toContain('DA VERIFICARE A MANO')
+    expect(out).toContain('TD01')
+  })
+
+  it('CONTROLLO POSITIVO — una rilettura SENZA ei_raw non rende sospetto niente', async () => {
+    // ⚠️ `ei_raw` assente vuol dire «non l'ho visto», non «non c'e'». Se
+    // l'assenza contasse come errore, OGNI autofattura risulterebbe sospetta
+    // per un guasto di lettura — e la segnalazione non varrebbe piu' niente.
+    stato.riga = pendingConfermato([DUE[0]])
+    stato.riletture.set('doc-1', { id: 'doc-1', type: 'self_supplier_invoice' })
+
+    const out = await confirmFicStep2('pend-1')
+
+    expect(out).toContain('AUTOFATTURE CREATE')
+    expect(out).not.toContain('DA VERIFICARE A MANO')
+  })
+
+  it('CONTROLLO POSITIVO — con TD17 riletto la creazione e riuscita', async () => {
+    stato.riga = pendingConfermato([DUE[0]])
+    stato.riletture.set('doc-1', {
+      id: 'doc-1',
+      type: 'self_supplier_invoice',
+      ei_raw: { FatturaElettronicaBody: { DatiGenerali: { DatiGeneraliDocumento: { TipoDocumento: 'TD17' } } } },
+    })
+
+    const out = await confirmFicStep2('pend-1')
+
+    expect(out).toContain('AUTOFATTURE CREATE')
+    expect(out).not.toContain('DA VERIFICARE A MANO')
+  })
 })
 
 describe('annullare un gruppo di autofatture', () => {
@@ -469,7 +530,7 @@ describe('il tool si trova con le parole dell Ingegnere', () => {
     const t = FIC_WRITE_TOOLS.find((d) => d.name === 'compila_autofattura')
     expect(t).toBeDefined()
     const d = (t?.description ?? '').toLowerCase()
-    for (const parola of ['autofattur', 'reverse charge', 'estere', 'booking', 'self_supplier_invoice', 'vat_id', 'td17']) {
+    for (const parola of ['autofattur', 'reverse charge', 'estere', 'booking', 'self_supplier_invoice', 'vat_id', 'td17', 'ei_raw']) {
       expect(d, parola).toContain(parola)
     }
     // ⚠️ `vat_id` NON e' fra i required dello schema: se lo fosse, il modello

@@ -1132,7 +1132,62 @@ async function eseguiPagamenti(
  * ESTATE. Il secondo e' quello in cui si e' cliente e fornitore di se' stessi
  * (autoconsumo), che qui sarebbe il documento sbagliato.
  */
+/**
+ * ⚠️ DA CONFERMARE SU UN DOCUMENTO VERO — e per questo sta scritto QUI e in
+ * nessun altro punto: si cambia in una riga.
+ *
+ * La documentazione di Fatture in Cloud si contraddice sui due valori. La FAQ
+ * sviluppatori dice «self_supplier_invoice = quando sei sia cliente sia
+ * fornitore»; la descrizione del campo dice invece che con
+ * `self_supplier_invoice` l'emittente compare come CLIENTE e l'altra azienda
+ * come FORNITORE — che e' esattamente il caso dell'integrazione TD17 su una
+ * fattura Booking.
+ *
+ * Si e' scelta la seconda lettura, perche' e' quella che descrive il caso
+ * vero. Ma e' una lettura, non una prova: se la prima autofattura creata su
+ * Fatture in Cloud risultasse sbagliata, il valore da provare e'
+ * `self_own_invoice` e si cambia solo questa riga.
+ */
 const TIPO_FIC_AUTOFATTURA = 'self_supplier_invoice'
+
+/**
+ * 🚨 Il codice TD17 NON sta nel campo `type`: sta in `ei_raw`.
+ *
+ * `type` sceglie la FORMA del documento su Fatture in Cloud; il tipo documento
+ * dell'XML SdI e' un'altra cosa, e senza questa struttura il documento non e'
+ * un'integrazione TD17 — e' una normale autofattura, corretta in apparenza e
+ * sbagliata nella sostanza. Era il punto su cui questo lavoro poteva essere
+ * silenziosamente sbagliato (documentazione ufficiale FIC, FAQ sviluppatori).
+ *
+ * TD17 = integrazione/autofattura per acquisto di servizi dall'estero,
+ * art. 17 c.2 DPR 633/72, servizio generico ex art. 7-ter.
+ */
+const TIPO_DOCUMENTO_SDI = 'TD17'
+
+function eiRawTipoDocumento(codice: string): Record<string, unknown> {
+  return {
+    FatturaElettronicaBody: {
+      DatiGenerali: {
+        DatiGeneraliDocumento: { TipoDocumento: codice },
+      },
+    },
+  }
+}
+
+/**
+ * Il `TipoDocumento` che Fatture in Cloud riporta su un documento riletto,
+ * oppure `undefined` se la rilettura non espone `ei_raw`.
+ *
+ * ⚠️ `undefined` NON vuol dire «assente sul documento»: vuol dire «non l'ho
+ * visto». La differenza conta, perche' da qui si decide se dichiarare un
+ * documento sospetto, e un guasto di lettura non deve travestirsi da errore
+ * del documento.
+ */
+function tipoDocumentoRiletto(doc: Record<string, unknown>): string | undefined {
+  const body = asObject(asObject(doc.ei_raw).FatturaElettronicaBody)
+  const generali = asObject(asObject(body.DatiGenerali).DatiGeneraliDocumento)
+  return cleanString(generali.TipoDocumento)
+}
 
 interface AutofatturaRiga {
   /** Denominazione del fornitore estero, risolta sull'anagrafica. */
@@ -1225,9 +1280,9 @@ function descriviAutofatture(input: {
     '⚠️ L\'imponibile deve essere quello delle sole COMMISSIONI della piattaforma (fee sui pagamenti gestiti compresa). '
     + 'Gli incassi girati dalla piattaforma sono soldi degli ospiti e NON si integrano: se un importo qui sopra somiglia a un incasso, annulla.',
     'Vengono COMPILATE e NON trasmesse allo SdI (e_invoice: false): la trasmissione la fai tu da Fatture in Cloud.',
-    '⚠️ Due cose che questo tool NON imposta e che vanno controllate su Fatture in Cloud prima di trasmettere: '
-    + 'il codice tipo documento (deve risultare TD17) e i «dati fattura collegata». Il riferimento alla fattura originale '
-    + '(numero e data) e\' scritto nella riga e nelle note del documento, ma non nel campo strutturato.',
+    `Tipo documento SdI: ${TIPO_DOCUMENTO_SDI} (integrazione art. 17 c.2 DPR 633/72, servizio generico art. 7-ter), impostato su ogni documento.`,
+    '⚠️ I «dati fattura collegata» questo tool NON li compila: il riferimento alla fattura originale (numero e data) '
+    + 'e\' scritto nella riga e nelle note, ma non nel campo strutturato. Controllalo su Fatture in Cloud prima di trasmettere.',
     `1a conferma -> ${comandoDaMostrare('fic_ok', input.id)}`,
     `annulla -> ${comandoDaMostrare('fic_no', input.id)}`,
   ].filter(Boolean).join('\n')
@@ -1457,6 +1512,9 @@ async function compilaAutofatture(
         // L'id arriva dall'elenco di FIC, non da una tabella nostra.
         vat: { id: idIva },
       }],
+      // 🚨 Il codice TD17 viaggia QUI, non nel `type`: senza questa struttura
+      // il documento sarebbe una normale autofattura, non un'integrazione.
+      ei_raw: eiRawTipoDocumento(TIPO_DOCUMENTO_SDI),
       // La data dell'integrazione e' quella di RICEZIONE della fattura estera.
       date: r.dataRicezione,
       // Serie dedicata: senza, FIC numererebbe fra le fatture attive.
@@ -1508,7 +1566,8 @@ async function compilaAutofatture(
     iva: { id: idIva, etichetta: etichettaIva },
     numerazione,
     da_creare: documenti.length,
-    da_controllare_su_fic: 'il codice tipo documento deve risultare TD17, e i «dati fattura collegata» non li imposta questo tool.',
+    tipo_documento_sdi: TIPO_DOCUMENTO_SDI,
+    da_controllare_su_fic: 'i «dati fattura collegata» non li imposta questo tool: il riferimento alla fattura originale sta nella riga e nelle note, non nel campo strutturato.',
     anteprima: pending.descrizione,
     conferma_1: comandoDaMostrare('fic_ok', pending.id),
     annulla: comandoDaMostrare('fic_no', pending.id),
@@ -1627,7 +1686,7 @@ async function creaAutofatture(
         + 'Fatture in Cloud: non tento nessun rollback. Da riprendere: '
         + `${nonTrattate.map((f) => `${f.fornitore} n.${f.numero}`).join(', ') || 'nessuna'}.`
       : null,
-    'Nessuna e\' stata trasmessa allo SdI: sono compilate. Controlla il codice tipo documento (TD17/TD18/TD19) su Fatture in Cloud.',
+    `Nessuna e' stata trasmessa allo SdI: sono compilate, tipo documento . L'invio lo decidi tu da Fatture in Cloud.`,
   ].filter(Boolean).join('\n\n')
 
   if (riuscite.length === 0) {
@@ -1674,6 +1733,20 @@ async function rileggiAutofattura(
   const tipo = cleanString(doc.type)
   if (tipo !== TIPO_FIC_AUTOFATTURA) {
     return { ok: false, error: `su Fatture in Cloud risulta di tipo «${tipo ?? 'sconosciuto'}», non ${TIPO_FIC_AUTOFATTURA}` }
+  }
+  // Il TipoDocumento SdI si controlla SOLO se la rilettura lo espone. Se FIC
+  // non restituisce `ei_raw` non si conclude niente: un dato che non si vede
+  // non e' un dato sbagliato, e trattarlo come tale renderebbe ogni
+  // autofattura «sospetta» per un guasto di lettura. Se invece c'e' ed e'
+  // DIVERSO, quello e' il caso da dichiarare: il documento esiste ma non e'
+  // l'integrazione che l'Ingegnere ha confermato.
+  const tipoSdi = tipoDocumentoRiletto(doc)
+  if (tipoSdi !== undefined && tipoSdi !== TIPO_DOCUMENTO_SDI) {
+    return {
+      ok: false,
+      error: `su Fatture in Cloud il tipo documento SdI risulta «${tipoSdi}», non ${TIPO_DOCUMENTO_SDI}: `
+        + 'il documento c\'e\' ma non e\' l\'integrazione confermata',
+    }
   }
   return { ok: true }
 }
@@ -2119,7 +2192,7 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     // autofatture e' il motivo per cui esiste — «non e che mi metto a
     // confermare quindici fatture vocalmente».
     name: 'compila_autofattura',
-    description: 'Compila su Fatture in Cloud le AUTOFATTURE/INTEGRAZIONI in reverse charge per le fatture ESTERE (il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, scadenza fiscale il 16 del mese; identico per le fee di Airbnb Ireland UC). Prepara UN documento per ogni fattura estera, tipo FIC self_supplier_invoice (chi emette compare come CLIENTE, il fornitore estero come fornitore), integrazione ex art. 17 c.2 DPR 633/72 su servizio generico art. 7-ter. I documenti vengono COMPILATI e NON trasmessi allo SdI: li controlla e li invia l Ingegnere. Accetta N fatture in una volta sola e chiede UNA SOLA conferma per tutte (in due passaggi: /fic_ok_<id> poi /fic_ok2_<id>, ma una conferma sola per tutto il gruppo). REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: non scegliere tu l aliquota ne la natura. Se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote IVA di quell azienda lette da Fatture in Cloud — con descrizione e natura — e tu CHIEDI all Ingegnere quale usare, poi richiami con vat_id. Non esiste nessun predefinito; (2) 🚨 SI INTEGRA SOLO LA FATTURA COMMISSIONI (fee sui pagamenti gestiti dalla piattaforma compresa). Gli INCASSI girati dalla piattaforma sono soldi degli ospiti riscossi per conto della societa e NON si integrano: se non sei sicuro che l importo sia una commissione, FERMATI E CHIEDI invece di chiamarmi; (3) 🚨 il tool RIFIUTA le fatture anteriori all iscrizione al VIES della societa: quelle riportano IVA italiana e si registrano come normali acquisti con IVA detraibile, non si integrano. Se te lo dice, riportalo e non insistere; (4) il fornitore estero deve essere IN ANAGRAFICA con indirizzo e partita IVA comunitaria: fic_cerca_anagrafica, se non c e fic_crea_cliente, poi passa qui fornitore_id. Senza anagrafica il tool rifiuta; (5) numero, data, data di RICEZIONE e imponibile sono quelli della fattura ORIGINALE e non si inventano: se non li hai, chiedili. La data dell integrazione e la data di RICEZIONE, non oggi; (6) serve una SERIE di numerazione dedicata alle integrazioni, separata dalle fatture attive: se non la passi il tool te la chiede, non la inventa; (7) mostra l anteprima COM E — elenca tutte le autofatture con fornitore, numero, date e imponibile: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte; (8) l esito e PER DOCUMENTO e viene da una RILETTURA su Fatture in Cloud: riporta quali si e quali no col motivo, e NON dire «fatte tutte»; (9) il tool NON imposta il codice tipo documento (deve risultare TD17) ne i «dati fattura collegata»: dillo all Ingegnere, vanno controllati su Fatture in Cloud prima di trasmettere.',
+    description: 'Compila su Fatture in Cloud le AUTOFATTURE/INTEGRAZIONI in reverse charge per le fatture ESTERE (il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, scadenza fiscale il 16 del mese; identico per le fee di Airbnb Ireland UC). Prepara UN documento per ogni fattura estera, tipo FIC self_supplier_invoice (chi emette compare come CLIENTE, il fornitore estero come fornitore), integrazione ex art. 17 c.2 DPR 633/72 su servizio generico art. 7-ter. I documenti vengono COMPILATI e NON trasmessi allo SdI: li controlla e li invia l Ingegnere. Accetta N fatture in una volta sola e chiede UNA SOLA conferma per tutte (in due passaggi: /fic_ok_<id> poi /fic_ok2_<id>, ma una conferma sola per tutto il gruppo). REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: non scegliere tu l aliquota ne la natura. Se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote IVA di quell azienda lette da Fatture in Cloud — con descrizione e natura — e tu CHIEDI all Ingegnere quale usare, poi richiami con vat_id. Non esiste nessun predefinito; (2) 🚨 SI INTEGRA SOLO LA FATTURA COMMISSIONI (fee sui pagamenti gestiti dalla piattaforma compresa). Gli INCASSI girati dalla piattaforma sono soldi degli ospiti riscossi per conto della societa e NON si integrano: se non sei sicuro che l importo sia una commissione, FERMATI E CHIEDI invece di chiamarmi; (3) 🚨 il tool RIFIUTA le fatture anteriori all iscrizione al VIES della societa: quelle riportano IVA italiana e si registrano come normali acquisti con IVA detraibile, non si integrano. Se te lo dice, riportalo e non insistere; (4) il fornitore estero deve essere IN ANAGRAFICA con indirizzo e partita IVA comunitaria: fic_cerca_anagrafica, se non c e fic_crea_cliente, poi passa qui fornitore_id. Senza anagrafica il tool rifiuta; (5) numero, data, data di RICEZIONE e imponibile sono quelli della fattura ORIGINALE e non si inventano: se non li hai, chiedili. La data dell integrazione e la data di RICEZIONE, non oggi; (6) serve una SERIE di numerazione dedicata alle integrazioni, separata dalle fatture attive: se non la passi il tool te la chiede, non la inventa; (7) mostra l anteprima COM E — elenca tutte le autofatture con fornitore, numero, date e imponibile: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte; (8) l esito e PER DOCUMENTO e viene da una RILETTURA su Fatture in Cloud: riporta quali si e quali no col motivo, e NON dire «fatte tutte»; (9) il tool imposta il tipo documento SdI TD17 (in ei_raw, non nel campo type), ma NON compila i «dati fattura collegata»: il riferimento alla fattura originale sta nella riga e nelle note, e il campo strutturato va controllato su Fatture in Cloud prima di trasmettere.',
     input_schema: {
       type: 'object',
       properties: {
