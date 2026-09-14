@@ -304,6 +304,45 @@ function normalizeRighe(
  * essere una forma parziale usata solo per la ricerca, e finirebbe scritta sul
  * documento fiscale al posto della denominazione vera.
  */
+/**
+ * I campi che danno IDENTITA' FISCALE a un'anagrafica, oltre al nome.
+ *
+ * ⚠️ 15 settembre 2026. `resolveEntitaFic` leggeva la scheda INTERA
+ * dall'anagrafica e poi teneva solo `id` e `name`, affidandosi a Fatture in
+ * Cloud per ricostruire il resto dall'id. Su una fattura italiana non si
+ * notava. Su un'integrazione TD17 la partita IVA comunitaria del cedente
+ * estero — Booking.com B.V., NL805734958B01 — non e' grafica: senza, il
+ * documento non e' valido.
+ *
+ * I dati erano gia' in mano, letti due righe sopra, e venivano buttati via per
+ * riaverli da un meccanismo mai verificato. Ora si portano avanti: se la
+ * scheda ha il campo, il documento ce l'ha. E si copiano solo i campi
+ * VALORIZZATI, perche' spedire una stringa vuota a FIC non e' «lascia stare» —
+ * e' «cancella quello che c'e'».
+ */
+const CAMPI_IDENTITA_FIC = [
+  'vat_number',
+  'tax_code',
+  'address_street',
+  'address_postal_code',
+  'address_city',
+  'address_province',
+  'country',
+  'country_iso',
+] as const
+
+export { identitaFiscale as identitaFiscalePerTest }
+
+function identitaFiscale(scheda: Record<string, unknown> | undefined): Record<string, unknown> {
+  const fuori: Record<string, unknown> = {}
+  if (!scheda) return fuori
+  for (const campo of CAMPI_IDENTITA_FIC) {
+    const valore = cleanString(scheda[campo])
+    if (valore) fuori[campo] = valore
+  }
+  return fuori
+}
+
 async function resolveEntitaFic(
   cliente: string,
   societa: CodiceSocieta,
@@ -335,7 +374,7 @@ async function resolveEntitaFic(
     const scheda = (r.data?.data ?? r.data) as Record<string, unknown> | undefined
     const nome = cleanString(scheda?.name)
     if (!nome) return { ok: false, error: `${etichettaId} ${clienteId} non trovato in anagrafica.` }
-    return { ok: true, entity: { id: clienteId, name: nome }, descrizione: `${nome} (id ${clienteId})` }
+    return { ok: true, entity: { id: clienteId, name: nome, ...identitaFiscale(scheda) }, descrizione: `${nome} (id ${clienteId})` }
   }
 
   const r = await ficGet(`/c/${company.id}/entities/${segmento}`, {
@@ -358,7 +397,7 @@ async function resolveEntitaFic(
           .map(x => cleanString(x.name) ?? '?')
           .join(', ')}). Ho preso il primo: se non e' questo, annulla e scrivi il nome per esteso.`
       : ''
-    return { ok: true, entity: { id: first.id, name: nome }, descrizione: `${nome} (id ${first.id})${altri}` }
+    return { ok: true, entity: { id: first.id, name: nome, ...identitaFiscale(first) }, descrizione: `${nome} (id ${first.id})${altri}` }
   }
   // ⚠️ Nessuna corrispondenza. Il documento si compila lo stesso, col solo
   // nome: e' voluto (FIC accetta un'anagrafica al volo), ma l'Ingegnere deve
