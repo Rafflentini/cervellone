@@ -187,16 +187,30 @@ describe('differimento delle definizioni dei tool', () => {
   // Google e dice quali sono VIVE, col motivo se non lo sono. Prima di oggi
   // la domanda "la casella di La Real Estate funziona?" non aveva risposta:
   // la credenziale era salvata ma mai esercitata.
-  it('senza opzioni: 138 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 14 settembre 2026 (autofatture). Da 138 a 139, impronta da
+  // `9d032bf3eedd40e8b5ae264d54753924`. E' entrato `compila_autofattura`: le
+  // INTEGRAZIONI in reverse charge per le fatture estere — il caso vero sono
+  // le commissioni mensili di Booking.com B.V. a LA REAL ESTATE, scadenza
+  // fiscale il 16 del mese, identiche per le fee di Airbnb.
+  //
+  // ⚠️ E' l'unico tool che crea N documenti fiscali con UNA conferma sola
+  // («non e che mi metto a confermare quindici fatture vocalmente»), e per
+  // questo la sua descrizione e' lunga: porta scritte le tre cose che NON
+  // decide — l'aliquota IVA (senza `vat_id` si ferma ed elenca quelle vere di
+  // Fatture in Cloud), la serie di numerazione dedicata, e il fatto che TD17 e
+  // i «dati fattura collegata» vanno controllati a mano su FIC. Il numero sale
+  // da 138 a 139 di proposito. Impronta presa DAL FALLIMENTO del test.
+  it('senza opzioni: 139 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(138)
+    expect(defs).toHaveLength(139)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
   // LA DECISIONE, 14 settembre 2026 (sera). Da 137 a 138: e entrato
   // gmail_leggi_allegato. La funzione che scarica un allegato Gmail esisteva
   // da mesi e NESSUN tool la esponeva: il bot ha risposto all Ingegnere «non
   // ho un tool che apra un allegato di Gmail» mentre il codice era in casa.
   // Impronta presa DAL FALLIMENTO del test, non calcolata a parte.
-      .toBe('9d032bf3eedd40e8b5ae264d54753924')
+      .toBe('c6223d7324d60e1fa1667ad676987cba')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
