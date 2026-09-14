@@ -303,3 +303,57 @@ describe('descriviDeriva - l elenco dei file non deve mangiare Telegram (reperto
     expect(testo).toContain('manca la colonna procedures.output_preferences')
   })
 })
+
+describe('il divisore di statement conosce le stringhe (reperto 8)', () => {
+  it('🚨 un punto e virgola DENTRO un letterale non divide lo statement', () => {
+    // Testo vero, `2026-05-25-cervellone-scadenze.sql`: il commento contiene
+    // «RLS deny-all anon/auth; accesso service_role server-side.» e il
+    // frammento «accesso service_role server-side.'» finiva fra i non
+    // interpretati come se fosse uno statement a se'.
+    // Oggi non nasce nessun oggetto falso (l'ancora `^` delle forme salva),
+    // ma basta un seed che contenga «; create index …» per inventare un
+    // atteso inesistente: un falso allarme permanente.
+    const r = oggettiAttesi([migrazioneVera('2026-05-25-cervellone-scadenze.sql')])
+
+    expect(r.nonInterpretate.some((s) => s.testo.startsWith("accesso service_role"))).toBe(false)
+    expect(r.nonInterpretate.some((s) => s.testo.includes('anon/auth; accesso service_role server-side'))).toBe(true)
+  })
+
+  it('🚨 un «--» dentro un letterale non e un commento, e non si mangia la riga', () => {
+    // Tutto su UNA riga: se il `--` dentro il valore fosse preso per un
+    // commento, si porterebbe via il resto della riga — e la tabella dopo
+    // sparirebbe senza finire nemmeno fra i non interpretati.
+    const r = oggettiAttesi([{
+      nome: 't.sql',
+      sql: "insert into cervellone_config (key, value) values ('chiave_x', 'a -- b'); create table dopo (id int);",
+    }])
+
+    expect(r.oggetti).toContainEqual({ tipo: 'config', chiave: 'chiave_x' })
+    expect(r.oggetti).toContainEqual({ tipo: 'tabella', tabella: 'dopo' })
+  })
+
+  it('🚨 un apice raddoppiato non chiude il letterale, e non inventa un indice', () => {
+    // Il danno vero descritto dall'audit: un letterale che contiene
+    // «; create index …» faceva nascere un atteso INESISTENTE, cioe' un falso
+    // allarme permanente nel guardiano che serve a dare gli allarmi veri.
+    const r = oggettiAttesi([{
+      nome: 'u.sql',
+      sql: "insert into cervellone_config (key, value) values ('k1', 'dall''anagrafica; create index idx_falso on t (a)');",
+    }])
+    expect(r.oggetti).toContainEqual({ tipo: 'config', chiave: 'k1' })
+    expect(r.oggetti).not.toContainEqual({ tipo: 'indice', nome: 'idx_falso' })
+  })
+
+  it('CONTROLLO POSITIVO: fuori dalle stringhe il punto e virgola divide ancora', () => {
+    // Senza questo, un divisore che non dividesse piu' niente passerebbe i
+    // test qui sopra.
+    const r = oggettiAttesi([{ nome: 'w.sql', sql: 'create table a (id int); create table b (id int);' }])
+    expect(r.oggetti).toContainEqual({ tipo: 'tabella', tabella: 'a' })
+    expect(r.oggetti).toContainEqual({ tipo: 'tabella', tabella: 'b' })
+  })
+
+  it('CONTROLLO POSITIVO: i commenti VERI si tolgono ancora', () => {
+    const r = oggettiAttesi([{ nome: 'y.sql', sql: '-- create table finta (id int);\n/* create table finta2 (id int); */\ncreate table vera2 (id int);' }])
+    expect(r.oggetti.filter((o) => o.tipo === 'tabella')).toEqual([{ tipo: 'tabella', tabella: 'vera2' }])
+  })
+})

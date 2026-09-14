@@ -251,42 +251,109 @@ const FORME: Array<{ re: RegExp; leggi: (m: RegExpExecArray, statement: string) 
   },
 ]
 
-/** Via i commenti `--` e i blocchi, che non promettono niente. */
-function senzaCommenti(sql: string): string {
-  return sql.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ')
-}
+const APRE_DOLLARO = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/
 
+/**
+ * Divide il file negli statement, togliendo i commenti per strada.
+ *
+ * Una passata sola, perche' commenti, stringhe e `;` non si possono guardare
+ * separatamente: prima i commenti si toglievano con una regex cieca e il
+ * divisore non conosceva gli apici, cosi'
+ *   `comment on table … is '… anon/auth; accesso service_role server-side.';`
+ * (testo vero, `2026-05-25-cervellone-scadenze.sql`) diventava DUE statement.
+ * Oggi non nasceva nessun oggetto falso — l'ancora `^` delle forme salvava —
+ * ma bastava un letterale che contenesse «; create index …» per far nascere
+ * un atteso INESISTENTE: un falso allarme permanente dentro il guardiano che
+ * serve a dare gli allarmi veri.
+ *
+ * Dentro un blocco `$$ … $$` non si tocca niente: il dollar quoting esiste
+ * proprio per poter scrivere apici e punti e virgola senza significato.
+ */
 function dividiStatement(sql: string): string[] {
   const pezzi: string[] = []
   let corrente = ''
   let dollarQuote: string | null = null
+  let i = 0
 
-  for (let i = 0; i < sql.length; i += 1) {
+  while (i < sql.length) {
     const c = sql[i]
+
+    if (dollarQuote) {
+      if (c === '$') {
+        const m = APRE_DOLLARO.exec(sql.slice(i))
+        if (m && m[0] === dollarQuote) {
+          dollarQuote = null
+          corrente += m[0]
+          i += m[0].length
+          continue
+        }
+      }
+      corrente += c
+      i += 1
+      continue
+    }
+
     if (c === '$') {
-      const resto = sql.slice(i)
-      const m = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(resto)
+      const m = APRE_DOLLARO.exec(sql.slice(i))
       if (m) {
-        if (dollarQuote === m[0]) dollarQuote = null
-        else if (!dollarQuote) dollarQuote = m[0]
+        dollarQuote = m[0]
         corrente += m[0]
-        i += m[0].length - 1
+        i += m[0].length
         continue
       }
     }
-    if (c === ';' && !dollarQuote) {
-      pezzi.push(corrente)
-      corrente = ''
+
+    // Commento di riga: sparisce fino a fine riga (il `\n` resta, e la
+    // normalizzazione degli spazi lo assorbe).
+    if (c === '-' && sql[i + 1] === '-') {
+      while (i < sql.length && sql[i] !== '\n') i += 1
+      corrente += ' '
       continue
     }
+
+    // Commento a blocco.
+    if (c === '/' && sql[i + 1] === '*') {
+      const fine = sql.indexOf('*/', i + 2)
+      i = fine === -1 ? sql.length : fine + 2
+      corrente += ' '
+      continue
+    }
+
+    // Letterale: si copia INTERO, `;` e `--` compresi.
+    if (c === "'") {
+      corrente += c
+      i += 1
+      while (i < sql.length) {
+        if (sql[i] === "'") {
+          // Un apice raddoppiato (`''`) NON chiude il letterale.
+          if (sql[i + 1] === "'") { corrente += "''"; i += 2; continue }
+          corrente += "'"
+          i += 1
+          break
+        }
+        corrente += sql[i]
+        i += 1
+      }
+      continue
+    }
+
+    if (c === ';') {
+      pezzi.push(corrente)
+      corrente = ''
+      i += 1
+      continue
+    }
+
     corrente += c
+    i += 1
   }
+
   pezzi.push(corrente)
   return pezzi
 }
 
 function statement(sql: string): string[] {
-  return dividiStatement(senzaCommenti(sql))
+  return dividiStatement(sql)
     .map((s) => s.replace(/\s+/g, ' ').trim())
     .filter((s) => s.length > 0)
 }

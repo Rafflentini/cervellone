@@ -2638,11 +2638,7 @@
     },
     {
       "file": "2026-05-25-cervellone-scadenze.sql",
-      "testo": "comment on table public.cervellone_scadenze is 'Scadenzario generico Cervellone (documenti + reminder). RLS deny-all anon/auth"
-    },
-    {
-      "file": "2026-05-25-cervellone-scadenze.sql",
-      "testo": "accesso service_role server-side.'"
+      "testo": "comment on table public.cervellone_scadenze is 'Scadenzario generico Cervellone (documenti + reminder). RLS deny-all anon/auth; accesso service_role server-side.'"
     },
     {
       "file": "2026-05-25-telegram-recent-uploads.sql",
@@ -2699,10 +2695,6 @@
     {
       "file": "2026-06-04-working-memory-procedures.sql",
       "testo": "insert into procedures (task_type, title, checklist, output_spec, save_location, lessons) values ( 'pos', 'POS Restruktura (impresa esecutrice) — Allegato XV D.Lgs 81/2008', '[ {\"step\": \"Leggi il DVR "
-    },
-    {
-      "file": "2026-06-04-working-memory-procedures.sql",
-      "testo": "chiedi SOLO ciò che manca dopo aver letto DVR+PSC+contratto\"} ]'::jsonb, '>=20 pagine A4 verticale, Allegato XV D.Lgs 81/2008, copertina + indice + analisi rischi P x D x R per ogni fase di lavorazion"
     },
     {
       "file": "2026-06-06-workflow-run-attempts.sql",
