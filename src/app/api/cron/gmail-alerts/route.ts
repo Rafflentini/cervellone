@@ -4,10 +4,14 @@ import { supabase } from '@/lib/supabase'
 import { checkCriticalAlerts } from '@/lib/gmail-summary'
 import { sendTelegramMessage, sendTelegramMessageChecked } from '@/lib/telegram-helpers'
 import { recordBotAction } from '@/lib/gmail-tools'
-import { googleAuthKindOf, isFatalGoogleAuthKind } from '@/lib/google-token-health'
+import { googleAuthKindOf, isFatalGoogleAuthKind, chiaveTokenMorto } from '@/lib/google-token-health'
+import { getCasella } from '@/lib/caselle'
 
 export const maxDuration = 60
-const GOOGLE_TOKEN_DEAD_KEY = 'google_token_dead'
+// La bandierina e' per account (Task 5, 14 settembre 2026): i cron Gmail
+// sorvegliano la casella di Restruktura; quella de La Real Estate non ha
+// ancora un cron suo.
+const GOOGLE_TOKEN_DEAD_KEY = chiaveTokenMorto(getCasella('drive').accountEmail!)
 const GOOGLE_TOKEN_DEAD_ALERT =
   '⚠️ *Token Google scaduto/revocato* — Gmail e Drive non sono accessibili (invalid_grant). Riautorizza aprendo in incognito: https://cervellone-five.vercel.app/api/auth/google (login restruktura.drive@gmail.com → Consenti).'
 

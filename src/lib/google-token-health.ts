@@ -28,6 +28,18 @@ export type GoogleErrorKind = 'dead' | 'scope' | 'config' | 'transient' | 'other
 const GOOGLE_TOKEN_DEAD_KEY = 'google_token_dead'
 
 /**
+ * La bandierina del token morto, UNA PER ACCOUNT.
+ *
+ * ⚠️ Fino al 14 settembre 2026 era una sola (`google_token_dead`), scritta dai
+ * cron Gmail guardando solo Restruktura. Con due account quella forma rende il
+ * secondo cieco PER COSTRUZIONE: il token de La Real Estate poteva morire
+ * senza che nessuno lo sapesse.
+ */
+export function chiaveTokenMorto(accountEmail: string): string {
+  return `${GOOGLE_TOKEN_DEAD_KEY}:${accountEmail}`
+}
+
+/**
  * Testo unico dell'errore. Deve contenere: cosa è successo, cosa NON è
  * successo (i file ci sono ancora) e il gesto esatto per rimediare.
  */
@@ -251,8 +263,12 @@ let lastNotifyAt = 0
  * un `try/catch` da solo sarebbe codice morto e il flag verrebbe scritto anche
  * su un messaggio mai recapitato → latch permanente, nessun alert mai più.
  * Si usa perciò `sendTelegramMessageChecked`, che riporta l'esito.
+ *
+ * `accountEmail` è obbligatoria: il latch è per account (`chiaveTokenMorto`),
+ * non più unico. Un default qui ricreerebbe il difetto del 14 settembre 2026 —
+ * chi non lo passa tornerebbe a scrivere sulla bandierina di uno solo dei due.
  */
-export async function markGoogleTokenDead(kind: GoogleErrorKind): Promise<void> {
+export async function markGoogleTokenDead(kind: GoogleErrorKind, accountEmail: string): Promise<void> {
   if (!isFatalGoogleAuthKind(kind)) return
 
   const now = Date.now()
@@ -264,11 +280,12 @@ export async function markGoogleTokenDead(kind: GoogleErrorKind): Promise<void> 
 
   try {
     const supabase = getSupabaseServer()
+    const key = chiaveTokenMorto(accountEmail)
 
     const { data } = await supabase
       .from('cervellone_config')
       .select('value')
-      .eq('key', GOOGLE_TOKEN_DEAD_KEY)
+      .eq('key', key)
       .maybeSingle()
 
     if (String(data?.value ?? '').replace(/"/g, '') === 'true') return
@@ -292,7 +309,7 @@ export async function markGoogleTokenDead(kind: GoogleErrorKind): Promise<void> 
     }
 
     const { error } = await supabase.from('cervellone_config').upsert(
-      { key: GOOGLE_TOKEN_DEAD_KEY, value: 'true' },
+      { key, value: 'true' },
       { onConflict: 'key' },
     )
     if (error) console.error('[GOOGLE-HEALTH] flag upsert failed:', error.message)

@@ -68,9 +68,13 @@ beforeEach(() => {
   process.env.ADMIN_CHAT_ID = '123456'
 })
 
+// La bandierina e' per account (Task 5): i due cron sorvegliano 'drive'
+// (restruktura.drive@gmail.com), quindi qui e' quella la chiave attesa.
+const CHIAVE_TOKEN_MORTO_DRIVE = 'google_token_dead:restruktura.drive@gmail.com'
+
 const flagWrites = () =>
   mockUpsert.mock.calls.filter(
-    (c) => (c[0] as { key?: string } | undefined)?.key === 'google_token_dead',
+    (c) => (c[0] as { key?: string } | undefined)?.key === CHIAVE_TOKEN_MORTO_DRIVE,
   )
 
 describe.each([
@@ -88,7 +92,7 @@ describe.each([
     expect(mockSendChecked.mock.calls[0][0]).toBe(123456)
     expect(mockSendChecked.mock.calls[0][1]).toContain('Token Google')
     expect(flagWrites()).toHaveLength(1)
-    expect(flagWrites()[0][0]).toEqual({ key: 'google_token_dead', value: 'true' })
+    expect(flagWrites()[0][0]).toEqual({ key: CHIAVE_TOKEN_MORTO_DRIVE, value: 'true' })
   })
 
   it("il messaggio di GoogleAuthDeadError NON contiene 'invalid_grant' (perché il match su stringa non basta più)", () => {
@@ -116,7 +120,7 @@ describe.each([
   })
 
   it('flag già a true ⇒ nessun secondo alert (latch DB)', async () => {
-    configRows.google_token_dead = 'true'
+    configRows[CHIAVE_TOKEN_MORTO_DRIVE] = 'true'
     failingCall().mockRejectedValue(new GoogleAuthDeadError('dead'))
 
     const { GET } = await loadRoute()

@@ -86,7 +86,9 @@ describe('getAuthorizedClient — token morto', () => {
     const { GoogleAuthDeadError } = await import('./google-token-health')
 
     await expect(getAuthorizedClient('restruktura.drive@gmail.com')).rejects.toBeInstanceOf(GoogleAuthDeadError)
-    expect(markGoogleTokenDeadSpy).toHaveBeenCalledWith('dead')
+    // La bandierina e' per account (Task 5): markGoogleTokenDead ora prende
+    // anche l'account, non solo il tipo di errore.
+    expect(markGoogleTokenDeadSpy).toHaveBeenCalledWith('dead', 'restruktura.drive@gmail.com')
   })
 
   it('il messaggio dell errore spiega COSA fare (URL di riautorizzazione)', async () => {
