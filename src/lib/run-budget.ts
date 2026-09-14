@@ -8,7 +8,37 @@
  */
 import type { UsageTokens } from './api-usage'
 
-export const MAX_RUN_TOKENS = 200_000
+/**
+ * Il tetto di token di un turno del coordinatore.
+ *
+ * ⚠️ Era 200.000 fino al 14 settembre 2026, e li sfondava LAVORANDO.
+ * Quel giorno l'Ingegnere ha chiesto di registrare l'incasso di UNA fattura:
+ * il bot ha letto le fatture su Fatture in Cloud, ha incontrato un errore, e
+ * mentre ne cercava la causa nel proprio codice si e' visto rispondere «la
+ * richiesta ha superato il budget di elaborazione». Su una richiesta semplice.
+ *
+ * Questo file conteneva gia' il principio, scritto per lo specialista:
+ * «un tetto che una richiesta NORMALE supera non e' un tetto anti-runaway,
+ * e' una guardia che blocca il caso normale». Valeva anche qui, e nessuno
+ * l'aveva applicato al coordinatore.
+ *
+ * E dal 14 settembre esiste una guardia MIGLIORE: quella sul TEMPO
+ * (`SOGLIA_TEMPO_MS` in `claude.ts`), che misura direttamente la cosa che fa
+ * male — essere uccisi da Vercel a 800 secondi senza consegnare niente —
+ * invece di un sostituto. I token erano un modo indiretto di dire «si e'
+ * impantanato»; i secondi lo dicono e basta.
+ *
+ * 500k: il coordinatore puo' portare a termine un lavoro vero con due o tre
+ * deleghe, e il runaway lo ferma il tempo. Nel caso peggiore un turno costa di
+ * piu' — ma un turno che si ferma a meta' e' costato tutto e non ha consegnato
+ * niente, che e' la spesa peggiore di tutte.
+ *
+ * ⚠️ Cosa cambia nel rapporto con gli specialisti: prima «due deleghe stanno
+ * sotto un budget di coordinatore». Ora ce ne stanno cinque. Non e' un
+ * invito a delegare di piu': e' che il tetto non e' piu' lui a decidere
+ * quando fermarsi.
+ */
+export const MAX_RUN_TOKENS = 500_000
 
 /** Path durable: task lunghe legittime (30-60 min) → budget dedicato. ~$3-4 max su Sonnet. */
 export const MAX_DURABLE_RUN_TOKENS = 1_000_000
