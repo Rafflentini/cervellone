@@ -58,6 +58,19 @@ function getServer() {
 
 const ACCOUNT_PREFIX: Record<AccountKey, string> = { info: 'EMAIL_INFO', raffaele: 'EMAIL_RAFFAELE' }
 
+/**
+ * Le chiavi `AccountKey` CONOSCIUTE dal config — non quali sono configurate
+ * ORA (quello è `listAccounts()`, che dipende dalle env). Nessun segreto qui:
+ * solo i due nomi, derivati da `ACCOUNT_PREFIX` invece che riscritti a mano.
+ *
+ * Serve a chi, fuori da questo file, deve sapere quali sono le caselle
+ * TopHost senza copiare `['info', 'raffaele']` una quarta volta — il
+ * compilatore obbliga `ACCOUNT_PREFIX` ad avere ESATTAMENTE le chiavi di
+ * `AccountKey` (né una in meno né una in più), quindi `ACCOUNT_KEYS` non può
+ * divergere dal tipo senza un errore di build.
+ */
+export const ACCOUNT_KEYS: readonly AccountKey[] = Object.keys(ACCOUNT_PREFIX) as AccountKey[]
+
 export function getAccountConfig(account: AccountKey): EmailAccountConfig {
   const prefix = ACCOUNT_PREFIX[account]
   if (!prefix) throw new EmailConfigError(`Account sconosciuto: ${account}`)

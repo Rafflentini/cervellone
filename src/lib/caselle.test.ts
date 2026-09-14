@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { getCasella, listaCaselle, caselleDiTrasporto, risolviCasella } from './caselle'
+import { ACCOUNT_KEYS } from '@/v19/tools/email/config'
 
 describe('il registro delle caselle', () => {
   it('ha quattro caselle, e ciascuna sa a quale societa appartiene', () => {
@@ -29,8 +30,15 @@ describe('il registro delle caselle', () => {
     // controlla che il registro nuovo ABBIA ASSORBITO quello vecchio invece di
     // affiancarglisi. In questo repo il terzo posto dove la stessa verita' e'
     // scritta diversa e' la ferita che si riapre di continuo.
+    //
+    // ⚠️ Fino al 14 settembre 2026 il lato destro era un letterale
+    // `['info', 'raffaele']` scritto QUI: una TERZA copia, non un confronto —
+    // sarebbe rimasta verde anche se `AccountKey` fosse cambiato (audit
+    // avversariale). `ACCOUNT_KEYS` e' un valore a runtime che il compilatore
+    // obbliga a combaciare con `AccountKey` (vedi config.ts): un confronto
+    // vero, non una promessa.
     const daTrasporto: string[] = caselleDiTrasporto('tophost').map((c) => c.chiave).sort()
-    const daAccountKey: string[] = ['info', 'raffaele'] // il tipo AccountKey di v19/tools/email/config.ts
+    const daAccountKey: string[] = [...ACCOUNT_KEYS].sort()
     expect(daTrasporto).toEqual(daAccountKey)
   })
 

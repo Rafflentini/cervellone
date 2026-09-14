@@ -18,7 +18,15 @@ describe('il prompt e il registro non possono divergere', () => {
   })
 
   it('il prompt non dice piu che i tool Gmail lavorano su UNA casella sola', () => {
-    expect(PROMPT).not.toMatch(/tool gmail_\*\)?:?\s*$/im)
+    // LA DECISIONE, 14 settembre 2026 (audit avversariale): la regex
+    // originaria (`/tool gmail_\*\)?:?\s*$/im`) era `false` ANCHE sul prompt
+    // vecchio — misurato girandola sul commit 7ca173d, prima di questo lavoro
+    // — quindi non poteva mai diventare rossa e non provava niente. La vecchia
+    // intestazione vera era `REGOLA TOOL GMAIL (Google API OAuth, account
+    // restruktura.drive@gmail.com):`: e' QUESTA la stringa che deve sparire.
+    expect(PROMPT).not.toMatch(/account restruktura\.drive@gmail\.com\)/i)
+    // E il rimpiazzo afferma esplicitamente che sono due, non una.
+    expect(PROMPT).toMatch(/le caselle Google sono DUE/i)
     expect(PROMPT).toMatch(/casella .*OBBLIGATORIA|di' SEMPRE da quale casella/i)
   })
 })
