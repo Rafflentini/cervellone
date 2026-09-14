@@ -104,6 +104,7 @@ export const DOMINI: readonly Dominio[] = [
       'compila_fattura_emessa',
       'compila_rapporto_intervento',
       'compila_autofattura',
+      'registra_spesa_fornitore',
       'conferma_bozza_fic',
       'segna_fatture_ricevute_pagate',
       'segna_fatture_emesse_pagate',

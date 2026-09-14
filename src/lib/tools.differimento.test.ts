@@ -225,11 +225,24 @@ describe('differimento delle definizioni dei tool', () => {
   // `main` non aveva `compila_autofattura`, quello delle autofatture non
   // aveva `verifica_deriva_schema`. Numero e impronta qui sotto sono presi
   // DAL FALLIMENTO del test, non calcolati a parte.
-  it('senza opzioni: 140 definizioni e la stessa impronta di main', () => {
+  // LA DECISIONE, 14 settembre 2026 (la spesa del fornitore). Era 140 con
+  // impronta `1f2040fdd43a653c897ee0119d750d14`. E' stato aggiunto UN tool
+  // custom: `registra_spesa_fornitore` — registra su Fatture in Cloud la
+  // fattura d'ACQUISTO di un fornitore come documento RICEVUTO, prendendo il
+  // PDF da una mail di Gmail e allegandoglielo.
+  //
+  // Nasce da un buco aperto dal tool del giorno prima: `compila_autofattura`
+  // sa creare l'integrazione TD17 delle fatture estere, cioe' l'IVA a DEBITO,
+  // e nessuno sapeva registrare la fattura passiva a monte. Mezzo adempimento.
+  // Le parole dell'Ingegnere sul perimetro: «deve solo mettere PDF e importo».
+  //
+  // ⚠️ Numero e impronta qui sotto sono presi DAL FALLIMENTO del test, non
+  // calcolati a parte. Il numero sale da 140 a 141 di proposito.
+  it('senza opzioni: 141 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(140)
+    expect(defs).toHaveLength(141)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('1f2040fdd43a653c897ee0119d750d14')
+      .toBe('f3513aaed2b46c211dea858865676c1a')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

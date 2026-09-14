@@ -656,3 +656,128 @@ export async function executeFicTool(
     return JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) })
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * SPESE (documenti RICEVUTI): l'allegato e il documento
+ * ------------------------------------------------------------------ */
+
+/**
+ * Formati che Fatture in Cloud accetta come allegato di un documento ricevuto.
+ * Elenco della documentazione ufficiale dell'SDK (ReceivedDocumentsApi):
+ * png, jpg, gif, pdf, zip, xls, xlsx, doc, docx. Non e' una nostra preferenza
+ * ed e' per questo che sta qui accanto alla chiamata, non in una regola di
+ * prompt: un formato fuori elenco lo rifiuta FIC, e tanto vale dirlo prima.
+ */
+export const FORMATI_ALLEGATO_FIC = ['png', 'jpg', 'gif', 'pdf', 'zip', 'xls', 'xlsx', 'doc', 'docx'] as const
+
+/**
+ * Carica un file e restituisce l'`attachment_token` da mettere sul documento.
+ *
+ * 🚨 MULTIPART, non JSON — ed e' il motivo per cui questa funzione esiste
+ * invece di riusare `ficPost`. `ficPost` manda SEMPRE
+ * `Content-Type: application/json` e serializza il corpo con `JSON.stringify`:
+ * un PDF passato di li' diventerebbe una stringa, cioe' un file corrotto
+ * spedito senza che nessuno dei due lati se ne accorga. L'endpoint vuole due
+ * campi, `filename` (stringa) e `attachment` (file).
+ *
+ * Il token NON e' ancora un documento: e' un file messo da parte. Finche'
+ * nessuno lo cita in una POST su `received_documents`, su Fatture in Cloud non
+ * compare niente.
+ */
+export async function caricaAllegatoFIC(
+  filename: string,
+  contenuto: Buffer,
+  societa: CodiceSocieta,
+): Promise<{ ok: true; token: string } | { ok: false; error: string }> {
+  const s = getSocieta(societa)
+  const token = getFicToken(societa)
+  if (!token) return { ok: false, error: `${s.ficTokenEnv} non configurato su Vercel (${s.denominazione}).` }
+
+  const company = await getCompanyId(societa)
+  if (!company.ok) return { ok: false, error: company.error }
+
+  const path = `/c/${company.id}/received_documents/attachment`
+  console.log('[FIC] POST received_documents/attachment') // audit (mai loggare il token)
+
+  try {
+    const form = new FormData()
+    form.append('filename', filename)
+    // `new Uint8Array(...)`: un Buffer e' gia' una Uint8Array, ma la copia
+    // esplicita evita che un Buffer che condivide il pool di Node finisca nel
+    // Blob con i byte di qualcun altro attaccati in coda.
+    form.append('attachment', new Blob([new Uint8Array(contenuto)]), filename)
+
+    const res = await fetch(FIC_BASE + path, {
+      method: 'POST',
+      // ⚠️ NIENTE Content-Type scritto a mano: il boundary lo genera fetch dal
+      // FormData. Imporlo qui produrrebbe un multipart senza boundary valido.
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      body: form,
+    })
+    if (res.status === 401) return { ok: false, error: 'Token FIC non valido/revocato: rigeneralo nelle Applicazioni collegate.' }
+    if (res.status === 429) return { ok: false, error: 'Troppe richieste a Fatture in Cloud, riprova tra poco.' }
+    if (!res.ok) return { ok: false, error: `Errore caricamento allegato FIC ${res.status}: ${(await res.text()).slice(0, 600)}` }
+
+    const json = await res.json()
+    const data = json?.data ?? json
+    const attachmentToken = typeof data?.attachment_token === 'string' ? data.attachment_token.trim() : ''
+    // Un 200 senza token e' un caricamento NON avvenuto: proseguire vorrebbe
+    // dire creare la spesa senza il suo PDF e chiamarla riuscita.
+    if (!attachmentToken) return { ok: false, error: 'Allegato caricato ma attachment_token assente nella risposta di Fatture in Cloud.' }
+    return { ok: true, token: attachmentToken }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * Crea un documento RICEVUTO (spesa) su Fatture in Cloud.
+ *
+ * 🚨 NON e' `creaDocumentoFIC` e non deve diventarlo. Quella funzione e'
+ * cablata su `/issued_documents`, forza `e_invoice: false` (che qui non ha
+ * senso: un documento ricevuto non si trasmette) e, se il payload non porta un
+ * piano pagamenti, ne APPICCICA uno a 30 giorni. Su una spesa gia' saldata per
+ * compensazione quel piano finto la farebbe comparire nello scadenzario come
+ * da pagare — cioe' esattamente il dato sbagliato.
+ *
+ * Qui il payload si spedisce COM'E'. Il piano pagamenti lo decide il chiamante,
+ * che sa se la spesa e' saldata e quando.
+ */
+export async function creaSpesaFIC(
+  payload: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<FicCreateResult> {
+  const s = getSocieta(societa)
+  const token = getFicToken(societa)
+  if (!token) return { ok: false, error: `${s.ficTokenEnv} non configurato su Vercel (${s.denominazione}).` }
+
+  const company = await getCompanyId(societa)
+  if (!company.ok) return { ok: false, error: company.error }
+
+  const path = `/c/${company.id}/received_documents`
+  console.log('[FIC] POST received_documents') // audit (mai loggare il token)
+
+  try {
+    const res = await fetch(FIC_BASE + path, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ data: payload }),
+    })
+    if (res.status === 401) return { ok: false, error: 'Token FIC non valido/revocato: rigeneralo nelle Applicazioni collegate.' }
+    if (res.status === 429) return { ok: false, error: 'Troppe richieste a Fatture in Cloud, riprova tra poco.' }
+    if (!res.ok) return { ok: false, error: `Errore creazione spesa FIC ${res.status}: ${(await res.text()).slice(0, 600)}` }
+
+    const json = await res.json()
+    const data = json?.data ?? json
+    const id = data?.id ? String(data.id) : ''
+    if (!id) return { ok: false, error: 'Spesa creata su FIC ma id documento non trovato nella risposta.' }
+    const url = typeof data?.url === 'string' && data.url ? data.url : `https://secure.fattureincloud.it/received_documents/${id}`
+    return { ok: true, id, url }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
