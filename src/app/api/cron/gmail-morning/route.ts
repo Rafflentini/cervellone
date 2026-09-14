@@ -97,7 +97,9 @@ export async function GET(req: NextRequest) {
 
   let summary
   try {
-    summary = await buildDailySummary(1)
+    // I cron Gmail sorvegliano la casella di Restruktura; quella de La Real
+    // Estate non ha ancora un cron suo.
+    summary = await buildDailySummary('drive', 1)
   } catch (err) {
     console.error('[CRON gmail-morning] buildDailySummary failed:', err instanceof Error ? err.message : String(err))
     // NON cercare 'invalid_grant' nel messaggio: getAuthorizedClient lancia

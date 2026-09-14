@@ -435,7 +435,7 @@ describe('adattatore Gmail', () => {
 
     await casellaGmail().leggi('2026-08-01', '2026-09-01')
 
-    const q = cercaGmail.mock.calls[0][0] as string
+    const q = cercaGmail.mock.calls[0][1] as string
     expect(q).toContain('after:2026/08/01')
     expect(q).toContain('before:2026/09/01')
     expect(q).toContain('has:attachment')
@@ -446,7 +446,7 @@ describe('adattatore Gmail', () => {
 
     await casellaGmail().leggi('2026-08-01', '2026-09-01')
 
-    const q = cercaGmail.mock.calls[0][0] as string
+    const q = cercaGmail.mock.calls[0][1] as string
     expect(q).toContain('-in:sent')
     expect(q).toContain('-in:trash')
   })

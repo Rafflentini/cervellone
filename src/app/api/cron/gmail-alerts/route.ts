@@ -90,7 +90,9 @@ export async function GET(req: NextRequest) {
 
   let critical
   try {
-    critical = await checkCriticalAlerts(sinceTs)
+    // I cron Gmail sorvegliano la casella di Restruktura; quella de La Real
+    // Estate non ha ancora un cron suo.
+    critical = await checkCriticalAlerts('drive', sinceTs)
   } catch (err) {
     console.error('[CRON gmail-alerts] checkCriticalAlerts failed:', err instanceof Error ? err.message : String(err))
     // NON cercare 'invalid_grant' nel messaggio: getAuthorizedClient lancia

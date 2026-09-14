@@ -9,6 +9,21 @@ import {
 import { buildDailySummary } from '../gmail-summary'
 import { MAIL_TOOL_EXECUTORS } from '@/v19/tools/email'
 import { recordSentMail } from '@/lib/sent-mail'
+import type { ChiaveCasella } from '../caselle'
+
+/**
+ * I tool `gmail_*` rivolti al modello operano tutti sulla casella di
+ * Restruktura — è la stessa scelta già scritta nelle descrizioni dei tool
+ * qui sotto ("casella restruktura.drive@gmail.com"), ora esplicita anche nel
+ * codice invece che solo nel testo per l'utente.
+ *
+ * Non è un predefinito nascosto in `gmail-tools.ts`: è la politica di QUESTO
+ * livello, scritta qui perché è qui che si legge e si prova. Dare al modello
+ * la scelta tra le caselle Google (`drive` / `larealestate`) è lavoro di un
+ * task successivo, quando i tool avranno un parametro `casella` collegato
+ * alla società attiva in conversazione.
+ */
+const CASELLA_TOOL_GMAIL: ChiaveCasella = 'drive'
 
 // 2026-05-24 V19 Mail (TopHost IMAP/SMTP per info@/raffaele.lentini@):
 // 5 tool — read_email, get_email_body, send_email, forward_email, mark_email
@@ -303,7 +318,7 @@ export async function executeGmailWrapper(
   try {
     switch (name) {
       case 'gmail_list_inbox': {
-        const res = await listInbox({
+        const res = await listInbox(CASELLA_TOOL_GMAIL, {
           maxResults: parseInt(get('max_results') || '20', 10),
           onlyUnread: get('only_unread') === 'true',
           sinceDays: parseInt(get('since_days') || '0', 10) || undefined,
@@ -311,19 +326,19 @@ export async function executeGmailWrapper(
         return formatGmailList(res)
       }
       case 'gmail_search': {
-        const res = await searchGmail(get('query'), parseInt(get('max_results') || '20', 10))
+        const res = await searchGmail(CASELLA_TOOL_GMAIL, get('query'), parseInt(get('max_results') || '20', 10))
         return formatGmailList(res)
       }
       case 'gmail_read_message': {
-        const m = await readMessage(get('message_id'))
+        const m = await readMessage(CASELLA_TOOL_GMAIL, get('message_id'))
         return formatGmailMessage(m)
       }
       case 'gmail_read_thread': {
-        const t = await readThread(get('thread_id'))
+        const t = await readThread(CASELLA_TOOL_GMAIL, get('thread_id'))
         return t.map(formatGmailMessage).join('\n\n---\n\n')
       }
       case 'gmail_create_draft': {
-        const res = await createDraft({
+        const res = await createDraft(CASELLA_TOOL_GMAIL, {
           to: get('to'),
           subject: get('subject'),
           body: get('body'),
@@ -333,48 +348,48 @@ export async function executeGmailWrapper(
         return `✅ Bozza creata. draft_id=${res.draftId}\nUsa gmail_show_draft per anteprima, poi gmail_send_draft DOPO conferma utente.`
       }
       case 'gmail_list_drafts': {
-        const drafts = await listDrafts(20)
+        const drafts = await listDrafts(CASELLA_TOOL_GMAIL, 20)
         if (drafts.length === 0) return 'Nessuna bozza pendente.'
         return drafts.map(d => `📝 ${d.draftId}: A: ${d.to} | Oggetto: ${d.subject}`).join('\n')
       }
       case 'gmail_show_draft': {
-        const d = await showDraft(get('draft_id'))
+        const d = await showDraft(CASELLA_TOOL_GMAIL, get('draft_id'))
         return formatGmailMessage(d)
       }
       case 'gmail_send_draft': {
-        const res = await sendDraft(get('draft_id'))
+        const res = await sendDraft(CASELLA_TOOL_GMAIL, get('draft_id'))
         return `📤 Inviata. message_id=${res.messageId} thread_id=${res.threadId}`
       }
       case 'gmail_delete_draft': {
-        await deleteDraft(get('draft_id'))
+        await deleteDraft(CASELLA_TOOL_GMAIL, get('draft_id'))
         return `🗑 Bozza cancellata.`
       }
       case 'gmail_apply_label': {
-        await applyLabel(get('message_id'), get('label_name'))
+        await applyLabel(CASELLA_TOOL_GMAIL, get('message_id'), get('label_name'))
         return `🏷 Label "${get('label_name')}" applicata.`
       }
       case 'gmail_remove_label': {
-        await removeLabel(get('message_id'), get('label_name'))
+        await removeLabel(CASELLA_TOOL_GMAIL, get('message_id'), get('label_name'))
         return `🏷 Label rimossa.`
       }
       case 'gmail_list_labels': {
-        const labels = await listLabels()
+        const labels = await listLabels(CASELLA_TOOL_GMAIL)
         return labels.map(l => `- ${l.name} (id=${l.id})`).join('\n')
       }
       case 'gmail_mark_read': {
-        await markAsRead(get('message_id'))
+        await markAsRead(CASELLA_TOOL_GMAIL, get('message_id'))
         return `✓ Segnata come letta.`
       }
       case 'gmail_archive': {
-        await archive(get('message_id'))
+        await archive(CASELLA_TOOL_GMAIL, get('message_id'))
         return `📦 Archiviata.`
       }
       case 'gmail_trash': {
-        await trash(get('message_id'))
+        await trash(CASELLA_TOOL_GMAIL, get('message_id'))
         return `🗑 Spostata nel cestino (recuperabile 30 giorni).`
       }
       case 'gmail_summary_inbox': {
-        const summary = await buildDailySummary(parseInt(get('since_days') || '1', 10))
+        const summary = await buildDailySummary(CASELLA_TOOL_GMAIL, parseInt(get('since_days') || '1', 10))
         return summary.digest
       }
       default:
