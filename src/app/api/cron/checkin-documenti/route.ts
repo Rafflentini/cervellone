@@ -18,6 +18,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { rispostaSeFuoriDalCron } from '@/lib/cron-auth'
 import {
   FOGLIO_CHECKIN_ID, SCHEDA_SOGGIORNI, SCHEDA_OSPITI, COL_SOGGIORNI, COL_OSPITI,
 } from '@/lib/checkin/foglio-schema'
@@ -28,9 +29,11 @@ import { scadutiDaCancellare, type PraticaConDocumenti } from '@/lib/checkin/con
 import { eliminaDocumento } from '@/lib/checkin/documenti'
 
 export async function GET(req: NextRequest) {
-  if (req.headers.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ ok: false, errore: 'non autorizzato' }, { status: 401 })
-  }
+  // C43 — la porta dei cron e' UNA, in `src/lib/cron-auth.ts`: un segreto che
+  // MANCA chiude. Prima, con `CRON_SECRET` non configurata, il confronto
+  // diventava con la stringa `"Bearer undefined"`, che chiunque puo' scrivere.
+  const fuori = rispostaSeFuoriDalCron(req, { ok: false, errore: 'non autorizzato' })
+  if (fuori) return fuori
 
   try {
     const [cfg, soggiorni, ospiti] = await Promise.all([
