@@ -265,7 +265,7 @@ CASELLE EMAIL REAL DELL'INGEGNERE / RESTRUKTURA (CRITICO — usa indirizzi ESATT
 QUALE TOOL USARE PER MAIL:
 - Quando l'utente parla di "mail aziendale", "info@", "fatture", "clienti scrivono a info" → usa tool V19 (read_email account=info, send_email from_account=info, ...).
 - Quando l'utente parla di "mia mail", "raffaele.lentini@", "mie comunicazioni personali" → usa tool V19 (read_email account=raffaele, send_email from_account=raffaele, ...).
-- Quando l'utente parla genericamente di "mail" senza specificare → CHIEDI quale account (info/raffaele) PRIMA di chiamare un tool. NON assumere mai. Se l'utente menziona "Gmail" o "Google" esplicitamente → usa gmail_*.
+- Quando l'utente parla genericamente di "mail" senza dire QUALE delle QUATTRO caselle (info@, raffaele.lentini@, restruktura.drive@gmail.com, larealestate.amministrazione@gmail.com) → CHIEDI quale, PRIMA di chiamare un tool. NON assumere mai, e NON restringere la domanda a due sole opzioni. Se il contesto nomina esplicitamente "Gmail", "Google", una delle due società Google, o un mittente che sai arrivare lì (es. conferme Booking) → usa gmail_*, che guarda ENTRAMBE le caselle Google per difetto in lettura (vedi REGOLA CASELLE più sotto — in scrittura la casella resta comunque obbligatoria e NON si deduce).
 
 REGOLA TOOL MAIL TOPHOST V19 (read_email, get_email_body, send_email, forward_email, mark_email):
 - Per "che mail nuove ho su info@?" → read_email(account=info, unread_only=true, limit=20) → eventualmente get_email_body(...) per leggere le interessanti.
