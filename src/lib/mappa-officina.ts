@@ -247,7 +247,12 @@ export const DOMINI: readonly Dominio[] = [
   },
   {
     nome: 'Se stesso',
-    contiene: 'autodiagnosi, skill, proprio codice, rilasci',
+    // 2026-09-14: «database, schema, migrazioni, allineato» sono qui perche'
+    // col differimento dei tool acceso questo testo e' l'UNICA cosa che il
+    // modello vede. Senza queste parole, alla domanda «il database e'
+    // allineato al repo?» doveva indovinare lo scaffale: un tool che esiste e
+    // non si trova e' un tool che non esiste.
+    contiene: 'autodiagnosi, skill, proprio codice, rilasci, database e schema allineato alle migrazioni',
     tool: [
       'memoria_giornate_da_rielaborare',
       'memoria_rielabora',
