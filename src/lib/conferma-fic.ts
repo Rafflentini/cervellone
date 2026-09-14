@@ -60,7 +60,26 @@ interface RigaPending {
   descrizione: string | null
   created_at: string
   societa: string | null
+  /** `fattura_emessa` | `rapporto_intervento` | `pagamento_ricevuta` | `pagamento_emessa`. */
+  tipo: string | null
 }
+
+/**
+ * Le azioni che si chiudono con UNA conferma sola.
+ *
+ * ⚠️ Il criterio non è «semplice o complicata», è **reversibile o no**.
+ * Emettere una fattura è un atto fiscale che non si disfa: resta a due
+ * passaggi. Registrare un incasso si cancella dall'interfaccia di Fatture in
+ * Cloud in dieci secondi — e pretendere due «confermo» per scrivere una data e
+ * un importo che l'Ingegnere ha appena letto nell'anteprima non è prudenza,
+ * è attrito. Chiesto da Raffaele il 14 settembre 2026, dopo tre giorni passati
+ * a far funzionare proprio quella riga di incasso.
+ *
+ * ⚠️ Quello che NON cambia: la conferma resta una frase che l'Ingegnere ha
+ * detto o scritto DAVVERO, e l'anteprima gliela si è già mostrata quando il
+ * tool ha preparato la riga. Un passaggio solo, ma umano.
+ */
+const A_CONFERMA_SINGOLA: ReadonlySet<string> = new Set(['pagamento_emessa', 'pagamento_ricevuta'])
 
 export interface EsitoConfermaFic {
   /** false = non era una conferma per una bozza FIC: il messaggio va al modello. */
@@ -116,6 +135,13 @@ async function avanzaUnPasso(righe: RigaPending[]): Promise<EsitoConfermaFic> {
     // Se il primo passaggio non e' andato a buon fine il testo va riportato
     // com'e': non si finge di aver registrato niente.
     if (!message.includes('/fic_ok2_')) return { intercettato: true, message }
+
+    // Un incasso si chiude qui: l'anteprima l'Ingegnere l'ha gia' vista quando
+    // il tool ha preparato la riga, e questo «confermo» e' l'atto umano. Il
+    // secondo passaggio resta per cio' che NON si disfa (v. A_CONFERMA_SINGOLA).
+    if (A_CONFERMA_SINGOLA.has(riga.tipo ?? '')) {
+      return { intercettato: true, message: await confirmFicStep2(riga.id) }
+    }
     // La denominazione si legge dalla riga, non da un default: una conferma
     // che nomina l'azienda sbagliata e' peggio di una che non la nomina.
     const codice = (riga.societa ?? '') as CodiceSocieta
@@ -143,7 +169,7 @@ async function leggiPending(societa?: CodiceSocieta): Promise<RigaPending[] | nu
 
   let q = supabase
     .from('cervellone_fic_pending')
-    .select('id, conferme, descrizione, created_at, societa')
+    .select('id, conferme, descrizione, created_at, societa, tipo')
     .eq('stato', 'in_attesa')
     .gte('created_at', dal)
 
