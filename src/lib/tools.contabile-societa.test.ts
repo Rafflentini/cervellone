@@ -44,7 +44,7 @@ beforeEach(() => {
 describe('un guasto nella lettura della societa non fa girare il tool sulla societa indovinata', () => {
   it('CONTROLLO POSITIVO — lettura della societa fallita: il tool contabile NON viene eseguito', async () => {
     esitoSocieta = { ok: false, errore: 'connessione persa' }
-    const out = await executeTool('fic_lista_fatture', {}, 'conv-1')
+    const out = await executeTool('fic_fatture_emesse', {}, 'conv-1')
     const j = JSON.parse(String(out))
     expect(j.ok).toBe(false)
     expect(j.error).toContain('connessione persa')
@@ -54,12 +54,12 @@ describe('un guasto nella lettura della societa non fa girare il tool sulla soci
 
   it('CONTROLLO NEGATIVO — societa leggibile: il tool gira, e gira sulla societa GIUSTA', async () => {
     esitoSocieta = { ok: true, codice: 'larealestate', esplicita: true }
-    await executeTool('fic_lista_fatture', {}, 'conv-1')
-    expect(spiaEsecutore).toHaveBeenCalledWith('fic_lista_fatture', {}, 'larealestate')
+    await executeTool('fic_fatture_emesse', {}, 'conv-1')
+    expect(spiaEsecutore).toHaveBeenCalledWith('fic_fatture_emesse', {}, 'larealestate')
   })
 
   it('senza conversazione rifiuta come prima (comportamento invariato)', async () => {
-    const out = await executeTool('fic_lista_fatture', {}, undefined)
+    const out = await executeTool('fic_fatture_emesse', {}, undefined)
     expect(JSON.parse(String(out)).ok).toBe(false)
     expect(spiaEsecutore).not.toHaveBeenCalled()
   })
@@ -78,8 +78,8 @@ describe('un guasto nella lettura della societa non fa girare il tool sulla soci
 
   it('i messaggi di rifiuto non contengono underscore ne comandi slash', async () => {
     esitoSocieta = { ok: false, errore: 'x' }
-    const a = String(await executeTool('fic_lista_fatture', {}, 'conv-1'))
-    const b = String(await executeTool('fic_lista_fatture', {}, undefined))
+    const a = String(await executeTool('fic_fatture_emesse', {}, 'conv-1'))
+    const b = String(await executeTool('fic_fatture_emesse', {}, undefined))
     for (const msg of [JSON.parse(a).error, JSON.parse(b).error]) {
       expect(msg).not.toMatch(/_/)
       expect(msg).not.toMatch(/\/[a-z]+/)

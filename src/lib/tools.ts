@@ -944,7 +944,25 @@ const nomiDi = (tools: ToolDefinition[]) => {
  * le due voci fa diventare rosso.
  */
 const executeFicPdfWrapper = contabile(executeFicPdfTool, nomiDi(FIC_PDF_TOOLS))
-const executeFicWrapper = contabile(executeFicTool, (n) => n.startsWith('fic_'))
+// ⚠️ Per ELENCO di nomi, non per prefisso. `startsWith('fic_')` faceva di
+// questo wrapper un TAPPO: ogni tool `fic_*` scritto in un altro file e
+// registrato DOPO di lui restava irraggiungibile, perche' `executeFicTool`
+// per un nome che non conosce risponde con una stringa («tool FIC
+// sconosciuto») invece che con `null` — e `executeTool` si ferma al primo
+// risultato non nullo.
+//
+// Non e' teoria: il 14 settembre 2026 la trappola gemella su `gmail_` e'
+// costata una giornata. `gmail_leggi_allegato` era registrato in cinque posti
+// e in produzione rispondeva «non riconosciuto»; il bot, non sapendo
+// spiegarselo, ha incolpato il deploy di Vercel.
+//
+// Qui la stessa trappola era ancora armata e reggeva solo grazie all'ORDINE
+// di `EXECUTORS` — una condizione vera oggi che nessuno ricorda fra un mese.
+// `nomiDi` e' la forma che usano tutti gli altri wrapper: verificato che i
+// nomi dichiarati in FIC_READ_TOOLS e quelli gestiti dallo switch siano gli
+// stessi sei, senza differenze in nessuna delle due direzioni.
+const executeFicWrapper = contabile(executeFicTool, nomiDi(FIC_READ_TOOLS))
+
 const executeFicWriteWrapper = contabile(executeFicWriteTool, nomiDi(FIC_WRITE_TOOLS))
 // Stesso wrapper degli altri tool contabili: la societa' la decide la
 // CONVERSAZIONE, mai l'input. Senza, si creerebbe il cliente sull'azienda

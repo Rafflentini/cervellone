@@ -160,11 +160,21 @@ describe('fic_pdf_documento', () => {
 })
 
 /**
- * 🚨 LA CATENA. `executeFicTool` risponde a QUALUNQUE `fic_*` — anche a quelli
- * che non conosce, con «tool FIC sconosciuto» — ed e' una risposta, non un
- * `null`: `executeTool` si ferma li'. Se `executeFicPdfWrapper` finisse DOPO
- * `executeFicWrapper` in `EXECUTORS`, questo tool sarebbe registrato ovunque e
- * irraggiungibile.
+ * 🚨 LA CATENA. Un tool registrato dev'essere anche RAGGIUNGIBILE: `executeTool`
+ * si ferma al primo esecutore che non risponde `null`, e `executeFicTool`, per
+ * un nome che non conosce, risponde con una stringa («tool FIC sconosciuto»)
+ * invece che con `null`.
+ *
+ * Finche' `executeFicWrapper` rivendicava OGNI `fic_*` per PREFISSO, questo
+ * tool era raggiungibile solo perche' il suo esecutore viene PRIMA in
+ * `EXECUTORS` — una condizione vera oggi che nessuno ricorda fra un mese, e la
+ * stessa che il 14 settembre 2026 ha reso `gmail_leggi_allegato` invisibile in
+ * produzione mentre era registrato in cinque posti.
+ *
+ * Dal 14 settembre 2026 quel wrapper rivendica per ELENCO
+ * (`nomiDi(FIC_READ_TOOLS)`), come tutti gli altri wrapper contabili: l'ordine
+ * non e' piu' portante, e un nome `fic_*` che non e' di nessuno cade in fondo
+ * alla catena, dove `executeTool` lo rifiuta dicendolo.
  */
 describe('fic_pdf_documento arriva davvero al suo esecutore', () => {
   it('🚨 la catena lo esegue: torna il link, non «tool FIC sconosciuto»', async () => {
@@ -181,7 +191,7 @@ describe('fic_pdf_documento arriva davvero al suo esecutore', () => {
     // test qui sopra e farebbe sparire ogni errore di battitura del modello.
     const { executeTool } = await import('@/lib/tools')
     const esito = await executeTool('fic_inventato_di_sana_pianta', {}, 'conv-1')
-    expect(esito).toContain('sconosciuto')
+    expect(esito).toContain('non riconosciuto')
     expect(spiaPdf).not.toHaveBeenCalled()
   }, 30_000)
 
