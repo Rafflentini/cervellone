@@ -21,6 +21,14 @@
       "chiave": "model_stable"
     },
     {
+      "tipo": "config",
+      "chiave": "model_active"
+    },
+    {
+      "tipo": "config",
+      "chiave": "circuit_state"
+    },
+    {
       "tipo": "tabella",
       "tabella": "telegram_active_jobs"
     },
@@ -47,6 +55,14 @@
     {
       "tipo": "config",
       "chiave": "gmail_summary_last_run"
+    },
+    {
+      "tipo": "config",
+      "chiave": "gmail_alert_check_last_run"
+    },
+    {
+      "tipo": "config",
+      "chiave": "gmail_silent_until"
     },
     {
       "tipo": "tabella",
@@ -83,6 +99,14 @@
     {
       "tipo": "config",
       "chiave": "audit_silent_until"
+    },
+    {
+      "tipo": "config",
+      "chiave": "audit_last_run_week"
+    },
+    {
+      "tipo": "config",
+      "chiave": "audit_model"
     },
     {
       "tipo": "tabella",
@@ -135,6 +159,14 @@
     {
       "tipo": "config",
       "chiave": "memoria_extract_last_run"
+    },
+    {
+      "tipo": "config",
+      "chiave": "memoria_silent_until"
+    },
+    {
+      "tipo": "config",
+      "chiave": "memoria_extract_model"
     },
     {
       "tipo": "tabella",
@@ -412,6 +444,11 @@
       "tipo": "colonna",
       "tabella": "cervellone_email_invoices_log",
       "colonna": "source_account"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "source_key"
     },
     {
       "tipo": "indice",

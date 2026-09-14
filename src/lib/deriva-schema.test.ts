@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import fs from 'fs'
+import path from 'path'
 import { confronta, descriviDeriva, oggettiAttesi, type Fotografia } from './deriva-schema'
 
 describe('oggettiAttesi - cosa il repo PROMETTE che esista', () => {
@@ -124,5 +126,65 @@ describe('confronta - quello che manca davvero', () => {
     const testo = descriviDeriva(confronta(ATTESI as never, FOTO_PIENA))
     expect(testo).toContain('5')
     expect(testo.toLowerCase()).toContain('non interpretat')
+  })
+})
+
+/**
+ * I test che seguono usano il TESTO VERO delle migrazioni, non SQL inventato.
+ *
+ * Motivo: l'audit del 14 settembre 2026 ha trovato statement che il parser
+ * RICONOSCEVA ma leggeva a meta' — `source_key` non era ne' fra gli oggetti
+ * attesi ne' fra quelli dichiarati non letti. Un oggetto perso cosi' non
+ * compare in NESSUNO dei due numeri del rapporto, ed e' il difetto peggiore
+ * possibile per un guardiano che nasce per uccidere le perdite silenziose.
+ * SQL inventato non avrebbe mai trovato quel caso: la forma esatta veniva dal
+ * file vero.
+ */
+const MIGRAZIONI = path.join(process.cwd(), 'supabase', 'migrations')
+
+function migrazioneVera(nome: string) {
+  return { nome, sql: fs.readFileSync(path.join(MIGRAZIONI, nome), 'utf8') }
+}
+
+describe('statement riconosciuti ma letti a META (audit 14 set 2026)', () => {
+  it('🚨 ADD COLUMN multiplo: prende TUTTE le colonne, non solo la prima', () => {
+    // `2026-09-05-fatture-estere-tre-caselle.sql` aggiunge due colonne in un
+    // solo ALTER TABLE. Prima della cura `source_account` era fra gli attesi e
+    // `source_key` non era da nessuna parte: ne' atteso, ne' dichiarato.
+    const r = oggettiAttesi([migrazioneVera('2026-09-05-fatture-estere-tre-caselle.sql')])
+
+    expect(r.oggetti).toContainEqual({ tipo: 'colonna', tabella: 'cervellone_email_invoices_log', colonna: 'source_account' })
+    expect(r.oggetti).toContainEqual({ tipo: 'colonna', tabella: 'cervellone_email_invoices_log', colonna: 'source_key' })
+  })
+
+  it('🚨 VALUES multiplo: tutte le chiavi di configurazione, non solo la prima', () => {
+    // `2026-05-07-cervellone-self-audit.sql` dichiara tre chiavi in una sola
+    // INSERT. Fra le perse c'era `audit_last_run_week`, la chiave su cui
+    // `self-audit/route.ts` decide se il rapporto settimanale parte: il
+    // guardiano non si accorgeva della mancanza della chiave che lo fa vivere.
+    const r = oggettiAttesi([migrazioneVera('2026-05-07-cervellone-self-audit.sql')])
+
+    expect(r.oggetti).toContainEqual({ tipo: 'config', chiave: 'audit_silent_until' })
+    expect(r.oggetti).toContainEqual({ tipo: 'config', chiave: 'audit_last_run_week' })
+    expect(r.oggetti).toContainEqual({ tipo: 'config', chiave: 'audit_model' })
+  })
+
+  it('tutte e 15 le chiavi di configurazione del repo, non 7', () => {
+    // Il numero e' misurato sui file veri: sette INSERT per quindici chiavi.
+    const nomi = fs.readdirSync(MIGRAZIONI).filter((n) => n.endsWith('.sql')).sort()
+    const r = oggettiAttesi(nomi.map(migrazioneVera))
+    const chiavi = r.oggetti.filter((o) => o.tipo === 'config')
+
+    expect(chiavi.length).toBe(15)
+  })
+
+  it('CONTROLLO POSITIVO: un ADD COLUMN singolo continua a dare UNA colonna', () => {
+    // Senza questo, un parser che sputasse fuori colonne a caso passerebbe i
+    // due test qui sopra.
+    const r = oggettiAttesi([{
+      nome: 's.sql',
+      sql: 'ALTER TABLE procedures ADD COLUMN IF NOT EXISTS output_preferences text[];',
+    }])
+    expect(r.oggetti).toEqual([{ tipo: 'colonna', tabella: 'procedures', colonna: 'output_preferences' }])
   })
 })

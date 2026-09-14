@@ -25,30 +25,115 @@ export interface OggettiAttesi {
 /** Un identificatore SQL: `nome`, `"nome"`, `schema.nome`. Si tiene l'ultima parte. */
 const ID = '(?:"?[A-Za-z_][A-Za-z0-9_$]*"?\\.)?"?([A-Za-z_][A-Za-z0-9_$]*)"?'
 
-const FORME: Array<{ re: RegExp; leggi: (m: RegExpExecArray) => OggettoAtteso }> = [
+/** Quello che UNO statement dichiara: cosa si e' letto e cosa NON si e' letto. */
+interface Lettura {
+  oggetti: OggettoAtteso[]
+  /** Pezzi dello statement che il parser non ha saputo leggere. Si dichiarano. */
+  nonLetti: string[]
+}
+
+/**
+ * Le chiavi di un `VALUES ('a', …), ('b', …), ('c', …)`.
+ *
+ * Di ogni tupla si prende il PRIMO letterale fra apici: per
+ * `cervellone_config` e' la chiave. Si legge a mano e non con una regex
+ * perche' i valori contengono virgole, parentesi e apici raddoppiati (`''`).
+ * Fermarsi alla prima tupla e' il difetto che questa funzione chiude: le
+ * INSERT del repo dichiarano 15 chiavi e l'elenco congelato ne conteneva 7 —
+ * fra le perse c'era `audit_last_run_week`, quella su cui il rapporto
+ * settimanale decide se partire.
+ */
+function chiaviDelleTuple(statement: string, da: number): { chiavi: string[]; tutteLette: boolean } {
+  const chiavi: string[] = []
+  let i = da
+  let tutteLette = true
+
+  while (i < statement.length) {
+    // Fra una tupla e l'altra si accetta solo spazio o virgola: qualunque
+    // altra cosa (`ON CONFLICT …`, `RETURNING …`) chiude l'elenco.
+    while (i < statement.length && /[\s,]/.test(statement[i])) i += 1
+    if (statement[i] !== '(') break
+
+    i += 1
+    let profondita = 1
+    let chiave: string | null = null
+    while (i < statement.length && profondita > 0) {
+      const c = statement[i]
+      if (c === "'") {
+        let letterale = ''
+        i += 1
+        while (i < statement.length) {
+          if (statement[i] === "'") {
+            if (statement[i + 1] === "'") { letterale += "'"; i += 2; continue }
+            i += 1
+            break
+          }
+          letterale += statement[i]
+          i += 1
+        }
+        if (chiave === null) chiave = letterale
+        continue
+      }
+      if (c === '(') profondita += 1
+      else if (c === ')') profondita -= 1
+      i += 1
+    }
+    // Una tupla senza letterale iniziale non e' una chiave che sappiamo
+    // leggere: si dichiara invece di sparire.
+    if (chiave === null) tutteLette = false
+    else chiavi.push(chiave)
+  }
+
+  return { chiavi, tutteLette }
+}
+
+const FORME: Array<{ re: RegExp; leggi: (m: RegExpExecArray, statement: string) => Lettura }> = [
   {
     re: new RegExp(`^ALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${ID}\\s+ADD\\s+COLUMN\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${ID}`, 'i'),
-    leggi: (m) => ({ tipo: 'colonna', tabella: m[1], colonna: m[2] }),
+    leggi: (m, statement) => {
+      // Un solo ALTER TABLE puo' aggiungere PIU' colonne separate da virgola
+      // (`2026-09-05-fatture-estere-tre-caselle.sql`). Fermarsi alla prima
+      // faceva sparire `source_key` da entrambi i numeri del rapporto: ne'
+      // attesa, ne' dichiarata non letta.
+      const tutte = new RegExp(`ADD\\s+COLUMN\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${ID}`, 'gi')
+      const oggetti: OggettoAtteso[] = []
+      let c: RegExpExecArray | null
+      while ((c = tutte.exec(statement)) !== null) {
+        oggetti.push({ tipo: 'colonna', tabella: m[1], colonna: c[1] })
+      }
+      return { oggetti, nonLetti: [] }
+    },
   },
   {
     re: new RegExp(`^ALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${ID}\\s+ADD\\s+PRIMARY\\s+KEY\\s*\\(([^)]*)\\)`, 'i'),
     leggi: (m) => ({
-      tipo: 'chiave_primaria',
-      tabella: m[1],
-      colonne: m[2].split(',').map((c) => c.trim().replace(/"/g, '')).filter(Boolean),
+      oggetti: [{
+        tipo: 'chiave_primaria',
+        tabella: m[1],
+        colonne: m[2].split(',').map((c) => c.trim().replace(/"/g, '')).filter(Boolean),
+      }],
+      nonLetti: [],
     }),
   },
   {
     re: new RegExp(`^CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${ID}`, 'i'),
-    leggi: (m) => ({ tipo: 'tabella', tabella: m[1] }),
+    leggi: (m) => ({ oggetti: [{ tipo: 'tabella', tabella: m[1] }], nonLetti: [] }),
   },
   {
     re: new RegExp(`^CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?${ID}`, 'i'),
-    leggi: (m) => ({ tipo: 'indice', nome: m[1] }),
+    leggi: (m) => ({ oggetti: [{ tipo: 'indice', nome: m[1] }], nonLetti: [] }),
   },
   {
     re: /^INSERT\s+INTO\s+cervellone_config\s*\([^)]*\)\s*VALUES\s*\(\s*'([^']+)'/i,
-    leggi: (m) => ({ tipo: 'config', chiave: m[1] }),
+    leggi: (m, statement) => {
+      // Una sola INSERT dichiara spesso PIU' righe: si leggono tutte le tuple.
+      const inizioTuple = /^INSERT\s+INTO\s+cervellone_config\s*\([^)]*\)\s*VALUES/i.exec(statement)
+      const { chiavi, tutteLette } = chiaviDelleTuple(statement, inizioTuple ? inizioTuple[0].length : 0)
+      return {
+        oggetti: chiavi.map((chiave) => ({ tipo: 'config' as const, chiave })),
+        nonLetti: tutteLette ? [] : [statement],
+      }
+    },
   },
 ]
 
@@ -106,7 +191,13 @@ export function oggettiAttesi(file: Array<{ nome: string; sql: string }>): Ogget
         continue
       }
       const m = forma.re.exec(s)
-      if (m) oggetti.push(forma.leggi(m))
+      if (!m) continue
+      const lettura = forma.leggi(m, s)
+      for (const o of lettura.oggetti) oggetti.push(o)
+      // Anche dentro uno statement RICONOSCIUTO ci puo' essere un pezzo che non
+      // si sa leggere: va dichiarato, altrimenti sparisce da tutti e due i
+      // numeri del rapporto — che e' il difetto peggiore possibile qui.
+      for (const t of lettura.nonLetti) nonInterpretate.push({ file: f.nome, testo: t.slice(0, 200) })
     }
   }
 
