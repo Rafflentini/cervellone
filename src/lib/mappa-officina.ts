@@ -110,6 +110,11 @@ export const DOMINI: readonly Dominio[] = [
       'fic_modalita_pagamento_fornitore',
       'fic_cerca_anagrafica',
       'fic_crea_cliente',
+      // 2026-09-15: CORREGGERE una scheda anagrafica. Sta accanto a
+      // `fic_crea_cliente` perche' e' lo stesso mestiere e soprattutto perche'
+      // senza di lui l'unico modo di sistemare una scheda sbagliata era
+      // crearne un'altra, cioe' fabbricare un doppione.
+      'fic_aggiorna_anagrafica',
       'compila_fattura_emessa',
       'compila_rapporto_intervento',
       'compila_autofattura',
