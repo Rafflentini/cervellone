@@ -165,11 +165,42 @@ describe('differimento delle definizioni dei tool', () => {
   // produzione. Nasce perche' quel giorno si e' scoperto che cinque migrazioni
   // su 43 non erano mai state applicate, e due di quelle reggevano codice vivo
   // da mesi senza che nessuno se ne accorgesse. Il numero sale di proposito.
-  it('senza opzioni: 137 definizioni e la stessa impronta di main', () => {
+  // LA DECISIONE, 14 settembre 2026 (caselle di posta, Task 3). Il NUMERO NON
+  // CAMBIA — restano 136 — ma l'impronta si', da `0e77f378c51bbd066553761b0161f8a2`
+  // a `881bc21612852e7a859a23c9824f4cc5`. Gli 8 tool `gmail_*` di sola lettura
+  // (list_inbox, search, read_message, read_thread, list_drafts, show_draft,
+  // list_labels, summary_inbox) hanno un parametro in piu', `caselle`
+  // (facoltativo): senza indicazione guardano TUTTE le caselle Google
+  // (drive, larealestate) e ogni risultato dichiara da quale viene. Le
+  // descrizioni dei tool sono cambiate di conseguenza — non piu'
+  // "casella restruktura.drive@gmail.com" fissa.
+  //
+  // LA DECISIONE, 14 settembre 2026 (caselle di posta, Task 4). Il NUMERO NON
+  // CAMBIA — restano 136 — ma l'impronta si', da `881bc21612852e7a859a23c9824f4cc5`
+  // a `a236f73fc2a117216b97b4db1b70544e`. Gli 8 tool `gmail_*` di SCRITTURA
+  // (create_draft, send_draft, delete_draft, apply_label, remove_label,
+  // mark_read, archive, trash) hanno un parametro in piu', `casella`
+  // (OBBLIGATORIO, niente default): a differenza della lettura (Task 3), in
+  // scrittura la casella non si deduce mai — non e' nello schema come
+  // facoltativo ma come `required`, e il rifiuto vero e proprio (se manca o
+  // e' inventata) avviene nel CODICE — `casellaPerScrittura` in
+  // `politica-caselle.ts`, chiamata da `executeGmailWrapper` prima di
+  // toccare `gmail-tools` — non in una regola di prompt.
+  // LA DECISIONE, 14 settembre 2026 (caselle di posta, Task 6). Il NUMERO
+  // CAMBIA — da 136 a 137 — e l'impronta con esso, da
+  // `a236f73fc2a117216b97b4db1b70544e` a `0848ebc6c335bda6580cea6459eee647`.
+  // Nuovo tool `verifica_accessi_google`: prova una per una le credenziali
+  // Google e dice quali sono VIVE, col motivo se non lo sono. Prima di oggi
+  // la domanda "la casella di La Real Estate funziona?" non aveva risposta:
+  // la credenziale era salvata ma mai esercitata.
+  it('senza opzioni: 138 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(137)
+    expect(defs).toHaveLength(138)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('4b4afe2c9a0c31085a66b685bb092dcf')
+  // LA DECISIONE, 14 settembre 2026 (merge dei due rami). I due tool sono nati
+  // in rami diversi nella stessa giornata e si sono incontrati qui: 136 -> 138.
+  // L-impronta e- stata presa DAL FALLIMENTO del test, non calcolata a parte.
+      .toBe('30568021f1b1730611879be6f102879e')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

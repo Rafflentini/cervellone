@@ -190,6 +190,10 @@ export const DOMINI: readonly Dominio[] = [
       // un ottavo dominio inventato.
       'aggiorna_progetto',
       'chiudi_progetto',
+      // verifica_accessi_google: chi chiede "riesco a leggere la posta di X?"
+      // parla di posta, non di autodiagnosi — il dominio e' Segreteria, non
+      // "Se stesso" (Task 6, 14 settembre 2026).
+      'verifica_accessi_google',
     ],
   },
   {

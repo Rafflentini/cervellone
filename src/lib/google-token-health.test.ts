@@ -193,8 +193,11 @@ describe('classifyGoogleError — other', () => {
 })
 
 describe('GoogleAuthDeadError', () => {
-  it('porta con sé la spiegazione completa (i ~20 catch di drive.ts la stampano così com è)', () => {
-    const err = new GoogleAuthDeadError('dead')
+  it('porta con sé la spiegazione completa, CON L\'ACCOUNT MORTO (i ~20 catch di drive.ts la stampano così com è)', () => {
+    // LA DECISIONE, 14 settembre 2026 (audit avversariale): prima nominava
+    // SEMPRE restruktura.drive@gmail.com, anche costruito con l'account de La
+    // Real Estate — l'Ingegnere avrebbe riautorizzato quello sbagliato.
+    const err = new GoogleAuthDeadError('dead', 'restruktura.drive@gmail.com')
     expect(err).toBeInstanceOf(Error)
     expect(err.name).toBe('GoogleAuthDeadError')
     expect(err.message).toContain('Token Google scaduto o revocato')
@@ -204,15 +207,32 @@ describe('GoogleAuthDeadError', () => {
     expect(err.message).toContain('restruktura.drive@gmail.com')
   })
 
-  it('interpolato in stringa (come fanno i catch di drive.ts) resta leggibile', () => {
+  it('🚨 CONTROLLO POSITIVO: costruito con l\'account de La Real Estate, nomina QUELLO — non restruktura.drive', () => {
+    const err = new GoogleAuthDeadError('dead', 'larealestate.amministrazione@gmail.com')
+    expect(err.message).toContain('larealestate.amministrazione@gmail.com')
+    expect(err.message).not.toContain('restruktura.drive@gmail.com')
+    // Solo la casella 'drive' serve anche Drive/Calendar: per La Real Estate
+    // e' SOLO Gmail che smette di funzionare, e il messaggio deve dirlo.
+    expect(err.message).not.toContain('Drive, Gmail e Calendar')
+    expect(err.message).toContain('Gmail')
+  })
+
+  it('senza account (nessuno lo passa più in produzione) non indovina nessun indirizzo', () => {
     const err = new GoogleAuthDeadError('dead')
+    expect(err.message).not.toContain('restruktura.drive@gmail.com')
+    expect(err.message).not.toContain('larealestate.amministrazione@gmail.com')
+    expect(err.message).toContain('Token Google scaduto o revocato')
+  })
+
+  it('interpolato in stringa (come fanno i catch di drive.ts) resta leggibile', () => {
+    const err = new GoogleAuthDeadError('dead', 'restruktura.drive@gmail.com')
     const rendered = `Errore listando i file: ${err}`
     expect(rendered).toContain('Token Google scaduto')
     expect(rendered).toContain('/api/auth/google')
   })
 
   it('kind=config aggiunge la nota che il re-consent NON risolve', () => {
-    const err = new GoogleAuthDeadError('config')
+    const err = new GoogleAuthDeadError('config', 'restruktura.drive@gmail.com')
     expect(err.message).toContain('https://cervellone-five.vercel.app/api/auth/google')
     expect(err.message.toLowerCase()).toContain('client_id')
   })

@@ -12,6 +12,11 @@ const mockMaybeSingle = vi.fn()
 const mockUpsert = vi.fn()
 const mockSend = vi.fn()
 
+// Questo file prova il MECCANISMO (ordine send→flag, throttle, latch), non la
+// distinzione fra account — un solo indirizzo fisso basta (Task 5: la
+// bandierina è per account, vedi google-oauth.bandierina-per-account.test.ts).
+const TEST_ACCOUNT_EMAIL = 'restruktura.drive@gmail.com'
+
 vi.mock('./supabase-server', () => ({
   getSupabaseServer: () => ({
     from: () => ({
@@ -39,7 +44,7 @@ describe('markGoogleTokenDead', () => {
   it('flag già "true" ⇒ NESSUN alert (latch DB sopravvive ai cold start)', async () => {
     mockMaybeSingle.mockResolvedValue({ data: { value: 'true' }, error: null })
     const { markGoogleTokenDead } = await import('./google-token-health')
-    await markGoogleTokenDead('dead')
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
     expect(mockSend).not.toHaveBeenCalled()
     expect(mockUpsert).not.toHaveBeenCalled()
   })
@@ -47,13 +52,13 @@ describe('markGoogleTokenDead', () => {
   it('flag già \'"true"\' (con virgolette JSON nel valore) ⇒ NESSUN alert', async () => {
     mockMaybeSingle.mockResolvedValue({ data: { value: '"true"' }, error: null })
     const { markGoogleTokenDead } = await import('./google-token-health')
-    await markGoogleTokenDead('dead')
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
     expect(mockSend).not.toHaveBeenCalled()
   })
 
   it('flag assente ⇒ un alert + scrittura del flag', async () => {
     const { markGoogleTokenDead } = await import('./google-token-health')
-    await markGoogleTokenDead('dead')
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
 
     expect(mockSend).toHaveBeenCalledTimes(1)
     const [chatId, text] = mockSend.mock.calls[0] as [number, string]
@@ -63,7 +68,7 @@ describe('markGoogleTokenDead', () => {
 
     expect(mockUpsert).toHaveBeenCalledTimes(1)
     const [row, opts] = mockUpsert.mock.calls[0] as [Record<string, string>, Record<string, string>]
-    expect(row).toEqual({ key: 'google_token_dead', value: 'true' })
+    expect(row).toEqual({ key: `google_token_dead:${TEST_ACCOUNT_EMAIL}`, value: 'true' })
     expect(opts).toEqual({ onConflict: 'key' })
   })
 
@@ -74,7 +79,7 @@ describe('markGoogleTokenDead', () => {
   it('invio NON recapitato (ritorna false) ⇒ flag NON scritto (il latch non si brucia)', async () => {
     mockSend.mockResolvedValue(false)
     const { markGoogleTokenDead } = await import('./google-token-health')
-    await markGoogleTokenDead('dead')
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
 
     expect(mockSend).toHaveBeenCalledTimes(1)
     expect(mockUpsert).not.toHaveBeenCalled()
@@ -83,12 +88,12 @@ describe('markGoogleTokenDead', () => {
   it('invio non recapitato ⇒ il tentativo successivo NON è throttlato (si riprova)', async () => {
     mockSend.mockResolvedValue(false)
     const { markGoogleTokenDead } = await import('./google-token-health')
-    await markGoogleTokenDead('dead')
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
     expect(mockUpsert).not.toHaveBeenCalled()
 
     // secondo giro: Telegram è tornato su
     mockSend.mockResolvedValue(true)
-    await markGoogleTokenDead('dead')
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
     expect(mockSend).toHaveBeenCalledTimes(2)
     expect(mockUpsert).toHaveBeenCalledTimes(1)
   })
@@ -96,7 +101,7 @@ describe('markGoogleTokenDead', () => {
   it('send che RIFIUTA ⇒ flag NON scritto (il latch non si brucia)', async () => {
     mockSend.mockRejectedValue(new Error('telegram 500'))
     const { markGoogleTokenDead } = await import('./google-token-health')
-    await markGoogleTokenDead('dead')
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
 
     expect(mockSend).toHaveBeenCalledTimes(1)
     expect(mockUpsert).not.toHaveBeenCalled()
@@ -104,15 +109,15 @@ describe('markGoogleTokenDead', () => {
 
   it('due chiamate nello stesso tick ⇒ UN SOLO send', async () => {
     const { markGoogleTokenDead } = await import('./google-token-health')
-    await Promise.all([markGoogleTokenDead('dead'), markGoogleTokenDead('dead')])
+    await Promise.all([markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL), markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)])
     expect(mockSend).toHaveBeenCalledTimes(1)
     expect(mockUpsert).toHaveBeenCalledTimes(1)
   })
 
   it('kind transient/other ⇒ nessun alert e nessun latch (flakiness di rete)', async () => {
     const { markGoogleTokenDead } = await import('./google-token-health')
-    await markGoogleTokenDead('transient')
-    await markGoogleTokenDead('other')
+    await markGoogleTokenDead('transient', TEST_ACCOUNT_EMAIL)
+    await markGoogleTokenDead('other', TEST_ACCOUNT_EMAIL)
     expect(mockSend).not.toHaveBeenCalled()
     expect(mockUpsert).not.toHaveBeenCalled()
   })
@@ -123,7 +128,7 @@ describe('markGoogleTokenDead', () => {
     process.env.TELEGRAM_ALLOWED_IDS = ''
     try {
       const { markGoogleTokenDead } = await import('./google-token-health')
-      await markGoogleTokenDead('dead')
+      await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
       expect(mockSend).not.toHaveBeenCalled()
       expect(mockUpsert).not.toHaveBeenCalled()
     } finally {
@@ -137,7 +142,7 @@ describe('markGoogleTokenDead', () => {
     process.env.TELEGRAM_ALLOWED_IDS = '999888,111'
     try {
       const { markGoogleTokenDead } = await import('./google-token-health')
-      await markGoogleTokenDead('dead')
+      await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
       expect(mockSend).toHaveBeenCalledTimes(1)
       expect(mockSend.mock.calls[0][0]).toBe(999888)
     } finally {
@@ -148,6 +153,40 @@ describe('markGoogleTokenDead', () => {
   it('un errore Supabase in lettura non fa esplodere il chiamante', async () => {
     mockMaybeSingle.mockRejectedValue(new Error('supabase down'))
     const { markGoogleTokenDead } = await import('./google-token-health')
-    await expect(markGoogleTokenDead('dead')).resolves.toBeUndefined()
+    await expect(markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)).resolves.toBeUndefined()
+  })
+
+  // LA DECISIONE, 14 settembre 2026 (audit avversariale): fino a qui il testo
+  // dell'alert era cablato su restruktura.drive@gmail.com — se moriva l'altro
+  // account, l'Ingegnere avrebbe riautorizzato quello sbagliato.
+  it('🚨 CONTROLLO POSITIVO: il testo nomina QUESTO account, non un altro', async () => {
+    const { markGoogleTokenDead } = await import('./google-token-health')
+    await markGoogleTokenDead('dead', 'larealestate.amministrazione@gmail.com')
+
+    const [, text] = mockSend.mock.calls[0] as [number, string]
+    expect(text).toContain('larealestate.amministrazione@gmail.com')
+    expect(text).not.toContain('restruktura.drive@gmail.com')
+  })
+
+  // Fino al 14 settembre 2026 `lastNotifyAt` era UN numero globale: il primo
+  // account moriva, il secondo entro l'ora veniva INGHIOTTITO dal throttle —
+  // nessun send, nessuna scrittura del flag, nessuna traccia.
+  it('🚨 il throttle e PER ACCOUNT: un secondo account morto entro l\'ora manda comunque il SUO alert', async () => {
+    const { markGoogleTokenDead } = await import('./google-token-health')
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
+    await markGoogleTokenDead('dead', 'larealestate.amministrazione@gmail.com')
+
+    expect(mockSend).toHaveBeenCalledTimes(2)
+    expect(mockUpsert).toHaveBeenCalledTimes(2)
+    const testi = mockSend.mock.calls.map((c) => c[1] as string)
+    expect(testi[0]).toContain(TEST_ACCOUNT_EMAIL)
+    expect(testi[1]).toContain('larealestate.amministrazione@gmail.com')
+  })
+
+  it('lo stesso account due volte nell\'ora resta throttlato (il throttle per-account non e diventato "mai")', async () => {
+    const { markGoogleTokenDead } = await import('./google-token-health')
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
+    await markGoogleTokenDead('dead', TEST_ACCOUNT_EMAIL)
+    expect(mockSend).toHaveBeenCalledTimes(1)
   })
 })

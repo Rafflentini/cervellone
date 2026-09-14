@@ -4,6 +4,7 @@
 
 import { supabase } from './supabase'
 import { listInbox, type GmailMessageMeta } from './gmail-tools'
+import type { ChiaveCasella } from './caselle'
 
 export interface MailSummary {
   totalUnread: number
@@ -43,8 +44,8 @@ function matchesAlert(msg: GmailMessageMeta, rules: AlertRule[]): { matched: boo
   return { matched: false, severity: 'low', reason: '' }
 }
 
-export async function buildDailySummary(sinceDays = 1): Promise<MailSummary> {
-  const messages = await listInbox({ onlyUnread: true, sinceDays, maxResults: 100 })
+export async function buildDailySummary(casella: ChiaveCasella, sinceDays = 1): Promise<MailSummary> {
+  const messages = await listInbox(casella, { onlyUnread: true, sinceDays, maxResults: 100 })
   const rules = await loadAlertRules()
 
   const critical: GmailMessageMeta[] = []
@@ -114,9 +115,9 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s
 }
 
-export async function checkCriticalAlerts(sinceTs: Date): Promise<GmailMessageMeta[]> {
+export async function checkCriticalAlerts(casella: ChiaveCasella, sinceTs: Date): Promise<GmailMessageMeta[]> {
   const sinceDays = Math.max(1, Math.ceil((Date.now() - sinceTs.getTime()) / (24 * 3600 * 1000)))
-  const messages = await listInbox({ onlyUnread: true, sinceDays, maxResults: 50 })
+  const messages = await listInbox(casella, { onlyUnread: true, sinceDays, maxResults: 50 })
   const rules = await loadAlertRules()
   const critical: GmailMessageMeta[] = []
   for (const m of messages) {

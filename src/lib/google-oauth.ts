@@ -6,7 +6,12 @@ import {
   isFatalGoogleAuthKind,
   markGoogleTokenDead,
   GoogleAuthDeadError,
+  chiaveTokenMorto,
 } from './google-token-health'
+
+// Re-esportata: la bandierina del token morto e' per account (Task 5, 14
+// settembre 2026) e questo e' il file che i chiamanti gia' conoscono.
+export { chiaveTokenMorto }
 
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
@@ -174,8 +179,10 @@ export async function exchangeCodeAndStore(code: string): Promise<{ email: strin
   if (error) throw new Error(`Supabase upsert failed: ${error.message}`)
 
   try {
+    // Bandierina PER ACCOUNT: resetta solo quella dell'account appena
+    // riautorizzato, non quella dell'altra casella.
     const { error: flagErr } = await getSupabaseServer().from('cervellone_config').upsert(
-      { key: 'google_token_dead', value: 'false' },
+      { key: chiaveTokenMorto(email), value: 'false' },
       { onConflict: 'key' },
     )
     if (flagErr) console.warn('[OAUTH] reset google_token_dead flag failed:', flagErr.message)
@@ -246,11 +253,12 @@ export async function getAuthorizedClient(accountEmail: string): Promise<OAuth2C
         console.log('[OAUTH] access_token rotated')
 
         // FIX P1: un refresh andato a buon fine prova che il token NON è morto.
-        // Resetta il flag latched 'google_token_dead' (best-effort, non-bloccante)
-        // così una eventuale morte token reale successiva può ri-allertare.
+        // Resetta il flag latched PER ACCOUNT (best-effort, non-bloccante) così
+        // una eventuale morte token reale successiva può ri-allertare — senza
+        // toccare la bandierina dell'altra casella.
         try {
           const { error: flagErr } = await getSupabaseServer().from('cervellone_config').upsert(
-            { key: 'google_token_dead', value: 'false' },
+            { key: chiaveTokenMorto(accountEmail), value: 'false' },
             { onConflict: 'key' },
           )
           if (flagErr) console.warn('[OAUTH] reset google_token_dead flag failed:', flagErr.message)
@@ -269,8 +277,8 @@ export async function getAuthorizedClient(accountEmail: string): Promise<OAuth2C
       const detail = probeErr instanceof Error ? probeErr.message : String(probeErr)
       if (isFatalGoogleAuthKind(kind)) {
         console.error(`[OAUTH] credenziale non valida (${kind}): ${detail}`)
-        await markGoogleTokenDead(kind)
-        throw new GoogleAuthDeadError(kind)
+        await markGoogleTokenDead(kind, accountEmail)
+        throw new GoogleAuthDeadError(kind, accountEmail)
       }
       // transient/other: rete ballerina o credenziali assenti. Nessun alert,
       // si restituisce comunque il client e si lascia decidere alla vera chiamata.

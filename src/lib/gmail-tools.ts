@@ -12,6 +12,7 @@ import { google } from 'googleapis'
 import type { gmail_v1 } from 'googleapis'
 import type { OAuth2Client } from 'google-auth-library'
 import { supabase } from './supabase'
+import { getCasella, type ChiaveCasella } from './caselle'
 
 // ── Types ──
 
@@ -57,21 +58,38 @@ export interface SendDraftResult {
 
 // ── Auth (riusa pattern di drive.ts) ──
 
-async function getGmailAuth(): Promise<OAuth2Client> {
+/**
+ * La casella e' un parametro, e non ha un predefinito.
+ *
+ * ⚠️ Qui, fino al 14 settembre 2026, c'era
+ *   `getAuthorizedClient(getSocieta('restruktura').googleAccount)`
+ * con accanto il commento di una sessione precedente: «nel Task 4 arrivera'
+ * dalla societa' attiva… leggere quella sbagliata significa cercare fatture
+ * inesistenti». Quel Task 4 non e' mai arrivato, e per mesi il bot ha potuto
+ * leggere una casella sola.
+ *
+ * Un predefinito non si rimette: e' una decisione presa una volta e poi
+ * invisibile, e chi aggiunge la prossima funzione non la vede.
+ */
+async function getGmailAuth(chiave: ChiaveCasella): Promise<OAuth2Client> {
+  const casella = getCasella(chiave)
+  if (casella.trasporto !== 'google' || !casella.accountEmail) {
+    throw new Error(
+      `"${chiave}" non e una casella Google (${casella.indirizzo}): usala con i tool di posta TopHost.`,
+    )
+  }
   const { getAuthorizedClient } = await import('./google-oauth')
-  const { getSocieta } = await import('./societa')
-  // Casella dichiarata esplicitamente: nel Task 4 arriverà dalla società attiva.
-  // Qui il rischio è concreto — la posta de La Real Estate arriva su una casella
-  // diversa, e leggere quella sbagliata significa cercare fatture inesistenti.
-  const oauthClient = await getAuthorizedClient(getSocieta('restruktura').googleAccount)
+  const oauthClient = await getAuthorizedClient(casella.accountEmail)
   if (!oauthClient) {
-    throw new Error('OAuth Gmail non autenticato. L\'Ingegnere deve completare il consent flow su /api/auth/google con scope gmail.modify + gmail.send.')
+    throw new Error(
+      `OAuth Gmail non autenticato per ${casella.indirizzo}. Serve il consent flow su /api/auth/google con quell'account.`,
+    )
   }
   return oauthClient
 }
 
-async function getGmailClient(): Promise<gmail_v1.Gmail> {
-  return google.gmail({ version: 'v1', auth: await getGmailAuth() })
+async function gmailClient(chiave: ChiaveCasella): Promise<gmail_v1.Gmail> {
+  return google.gmail({ version: 'v1', auth: await getGmailAuth(chiave) })
 }
 
 // ── Anti-loop helpers ──
@@ -211,12 +229,12 @@ function rawToFull(raw: RawMessage): GmailMessage {
 
 // ── Read tools ──
 
-export async function listInbox(opts?: {
+export async function listInbox(casella: ChiaveCasella, opts?: {
   maxResults?: number
   onlyUnread?: boolean
   sinceDays?: number
 }): Promise<GmailMessageMeta[]> {
-  const gmail = await getGmailClient()
+  const gmail = await gmailClient(casella)
   const max = Math.min(opts?.maxResults || 20, 100)
   const queryParts: string[] = ['in:inbox']
   if (opts?.onlyUnread) queryParts.push('is:unread')
@@ -253,8 +271,8 @@ export async function listInbox(opts?: {
   return results
 }
 
-export async function searchGmail(query: string, maxResults = 20): Promise<GmailMessageMeta[]> {
-  const gmail = await getGmailClient()
+export async function searchGmail(casella: ChiaveCasella, query: string, maxResults = 20): Promise<GmailMessageMeta[]> {
+  const gmail = await gmailClient(casella)
   const max = Math.min(maxResults, 100)
   console.log(`[GMAIL] search q="${query}" max=${max}`)
   const list = await gmail.users.messages.list({
@@ -283,8 +301,8 @@ export async function searchGmail(query: string, maxResults = 20): Promise<Gmail
   return results
 }
 
-export async function readMessage(messageId: string): Promise<GmailMessage> {
-  const gmail = await getGmailClient()
+export async function readMessage(casella: ChiaveCasella, messageId: string): Promise<GmailMessage> {
+  const gmail = await gmailClient(casella)
   console.log(`[GMAIL] readMessage id=${messageId}`)
   const res = await gmail.users.messages.get({
     userId: 'me',
@@ -294,8 +312,8 @@ export async function readMessage(messageId: string): Promise<GmailMessage> {
   return rawToFull(res.data as RawMessage)
 }
 
-export async function readThread(threadId: string): Promise<GmailMessage[]> {
-  const gmail = await getGmailClient()
+export async function readThread(casella: ChiaveCasella, threadId: string): Promise<GmailMessage[]> {
+  const gmail = await gmailClient(casella)
   console.log(`[GMAIL] readThread id=${threadId}`)
   const res = await gmail.users.threads.get({
     userId: 'me',
@@ -332,7 +350,7 @@ function rfc822ToBase64Url(raw: string): string {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-export async function createDraft(opts: {
+export async function createDraft(casella: ChiaveCasella, opts: {
   to: string
   subject: string
   body: string
@@ -340,7 +358,7 @@ export async function createDraft(opts: {
   threadId?: string
 }): Promise<{ draftId: string; messageId: string }> {
   if (!opts.to.includes('@')) throw new Error(`Indirizzo destinatario non valido: ${opts.to}`)
-  const gmail = await getGmailClient()
+  const gmail = await gmailClient(casella)
   const rfc822 = buildRfc822({
     to: opts.to,
     subject: opts.subject,
@@ -365,8 +383,8 @@ export async function createDraft(opts: {
   return { draftId, messageId }
 }
 
-export async function listDrafts(maxResults = 10): Promise<GmailDraftMeta[]> {
-  const gmail = await getGmailClient()
+export async function listDrafts(casella: ChiaveCasella, maxResults = 10): Promise<GmailDraftMeta[]> {
+  const gmail = await gmailClient(casella)
   const list = await gmail.users.drafts.list({
     userId: 'me',
     maxResults: Math.min(maxResults, 50),
@@ -400,8 +418,8 @@ export async function listDrafts(maxResults = 10): Promise<GmailDraftMeta[]> {
   return results
 }
 
-export async function showDraft(draftId: string): Promise<GmailMessage> {
-  const gmail = await getGmailClient()
+export async function showDraft(casella: ChiaveCasella, draftId: string): Promise<GmailMessage> {
+  const gmail = await gmailClient(casella)
   const res = await gmail.users.drafts.get({
     userId: 'me',
     id: draftId,
@@ -411,8 +429,8 @@ export async function showDraft(draftId: string): Promise<GmailMessage> {
   return rawToFull(res.data.message as RawMessage)
 }
 
-export async function deleteDraft(draftId: string): Promise<void> {
-  const gmail = await getGmailClient()
+export async function deleteDraft(casella: ChiaveCasella, draftId: string): Promise<void> {
+  const gmail = await gmailClient(casella)
   await gmail.users.drafts.delete({ userId: 'me', id: draftId })
   console.log(`[GMAIL] deleteDraft id=${draftId}`)
 }
@@ -421,9 +439,9 @@ export async function deleteDraft(draftId: string): Promise<void> {
 
 const NOREPLY_REGEX = /(?:^|<)(?:noreply|no-reply|donotreply|do-not-reply|notification|notifications)@/i
 
-export async function sendDraft(draftId: string): Promise<SendDraftResult> {
-  const gmail = await getGmailClient()
-  const draft = await showDraft(draftId)
+export async function sendDraft(casella: ChiaveCasella, draftId: string): Promise<SendDraftResult> {
+  const gmail = await gmailClient(casella)
+  const draft = await showDraft(casella, draftId)
 
   if (draft.threadId) {
     if (await isThreadInBotLoop(draft.threadId)) {
@@ -432,7 +450,7 @@ export async function sendDraft(draftId: string): Promise<SendDraftResult> {
   }
 
   if (draft.threadId) {
-    const thread = await readThread(draft.threadId).catch(() => [])
+    const thread = await readThread(casella, draft.threadId).catch(() => [])
     const incoming = thread.filter(m => m.from && !/me$/i.test(m.from))
     const last = incoming[incoming.length - 1]
     if (last) {
@@ -465,8 +483,8 @@ interface LabelInfo {
   name: string
 }
 
-export async function listLabels(): Promise<LabelInfo[]> {
-  const gmail = await getGmailClient()
+export async function listLabels(casella: ChiaveCasella): Promise<LabelInfo[]> {
+  const gmail = await gmailClient(casella)
   const res = await gmail.users.labels.list({ userId: 'me' })
   return (res.data.labels || []).map(l => ({
     id: l.id || '',
@@ -474,11 +492,11 @@ export async function listLabels(): Promise<LabelInfo[]> {
   })).filter(l => l.id && l.name)
 }
 
-async function ensureLabelId(labelName: string): Promise<string> {
-  const labels = await listLabels()
+async function ensureLabelId(casella: ChiaveCasella, labelName: string): Promise<string> {
+  const labels = await listLabels(casella)
   const existing = labels.find(l => l.name === labelName)
   if (existing) return existing.id
-  const gmail = await getGmailClient()
+  const gmail = await gmailClient(casella)
   const res = await gmail.users.labels.create({
     userId: 'me',
     requestBody: {
@@ -490,10 +508,10 @@ async function ensureLabelId(labelName: string): Promise<string> {
   return res.data.id || ''
 }
 
-export async function applyLabel(messageId: string, labelName: string): Promise<void> {
-  const labelId = await ensureLabelId(labelName)
+export async function applyLabel(casella: ChiaveCasella, messageId: string, labelName: string): Promise<void> {
+  const labelId = await ensureLabelId(casella, labelName)
   if (!labelId) throw new Error(`Label "${labelName}" non creabile`)
-  const gmail = await getGmailClient()
+  const gmail = await gmailClient(casella)
   await gmail.users.messages.modify({
     userId: 'me',
     id: messageId,
@@ -503,11 +521,11 @@ export async function applyLabel(messageId: string, labelName: string): Promise<
   console.log(`[GMAIL] applyLabel msg=${messageId} label=${labelName}`)
 }
 
-export async function removeLabel(messageId: string, labelName: string): Promise<void> {
-  const labels = await listLabels()
+export async function removeLabel(casella: ChiaveCasella, messageId: string, labelName: string): Promise<void> {
+  const labels = await listLabels(casella)
   const label = labels.find(l => l.name === labelName)
   if (!label) return
-  const gmail = await getGmailClient()
+  const gmail = await gmailClient(casella)
   await gmail.users.messages.modify({
     userId: 'me',
     id: messageId,
@@ -516,8 +534,8 @@ export async function removeLabel(messageId: string, labelName: string): Promise
   console.log(`[GMAIL] removeLabel msg=${messageId} label=${labelName}`)
 }
 
-export async function markAsRead(messageId: string): Promise<void> {
-  const gmail = await getGmailClient()
+export async function markAsRead(casella: ChiaveCasella, messageId: string): Promise<void> {
+  const gmail = await gmailClient(casella)
   await gmail.users.messages.modify({
     userId: 'me',
     id: messageId,
@@ -526,8 +544,8 @@ export async function markAsRead(messageId: string): Promise<void> {
   await recordBotAction(messageId, '', 'marked_read')
 }
 
-export async function markAsUnread(messageId: string): Promise<void> {
-  const gmail = await getGmailClient()
+export async function markAsUnread(casella: ChiaveCasella, messageId: string): Promise<void> {
+  const gmail = await gmailClient(casella)
   await gmail.users.messages.modify({
     userId: 'me',
     id: messageId,
@@ -535,8 +553,8 @@ export async function markAsUnread(messageId: string): Promise<void> {
   })
 }
 
-export async function archive(messageId: string): Promise<void> {
-  const gmail = await getGmailClient()
+export async function archive(casella: ChiaveCasella, messageId: string): Promise<void> {
+  const gmail = await gmailClient(casella)
   await gmail.users.messages.modify({
     userId: 'me',
     id: messageId,
@@ -546,8 +564,8 @@ export async function archive(messageId: string): Promise<void> {
   console.log(`[GMAIL] archive msg=${messageId}`)
 }
 
-export async function trash(messageId: string): Promise<void> {
-  const gmail = await getGmailClient()
+export async function trash(casella: ChiaveCasella, messageId: string): Promise<void> {
+  const gmail = await gmailClient(casella)
   await gmail.users.messages.trash({
     userId: 'me',
     id: messageId,
@@ -568,8 +586,8 @@ export async function trash(messageId: string): Promise<void> {
  * Gmail restituisce base64url (`-` e `_` al posto di `+` e `/`): passarlo cosi'
  * com'e' a nodemailer produce un PDF corrotto che si apre solo a meta'.
  */
-export async function scaricaAllegato(messageId: string, attachmentId: string): Promise<string> {
-  const gmail = await getGmailClient()
+export async function scaricaAllegato(casella: ChiaveCasella, messageId: string, attachmentId: string): Promise<string> {
+  const gmail = await gmailClient(casella)
   const res = await gmail.users.messages.attachments.get({
     userId: 'me',
     messageId,

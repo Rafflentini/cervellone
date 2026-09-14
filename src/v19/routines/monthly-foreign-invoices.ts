@@ -321,7 +321,9 @@ export function casellaGmail(): Casella {
       // al solo insieme che ci interessa. `-in:sent -in:trash` tiene fuori la
       // posta che il bot ha spedito lui stesso e il cestino.
       const q = `after:${since.replace(/-/g, '/')} before:${before.replace(/-/g, '/')} has:attachment -in:sent -in:trash`
-      const trovati = await searchGmail(q, LIMITE_GMAIL)
+      // Questa casella Gmail e' quella di Restruktura (restruktura.drive@gmail.com):
+      // vedi il commento sopra `casellaGmail`.
+      const trovati = await searchGmail('drive', q, LIMITE_GMAIL)
       const messaggi = trovati.map((g) => ({
         chiave: g.id,
         from: g.from ?? '',
@@ -342,12 +344,12 @@ export function casellaGmail(): Casella {
       return { messaggi, totale: messaggi.length, troncato: trovati.length >= LIMITE_GMAIL }
     },
     async inoltra(m, oggetto, testo) {
-      const completo = await readMessage(m.chiave)
+      const completo = await readMessage('drive', m.chiave)
       const allegati = []
       for (const a of completo.attachments ?? []) {
         allegati.push({
           filename: a.filename,
-          content_base64: await scaricaAllegato(m.chiave, a.attachmentId),
+          content_base64: await scaricaAllegato('drive', m.chiave, a.attachmentId),
           contentType: a.mimeType,
         })
       }

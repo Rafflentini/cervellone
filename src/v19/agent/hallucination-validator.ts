@@ -117,8 +117,8 @@ export async function defaultDriveChecker(fileId: string): Promise<boolean> {
 
   // Può lanciare GoogleAuthDeadError: si propaga → "non verificabile".
   // Casella dichiarata esplicitamente: nel Task 4 arriverà dalla società attiva.
-  const { getSocieta } = await import('@/lib/societa')
-  const auth = await getAuthorizedClient(getSocieta('restruktura').googleAccount)
+  const { getCasella, CASELLA_FILE_E_CALENDARIO } = await import('@/lib/caselle')
+  const auth = await getAuthorizedClient(getCasella(CASELLA_FILE_E_CALENDARIO).accountEmail!)
   if (!auth) {
     throw new Error(
       '[v19/hallucination-validator] nessun client OAuth Google: esistenza file non verificabile',

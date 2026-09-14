@@ -507,7 +507,22 @@ export function fannoLavoro(nomeToolServer: string): boolean {
  * - `empty`: il modello non ha mai prodotto testo, l'utente riceve una scusa
  * - `budget`: la run ha sfondato il tetto di token ed e' stata troncata
  */
-export type MotivoFallimento = 'api_error' | 'empty' | 'budget'
+export type MotivoFallimento = 'api_error' | 'empty' | 'budget' | 'tempo'
+
+/**
+ * Quando il ciclo si ferma da solo per non sbattere contro il muro del tempo.
+ *
+ * ⚠️ `api/chat` e `api/telegram` hanno `maxDuration = 800` in `vercel.json`. Al
+ * secondo 800 Vercel uccide la funzione: l'Ingegnere non riceve un errore,
+ * riceve il NIENTE, e il lavoro fatto fin li' e' perso.
+ *
+ * 680 lascia ~2 minuti: abbastanza perche' il modello chiuda la frase e perche'
+ * quello che ha prodotto venga consegnato e archiviato. Il numero e' un
+ * margine, non una misura: dal 14 set 2026 `api_usage.meta.durataMs` registra
+ * quanto durano i giri VERI, ed e' su quello che andra' ritarato — la prima
+ * volta con dati, invece che a naso.
+ */
+export const SOGLIA_TEMPO_MS = 680_000
 
 /**
  * Dove esce quello che il modello produce. E' l'unica cosa che i due canali
@@ -757,6 +772,25 @@ export async function runAgentTurn(
   let apiErrorOccurred = false
   let apiErrorRecordDetails = ''
   let runAbortedBudget = false
+  /** True se il ciclo si e' fermato per il TEMPO, non per il budget. */
+  let runAbortedTempo = false
+  /**
+   * Quando il giro e' cominciato. Serve a UNA cosa sola: sapere quanto dura.
+   *
+   * ⚠️ Perche' esiste (14 settembre 2026). Le due rotte che portano un turno —
+   * `api/chat` e `api/telegram` — hanno `maxDuration = 800`: oltre, Vercel
+   * uccide la funzione a meta' frase e l'Ingegnere non riceve NIENTE. Dal 13
+   * settembre il coordinatore DELEGA agli specialisti, quindi i giri si sono
+   * allungati — e non lo sapeva nessuno, perche' la durata non veniva
+   * registrata da nessuna parte.
+   *
+   * Peggio: il numero che c'era, `iterations`, INGANNA proprio qui. Delegando,
+   * le iterazioni del coordinatore SCENDONO (misurato: 3,7 prima del Decollo,
+   * 2,2 dopo) mentre il lavoro dello specialista gira dentro quel giro senza
+   * comparire nel contatore. Il numero cala mentre il tempo sale: usarlo per
+   * rassicurarsi e' peggio che non averlo.
+   */
+  const inizioGiro = Date.now()
   /**
    * True se l'ULTIMA iterazione si e' chiusa con `pause_turn`: il modello aveva
    * messo in pausa un turno lungo e non ha mai ripreso. Quello che si consegna
@@ -993,6 +1027,39 @@ export async function runAgentTurn(
         segnalaFallimento('budget')
         runAbortedBudget = true
         await emit('\n\n⚠️ _Mi fermo qui: la richiesta ha superato il budget di elaborazione. La riformuli in modo più mirato o la spezzi in passi più piccoli._')
+        break
+      }
+
+      /**
+       * ⚠️ IL MURO DEI 800 SECONDI, e perche' ci si ferma PRIMA.
+       *
+       * `api/chat` e `api/telegram` hanno `maxDuration = 800` (vercel.json).
+       * Al secondo 800 Vercel non chiede permesso: uccide la funzione. Quello
+       * che l'Ingegnere riceve non e' un errore, e' il NIENTE — la richiesta
+       * muore a meta' frase, il lavoro fatto fin li' e' perso, e su Telegram
+       * non arriva nemmeno un messaggio che dica cos'e' successo.
+       *
+       * Dal 13 settembre il coordinatore DELEGA agli specialisti: il lavoro di
+       * un altro modello gira dentro questo giro, e i turni si sono allungati
+       * senza che nessuno li misurasse. Questo e' il guard rail che mancava.
+       *
+       * Fermandosi a `SOGLIA_TEMPO_MS` restano ~2 minuti: abbastanza perche' il
+       * modello chiuda una frase e perche' quello che ha gia' prodotto venga
+       * consegnato e archiviato. Un lavoro troncato che SI SA di aver troncato
+       * vale infinitamente piu' di una funzione uccisa in silenzio — ed e' la
+       * stessa regola di casa: un guasto deve poter essere visto.
+       *
+       * `!modelloHaChiuso` per lo stesso motivo del budget qui sopra: se il
+       * modello ha gia' finito, non c'e' niente da fermare.
+       */
+      if (Date.now() - inizioGiro > SOGLIA_TEMPO_MS && !modelloHaChiuso) {
+        const secondi = Math.round((Date.now() - inizioGiro) / 1000)
+        console.warn(`run_aborted_tempo: ${secondi}s > ${SOGLIA_TEMPO_MS / 1000}s (iter=${iterations})`)
+        segnalaFallimento('tempo')
+        runAbortedTempo = true
+        await emit(
+          `\n\n⚠️ _Mi fermo qui: ci sto mettendo troppo (${secondi} secondi) e fra poco la richiesta verrebbe interrotta di netto, senza lasciarle niente. Quello che ho fatto fin qui glielo consegno. Se vuole, mi chieda il pezzo che manca come richiesta a parte._`,
+        )
         break
       }
       totalToolCalls += toolBlocks.length
@@ -1234,7 +1301,11 @@ export async function runAgentTurn(
   // Uno specialista che sfonda il budget tre volte di fila farebbe scattare il
   // rollback su un modello perfettamente sano — lo stesso falso segnale gia'
   // chiuso una volta su web_search e sulle promesse mantenute.
-  const causaGiaNota = apiErrorOccurred || runAbortedBudget || turnoTroncatoInPausa
+  // `runAbortedTempo` sta qui per lo stesso motivo degli altri tre: la fermata
+  // per tempo ha gia' scritto la sua frase, e senza questo un turno fermato dal
+  // muro dei 800 secondi verrebbe registrato 'empty' col sink muto di uno
+  // specialista — e 'empty' conta nel circuit breaker, 'run_aborted' no.
+  const causaGiaNota = apiErrorOccurred || runAbortedBudget || runAbortedTempo || turnoTroncatoInPausa
   if (fullResponse.length === 0 && !causaGiaNota) {
     console.warn(`STREAM(${policy.tag}) EMPTY: fullResponse vuoto dopo ${iterations} iter (totalToolCalls=${totalToolCalls}), applicato fallback`)
     segnalaFallimento('empty')
@@ -1283,7 +1354,12 @@ export async function runAgentTurn(
       // tre richieste pesanti di fila, che e' lo stesso difetto (falso segnale →
       // rollback immotivato) chiuso oggi su web_search e sulle promesse
       // mantenute. `run_aborted` e' escluso dal conteggio in circuit-breaker.
-      : runAbortedBudget
+      // La fermata per TEMPO sta nella stessa colonna di quella per budget, e
+      // per lo stesso motivo: la richiesta era lunga, il modello non e' guasto.
+      // Contarla fra i fallimenti farebbe scattare il rollback su un modello
+      // sano dopo tre richieste lente di fila — e con la delega agli
+      // specialisti le richieste lente sono diventate la norma, non l'eccezione.
+      : (runAbortedBudget || runAbortedTempo)
         ? 'run_aborted'
       // Stessa ragione, altra causa: il ciclo e' finito con il modello ancora in
       // pausa (tetto di iterazioni raggiunto). Quello che si consegna e' un
@@ -1346,7 +1422,22 @@ export async function runAgentTurn(
       outcome,
       totalToolCalls,
       apiError: apiErrorOccurred,
-      runAborted: isRunOverBudget(accUsage, runBudget),
+      /**
+       * ⚠️ `runAbortedBudget`, NON `isRunOverBudget(...)`.
+       *
+       * Fino al 14 settembre 2026 qui si ricalcolava il budget a fine giro: un
+       * turno finito benissimo, ma che aveva consumato molto, veniva archiviato
+       * come «abortito». Il flag mentiva proprio sui giri riusciti piu' grossi —
+       * cioe' quelli che con la delega agli specialisti sono diventati la norma.
+       * Il flag VERO e' quello che il ciclo alza quando si ferma davvero.
+       */
+      runAborted: runAbortedBudget,
+      /**
+       * Quanto e' durato, in millisecondi. Senza questo numero la domanda «con
+       * la delega rischiamo di sbattere contro i 800 secondi?» non ha risposta:
+       * non e' che non la si guarda, non e' guardabile.
+       */
+      durataMs: Date.now() - inizioGiro,
     },
     // Un blip di Supabase sulla contabilita' consumi non deve far fallire un
     // turno gia' consegnato all'utente: senza il .catch(), la route ci

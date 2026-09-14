@@ -5,6 +5,14 @@
  * revisionabile in una pull request; e i segreti non devono finire in una
  * tabella. Qui si dichiara QUALE variabile d'ambiente contiene il token,
  * mai il token.
+ *
+ * ⚠️ NON aggiungere un campo per l'account Google: c'era (`googleAccount`),
+ * tolto il 14 settembre 2026 (audit avversariale) perché senza un solo
+ * chiamante era diventato una SECONDA copia degli stessi due indirizzi
+ * dichiarati in `caselle.ts` — viva nel registro, morta nell'uso, la
+ * situazione in cui questo repo ha già scritto la stessa verità in due posti
+ * che poi divergono. La casella Google di una società si chiede a
+ * `caselle.ts` (`caselleDiTrasporto`, `getCasella`), non a questo file.
  */
 
 import { RESTRUKTURA } from '../v19/prompts/identita'
@@ -28,7 +36,6 @@ export interface Societa {
   ficTokenEnv: string
   /** Nome della variabile d'ambiente con l'id azienda FIC. MAI il valore. */
   ficCompanyIdEnv: string
-  googleAccount: string
   aliquotaIvaDefault: number
 }
 
@@ -42,7 +49,6 @@ const REGISTRO: Record<CodiceSocieta, Societa> = {
     sede: RESTRUKTURA.sedeLegale,
     ficTokenEnv: 'FIC_ACCESS_TOKEN',
     ficCompanyIdEnv: 'FIC_COMPANY_ID',
-    googleAccount: RESTRUKTURA.email,
     aliquotaIvaDefault: 22,
   },
   larealestate: {
@@ -52,7 +58,6 @@ const REGISTRO: Record<CodiceSocieta, Societa> = {
     sede: 'Via Civita 8, Maratea (PZ)',
     ficTokenEnv: 'FIC_ACCESS_TOKEN_LAREALESTATE',
     ficCompanyIdEnv: 'FIC_COMPANY_ID_LAREALESTATE',
-    googleAccount: 'larealestate.amministrazione@gmail.com',
     aliquotaIvaDefault: 10,
   },
 }
