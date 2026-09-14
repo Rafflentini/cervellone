@@ -180,11 +180,18 @@ describe('differimento delle definizioni dei tool', () => {
   // e' inventata) avviene nel CODICE — `casellaPerScrittura` in
   // `politica-caselle.ts`, chiamata da `executeGmailWrapper` prima di
   // toccare `gmail-tools` — non in una regola di prompt.
-  it('senza opzioni: 136 definizioni e la stessa impronta di main', () => {
+  // LA DECISIONE, 14 settembre 2026 (caselle di posta, Task 6). Il NUMERO
+  // CAMBIA — da 136 a 137 — e l'impronta con esso, da
+  // `a236f73fc2a117216b97b4db1b70544e` a `0848ebc6c335bda6580cea6459eee647`.
+  // Nuovo tool `verifica_accessi_google`: prova una per una le credenziali
+  // Google e dice quali sono VIVE, col motivo se non lo sono. Prima di oggi
+  // la domanda "la casella di La Real Estate funziona?" non aveva risposta:
+  // la credenziale era salvata ma mai esercitata.
+  it('senza opzioni: 137 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(136)
+    expect(defs).toHaveLength(137)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('a236f73fc2a117216b97b4db1b70544e')
+      .toBe('0848ebc6c335bda6580cea6459eee647')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
