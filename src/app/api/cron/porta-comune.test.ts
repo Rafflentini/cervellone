@@ -72,12 +72,10 @@ const SEGRETO = 'segreto-di-prova-del-cron'
  * lancio lento NON e' accertata: svuotare `node_modules/.vite` non la
  * riproduce, quindi non e' la cache di trasformazione.
  *
- * L'attesa generale e' poi stata portata a 15s in `vitest.config.ts` per un
- * motivo piu' largo (la contesa fra worker: v. il commento la'). Questo
- * numero resta lo stesso, ed e' piu' alto, perche' vale per i due import
- * peggiori che ci siano: se un giorno la suite tornera' stretta, questo file
- * non dev'essere il primo a cadere per fame di CPU invece che per la porta
- * dei cron.
+ * Il timeout GENERALE resta quello di vitest: si e' provato ad allargarlo per
+ * tutti, e la prova non ha retto a una seconda misura (v. il commento in
+ * `vitest.config.ts`). Qui il numero e' esplicito e vale solo per questi test,
+ * che sono i piu' cari della suite — l'idioma del repo, usato in 41 punti.
  *
  * Un test verde solo dal secondo lancio in poi viene ignorato al primo rosso,
  * ed e' cosi' che un test smette di sorvegliare senza che nessuno lo cancelli.

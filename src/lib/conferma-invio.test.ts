@@ -160,7 +160,14 @@ describe('la frase che il bot SUGGERISCE deve essere accettata dalla regola', ()
     // il contenuto del messaggio è provato nei test del modulo mail; qui basta
     // che la costante sia la fonte, e lo prova l'assert sopra sulla regola.
     expect(FRASE_CONFERMA_SUGGERITA.length).toBeGreaterThan(0)
-  })
+  // ⚠️ MISURATO il 14 set 2026: importare `telegram-confirm` costa **1703 ms**
+  // da solo, su macchina scarica. Questo file e' fatto di regex pure e chiude
+  // in millisecondi; l'unico test `async` e' questo, e si porta dentro il
+  // proprio budget di 5s un import che ne mangia un terzo. Basta un po' di
+  // contesa fra worker e va in TIMEOUT — un rosso che non dice niente sulla
+  // regola di conferma, ed e' proprio quello che la suite aveva addosso.
+  // Il timeout per-test e' l'idioma di questo repo (41 punti).
+  }, 20_000)
 })
 
 describe('eMessaggioBreveNonConferma — quando il bot deve DIRLO invece di tacere', () => {
