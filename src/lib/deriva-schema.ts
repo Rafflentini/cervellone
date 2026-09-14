@@ -159,8 +159,15 @@ function vociDelCorpo(statement: string): string[] | null {
  * piu' su una tabella che esiste gia': Postgres non fa nulla, in silenzio, e
  * il guardiano rispondeva «Nessuna deriva».
  *
- * ⚠️ Una `PRIMARY KEY (a, b)` dichiarata come vincolo di tabella NON viene
- * registrata: e' un limite noto e dichiarato, non una protezione.
+ * La `PRIMARY KEY` si registra in tutte e due le forme in cui il repo la
+ * scrive: in linea (`id uuid primary key`) e come vincolo di tabella
+ * (`PRIMARY KEY (name, type)`, in `cervellone_entita_menzionate`). Saltare la
+ * seconda insieme agli altri vincoli la faceva sparire da ENTRAMBI i numeri
+ * del rapporto — la stessa perdita silenziosa del reperto 1.
+ *
+ * ⚠️ Gli ALTRI vincoli (`FOREIGN`, `UNIQUE`, `CHECK`, `CONSTRAINT`, `EXCLUDE`,
+ * `LIKE`) restano fuori, ed e' una scelta dichiarata: il guardiano non ha mai
+ * detto di controllarli.
  */
 function colonneDelCorpo(tabella: string, statement: string): Lettura {
   const voci = vociDelCorpo(statement)
@@ -172,6 +179,17 @@ function colonneDelCorpo(tabella: string, statement: string): Lettura {
   for (const voce of voci) {
     const v = voce.trim()
     if (!v) continue
+
+    // Una `PRIMARY KEY (a, b)` di tabella e' una promessa quanto una colonna:
+    // si legge PRIMA di scartare i vincoli, con tutte le sue colonne.
+    const pkDiTabella = /^PRIMARY\s+KEY\s*\(([^)]*)\)/i.exec(v)
+    if (pkDiTabella) {
+      const colonne = pkDiTabella[1].split(',').map((c) => c.trim().replace(/"/g, '')).filter(Boolean)
+      if (colonne.length > 0) oggetti.push({ tipo: 'chiave_primaria', tabella, colonne })
+      // Una `PRIMARY KEY ()` senza colonne non si sa leggere: si dichiara.
+      else nonLetti.push(v)
+      continue
+    }
 
     const prima = /^[A-Za-z_]+/.exec(v)
     if (prima && VINCOLI_DI_TABELLA.includes(prima[0].toUpperCase())) continue
@@ -382,7 +400,22 @@ export function oggettiAttesi(file: Array<{ nome: string; sql: string }>): Ogget
     }
   }
 
-  return { oggetti, nonInterpretate }
+  // Lo stesso oggetto promesso due volte vale UNO.
+  // `document_templates.dati_fissi` e' dichiarata sia nel suo CREATE TABLE sia
+  // in un ALTER TABLE successivo, e contarla due volte gonfiava il numero
+  // «oggetti verificati» del rapporto. E' poco, ma e' un numero che dice una
+  // cosa falsa dentro lo strumento che nasce contro i numeri che dicono cose
+  // false. La chiave e' l'oggetto INTERO: due colonne omonime su tabelle
+  // diverse restano due.
+  const visti = new Set<string>()
+  const senzaDoppioni = oggetti.filter((o) => {
+    const chiave = JSON.stringify(o)
+    if (visti.has(chiave)) return false
+    visti.add(chiave)
+    return true
+  })
+
+  return { oggetti: senzaDoppioni, nonInterpretate }
 }
 
 export interface Fotografia {

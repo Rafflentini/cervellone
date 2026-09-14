@@ -357,3 +357,71 @@ describe('il divisore di statement conosce le stringhe (reperto 8)', () => {
     expect(r.oggetti.filter((o) => o.tipo === 'tabella')).toEqual([{ tipo: 'tabella', tabella: 'vera2' }])
   })
 })
+
+describe('la PRIMARY KEY dichiarata come VINCOLO di tabella', () => {
+  it('🚨 non sparisce: e una promessa del repo, con tutte le sue colonne', () => {
+    // `cervellone_entita_menzionate` dichiara `PRIMARY KEY (name, type)` come
+    // vincolo di tabella, non in linea. Saltarla insieme agli altri vincoli la
+    // faceva sparire da ENTRAMBI i numeri del rapporto — la stessa perdita
+    // silenziosa del reperto 1. E' esattamente la forma del guasto vero di
+    // `gmail_processed_messages`: tabella e colonne c'erano, l'upsert falliva
+    // lo stesso perche' la chiave primaria era un'altra.
+    const r = oggettiAttesi([migrazioneVera('2026-05-07-memoria-persistente.sql')])
+
+    expect(r.oggetti).toContainEqual({
+      tipo: 'chiave_primaria', tabella: 'cervellone_entita_menzionate', colonne: ['name', 'type'],
+    })
+  })
+
+  it('CONTROLLO POSITIVO: la chiave primaria IN LINEA continua a funzionare', () => {
+    // Senza questo, una cura che spostasse la lettura sui soli vincoli di
+    // tabella spegnerebbe in silenzio le 37 chiavi dichiarate in linea.
+    const r = oggettiAttesi([migrazioneVera('2026-05-25-cervellone-scadenze.sql')])
+    expect(r.oggetti).toContainEqual({ tipo: 'chiave_primaria', tabella: 'cervellone_scadenze', colonne: ['id'] })
+  })
+
+  it('gli ALTRI vincoli di tabella restano fuori, ed e una scelta dichiarata', () => {
+    // FOREIGN / UNIQUE / CHECK / CONSTRAINT / EXCLUDE / LIKE il guardiano
+    // dichiara di non controllarli: non sono promesse perse, sono promesse che
+    // non si e mai detto di guardare.
+    const r = oggettiAttesi([{
+      nome: 'z.sql',
+      sql: 'create table t (a int, b int, primary key (a, b), unique (b), foreign key (a) references u(id), check (a > 0));',
+    }])
+    expect(r.oggetti).toContainEqual({ tipo: 'chiave_primaria', tabella: 't', colonne: ['a', 'b'] })
+    expect(r.oggetti.filter((o) => o.tipo === 'colonna')).toEqual([
+      { tipo: 'colonna', tabella: 't', colonna: 'a' },
+      { tipo: 'colonna', tabella: 't', colonna: 'b' },
+    ])
+  })
+})
+
+describe('gli oggetti attesi non si contano due volte', () => {
+  it('🚨 la stessa colonna promessa due volte vale UNO', () => {
+    // `document_templates.dati_fissi` e' dichiarata sia nel CREATE TABLE sia in
+    // un ALTER TABLE successivo. Contarla due volte gonfia il numero
+    // «oggetti verificati»: un numero che dice una cosa falsa, dentro lo
+    // strumento che nasce contro i numeri che dicono cose false.
+    const r = oggettiAttesi([
+      { nome: 'a.sql', sql: 'create table t (x int);' },
+      { nome: 'b.sql', sql: 'alter table t add column if not exists x int;' },
+    ])
+    expect(r.oggetti.filter((o) => o.tipo === 'colonna')).toEqual([{ tipo: 'colonna', tabella: 't', colonna: 'x' }])
+  })
+
+  it('CONTROLLO POSITIVO: oggetti DIVERSI restano tutti', () => {
+    // Senza questo, una deduplicazione troppo larga (per tipo, o per tabella)
+    // passerebbe il test qui sopra cancellando meta' dell'elenco.
+    const r = oggettiAttesi([{ nome: 'c.sql', sql: 'create table t (x int, y int);' }])
+    expect(r.oggetti).toEqual([
+      { tipo: 'tabella', tabella: 't' },
+      { tipo: 'colonna', tabella: 't', colonna: 'x' },
+      { tipo: 'colonna', tabella: 't', colonna: 'y' },
+    ])
+  })
+
+  it('CONTROLLO POSITIVO: due colonne omonime su TABELLE diverse restano due', () => {
+    const r = oggettiAttesi([{ nome: 'd.sql', sql: 'create table t (id int); create table u (id int);' }])
+    expect(r.oggetti.filter((o) => o.tipo === 'colonna')).toHaveLength(2)
+  })
+})

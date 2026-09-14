@@ -242,6 +242,14 @@
       "colonna": "ts"
     },
     {
+      "tipo": "chiave_primaria",
+      "tabella": "gmail_processed_messages",
+      "colonne": [
+        "message_id",
+        "bot_action"
+      ]
+    },
+    {
       "tipo": "indice",
       "nome": "idx_gmail_processed_thread"
     },
@@ -310,14 +318,6 @@
     {
       "tipo": "indice",
       "nome": "idx_anthropic_files_conv"
-    },
-    {
-      "tipo": "chiave_primaria",
-      "tabella": "gmail_processed_messages",
-      "colonne": [
-        "message_id",
-        "bot_action"
-      ]
     },
     {
       "tipo": "tabella",
@@ -586,6 +586,14 @@
       "tipo": "colonna",
       "tabella": "cervellone_entita_menzionate",
       "colonna": "contexts_json"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_entita_menzionate",
+      "colonne": [
+        "name",
+        "type"
+      ]
     },
     {
       "tipo": "indice",
@@ -2001,11 +2009,6 @@
       "tipo": "colonna",
       "tabella": "document_templates",
       "colonna": "updated_by"
-    },
-    {
-      "tipo": "colonna",
-      "tabella": "document_templates",
-      "colonna": "dati_fissi"
     },
     {
       "tipo": "indice",
