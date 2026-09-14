@@ -11,6 +11,10 @@ import crypto from 'crypto'
 import { supabase } from '@/lib/supabase'
 import { saveMessageOnly, saveEmbeddingOnly } from '@/lib/memory'
 import { comprimiDocumentiNellaStoria, type MessaggioStoria } from '@/lib/compressione-documenti'
+// Il taglio della storia e' lo STESSO della chat web: una regola, due canali.
+// Da `taglio-storia` e non da `claude`: quest'ultimo tira dentro il motore del
+// modello, e importarlo da qui romperebbe i test di questa rotta.
+import { trimMessages } from '@/lib/taglio-storia'
 import { getSupabaseServer } from '@/lib/supabase-server'
 import { downloadTelegramFile, buildContentBlocks, sendTelegramMessage, sendTyping } from '@/lib/telegram-helpers'
 import { transcribeAudio } from '@/lib/trascrizione'
@@ -1044,6 +1048,29 @@ export async function POST(request: NextRequest) {
     // stesso client.
     comprimiDocumentiNellaStoria(history as unknown as MessaggioStoria[])
 
+    /**
+     * 🚨 LO STESSO TAGLIO DELLA CHAT WEB, e per lo stesso motivo.
+     *
+     * Il 14 settembre 2026 l'Ingegnere si e' visto rispondere «budget di
+     * elaborazione superato» tre volte di fila. La telemetria ha detto cos'era:
+     * UNA sola iterazione, ZERO tool, **933.975 token spediti**. Non un loop
+     * impazzito e non la delega: una singola richiesta gigantesca.
+     *
+     * Il taglio qui sopra (riga ~993) c'era gia', ma non mordeva: si ferma a
+     * "history.length > 8", e otto messaggi che contengono 34 fatture, sei PDF
+     * e gli elenchi di Fatture in Cloud restano enormi lo stesso. In piu'
+     * girava PRIMA che entrassero il messaggio nuovo e gli allegati.
+     *
+     * "trimMessages" e' la regola della chat web (src/lib/claude.ts): taglia
+     * per CARATTERI e non ha pavimenti. Stessa funzione su tutti e due i
+     * canali, perche' in questa casa il difetto si ripete sempre nella stessa
+     * forma — una difesa costruita bene su un canale e mai portata sull'altro.
+     */
+    const storia = trimMessages(history)
+    if (storia.length !== history.length) {
+      console.log(`[TELEGRAM] storia tagliata: ${history.length} -> ${storia.length} messaggi`)
+    }
+
     // ── Claude (ASINCRONO) — risponde subito, elabora in background ──
     const bgProcess = async () => {
       let heartbeatInterval: NodeJS.Timeout | null = setInterval(() => {
@@ -1062,7 +1089,7 @@ export async function POST(request: NextRequest) {
             chatId,
             userText,
             conversationId,
-            history,
+            history: storia,
             fileBlocks,
             fileDescription,
             attachedRecentUploadIds,
@@ -1160,7 +1187,7 @@ export async function POST(request: NextRequest) {
         chatId,
         userText,
         conversationId,
-        history,
+        history: storia,
         fileBlocks,
         fileDescription,
         attachedRecentUploadIds,

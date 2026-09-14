@@ -193,14 +193,20 @@ describe('differimento delle definizioni dei tool', () => {
   // Google e dice quali sono VIVE, col motivo se non lo sono. Prima di oggi
   // la domanda "la casella di La Real Estate funziona?" non aveva risposta:
   // la credenziale era salvata ma mai esercitata.
-  it('senza opzioni: 138 definizioni e la stessa impronta di main', () => {
+  it('senza opzioni: 139 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(138)
+    expect(defs).toHaveLength(139)
+    // LA DECISIONE, 14 settembre 2026 (sera, merge dei due rami). 136 -> 139.
+    // Tre tool nati nella stessa giornata su rami diversi, che si incontrano
+    // qui: `verifica_deriva_schema` (quali migrazioni del repo non sono
+    // applicate al database), `verifica_accessi_google` (quali credenziali
+    // Google sono vive) e `gmail_leggi_allegato` — quest'ultimo perche' la
+    // funzione che scarica un allegato Gmail esisteva da mesi e NESSUN tool la
+    // esponeva: il bot rispondeva «non ho un tool che apra un allegato di
+    // Gmail» mentre il codice era in casa.
+    // L'impronta e' presa DAL FALLIMENTO del test, non calcolata a parte.
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-  // LA DECISIONE, 14 settembre 2026 (merge dei due rami). I due tool sono nati
-  // in rami diversi nella stessa giornata e si sono incontrati qui: 136 -> 138.
-  // L-impronta e- stata presa DAL FALLIMENTO del test, non calcolata a parte.
-      .toBe('30568021f1b1730611879be6f102879e')
+      .toBe('8546d8c393467cb90bbf8f14f03c8e25')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

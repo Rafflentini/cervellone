@@ -42,6 +42,7 @@ import { registraChiamataTool } from './tool-call-log'
 import { DELEGA_TOOLS, executeDelegaTool } from './tools/delega-tools'
 import { DERIVA_TOOLS, executeDerivaTools } from './tools/deriva-schema-tools'
 import { ACCESSI_GOOGLE_TOOLS, executeAccessiGoogleTools } from './tools/accessi-google-tools'
+import { GMAIL_ALLEGATI_TOOLS, executeGmailAllegatiTools } from './tools/gmail-allegati-tools'
 
 
 // ── IMAGE TOOLS (ri-aggancio pixel immagini caricate) ──
@@ -835,6 +836,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...DELEGA_TOOLS, // 2026-09-13 Decollo: chiedi_alla_contabile. SPENTO finche' DECOLLO=1 (v. delega-tools.ts)
   ...DERIVA_TOOLS, // 2026-09-14: il database e' davvero allineato al repo?
   ...ACCESSI_GOOGLE_TOOLS, // 2026-09-14: le credenziali Google sono vive?
+  ...GMAIL_ALLEGATI_TOOLS, // 2026-09-14: aprire un PDF allegato a una mail Gmail
 ]
 
 /** Nomi di tutti i tool registrati. Esposto per moduli (es. tools/self) che
@@ -935,7 +937,7 @@ const executeRiconciliazioneWrapper = contabile(executeRiconciliazioneTool, nomi
 const executePrimaNotaWrapper = contabile(executePrimaNotaTool, nomiDi(PRIMA_NOTA_TOOLS))
 const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI_TOOLS))
 
-const EXECUTORS = [executeDelegaTool, executeAnagraficaWrapper, executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeModelloTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper, executeDerivaTools, executeAccessiGoogleTools]
+const EXECUTORS = [executeDelegaTool, executeAnagraficaWrapper, executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeModelloTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper, executeDerivaTools, executeAccessiGoogleTools, executeGmailAllegatiTools]
 
 export function getToolDefinitions(opzioni?: OpzioniTool) {
   // `soloQuesti` vince su tutto: e' uno specialista, e i suoi attrezzi sono
