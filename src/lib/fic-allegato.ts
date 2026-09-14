@@ -21,7 +21,7 @@
  * `formato` — la prima chiamata vera in produzione lo dirà.
  */
 import { testoDaPdf } from './drive'
-import { ficGet, getCompanyId } from './fatture-in-cloud'
+import { ficGet, getCompanyId, getFicToken } from './fatture-in-cloud'
 import { cercaFattureRicevute, datiFattura, type EsitoFic, type FiltriRicerca } from './fic-pagamenti'
 import type { CodiceSocieta } from './societa'
 
@@ -290,4 +290,303 @@ export async function modalitaDichiarateDalFornitore(
   if (!esito.ok) return esito
 
   return { ok: true, valore: { ...esito.valore, elenco_troncato: trovate.valore.elenco_troncato } }
+}
+
+/* ------------------------------------------------------------------ *
+ * 14 settembre 2026 — il PDF di un documento EMESSO, per RIVEDERLO
+ * PRIMA di trasmetterlo allo SdI.
+ *
+ * Parole dell'Ingegnere: «se gli richiedo da Cervellone il PDF della fattura
+ * o autofattura che ha compilato per controllarla, sa scaricare PDF e
+ * ridarmelo li' per controllare». Oggi, per rivedere una bozza appena
+ * compilata, deve aprire Fatture in Cloud a mano.
+ *
+ * 🚨 QUI C'E' UN'INCOGNITA DICHIARATA, NON UN'IPOTESI.
+ *
+ * La documentazione ufficiale di Fatture in Cloud espone il campo `url` di un
+ * `IssuedDocument` letto con `fieldset=detailed`, ma NON dice se quell'indirizzo
+ * sia scaricabile cosi' com'e', se voglia il token dell'applicazione, ne' se
+ * scada. Non e' stato possibile provarlo prima di scrivere questo codice: i
+ * token FIC stanno solo su Vercel, e scaricarli tirerebbe giu' tutti i segreti
+ * del progetto.
+ *
+ * Per questo il codice non SCEGLIE una delle due ipotesi: le PROVA tutte e
+ * due, in ordine, e dichiara quale ha funzionato (campo `autenticazione`). Se
+ * non funziona nessuna delle due, riporta lo STATO HTTP vero e il corpo della
+ * risposta — mai un «documento non disponibile» generico, che e' il difetto
+ * peggiore che questo progetto conosce: il guasto travestito da risposta.
+ *
+ * ⬜ DA VERIFICARE AL PRIMO USO VERO (non prima: non si puo'):
+ *    - quale delle due strade risponde — `autenticazione` lo dice in chiaro;
+ *    - se il link di FIC scade: in quel caso una chiamata tardiva dara' 403 o
+ *      404 e lo si leggera' scritto, invece di indovinarlo.
+ *
+ * ⚠️ E il token NON si spedisce a un host qualsiasi. `url` arriva dalla
+ * risposta di FIC, ma resta un dato remoto: se un giorno puntasse altrove, il
+ * secondo tentativo regalerebbe il token dell'azienda a quell'altrove. Si
+ * ritenta con `Authorization` SOLO verso un host di Fatture in Cloud; fuori di
+ * li' si dice che non si e' ritentato, e perche'.
+ * ------------------------------------------------------------------ */
+
+/** Cosa sappiamo del documento, per far capire che si sta per aprire la cosa giusta. */
+export type MetaDocumentoEmesso = {
+  id: number
+  numero: string
+  data: string
+  totale: number
+  /** L'etichetta leggibile del tipo (fattura, nota di credito, autofattura...). */
+  tipo: string
+  cliente: string
+  /** Nome del file da proporre a chi apre il link. Solo caratteri sicuri. */
+  nome_file: string
+}
+
+export type EsitoPdfEmesso =
+  | { ok: true; buffer: Buffer; meta: MetaDocumentoEmesso; autenticazione: 'nessuna' | 'bearer' }
+  | {
+      ok: false
+      /**
+       * QUATTRO motivi distinti, mai schiacciati in uno (stessa regola di
+       * `ModalitaPerFattura.esito`): 'documento' = non ho nemmeno letto il
+       * documento su FIC; 'nessun_url' = letto, ma FIC non espone un file;
+       * 'scaricamento' = c'era l'indirizzo e non ha dato il file (lo stato HTTP
+       * e' nel messaggio); 'non_pdf' = ha risposto 200 e NON erano byte di PDF.
+       */
+      motivo: 'documento' | 'nessun_url' | 'scaricamento' | 'non_pdf'
+      messaggio: string
+      meta?: MetaDocumentoEmesso
+    }
+
+/**
+ * I tipi di documento EMESSO di Fatture in Cloud che ci interessano. Un tipo
+ * fuori tabella non si nasconde: si restituisce grezzo e si dichiara come tale
+ * (stessa regola di `TABELLA_MODALITA_SDI`).
+ */
+const TIPI_EMESSI: Record<string, string> = {
+  invoice: 'fattura',
+  credit_note: 'nota di credito',
+  proforma: 'proforma',
+  receipt: 'ricevuta',
+  self_own_invoice: 'autofattura',
+  self_supplier_invoice: 'autofattura/integrazione (reverse charge)',
+}
+
+/** Il `TipoDocumento` SDI (TD01, TD17...) sta in `ei_raw`, non nel campo `type`. */
+function tipoDocumentoSdi(doc: Record<string, unknown>): string | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const td = (doc as any)?.ei_raw?.FatturaElettronicaBody?.DatiGenerali?.DatiGeneraliDocumento?.TipoDocumento
+  return typeof td === 'string' && td.trim() ? td.trim().toUpperCase() : null
+}
+
+/**
+ * Nome del file proposto a chi apre il link: numero e data, non l'id nudo.
+ *
+ * ⚠️ Passa da un setaccio che tiene SOLO `[A-Za-z0-9._-]`, e non e' cosmesi:
+ * questo nome finisce dentro l'intestazione `Content-Disposition`. Un numero
+ * di documento con dentro una virgoletta, un a capo o un punto e virgola —
+ * e i numeri FIC contengono gia' `/` — spezzerebbe l'intestazione. Il valore
+ * arriva da Fatture in Cloud, cioe' da fuori.
+ */
+function nomeFilePdf(tipo: string, numero: string, data: string): string {
+  const pulisci = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+  const pezzi = [pulisci(tipo), pulisci(numero), pulisci(data)].filter(Boolean)
+  return `${pezzi.join('-') || 'documento'}.pdf`
+}
+
+function metaDocumentoEmesso(doc: Record<string, unknown>, idChiesto: number): MetaDocumentoEmesso {
+  const d = datiFattura(doc, 'emessa')
+  const grezzo = typeof doc.type === 'string' ? doc.type.trim() : ''
+  const etichetta = TIPI_EMESSI[grezzo] ?? (grezzo ? `${grezzo} (tipo non in tabella)` : 'tipo non dichiarato')
+  const td = tipoDocumentoSdi(doc)
+  return {
+    id: d.id || idChiesto,
+    numero: d.numero,
+    data: d.data,
+    totale: d.importo,
+    tipo: td ? `${etichetta} ${td}` : etichetta,
+    // `datiFattura` chiama `fornitore` la controparte; su un documento EMESSO
+    // la controparte e' il cliente.
+    cliente: d.fornitore,
+    nome_file: nomeFilePdf(TIPI_EMESSI[grezzo] ?? 'documento', d.numero, d.data),
+  }
+}
+
+/** I primi byte, resi leggibili, per DIRE cosa e' arrivato quando non e' un PDF. */
+function anteprimaByte(buffer: Buffer): string {
+  return buffer.subarray(0, 40).toString('latin1').replace(/[^\x20-\x7e]/g, '.')
+}
+
+function hostDi(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return '(indirizzo illeggibile)'
+  }
+}
+
+/** Il token si manda solo a casa propria. Vedi il 🚨 in testa a questo blocco. */
+function eDiFattureInCloud(url: string): boolean {
+  return /(^|\.)fattureincloud\.(it|com)$/i.test(hostDi(url))
+}
+
+type UnaChiamata =
+  | { ok: true; buffer: Buffer }
+  | { ok: false; status: number | null; messaggio: string }
+
+async function chiamaUrlDocumento(url: string, token?: string): Promise<UnaChiamata> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+  try {
+    const headers: Record<string, string> = { Accept: 'application/pdf' }
+    if (token) headers.Authorization = `Bearer ${token}` // mai loggato
+    const res = await fetch(url, { headers, signal: controller.signal })
+    if (!res.ok) {
+      const corpo = await res.text().then((t) => t.slice(0, 200)).catch(() => '')
+      return { ok: false, status: res.status, messaggio: `HTTP ${res.status}${corpo ? ` — ${corpo}` : ''}` }
+    }
+    const lenHeader = res.headers.get('content-length')
+    const lenDichiarata = lenHeader ? Number(lenHeader) : undefined
+    if (lenDichiarata && lenDichiarata > TETTO_BYTE) {
+      return {
+        ok: false,
+        status: res.status,
+        messaggio: `il file pesa ${mbLeggibile(lenDichiarata)}, oltre il tetto di ${mbLeggibile(TETTO_BYTE)}: non l'ho scaricato`,
+      }
+    }
+    const buffer = Buffer.from(await res.arrayBuffer())
+    if (buffer.length > TETTO_BYTE) {
+      return {
+        ok: false,
+        status: res.status,
+        messaggio: `il file pesa ${mbLeggibile(buffer.length)}, oltre il tetto di ${mbLeggibile(TETTO_BYTE)}: scaricamento interrotto`,
+      }
+    }
+    return { ok: true, buffer }
+  } catch (err) {
+    const scaduto = err instanceof Error && err.name === 'AbortError'
+    return {
+      ok: false,
+      status: null,
+      messaggio: scaduto
+        ? `nessuna risposta entro ${TIMEOUT_MS / 1000}s`
+        : (err instanceof Error ? err.message : String(err)),
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Prima senza token. Se e SOLO se torna 401/403 — cioe' se l'indirizzo dice
+ * «ti manca una credenziale» — si ritenta con il Bearer dell'applicazione.
+ * Ogni altro stato NON si ritenta: un 404 o un 500 non diventano meno 404 o
+ * 500 con un token addosso, e ritentare a caso nasconderebbe il motivo vero.
+ */
+async function scaricaPdfDaFic(
+  url: string,
+  token: string | null,
+): Promise<{ ok: true; buffer: Buffer; autenticazione: 'nessuna' | 'bearer' } | { ok: false; messaggio: string }> {
+  const primo = await chiamaUrlDocumento(url)
+  if (primo.ok) return { ok: true, buffer: primo.buffer, autenticazione: 'nessuna' }
+  if (primo.status !== 401 && primo.status !== 403) return { ok: false, messaggio: primo.messaggio }
+
+  if (!eDiFattureInCloud(url)) {
+    return {
+      ok: false,
+      messaggio: `${primo.messaggio}. NON ho ritentato con il token dell'applicazione: l'indirizzo del file sta su `
+        + `${hostDi(url)}, che non e' Fatture in Cloud, e il token non si manda a un host che non lo deve avere.`,
+    }
+  }
+  if (!token) {
+    return { ok: false, messaggio: `${primo.messaggio}. Non ho ritentato con il token: non e' configurato.` }
+  }
+  const secondo = await chiamaUrlDocumento(url, token)
+  if (secondo.ok) return { ok: true, buffer: secondo.buffer, autenticazione: 'bearer' }
+  return {
+    ok: false,
+    messaggio: `senza token ${primo.messaggio}; ritentato con il token dell'applicazione: ${secondo.messaggio}`,
+  }
+}
+
+/**
+ * Il PDF di un documento EMESSO (fattura, autofattura/integrazione, nota di
+ * credito) dato il suo id. **Legge e basta**: non modifica il documento, non
+ * lo trasmette allo SdI, non lo cancella.
+ */
+export async function pdfDocumentoEmesso(
+  id: number,
+  societa: CodiceSocieta,
+): Promise<EsitoPdfEmesso> {
+  const company = await getCompanyId(societa)
+  if (!company.ok) return { ok: false, motivo: 'documento', messaggio: company.error }
+
+  const r = await ficGet(`/c/${company.id}/issued_documents/${id}`, { fieldset: 'detailed' }, societa)
+  if (!r.ok) return { ok: false, motivo: 'documento', messaggio: r.error }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const dati = ((r.data as any)?.data ?? r.data) as Record<string, unknown> | null
+  if (!dati || typeof dati !== 'object') {
+    return {
+      ok: false,
+      motivo: 'documento',
+      messaggio: `Fatture in Cloud non ha restituito nessun documento emesso con id ${id}.`,
+    }
+  }
+  const meta = metaDocumentoEmesso(dati, id)
+
+  const url = typeof dati.url === 'string' ? dati.url.trim() : ''
+  if (!url) {
+    return {
+      ok: false,
+      motivo: 'nessun_url',
+      messaggio: `Fatture in Cloud non espone nessun file (campo url) per il documento emesso ${id} `
+        + `(${meta.tipo} ${meta.numero} del ${meta.data}). Il PDF va aperto dal gestionale.`,
+      meta,
+    }
+  }
+
+  const scarico = await scaricaPdfDaFic(url, getFicToken(societa))
+  if (!scarico.ok) {
+    return {
+      ok: false,
+      motivo: 'scaricamento',
+      messaggio: `Non sono riuscito a scaricare il PDF del documento ${id} (${meta.tipo} ${meta.numero}): ${scarico.messaggio}.`,
+      meta,
+    }
+  }
+
+  // ⚠️ I BYTE, non il nome. Un indirizzo che risponde 200 con una pagina HTML
+  // di errore e l'estensione .pdf non e' un PDF: consegnarlo come documento
+  // fiscale sarebbe esattamente il guasto travestito da risposta.
+  const formato = rilevaFormato(scarico.buffer)
+  if (formato !== 'pdf') {
+    return {
+      ok: false,
+      motivo: 'non_pdf',
+      messaggio: `L'indirizzo del documento ${id} ha risposto, ma NON ha mandato un PDF: `
+        + `${scarico.buffer.length} byte riconosciuti come «${formato}», che cominciano con «${anteprimaByte(scarico.buffer)}». `
+        + `Non lo consegno come documento fiscale.`,
+      meta,
+    }
+  }
+
+  return { ok: true, buffer: scarico.buffer, meta, autenticazione: scarico.autenticazione }
+}
+
+/**
+ * La chiave su cui si firma il collegamento al PDF.
+ *
+ * ⚠️ Ci sta dentro anche la SOCIETA', e non e' un vezzo: i due account FIC
+ * hanno numerazioni indipendenti, quindi il documento 123 esiste su tutte e
+ * due e sono documenti diversi. Con una chiave fatta del solo id, un
+ * collegamento firmato per la fattura 123 di Restruktura aprirebbe anche la
+ * 123 de La Real Estate.
+ *
+ * Prende stringhe e non tipi: la rotta la costruisce dai pezzi GREZZI
+ * dell'indirizzo, prima di validarli, cosi' il controllo dell'accesso viene
+ * PRIMA di qualunque altra risposta e non si puo' sapere nulla — nemmeno se
+ * una societa' esista — senza un token valido.
+ */
+export function chiaveLinkPdf(societa: string, id: string | number): string {
+  return `fic-pdf:${societa}:${id}`
 }
