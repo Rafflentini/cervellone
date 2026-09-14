@@ -265,6 +265,10 @@ export const DOMINI: readonly Dominio[] = [
       'crea_procedura',
       'imposta_modello',
       'riepilogo_giorno',
+      // 2026-09-14: sapere se il proprio database ha ancora la forma che il
+      // proprio repository promette e' guardarsi allo specchio, non fare
+      // contabilita': lo scaffale e' questo.
+      'verifica_deriva_schema',
     ],
   },
 ]

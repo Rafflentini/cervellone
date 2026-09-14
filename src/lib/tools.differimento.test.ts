@@ -158,11 +158,18 @@ describe('differimento delle definizioni dei tool', () => {
   // centesimo» e il tool non aveva modo di saperlo — un bonifico parziale
   // avrebbe segnato pagata l'intera voce. Ora, se l'importo non combacia, la
   // fattura viene ESCLUSA e lo dice.
-  it('senza opzioni: 136 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 14 settembre 2026. Da 136 a 137, impronta da
+  // `bec89cf4b8eca133e2e64a6ee3f21d54`. E' entrato `verifica_deriva_schema`:
+  // dice quali migrazioni del repository NON sono applicate al database di
+  // produzione. Nasce perche' quel giorno si e' scoperto che cinque migrazioni
+  // su 43 non erano mai state applicate, e due di quelle reggevano codice vivo
+  // da mesi senza che nessuno se ne accorgesse. Il numero sale di proposito.
+  it('senza opzioni: 137 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(136)
+    expect(defs).toHaveLength(137)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('bec89cf4b8eca133e2e64a6ee3f21d54')
+      .toBe('4b4afe2c9a0c31085a66b685bb092dcf')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
