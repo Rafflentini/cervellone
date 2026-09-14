@@ -145,6 +145,12 @@ const VERSI = {
     controparte: 'fornitore',
     nonScrivibili: CAMPI_NON_SCRIVIBILI,
     dataPredefinita: true,
+    /**
+     * Le ricevute si rispediscono INTERE, come prima. Non sono mai «locked»
+     * (nessuno le trasmette allo SdI: le riceve), funzionano cosi' da sempre, e
+     * cambiarle sarebbe rischio gratuito su un percorso che non ha il problema.
+     */
+    soloPagamenti: false,
   },
   emessa: {
     endpoint: 'issued_documents',
@@ -152,6 +158,29 @@ const VERSI = {
     controparte: 'cliente',
     nonScrivibili: CAMPI_NON_SCRIVIBILI_EMESSA,
     dataPredefinita: false,
+    /**
+     * 🚨 Sulle EMESSE si manda SOLO il piano pagamenti, e questo cambia tutto.
+     *
+     * Il 14 settembre 2026, al primo uso vero, FIC ha rifiutato: la fattura
+     * 19-ED era gia' stata trasmessa allo SdI, quindi «locked». Il rifiuto e'
+     * corretto — una fattura elettronica trasmessa NON si modifica — ma la
+     * domanda era sbagliata: **noi non stiamo modificando la fattura, stiamo
+     * registrando un incasso**, e dall'interfaccia di FIC si fa senza problemi.
+     * Era il fatto di rispedire il documento INTERO a far scattare il blocco.
+     *
+     * Perche' prima si mandava tutto: il test lo diceva — «la semantica del PUT
+     * non e' documentata: cosi' l'esito e' lo stesso sia che sostituisca tutto,
+     * sia che accetti un payload parziale». Era prudenza sotto incertezza, ed
+     * era ragionevole. Poi l'incertezza si e' sciolta in due modi: la
+     * documentazione dichiara supportato l'aggiornamento PARZIALE, e mandare
+     * tutto si e' rivelato l'unica forma che NON funziona sulle fatture vere.
+     *
+     * ⚠️ La rete di sicurezza resta e non si tocca: dopo il PUT la fattura si
+     * RILEGGE e `verificaPagamento` controlla che non sia cambiato nient'altro.
+     * Se un payload parziale azzerasse qualcosa, il tool lo DICE invece di
+     * lasciare una fattura danneggiata in silenzio.
+     */
+    soloPagamenti: true,
   },
 } as const
 
@@ -554,6 +583,10 @@ export function corpoModifica(
   piano: Record<string, unknown>[],
   verso: Verso = 'ricevuta',
 ): Record<string, unknown> {
+  // Sulle emesse basta il piano pagamenti: rispedire il documento intero fa
+  // scattare il blocco delle e-fatture trasmesse (v. `soloPagamenti` in VERSI).
+  if (VERSI[verso].soloPagamenti) return { payments_list: piano }
+
   const corpo: Record<string, unknown> = {}
   const nonScrivibili: ReadonlySet<string> = VERSI[verso].nonScrivibili
   for (const [k, v] of Object.entries(doc)) {
