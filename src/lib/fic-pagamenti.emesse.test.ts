@@ -144,18 +144,35 @@ describe('i dati che l Ingegnere legge: numero e cliente di una fattura emessa',
 })
 
 describe('il corpo del PUT su una fattura emessa', () => {
-  it('rispedisce il documento meno i campi di sola lettura di IssuedDocument', () => {
+  /**
+   * 🚨 Qui, fino al 14 settembre 2026, si rispediva il DOCUMENTO INTERO, e il
+   * test lo pretendeva: «e' un documento intero, non un frammento». La ragione
+   * era scritta e ragionevole — «la semantica del PUT non e' documentata: cosi'
+   * l'esito e' lo stesso sia che sostituisca tutto, sia che accetti un payload
+   * parziale» — cioe' prudenza sotto incertezza.
+   *
+   * L'incertezza si e' sciolta al primo uso vero, e nel modo peggiore: FIC ha
+   * RIFIUTATO. La fattura 19-ED era gia' stata trasmessa allo SdI, quindi
+   * «locked». E il rifiuto era corretto: una fattura elettronica trasmessa non
+   * si modifica. Era la nostra domanda a essere sbagliata — non stiamo
+   * modificando la fattura, stiamo **registrando un incasso**, che
+   * dall'interfaccia di FIC si fa senza problemi.
+   *
+   * Mandare tutto si e' rivelato l'unica forma che NON funziona sulle fatture
+   * vere, cioe' quelle trasmesse. La documentazione dichiara supportato
+   * l'aggiornamento parziale: si manda solo il piano pagamenti.
+   */
+  it('🚨 manda SOLO il piano pagamenti: il documento intero fa scattare il blocco delle e-fatture', () => {
     const corpo = corpoModifica(emessa(), [voceIncassata()], 'emessa')
-    for (const k of ['id', 'amount_net', 'amount_vat', 'amount_gross', 'amount_withholding_tax', 'url', 'attachment_url', 'next_due_date', 'ei_status', 'seen_date', 'permanent_token', 'locked', 'created_at', 'updated_at']) {
+
+    expect(Object.keys(corpo)).toEqual(['payments_list'])
+    expect(corpo.payments_list).toEqual([voceIncassata()])
+
+    // Nessun campo del documento parte piu': sono quelli che FIC rifiuta di
+    // vedersi riscrivere su una fattura gia' andata allo SdI.
+    for (const k of ['type', 'number', 'numeration', 'date', 'items_list', 'entity', 'amount_due_discount']) {
       expect(corpo, k).not.toHaveProperty(k)
     }
-    // Quello che DEVE restare: e' un documento intero, non un frammento.
-    expect(corpo).toMatchObject({ type: 'invoice', number: 19, numeration: '-ED', date: '2026-06-15' })
-    expect(corpo.items_list).toEqual(emessa().items_list)
-    expect(corpo.payments_list).toEqual([voceIncassata()])
-    expect(corpo.entity).toEqual({ id: 9, name: 'Condominio "Residence Vallina II A1,A2,A3"' })
-    // amount_due_discount e' SCRIVIBILE nello schema (audit 14 set): resta.
-    expect(corpo).toHaveProperty('amount_due_discount')
   })
 
   // Controllo positivo: sulla ricevuta amount_net resta scrivibile, com'era.
