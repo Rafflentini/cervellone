@@ -56,4 +56,18 @@ describe('il wrapper contabile dei tool fic_ rivendica per elenco', () => {
     expect(spiaFic).toHaveBeenCalledTimes(1)
     expect(esito).not.toContain('non riconosciuto')
   }, 30_000)
+
+  it("🚨 fic_aggiorna_anagrafica arriva al SUO esecutore, non al tappo dei fic_", async () => {
+    // Si chiama fic_* ma vive in fic-anagrafica.ts: se il wrapper contabile di
+    // FIC rivendicasse per prefisso — o se qualcuno lo rimettesse davanti in
+    // EXECUTORS — questo tool sarebbe REGISTRATO E IRRAGGIUNGIBILE, e la
+    // risposta sarebbe «tool FIC sconosciuto» invece della modifica.
+    // Senza id il tool rifiuta subito: nessuna chiamata a Fatture in Cloud.
+    const esito = await executeTool('fic_aggiorna_anagrafica', {}, 'conv-1')
+
+    expect(spiaFic).not.toHaveBeenCalled()
+    expect(esito).not.toContain('tool FIC sconosciuto')
+    expect(esito).not.toContain('non riconosciuto')
+    expect(esito).toContain('fic_cerca_anagrafica')
+  }, 30_000)
 })

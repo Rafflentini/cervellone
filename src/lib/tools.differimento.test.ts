@@ -271,11 +271,25 @@ describe('differimento delle definizioni dei tool', () => {
   // Adesso accetta `elenco: 'fornitore'`, e siccome una capacita' che non e'
   // nello schema per il modello NON ESISTE, la descrizione cambia con lui e
   // paga il pedaggio dell'impronta.
-  it('senza opzioni: 142 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 15 settembre 2026 (correggere un'anagrafica). Era 142 con
+  // impronta `6d2b95c878cf6cdc4100f244971a8ce1`. E' stato aggiunto UN tool:
+  // `fic_aggiorna_anagrafica` — MODIFICA una scheda cliente o fornitore che
+  // esiste gia' su Fatture in Cloud.
+  //
+  // Le parole dell'Ingegnere: «deve saper anche modificare una anagrafica
+  // cliente o fornitore se serve». Prima di oggi Cervellone sapeva creare una
+  // scheda e cercarla, non correggerla: davanti a una scheda sbagliata
+  // l'unica strada praticabile era crearne un'altra, cioe' fabbricare il
+  // DOPPIONE che `fic-anagrafica.ts` esiste per impedire.
+  //
+  // ⚠️ Numero e impronta qui sotto sono presi DAL FALLIMENTO del test, non
+  // calcolati a parte. Il numero sale da 142 a 143 di proposito.
+  it('senza opzioni: 143 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(142)
+    expect(defs).toHaveLength(143)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('6d2b95c878cf6cdc4100f244971a8ce1')
+      .toBe('e6276bc3bc326987d2d842f15918fdd5')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
