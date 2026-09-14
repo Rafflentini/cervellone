@@ -7,10 +7,11 @@
  * il codice che la usa: cinque punti aprivano un client Google con la societa'
  * CABLATA. Questo file ne chiude QUATTRO (drive.ts, calendar-tools.ts,
  * document-saver.ts, hallucination-validator.ts) — il quinto e' `gmail-tools.ts`,
- * dove il Task 2 ha reso `casella` un parametro obbligatorio delle funzioni di
- * basso livello, senza ancora dare ai 16 tool `gmail_*` la scelta: quella e'
- * lavoro del Task 3 (lettura su tutte, con provenienza) e del Task 4
- * (scrittura sulla casella giusta).
+ * dove `casella` e' un parametro obbligatorio delle funzioni di basso livello
+ * (Task 2). I 16 tool `gmail_*` HANNO la scelta: in lettura guardano tutte le
+ * caselle Google per difetto e dicono da quale viene ogni risultato (Task 3),
+ * in scrittura la casella e' obbligatoria e non si deduce mai (Task 4) —
+ * entrambe vivono in `politica-caselle.ts`, cablate in `tools/mail.ts`.
  *
  * Perche' un registro e non un parametro qua e la': ne esistevano gia' DUE a
  * meta' — `societa.ts` per le societa' e `AccountKey` ('info'|'raffaele') per
