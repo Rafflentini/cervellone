@@ -2904,6 +2904,14 @@
       "testo": "alter table public.cervellone_fic_pending add constraint cervellone_fic_pending_tipo_check check (tipo in ('fattura_emessa', 'rapporto_intervento', 'pagamento_ricevuta', 'pagamento_emessa'))"
     },
     {
+      "file": "2026-09-14-fic-pending-spesa-ricevuta.sql",
+      "testo": "alter table public.cervellone_fic_pending drop constraint if exists cervellone_fic_pending_tipo_check"
+    },
+    {
+      "file": "2026-09-14-fic-pending-spesa-ricevuta.sql",
+      "testo": "alter table public.cervellone_fic_pending add constraint cervellone_fic_pending_tipo_check check (tipo in ('fattura_emessa', 'rapporto_intervento', 'pagamento_ricevuta', 'pagamento_emessa', 'autofattu"
+    },
+    {
       "file": "2026-09-14-fotografia-schema.sql",
       "testo": "CREATE OR REPLACE FUNCTION public.fotografia_schema() RETURNS jsonb LANGUAGE sql STABLE SECURITY INVOKER AS $$ SELECT jsonb_build_object( 'tabelle', ( SELECT coalesce(jsonb_agg(table_name ORDER BY tab"
     },

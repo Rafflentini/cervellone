@@ -94,5 +94,12 @@ describe('fic_leggi_allegato_fattura: il tool nuovo', () => {
     const parsed = JSON.parse(out || '{}')
     expect(parsed.ok).toBe(false)
     expect(parsed.motivo).toBe('nessun_allegato')
-  })
+    // ⚠️ Timeout suo: questo caso arriva a `leggiAllegatoFatturaRicevuta`, che
+    // tira dentro il modulo di Drive (`testoDaPdf`). Misurato ~4,7 s contro i
+    // 5 s predefiniti: la PRIMA corsa dopo qualunque modifica a
+    // `fatture-in-cloud.ts` scadeva, la seconda passava. Due agenti diversi,
+    // oggi, hanno perso tempo a cercare un difetto che non c'era. Un falso
+    // rosso costa quanto un difetto vero, perche' insegna a non fidarsi del
+    // rosso.
+  }, 30_000)
 })

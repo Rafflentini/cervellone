@@ -60,7 +60,7 @@ interface RigaPending {
   descrizione: string | null
   created_at: string
   societa: string | null
-  /** `fattura_emessa` | `rapporto_intervento` | `pagamento_ricevuta` | `pagamento_emessa`. */
+  /** `fattura_emessa` | `rapporto_intervento` | `pagamento_ricevuta` | `pagamento_emessa` | `autofattura` | `spesa_ricevuta`. */
   tipo: string | null
 }
 
@@ -78,8 +78,15 @@ interface RigaPending {
  * ⚠️ Quello che NON cambia: la conferma resta una frase che l'Ingegnere ha
  * detto o scritto DAVVERO, e l'anteprima gliela si è già mostrata quando il
  * tool ha preparato la riga. Un passaggio solo, ma umano.
+ *
+ * ⚠️ `spesa_ricevuta` sta qui per lo stesso criterio, non per comodità: una
+ * fattura d'ACQUISTO registrata non è un atto fiscale verso l'esterno — non
+ * si trasmette a nessuno, e su Fatture in Cloud si cancella in dieci secondi.
+ * Quello che NON si disfa è emettere; registrare quello che si è ricevuto no.
+ * (Chiesto insieme al tool, 14 settembre 2026: «deve solo mettere PDF e
+ * importo».)
  */
-const A_CONFERMA_SINGOLA: ReadonlySet<string> = new Set(['pagamento_emessa', 'pagamento_ricevuta'])
+const A_CONFERMA_SINGOLA: ReadonlySet<string> = new Set(['pagamento_emessa', 'pagamento_ricevuta', 'spesa_ricevuta'])
 
 export interface EsitoConfermaFic {
   /** false = non era una conferma per una bozza FIC: il messaggio va al modello. */

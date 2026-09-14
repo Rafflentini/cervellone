@@ -72,6 +72,22 @@ describe('un INCASSO si chiude con una conferma sola', () => {
 
     expect(step2).toHaveBeenCalledTimes(1)
   })
+
+  it('spesa_ricevuta: registrare una fattura d ACQUISTO si disfa, quindi una conferma sola', async () => {
+    // ⚠️ Il criterio resta «reversibile o no». Una spesa non si trasmette a
+    // nessuno: e' la registrazione di un documento che abbiamo RICEVUTO, e su
+    // Fatture in Cloud si cancella in dieci secondi. Quello che non si disfa
+    // e' EMETTERE — e infatti `fattura_emessa` e `autofattura` restano a due
+    // passaggi (v. i controlli positivi qui sotto).
+    righe.valore = pending('spesa_ricevuta', { descrizione: 'Registro una SPESA (fattura RICEVUTA) su Fatture in Cloud' })
+
+    const esito = await confermaFicPiuRecente('restruktura')
+
+    expect(step1).toHaveBeenCalledTimes(1)
+    expect(step2).toHaveBeenCalledTimes(1)
+    expect(esito.message).toContain('Scritto su Fatture in Cloud')
+    expect(esito.message).not.toContain('un\'ultima volta')
+  })
 })
 
 describe('CONTROLLO POSITIVO — quello che NON si disfa resta a due passaggi', () => {

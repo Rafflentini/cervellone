@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import { ficGet, getCompanyId, creaDocumentoFIC, eliminaDocumentoFIC } from './fatture-in-cloud'
+import { ficGet, getCompanyId, creaDocumentoFIC, eliminaDocumentoFIC, caricaAllegatoFIC, creaSpesaFIC } from './fatture-in-cloud'
 import { getSocieta, type CodiceSocieta } from './societa'
 import { comandoDaMostrare } from './comandi-uuid'
 import { modalitaPerDocumenti } from './fic-allegato'
@@ -8,6 +8,7 @@ import {
   cercaFattureRicevute,
   classificaFattura,
   controparteDi,
+  datiFattura,
   elencoContiPagamentoFic,
   leggiFatturaEmessa,
   leggiFatturaRicevuta,
@@ -18,8 +19,11 @@ import {
   type ContoPagamentoFic,
   type FatturaDaSegnarePagata,
   type FatturaEsclusa,
+  type FatturaRicevuta,
   type Verso,
 } from './fic-pagamenti'
+import { scegliAllegatoMail, scaricaAllegatoScelto, CASELLE_GOOGLE } from './spesa-allegato'
+import type { ChiaveCasella } from './caselle'
 
 /**
  * Le tre operazioni di I/O per verso, prese per NOME dal modulo: i test le
@@ -56,7 +60,7 @@ interface ToolDefinition {
 }
 
 type PendingStato = 'in_attesa' | 'creata' | 'annullata'
-type PendingTipo = 'fattura_emessa' | 'rapporto_intervento' | 'pagamento_ricevuta' | 'pagamento_emessa' | 'autofattura'
+type PendingTipo = 'fattura_emessa' | 'rapporto_intervento' | 'pagamento_ricevuta' | 'pagamento_emessa' | 'autofattura' | 'spesa_ricevuta'
 
 interface PendingRow {
   id: string
@@ -300,10 +304,11 @@ function normalizeRighe(
  * essere una forma parziale usata solo per la ricerca, e finirebbe scritta sul
  * documento fiscale al posto della denominazione vera.
  */
-async function resolveClientEntity(
+async function resolveEntitaFic(
   cliente: string,
   societa: CodiceSocieta,
   clienteId?: number,
+  segmento: 'clients' | 'suppliers' = 'clients',
 ): Promise<
   | { ok: true; entity: Record<string, unknown>; descrizione: string }
   | { ok: false; error: string }
@@ -321,16 +326,19 @@ async function resolveClientEntity(
   // Si rilegge comunque la scheda: serve la denominazione VERA (FIC rifiuta il
   // documento senza `entity.name`) e serve accorgersi di un id che non esiste
   // piu', invece di scoprirlo a fattura in creazione.
+  const etichettaId = segmento === 'suppliers' ? 'fornitore_id' : 'cliente_id'
+  const etichettaAnagrafica = segmento === 'suppliers' ? 'anagrafica fornitori' : 'anagrafica clienti'
+
   if (clienteId !== undefined) {
-    const r = await ficGet(`/c/${company.id}/entities/clients/${clienteId}`, undefined, societa)
-    if (!r.ok) return { ok: false, error: `cliente_id ${clienteId} non leggibile: ${r.error}` }
+    const r = await ficGet(`/c/${company.id}/entities/${segmento}/${clienteId}`, undefined, societa)
+    if (!r.ok) return { ok: false, error: `${etichettaId} ${clienteId} non leggibile: ${r.error}` }
     const scheda = (r.data?.data ?? r.data) as Record<string, unknown> | undefined
     const nome = cleanString(scheda?.name)
-    if (!nome) return { ok: false, error: `cliente_id ${clienteId} non trovato in anagrafica.` }
+    if (!nome) return { ok: false, error: `${etichettaId} ${clienteId} non trovato in anagrafica.` }
     return { ok: true, entity: { id: clienteId, name: nome }, descrizione: `${nome} (id ${clienteId})` }
   }
 
-  const r = await ficGet(`/c/${company.id}/entities/clients`, {
+  const r = await ficGet(`/c/${company.id}/entities/${segmento}`, {
     q: `name contains '${escapeFicQuery(cliente)}'`,
     per_page: 5,
   }, societa)
@@ -359,7 +367,7 @@ async function resolveClientEntity(
   return {
     ok: true,
     entity: { name: cliente },
-    descrizione: `«${cliente}» — ⚠️ NON risulta in anagrafica clienti: nessuna P.IVA, nessun indirizzo. Verifica prima di confermare.`,
+    descrizione: `«${cliente}» — ⚠️ NON risulta in ${etichettaAnagrafica}: nessuna P.IVA, nessun indirizzo. Verifica prima di confermare.`,
   }
 }
 
@@ -484,7 +492,7 @@ async function compilaDocumento(
   const grezzo = input.cliente_id
   const clienteId = typeof grezzo === 'number' ? grezzo : typeof grezzo === 'string' && grezzo.trim() !== '' ? Number(grezzo) : undefined
   if (clienteId !== undefined && !Number.isFinite(clienteId)) return fail('cliente_id non e\' un numero')
-  const entity = await resolveClientEntity(cliente, societa, clienteId)
+  const entity = await resolveEntitaFic(cliente, societa, clienteId)
   if (!entity.ok) return fail(entity.error)
 
   const itemsList: RigaDocumentoPayload[] = []
@@ -608,15 +616,25 @@ async function eliminaBozzaFic(input: Record<string, unknown>, societa: CodiceSo
         { id, ids_fatture: row.fic_document_id },
       )
     }
-    const annullato = await supabase
-      .from('cervellone_fic_pending')
-      .update({ stato: 'annullata', updated_at: new Date().toISOString() })
-      .eq('id', id)
-      .eq('stato', 'in_attesa')
-      .select('id, stato')
-    if (annullato.error) return fail(annullato.error.message)
-    if (!annullato.data?.length) return fail('pending FIC gia elaborato', { id })
-    return ok({ id, stato: 'annullata', nota: 'Nessun pagamento era stato scritto.' })
+    return annullaPendingInAttesa(id, 'Nessun pagamento era stato scritto.')
+  }
+
+  // 🚨 Una SPESA gia' registrata e' un documento RICEVUTO, e `eliminaDocumentoFIC`
+  // parla SOLO di `/issued_documents`: passargli l'id di una spesa vorrebbe dire
+  // chiedere a Fatture in Cloud di cancellare la fattura EMESSA che porta quel
+  // numero — un documento nostro, magari gia' trasmesso allo SdI, che non c'entra
+  // niente. E' la stessa famiglia del difetto qui sopra: un «annulla» che
+  // distrugge il documento sbagliato.
+  if (row.tipo === 'spesa_ricevuta') {
+    if (row.stato === 'creata') {
+      return fail(
+        'questa spesa e\' GIA\' registrata su Fatture in Cloud come documento RICEVUTO: non la cancello da qui. '
+        + 'Il verbo che ho per eliminare parla solo delle fatture EMESSE, e usarlo con questo id cancellerebbe un altro '
+        + 'documento. Eliminala da Fatture in Cloud, dove la vedi.',
+        { id, id_documento: row.fic_document_id },
+      )
+    }
+    return annullaPendingInAttesa(id, 'Nessuna spesa era stata registrata.')
   }
 
   // 🚨 Un pending di AUTOFATTURE gia' creato porta N id nel `fic_document_id`
@@ -634,15 +652,7 @@ async function eliminaBozzaFic(input: Record<string, unknown>, societa: CodiceSo
         { id, ids_documenti: row.fic_document_id },
       )
     }
-    const annullato = await supabase
-      .from('cervellone_fic_pending')
-      .update({ stato: 'annullata', updated_at: new Date().toISOString() })
-      .eq('id', id)
-      .eq('stato', 'in_attesa')
-      .select('id, stato')
-    if (annullato.error) return fail(annullato.error.message)
-    if (!annullato.data?.length) return fail('pending FIC gia elaborato', { id })
-    return ok({ id, stato: 'annullata', nota: 'Nessuna autofattura era stata creata.' })
+    return annullaPendingInAttesa(id, 'Nessuna autofattura era stata creata.')
   }
 
   if (row.stato === 'creata') {
@@ -769,7 +779,7 @@ function descriviPagamenti(input: {
  * payload e' quindi un oggetto qualsiasi, non piu' il solo `PagamentiPayload`.
  */
 async function salvaPendingPagamenti(
-  payload: PagamentiPayload | AutofatturePayload,
+  payload: PagamentiPayload | AutofatturePayload | SpesaRicevutaPayload,
   descrivi: (id: string) => string,
   societa: CodiceSocieta,
   tipo: PendingTipo,
@@ -1487,7 +1497,7 @@ async function compilaAutofatture(
   //    di far nascere il documento su un nome scritto a mano senza dirlo.
   const documenti: AutofatturaRiga[] = []
   for (const r of righe) {
-    const entity = await resolveClientEntity(r.fornitore, societa, r.fornitoreId)
+    const entity = await resolveEntitaFic(r.fornitore, societa, r.fornitoreId)
     if (!entity.ok) return fail(`${r.fornitore}: ${entity.error}. Non ho preparato niente.`)
 
     // 🚨 Qui l'anagrafica non e' facoltativa come su una fattura emessa.
@@ -1751,6 +1761,575 @@ async function rileggiAutofattura(
   return { ok: true }
 }
 
+/* ------------------------------------------------------------------ *
+ * Registrare la SPESA di un fornitore (documento RICEVUTO + il suo PDF)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Il tipo FIC di un documento di spesa. Sta fra i `type` di
+ * `received_documents`, che e' un endpoint diverso da quello delle fatture
+ * emesse: qui non si emette niente, si REGISTRA quello che ci ha mandato il
+ * fornitore.
+ */
+const TIPO_FIC_SPESA = 'expense'
+
+/**
+ * Perche' questo tool esiste (14 settembre 2026).
+ *
+ * `compila_autofattura` sa creare l'integrazione TD17 in reverse charge per le
+ * fatture estere. Ma l'integrazione e' META' adempimento: mette l'IVA a
+ * DEBITO senza la fattura passiva a monte. La spesa del fornitore — quella
+ * che porta il costo e l'IVA a credito — nessuno la registrava.
+ *
+ * Il perimetro l'ha dettato l'Ingegnere in una riga: «deve solo mettere PDF e
+ * importo». Non si legge il PDF, non si estrae nessun importo da nessuna
+ * parte, non si indovina niente: il numero lo dice lui, il file e' quello
+ * della mail.
+ */
+interface SpesaRicevutaPayload {
+  /**
+   * 🚨 La denominazione NUDA, com'e' scritta in anagrafica: e' la chiave con
+   * cui si cerca il doppione, e deve restare pulita. Qui c'era
+   * `entity.descrizione`, che porta con se' gli avvisi («Booking.com B.V.
+   * (id 9)»): cercare con quella stringa non trovava NIENTE, e
+   * l'anti-doppione della conferma passava sempre. Trovato da un test, non
+   * in produzione.
+   */
+  fornitore: string
+  /** Lo stesso fornitore come lo legge l'Ingegnere: id, avvisi di anagrafica. */
+  fornitore_descritto: string
+  /** Numero della fattura DEL FORNITORE: e' la chiave dell'anti-doppione. */
+  numero: string
+  data: string
+  imponibile: number
+  /** IVA in euro, calcolata sul valore dell'aliquota LETTO da Fatture in Cloud. */
+  iva: number
+  totale: number
+  vat: { id: number; etichetta: string }
+  conto: ContoPagamentoFic
+  /** Dove sta il PDF. Si scarica alla conferma, non prima: v. `spesa-allegato.ts`. */
+  allegato: { casella: string; message_id: string; attachment_id: string; filename: string; oggetto: string }
+  /** Il payload FIC gia' costruito, SENZA `attachment_token`: quello nasce al caricamento. */
+  payload: Record<string, unknown>
+}
+
+/**
+ * Chiude una riga in attesa senza toccare Fatture in Cloud.
+ *
+ * Tre rami di `elimina_bozza_fic` (pagamenti, autofatture, spese) facevano la
+ * stessa identica cosa scritta tre volte: e tre copie della stessa query sono
+ * tre posti dove la clausola `stato = 'in_attesa'` puo' sparire da una sola.
+ * Quella clausola e' la difesa: senza, un «annulla» arrivato tardi
+ * marcherebbe annullata una riga gia' eseguita.
+ */
+async function annullaPendingInAttesa(id: string, nota: string): Promise<string> {
+  const annullato = await supabase
+    .from('cervellone_fic_pending')
+    .update({ stato: 'annullata', updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('stato', 'in_attesa')
+    .select('id, stato')
+  if (annullato.error) return fail(annullato.error.message)
+  if (!annullato.data?.length) return fail('pending FIC gia elaborato', { id })
+  return ok({ id, stato: 'annullata', nota })
+}
+
+/**
+ * Due numeri di fattura sono lo stesso numero se differiscono solo per
+ * punteggiatura o maiuscole: «FT 123/2026» e «ft123-2026» sono lo stesso
+ * documento, e un anti-doppione che non lo vede non serve a niente.
+ */
+function chiaveNumeroFattura(numero: string): string {
+  return numero.toUpperCase().replace(/[^A-Z0-9]/g, '')
+}
+
+/**
+ * 🚨 L'ANTI-DOPPIONE. Cerca su Fatture in Cloud una fattura RICEVUTA dello
+ * stesso fornitore con lo stesso numero.
+ *
+ * I doppioni sono un difetto che questo progetto ha gia' pagato (anagrafiche
+ * clienti duplicate, settembre 2026), e su una fattura d'acquisto costano di
+ * piu': due volte lo stesso costo e due volte la stessa IVA a credito.
+ *
+ * ⚠️ Un elenco che NON si riesce a leggere, o che si legge a meta', non e' un
+ * «non c'e'»: e' un «non lo so», e qui torna come errore. Una ricerca fallita
+ * che si traveste da via libera e' esattamente il guasto che invece di
+ * chiudere APRE.
+ */
+async function cercaSpesaDoppione(
+  fornitore: string,
+  numero: string,
+  data: string,
+  societa: CodiceSocieta,
+): Promise<{ ok: true; esistente: FatturaRicevuta | null } | { ok: false; error: string }> {
+  const anno = Number(data.slice(0, 4))
+  const r = await cercaFattureRicevute(
+    { fornitore, anno: Number.isFinite(anno) ? anno : undefined },
+    societa,
+  )
+  if (!r.ok) {
+    return { ok: false, error: `non riesco a leggere le fatture gia' registrate di ${fornitore} su Fatture in Cloud (${r.error}), quindi non posso escludere il doppione` }
+  }
+  if (r.valore.elenco_troncato) {
+    return {
+      ok: false,
+      error: `l'elenco delle fatture ricevute del ${anno} e' TRONCATO (${r.valore.pagine_lette} pagine lette e Fatture in Cloud ne dichiara altre): `
+        + 'su un elenco incompleto non posso dire che questa spesa non c\'e\' gia\'',
+    }
+  }
+  const cercato = chiaveNumeroFattura(numero)
+  const esistente = r.valore.documenti
+    .map((d) => datiFattura(d, 'ricevuta'))
+    .find((f) => chiaveNumeroFattura(f.numero) === cercato) ?? null
+  return { ok: true, esistente }
+}
+
+function descriviSpesa(input: { id: string; societa: CodiceSocieta; spesa: SpesaRicevutaPayload }): string {
+  const s = getSocieta(input.societa)
+  const d = input.spesa
+  return [
+    `Registro una SPESA (fattura RICEVUTA) su Fatture in Cloud, col PDF allegato`,
+    `SOCIETA: ${s.denominazione} (P.IVA ${s.piva})`,
+    `Fornitore: ${d.fornitore_descritto}`,
+    `Fattura n.${d.numero} del ${d.data}`,
+    `Imponibile ${euro(d.imponibile)} + IVA ${euro(d.iva)} = totale ${euro(d.totale)}`,
+    `IVA applicata (id indicato nella chiamata, letto da Fatture in Cloud): ${d.vat.etichetta}`,
+    // 🚨 La riga che spiega perche' la spesa nasce gia' saldata.
+    `PAGATA per COMPENSAZIONE il ${d.data} sul conto «${d.conto.nome}» (id ${d.conto.id}): `
+    + 'il fornitore trattiene il dovuto dal bonifico, quindi non c\'e\' niente da pagare e questa fattura NON deve finire nello scadenzario.',
+    `Allegato: «${d.allegato.filename}» dalla mail «${d.allegato.oggetto}» (casella ${d.allegato.casella}).`,
+    '⚠️ Il PDF viene scaricato e caricato su Fatture in Cloud al momento della conferma: se in quel momento non si scarica, '
+    + 'la spesa NON nasce affatto — non nasce senza il suo documento.',
+    'Ho gia\' controllato che su Fatture in Cloud non ci sia una fattura di questo fornitore con questo numero, e lo ricontrollo prima di crearla.',
+    `conferma -> ${comandoDaMostrare('fic_ok', input.id)} (a voce basta un «confermo»: e' una conferma sola)`,
+    `annulla -> ${comandoDaMostrare('fic_no', input.id)}`,
+  ].filter(Boolean).join('\n')
+}
+
+/**
+ * Prepara la spesa e la mette in attesa di conferma. NON scrive niente su
+ * Fatture in Cloud e non scarica ancora il PDF.
+ *
+ * 🚨 QUI NON SI INDOVINA NIENTE. Due dati non hanno predefinito e non lo
+ * avranno mai:
+ *
+ * - l'ALIQUOTA IVA, perche' decide se l'IVA e' detraibile, in reverse charge o
+ *   esclusa — e' una qualificazione fiscale, non un dettaglio tecnico;
+ * - il CONTO su cui la spesa risulta pagata, perche' finisce su un documento
+ *   contabile vero.
+ *
+ * Se mancano, il tool restituisce l'elenco VERO letto da Fatture in Cloud e si
+ * ferma. Nessuna percentuale cablata da nessuna parte, nemmeno nel testo di un
+ * messaggio di rifiuto: una percentuale scritta in un rifiuto e' un suggerimento,
+ * e un suggerimento su una scelta fiscale e' gia' una scelta.
+ */
+async function compilaSpesaFornitore(
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string> {
+  const s = getSocieta(societa)
+
+  // 1) I dati che non si inventano. Ognuno manca -> non si prepara NIENTE.
+  const fornitore = cleanString(input.fornitore) ?? cleanString(input.nome)
+  if (!fornitore) {
+    return fail('serve il `fornitore` della spesa (es. "Booking.com B.V."): non lo invento. Non ho preparato niente.')
+  }
+
+  const numero = cleanString(input.numero) ?? cleanString(input.numero_fattura)
+  if (!numero) {
+    return fail(
+      `manca il numero della fattura di ${fornitore}, e senza numero non posso nemmeno controllare se e' gia' registrata. `
+      + 'Non ho preparato niente.',
+    )
+  }
+
+  const data = cleanString(input.data) ?? cleanString(input.data_fattura)
+  if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+    return fail(`la data della fattura n.${numero} di ${fornitore} manca o non e' nel formato YYYY-MM-DD. Non ho preparato niente.`)
+  }
+
+  // `importoSenzaAmbiguita` e non `parseNumber`: quello cancella i punti per il
+  // formato italiano, e su "18.32" restituirebbe 1832 — cento volte la spesa.
+  const letto = importoSenzaAmbiguita(input.imponibile ?? input.importo)
+  if (letto === null || letto <= 0) {
+    return fail(
+      `l'imponibile della fattura n.${numero} di ${fornitore} manca o non e' un numero leggibile `
+      + '(passa un numero, es. 18.32 — non "1.234,56"). Non ho preparato niente.',
+    )
+  }
+  const imponibile = Math.round(letto * 100) / 100
+
+  const casella = cleanString(input.casella)
+  const messageId = cleanString(input.message_id)
+  if (!casella || !messageId) {
+    return fail(
+      'servono `casella` e `message_id` della mail che porta il PDF della fattura: una spesa si registra CON il suo '
+      + 'documento, non senza. Trovali con gmail_search. Non ho preparato niente.',
+    )
+  }
+
+  // 2) 🚨 L'IVA. Si legge l'elenco vero di Fatture in Cloud e ci si scrive
+  //    dentro l'id indicato: un id assente dall'elenco e' un id inventato.
+  const elenco = await elencoAliquoteFic(societa)
+  if (!elenco.ok) return fail(`aliquote IVA non leggibili da Fatture in Cloud: ${elenco.error}. Non ho preparato niente.`)
+
+  const vatId = intero(input.vat_id)
+  const scelta = vatId === undefined
+    ? undefined
+    : elenco.righe.find((row) => parseAliquotaFic(row.id) === vatId)
+
+  if (!scelta) {
+    return ok({
+      need: 'vat_id',
+      messaggio: vatId === undefined
+        ? 'Non scelgo io l\'aliquota IVA di una fattura d\'acquisto: dice se l\'IVA e\' detraibile, in reverse charge o esclusa, '
+          + 'ed e\' una qualificazione fiscale, non un dettaglio. Chiedi all\'Ingegnere QUALE di queste usare e richiamami con vat_id.'
+        : `l'id IVA ${vatId} non esiste fra le ${elenco.righe.length} aliquote di questa azienda su Fatture in Cloud. `
+          + 'Chiedi all\'Ingegnere quale usare e richiamami con vat_id.',
+      // L'elenco GREZZO di FIC: descrizione, natura e note comprese. Ripulirlo
+      // vorrebbe dire scegliere quali campi contano in una decisione non nostra.
+      aliquote_disponibili: elenco.righe,
+      nota: 'Non ho preparato niente e non ho scritto niente su Fatture in Cloud.',
+    })
+  }
+
+  const idIva = parseAliquotaFic(scelta.id) as number
+  const etichettaIva = etichettaAliquota(scelta)
+  const valoreIva = parseAliquotaFic(scelta.value)
+  if (valoreIva === null) {
+    // Non si legge -> si dice. L'alternativa sarebbe scrivere «0» e far
+    // nascere una spesa con l'IVA sbagliata, che e' un dato inventato.
+    return fail(
+      `Fatture in Cloud non dice a quanto ammonta l'aliquota «${etichettaIva}»: senza quel valore non so quanta IVA `
+      + 'scrivere sulla spesa, e non la calcolo a naso. Non ho preparato niente.',
+    )
+  }
+  const iva = Math.round(imponibile * valoreIva) / 100
+  const totale = Math.round((imponibile + iva) * 100) / 100
+
+  // 3) 🚨 IL CONTO. Stessa forma: elenco vero, nessun predefinito.
+  const conti = await elencoContiPagamentoFic(societa)
+  if (!conti.ok) return fail(`conti di pagamento non leggibili da Fatture in Cloud: ${conti.error}. Non ho preparato niente.`)
+
+  const richiesta = cleanString(input.modalita_pagamento)
+  const risolto = richiesta ? risolviContoPagamento(conti.valore, richiesta) : null
+  if (!risolto || !risolto.ok) {
+    return ok({
+      need: 'modalita_pagamento',
+      messaggio: risolto
+        ? `${risolto.error}. Chiedi all'Ingegnere quale conto usare e richiamami.`
+        : 'Questa spesa nasce gia\' saldata (il fornitore trattiene il dovuto dal bonifico), e il conto su cui risulta '
+          + 'pagata non lo scelgo io. Chiedi all\'Ingegnere quale usare e richiamami con modalita_pagamento.',
+      conti_disponibili: conti.valore,
+      nota: 'Non ho preparato niente e non ho scritto niente su Fatture in Cloud.',
+    })
+  }
+  const conto = risolto.valore
+
+  // 4) L'ALLEGATO: si SCEGLIE ora (e se non e' univoco ci si ferma), si scarica
+  //    dopo la conferma. Vedi `spesa-allegato.ts`.
+  const scelto = await scegliAllegatoMail(casella as ChiaveCasella, messageId, cleanString(input.nome_file))
+  if (!scelto.ok) return fail(`${scelto.error}. Non ho preparato niente.`)
+
+  // 5) Il fornitore sull'anagrafica FORNITORI (non clienti: qui il documento e'
+  //    ricevuto). Se non risulta, il documento si prepara lo stesso col solo
+  //    nome — FIC accetta — ma l'avviso finisce nell'anteprima.
+  const entity = await resolveEntitaFic(fornitore, societa, intero(input.fornitore_id), 'suppliers')
+  if (!entity.ok) return fail(`${fornitore}: ${entity.error}. Non ho preparato niente.`)
+  const nomeFornitore = cleanString(asObject(entity.entity).name) ?? fornitore
+
+  // 6) 🚨 ANTI-DOPPIONE, con la denominazione RISOLTA: cercare col nome
+  //    scritto a mano avrebbe mancato la fattura registrata sotto il nome
+  //    dell'anagrafica, cioe' avrebbe dichiarato «non c'e'» proprio quando c'e'.
+  const doppione = await cercaSpesaDoppione(nomeFornitore, numero, data, societa)
+  if (!doppione.ok) {
+    return fail(`${doppione.error}. Non ho preparato niente: prima di creare una spesa devo poter escludere il doppione.`)
+  }
+  if (doppione.esistente) {
+    return fail(
+      `su Fatture in Cloud c'e' GIA' una fattura ricevuta di ${doppione.esistente.fornitore} con il numero `
+      + `${doppione.esistente.numero} (id ${doppione.esistente.id}, del ${doppione.esistente.data}, `
+      + `${euro(doppione.esistente.importo)}): non ne creo una seconda. Se quella e' sbagliata, correggila o eliminala `
+      + 'su Fatture in Cloud. Non ho preparato niente.',
+      { id_esistente: doppione.esistente.id, doppione: doppione.esistente },
+    )
+  }
+
+  const descrizione = cleanString(input.descrizione) ?? `${nomeFornitore} — fattura n.${numero} del ${data}`
+
+  const payloadFic: Record<string, unknown> = {
+    type: TIPO_FIC_SPESA,
+    entity: entity.entity,
+    date: data,
+    // Il numero DEL FORNITORE: su un documento ricevuto la numerazione interna
+    // di FIC e' un'altra cosa, e non si tocca.
+    invoice_number: numero,
+    amount_net: imponibile,
+    amount_vat: iva,
+    amount_gross: totale,
+    items_list: [{ name: descrizione, qty: 1, net_price: imponibile, vat: { id: idIva } }],
+    // 🚨 IL PIANO PAGAMENTI, ESPLICITO E SALDATO. Lasciarlo vuoto non e'
+    // neutro: la spesa comparirebbe come DA PAGARE nello scadenzario, e
+    // qualcuno pagherebbe una seconda volta qualcosa che il fornitore ha gia'
+    // trattenuto. Per questo la data del pagamento e' quella del documento e
+    // lo stato e' `paid` fin da subito.
+    payments_list: [{
+      due_date: data,
+      paid_date: data,
+      amount: totale,
+      status: 'paid',
+      payment_account: { id: conto.id },
+    }],
+  }
+
+  const spesa: SpesaRicevutaPayload = {
+    fornitore: nomeFornitore,
+    fornitore_descritto: entity.descrizione,
+    numero,
+    data,
+    imponibile,
+    iva,
+    totale,
+    vat: { id: idIva, etichetta: etichettaIva },
+    conto,
+    allegato: {
+      casella,
+      message_id: messageId,
+      attachment_id: scelto.allegato.attachmentId,
+      filename: scelto.allegato.filename,
+      oggetto: scelto.oggetto,
+    },
+    payload: payloadFic,
+  }
+
+  const pending = await salvaPendingPagamenti(
+    spesa,
+    (id) => descriviSpesa({ id, societa, spesa }),
+    societa,
+    'spesa_ricevuta',
+  )
+  if (!pending.ok) return fail(pending.error)
+
+  return ok({
+    societa: s.denominazione,
+    partita_iva: s.piva,
+    id: pending.id,
+    stato: 'in_attesa',
+    tipo_documento_fic: TIPO_FIC_SPESA,
+    fornitore: entity.descrizione,
+    numero,
+    data,
+    imponibile,
+    iva,
+    totale,
+    aliquota: { id: idIva, etichetta: etichettaIva },
+    pagamento: { conto: conto.nome, conto_id: conto.id, data, stato: 'paid', motivo: 'compensazione: non va nello scadenzario' },
+    allegato: spesa.allegato.filename,
+    anteprima: pending.descrizione,
+    conferma: comandoDaMostrare('fic_ok', pending.id),
+    annulla: comandoDaMostrare('fic_no', pending.id),
+    nota: 'Mostra l anteprima COM E. Non ho scritto niente su Fatture in Cloud e non ho ancora scaricato il PDF.',
+  })
+}
+
+function leggiSpesaPayload(payload: unknown): SpesaRicevutaPayload | null {
+  const p = asObject(payload)
+  const fornitore = cleanString(p.fornitore)
+  const numero = cleanString(p.numero)
+  const data = cleanString(p.data)
+  if (!fornitore || !numero || !data) return null
+
+  const vat = asObject(p.vat)
+  const idIva = Number(vat.id)
+  const etichetta = cleanString(vat.etichetta)
+  if (!Number.isFinite(idIva) || !etichetta) return null
+
+  const conto = asObject(p.conto)
+  const contoId = Number(conto.id)
+  const contoNome = cleanString(conto.nome)
+  if (!Number.isFinite(contoId) || !contoNome) return null
+
+  const allegato = asObject(p.allegato)
+  const casella = cleanString(allegato.casella)
+  const messageId = cleanString(allegato.message_id)
+  const attachmentId = cleanString(allegato.attachment_id)
+  const filename = cleanString(allegato.filename)
+  // Senza le coordinate del file non c'e' spesa da creare: il documento non
+  // nasce senza il suo PDF, e non si ripiega su una spesa «senza allegato».
+  if (!casella || !messageId || !attachmentId || !filename) return null
+
+  const payloadDoc = asObject(p.payload)
+  if (Object.keys(payloadDoc).length === 0) return null
+
+  return {
+    fornitore,
+    fornitore_descritto: cleanString(p.fornitore_descritto) ?? fornitore,
+    numero,
+    data,
+    imponibile: Number(p.imponibile) || 0,
+    iva: Number(p.iva) || 0,
+    totale: Number(p.totale) || 0,
+    vat: { id: idIva, etichetta },
+    conto: { id: contoId, nome: contoNome },
+    allegato: {
+      casella,
+      message_id: messageId,
+      attachment_id: attachmentId,
+      filename,
+      oggetto: cleanString(allegato.oggetto) ?? '(oggetto non registrato)',
+    },
+    payload: payloadDoc,
+  }
+}
+
+interface EsitoSpesa {
+  messaggio: string
+  creata: boolean
+  /** Creata su FIC ma NON confermata dalla rilettura: non e' un successo. */
+  da_verificare: boolean
+  /** true = NON si ritenta (o e' nata, o e' incerta, o e' gia' li'). */
+  bloccato: boolean
+  id: string | null
+}
+
+/**
+ * Rilegge da Fatture in Cloud la spesa appena creata.
+ *
+ * Non basta che la POST abbia risposto: si controlla che l'id torni, che il
+ * tipo sia quello di una spesa, e che l'ALLEGATO ci sia — perche' una fattura
+ * d'acquisto registrata senza il suo documento e' meta' del lavoro fatto e
+ * l'altra meta' persa in silenzio.
+ *
+ * ⚠️ Le due assenze non sono la stessa cosa. Se `attachment_url` non compare
+ * affatto nella rilettura, non l'abbiamo VISTO e non si conclude niente; se
+ * compare VUOTO, il documento c'e' e l'allegato no — e quello e' un guasto da
+ * dichiarare. Trattare «non l'ho visto» come «non c'e'» renderebbe ogni spesa
+ * sospetta per un capriccio del fieldset.
+ */
+async function rileggiSpesa(
+  id: string,
+  societa: CodiceSocieta,
+): Promise<{ ok: true; allegato: 'verificato' | 'non_visto' } | { ok: false; error: string }> {
+  const company = await getCompanyId(societa)
+  if (!company.ok) return { ok: false, error: company.error }
+
+  const r = await ficGet(`/c/${company.id}/received_documents/${encodeURIComponent(id)}`, { fieldset: 'detailed' }, societa)
+  if (!r.ok) return { ok: false, error: r.error }
+
+  const doc = asObject(r.data?.data ?? r.data)
+  if (String(doc.id ?? '') !== String(id)) return { ok: false, error: 'la rilettura non ha restituito quel documento' }
+
+  const tipo = cleanString(doc.type)
+  if (tipo !== undefined && tipo !== TIPO_FIC_SPESA) {
+    return { ok: false, error: `su Fatture in Cloud risulta di tipo «${tipo}», non ${TIPO_FIC_SPESA}` }
+  }
+
+  const haChiave = Object.prototype.hasOwnProperty.call(doc, 'attachment_url')
+  const url = cleanString(doc.attachment_url)
+  if (haChiave && !url) {
+    return { ok: false, error: 'il documento c\'e\' ma l\'allegato NON risulta: sarebbe una fattura d\'acquisto registrata senza il suo PDF' }
+  }
+  return { ok: true, allegato: url ? 'verificato' : 'non_visto' }
+}
+
+/**
+ * Crea la spesa: anti-doppione, PDF da Gmail, caricamento su FIC, POST,
+ * RILETTURA. In quest'ordine, e ogni passo che fallisce ferma tutto.
+ *
+ * Tre esiti, mai confusi:
+ * - REGISTRATA: creata E riletta;
+ * - NON REGISTRATA: non esiste su Fatture in Cloud, col motivo;
+ * - DA VERIFICARE: la POST ha risposto ma la rilettura no. Non e' un successo
+ *   e non e' un fallimento — e non si ritenta, perche' un secondo tentativo
+ *   creerebbe il doppione di un documento che forse c'e' gia'.
+ */
+async function creaSpesa(payload: unknown, societa: CodiceSocieta): Promise<EsitoSpesa> {
+  const s = getSocieta(societa)
+  const dati = leggiSpesaPayload(payload)
+  if (!dati) {
+    return {
+      messaggio: 'SPESA NON REGISTRATA: il pending non contiene una spesa leggibile (mancano i dati o le coordinate del PDF). Non ho creato niente.',
+      creata: false,
+      da_verificare: false,
+      bloccato: true,
+      id: null,
+    }
+  }
+
+  const intestazione = `${dati.fornitore_descritto} — fattura n.${dati.numero} del ${dati.data} — imponibile ${euro(dati.imponibile)}, totale ${euro(dati.totale)}`
+  const non = (motivo: string, bloccato = false, id: string | null = null): EsitoSpesa => ({
+    messaggio: `SPESA NON REGISTRATA su ${s.denominazione}: ${intestazione}.\n\n${motivo}`,
+    creata: false,
+    da_verificare: false,
+    bloccato,
+    id,
+  })
+
+  // 🚨 L'anti-doppione si rifa' QUI, subito prima di creare. Quello della
+  // compilazione serve a non far confermare un doppione; questo serve a non
+  // CREARLO — fra le due cose c'e' una conferma, e in mezzo la stessa fattura
+  // puo' essere entrata da un altro canale.
+  const doppione = await cercaSpesaDoppione(dati.fornitore, dati.numero, dati.data, societa)
+  if (!doppione.ok) return non(`${doppione.error}. Non ho creato niente.`)
+  if (doppione.esistente) {
+    return non(
+      `su Fatture in Cloud c'e' GIA' una fattura ricevuta con il numero ${doppione.esistente.numero} `
+      + `(id ${doppione.esistente.id}, del ${doppione.esistente.data}, ${euro(doppione.esistente.importo)}): `
+      + 'non ne creo una seconda e non ritento. Controllala su Fatture in Cloud.',
+      true,
+      String(doppione.esistente.id),
+    )
+  }
+
+  const scaricato = await scaricaAllegatoScelto(
+    dati.allegato.casella as ChiaveCasella,
+    dati.allegato.message_id,
+    { filename: dati.allegato.filename, attachmentId: dati.allegato.attachment_id },
+  )
+  if (!scaricato.ok) {
+    return non(`${scaricato.error}. La spesa NON nasce senza il suo documento: su Fatture in Cloud non c'e' niente.`)
+  }
+
+  const caricato = await caricaAllegatoFIC(dati.allegato.filename, scaricato.contenuto, societa)
+  if (!caricato.ok) {
+    return non(`caricamento dell'allegato su Fatture in Cloud fallito: ${caricato.error}. Nessun documento e' stato creato.`)
+  }
+
+  const creato = await creaSpesaFIC({ ...dati.payload, attachment_token: caricato.token }, societa)
+  if (!creato.ok) return non(`Fatture in Cloud ha rifiutato la creazione: ${creato.error}.`)
+
+  const riletta = await rileggiSpesa(creato.id, societa)
+  if (!riletta.ok) {
+    return {
+      messaggio: `SPESA DA VERIFICARE su ${s.denominazione}: ${intestazione}.\n\n`
+        + `Fatture in Cloud ha risposto con l'id ${creato.id}, ma la rilettura NON conferma: ${riletta.error}. `
+        + 'Controllala a mano su Fatture in Cloud prima di rifarla: non la conto fra le riuscite e non ritento, '
+        + 'perche\' un secondo tentativo creerebbe il doppione di un documento che forse c\'e\' gia\'.',
+      creata: false,
+      da_verificare: true,
+      bloccato: true,
+      id: creato.id,
+    }
+  }
+
+  return {
+    messaggio: [
+      `SPESA REGISTRATA su ${s.denominazione}: ${intestazione}.`,
+      '',
+      `✅ Documento RICEVUTO id ${creato.id}${creato.url ? ` — ${creato.url}` : ''}, verificato rileggendolo su Fatture in Cloud.`,
+      `IVA: ${dati.vat.etichetta} — ${euro(dati.iva)}.`,
+      `Risulta PAGATA il ${dati.data} sul conto «${dati.conto.nome}» (compensazione): non entra nello scadenzario.`,
+      riletta.allegato === 'verificato'
+        ? `Allegato «${dati.allegato.filename}»: c'e', l'ho riletto sul documento.`
+        : `⚠️ Allegato «${dati.allegato.filename}»: caricato, ma la rilettura non espone il campo dell'allegato, quindi NON l'ho verificato. Controllalo su Fatture in Cloud.`,
+    ].join('\n'),
+    creata: true,
+    da_verificare: false,
+    bloccato: true,
+    id: creato.id,
+  }
+}
+
 export async function confirmFicStep1(id: string): Promise<string> {
   const cleanId = cleanString(id)
   if (!cleanId) return 'ID bozza FIC richiesto.'
@@ -1864,6 +2443,48 @@ export async function confirmFicStep2(id: string): Promise<string> {
       .update({
         stato: 'creata',
         fic_document_id: esito.ids.join(','),
+        fic_url: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', cleanId)
+      .eq('stato', 'in_attesa')
+      .eq('conferme', 2)
+      .select('id')
+
+    if (chiusa.error) return `${esito.messaggio}\n\n⚠️ Aggiornamento audit fallito: ${chiusa.error.message}`
+    return esito.messaggio
+  }
+
+  // La SPESA di un fornitore e' UN documento RICEVUTO con il suo PDF: stessa
+  // riga e stessa conferma, ma la creazione e' una catena (anti-doppione,
+  // scaricamento del PDF da Gmail, caricamento su FIC, POST) e l'esito viene
+  // dalla RILETTURA, non dalla risposta della POST.
+  if (row.tipo === 'spesa_ricevuta') {
+    const esito = await creaSpesa(row.payload, row.societa)
+
+    // 🚨 Si ritenta SOLO se non e' nato niente E niente e' incerto. Una riga
+    // rimessa a `conferme: 1` quando il documento potrebbe esistere gia' e' il
+    // modo per creare il doppione al secondo «confermo» — che e' proprio la
+    // cosa che questo tool esiste per evitare.
+    if (!esito.creata && !esito.da_verificare && !esito.bloccato) {
+      await supabase
+        .from('cervellone_fic_pending')
+        .update({ conferme: 1, updated_at: new Date().toISOString() })
+        .eq('id', cleanId)
+        .eq('stato', 'in_attesa')
+        .eq('conferme', 2)
+      return esito.messaggio
+    }
+
+    const nato = esito.creata || esito.da_verificare
+    const chiusa = await supabase
+      .from('cervellone_fic_pending')
+      .update({
+        stato: nato ? 'creata' : 'annullata',
+        // Se il documento NON e' nato, qui non ci va nessun id: il
+        // `fic_document_id` di un documento che non abbiamo creato manderebbe
+        // un futuro «annulla» a cancellare la fattura di qualcun altro.
+        fic_document_id: nato ? esito.id : null,
         fic_url: null,
         updated_at: new Date().toISOString(),
       })
@@ -2051,16 +2672,26 @@ async function confermaBozzaFic(
   // riconoscerlo, un gruppo creato davvero verrebbe riferito come NON riuscito.
   const parziale = /^(PAGAMENTI|INCASSI) REGISTRATI IN PARTE/.test(messaggio)
     || /^AUTOFATTURE CREATE IN PARTE/.test(messaggio)
+  // La spesa di un fornitore porta un QUARTO verbo (SPESA REGISTRATA), e con se'
+  // un esito che gli altri non hanno: SPESA DA VERIFICARE, cioe' «Fatture in
+  // Cloud ha risposto ma la rilettura non conferma». Quello non e' ne' un si'
+  // ne' un no, e riferirlo come uno dei due sarebbe mentire in una delle due
+  // direzioni.
+  const daVerificare = /^SPESA DA VERIFICARE/.test(messaggio)
   const eseguita = messaggio.startsWith('BOZZA creata su FIC')
     || /^(PAGAMENTI|INCASSI) REGISTRATI/.test(messaggio)
     || /^AUTOFATTURE CREATE/.test(messaggio)
+    || /^SPESA REGISTRATA/.test(messaggio)
   return ok({
     id: riga.id,
     passo: 2,
     documento_creato: eseguita,
     esito_parziale: parziale,
+    esito_incerto: daVerificare,
     messaggio,
-    avviso: !eseguita
+    avviso: daVerificare
+      ? 'ESITO INCERTO: Fatture in Cloud ha risposto ma la rilettura NON conferma. Riporta il messaggio TESTUALMENTE, non dire ne che e stata registrata ne che non lo e, e NON ritentare: un secondo tentativo creerebbe il doppione.'
+      : !eseguita
       ? 'L operazione NON e riuscita: riporta il messaggio TESTUALMENTE e non dire che e stata fatta.'
       : parziale
         ? 'ATTENZIONE: solo ALCUNE fatture sono state scritte. Riporta il messaggio TESTUALMENTE, con l elenco di quali SI e quali NO col motivo. Non dire «fatte tutte».'
@@ -2224,6 +2855,41 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    // ⚠️ Nome al singolare e UNA spesa per chiamata, al contrario dei tool dei
+    // pagamenti e delle autofatture. Non e' un'omissione: li' il caso massivo
+    // nasceva da un bisogno vero («non e che mi metto a confermare quindici
+    // fatture vocalmente»), qui ogni spesa porta con se' il SUO PDF, il SUO
+    // numero e il SUO anti-doppione — e un gruppo confermato in blocco
+    // vorrebbe dire dire «si» a quindici documenti mai visti uno per uno.
+    name: 'registra_spesa_fornitore',
+    description:
+      "Registra su Fatture in Cloud la FATTURA D ACQUISTO di un fornitore (documento RICEVUTO, la SPESA) prendendo il PDF da una mail di Gmail e allegandoglielo. Il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, quella per cui compila_autofattura crea l integrazione TD17. Le due cose sono le due meta dello stesso adempimento: l autofattura mette l IVA a DEBITO, questa registra il COSTO e la fattura passiva a monte. Senza, l integrazione resta a meta. COSA SERVE: la mail col PDF (casella e message_id, da gmail_search), il fornitore, il numero e la data della sua fattura, e l IMPONIBILE. Nient altro: il PDF non lo leggo e nessun importo lo ricavo da solo. REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote di quell azienda lette da Fatture in Cloud (con descrizione e natura) — tu CHIEDI all Ingegnere quale usare e richiami con vat_id. Non esiste nessun predefinito, e l aliquota decide se l IVA e detraibile, in reverse charge o esclusa; (2) 🚨 nemmeno il CONTO di pagamento si indovina: senza modalita_pagamento il tool torna l elenco vero dei conti dell azienda e chiede; (3) la spesa nasce GIA SALDATA alla data del documento, per COMPENSAZIONE (la piattaforma trattiene le commissioni dal bonifico dei soggiorni): non deve finire nello scadenzario, e per questo il piano pagamenti viene scritto esplicitamente; (4) 🚨 ANTI-DOPPIONE: prima di preparare, e di nuovo prima di creare, il tool cerca su Fatture in Cloud se esiste gia una fattura ricevuta di quel fornitore con quel numero. Se c e NON ne crea una seconda: te lo dice e ti da l id di quella esistente. Se l elenco non si legge o e troncato il tool RIFIUTA, perche su un elenco incompleto non si puo dire che il doppione non c e; (5) l allegato: se la mail ha un solo allegato lo usa, se ne ha piu di uno e non passi nome_file si RIFIUTA e li elenca — aprire quello sbagliato vuol dire registrare una spesa vera col documento di un altra; (6) non scrive niente subito: prepara l anteprima e serve la conferma (/fic_ok_<id>, oppure un «confermo» a voce: e una conferma sola). Il PDF viene scaricato e caricato SOLO dopo la conferma, e se non si scarica la spesa NON nasce affatto; (7) l esito viene da una RILETTURA su Fatture in Cloud, non dalla risposta della creazione: se dice DA VERIFICARE il documento potrebbe esserci o no, riporta il messaggio testualmente e NON ritentare.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        casella: {
+          type: 'string',
+          enum: CASELLE_GOOGLE,
+          description: 'Da quale casella Google viene la mail con il PDF della fattura. Se non la sai, guarda da dove veniva il risultato di gmail_search.',
+        },
+        message_id: { type: 'string', description: 'Id della mail che porta il PDF (campo id dei risultati di gmail_search / gmail_list_inbox).' },
+        nome_file: { type: 'string', description: 'Nome dell allegato, se la mail ne ha piu di uno. Senza, con piu allegati il tool si rifiuta e te li elenca.' },
+        fornitore: { type: 'string', description: 'Denominazione del fornitore, es. "Booking.com B.V.". Obbligatoria.' },
+        fornitore_id: { type: 'number', description: 'Id dell anagrafica FORNITORI su Fatture in Cloud (fic_cerca_anagrafica con tipo fornitore). Con l id il documento punta il fornitore giusto senza ambiguita.' },
+        numero: { type: 'string', description: 'Numero della fattura DEL FORNITORE, come sta scritto sul documento. Obbligatorio: e la chiave con cui controllo che non sia gia registrata.' },
+        data: { type: 'string', description: 'Data della fattura del fornitore, YYYY-MM-DD. Obbligatoria: e anche la data a cui la spesa risulta pagata.' },
+        imponibile: { type: 'number', description: 'Imponibile in euro come numero (es. 218.44). Lo dice l Ingegnere: dal PDF non lo ricavo io.' },
+        vat_id: {
+          type: 'number',
+          description: '🚨 Id dell aliquota IVA di Fatture in Cloud (porta con se anche la natura). NON sceglierlo tu e non tirarlo a indovinare: se non ti e stato detto quale, chiama SENZA questo parametro — il tool ti restituisce l elenco vero delle aliquote dell azienda e tu chiedi all Ingegnere quale. Un id inventato viene rifiutato.',
+        },
+        modalita_pagamento: { type: 'string', description: 'Nome o id del conto di pagamento di Fatture in Cloud su cui la spesa risulta saldata. Se omesso o non riconosciuto, il tool torna l elenco vero dei conti dell azienda: chiedi all Ingegnere quale e richiama.' },
+        descrizione: { type: 'string', description: 'Descrizione della riga di spesa. Se omessa viene composta da fornitore, numero e data.' },
+      },
+      required: ['casella', 'message_id', 'fornitore', 'numero', 'data', 'imponibile'],
+    },
+  },
+  {
     name: 'lista_bozze_fic',
     description: 'Lista le bozze FIC pending, create o annullate registrate in cervellone_fic_pending.',
     input_schema: {
@@ -2251,6 +2917,7 @@ export async function executeFicWriteTool(
     if (name === 'compila_fattura_emessa') return compilaDocumento(input, 'fattura_emessa', societa)
     if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento', societa)
     if (name === 'compila_autofattura') return compilaAutofatture(input, societa)
+    if (name === 'registra_spesa_fornitore') return compilaSpesaFornitore(input, societa)
     if (name === 'segna_fatture_ricevute_pagate') return segnaFatturePagate(input, societa, 'ricevuta')
     if (name === 'segna_fatture_emesse_pagate') return segnaFatturePagate(input, societa, 'emessa')
     if (name === 'conferma_bozza_fic') return confermaBozzaFic(input, societa)
