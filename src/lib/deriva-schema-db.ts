@@ -36,10 +36,24 @@ function interpretaRisposta(risposta: { data: unknown; error: { message?: string
     return { ok: false, errore: 'fotografia_schema ha risposto in una forma che non riconosco: NON so dire se il database sia allineato.' }
   }
 
+  if (tabelle.length === 0) {
+    // Un database senza nemmeno una tabella non esiste. Prima, una risposta di
+    // array vuoti passava i controlli e il guardiano urlava «DERIVA: tutto
+    // manca» — indistinguibile da «non ho potuto guardare». Se la rpc dichiara
+    // zero tabelle, quello che e' rotto e' il controllo, non lo schema.
+    return { ok: false, errore: 'fotografia_schema non ha trovato nemmeno una tabella: NON so dire se il database sia allineato.' }
+  }
+
   const chiaviPrimarie: Record<string, string[]> = {}
   for (const [tabella, colonneVoce] of Object.entries(pk as Record<string, unknown>)) {
     const c = elencoDiStringhe(colonneVoce)
-    if (c) chiaviPrimarie[tabella.replace(/^public\./, '')] = c
+    if (!c) {
+      // Saltarla in silenzio faceva sembrare che la tabella non avesse chiave
+      // primaria: un falso allarme nato dentro lo strumento che serve a
+      // trovare i guasti.
+      return { ok: false, errore: `fotografia_schema: la chiave primaria di ${tabella} e in una forma che non riconosco: NON so dire se il database sia allineato.` }
+    }
+    chiaviPrimarie[tabella.replace(/^public\./, '')] = c
   }
 
   return { ok: true, foto: { tabelle, colonne, chiaviPrimarie, indici, chiaviConfig } }
