@@ -63,21 +63,24 @@ function req(authorization?: string) {
 const SEGRETO = 'segreto-di-prova-del-cron'
 
 /**
- * I 5 secondi che vitest concede per difetto non bastano al primo `import()`
- * di una rotta cron che si porta dietro mezzo mondo (Supabase, googleapis, i
- * prompt).
+ * Questi sono i test piu' CARI della suite: ciascuno importa un modulo-rotta
+ * intero, che si porta dietro mezzo mondo (Supabase, googleapis, i prompt).
  *
- * OSSERVATO il 14 set 2026 su Windows: al primo lancio di questo file due
- * rotte (`checkin-documenti` e `self-audit`) sono fallite per TIMEOUT a 5s
- * mentre il resto passava; i lanci successivi chiudono l'intero file in ~5s.
- * ⚠️ La causa NON e' accertata: svuotare `node_modules/.vite` non riproduce il
- * rallentamento, quindi non e' la cache di trasformazione. Questo numero e'
- * una difesa contro un rosso che non parla della porta dei cron, non una
- * spiegazione di perche' a volte sia lento.
+ * OSSERVATO il 14 set 2026 su Windows: al primo lancio, col timeout di
+ * vitest ancora a 5s, due rotte (`checkin-documenti` e `self-audit`) sono
+ * fallite per TIMEOUT mentre tutto il resto passava. ⚠️ La causa del primo
+ * lancio lento NON e' accertata: svuotare `node_modules/.vite` non la
+ * riproduce, quindi non e' la cache di trasformazione.
  *
- * Perche' non lasciarlo lampeggiare: un test verde solo dal secondo lancio in
- * poi viene ignorato al primo rosso, ed e' cosi' che un test smette di
- * sorvegliare senza che nessuno lo cancelli.
+ * L'attesa generale e' poi stata portata a 15s in `vitest.config.ts` per un
+ * motivo piu' largo (la contesa fra worker: v. il commento la'). Questo
+ * numero resta lo stesso, ed e' piu' alto, perche' vale per i due import
+ * peggiori che ci siano: se un giorno la suite tornera' stretta, questo file
+ * non dev'essere il primo a cadere per fame di CPU invece che per la porta
+ * dei cron.
+ *
+ * Un test verde solo dal secondo lancio in poi viene ignorato al primo rosso,
+ * ed e' cosi' che un test smette di sorvegliare senza che nessuno lo cancelli.
  */
 const ATTESA_IMPORT_FREDDO = 30_000
 let segretoDiPrima: string | undefined
