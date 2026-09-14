@@ -1631,34 +1631,18 @@ async function executeToolBlocks(
   return { results, eseguiti }
 }
 
-// cost-control 5 giu 2026: 500K char ≈ 125K token di input A OGNI messaggio web.
-// 120K char ≈ 30K token: ampiamente sufficiente (Telegram usa già solo 6 messaggi di history).
-const MAX_CONTEXT_CHARS = 120_000
-
-export function trimMessages(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
-  if (messages.length <= 1) return messages
-  let totalChars = charCount(messages[messages.length - 1].content)
-  let startIdx = messages.length - 1
-
-  for (let i = messages.length - 2; i >= 0; i--) {
-    const chars = charCount(messages[i].content)
-    if (totalChars + chars > MAX_CONTEXT_CHARS) break
-    totalChars += chars
-    startIdx = i
-  }
-
-  if (startIdx > 0) {
-    const trimmed = messages.slice(startIdx)
-    if (trimmed[0]?.role !== 'user') {
-      trimmed.unshift({ role: 'user', content: '(conversazione precedente omessa)' })
-    }
-    return trimmed
-  }
-  return messages
-}
-
-function charCount(content: Anthropic.MessageParam['content']): number {
-  if (typeof content === 'string') return content.length
-  if (Array.isArray(content)) return JSON.stringify(content).length
-  return 0
-}
+/**
+ * Il taglio della storia vive in `taglio-storia.ts`, non più qui.
+ *
+ * ⚠️ Serve a TUTTI E DUE i canali, e `claude.ts` si porta dietro l'intero
+ * motore del modello: importarlo dalla rotta di Telegram ne rompeva i test.
+ * In un modulo suo la regola sta davvero in un posto solo — che è la
+ * condizione perché i due canali non divergano, come invece è successo fino
+ * al 14 settembre 2026 (Telegram aveva un taglio proprio che non mordeva).
+ *
+ * Il re-export resta perché `trimMessages` è già importato da qui altrove.
+ */
+import { trimMessages, MAX_CONTEXT_CHARS } from './taglio-storia'
+// Riesportati perche' `trimMessages` e' gia' importato DA QUI in altri punti
+// del repo: spostare il file non deve rompere chi lo chiamava.
+export { trimMessages, MAX_CONTEXT_CHARS }

@@ -149,11 +149,16 @@ export const DOMINI: readonly Dominio[] = [
   },
   {
     nome: 'Segreteria',
-    contiene: 'posta, calendario, scadenze di mezzi e documenti',
+    contiene: 'posta, allegati delle mail, calendario, scadenze di mezzi e documenti',
     tool: [
       'gmail_list_inbox',
       'gmail_search',
       'gmail_read_message',
+      // 2026-09-14: aprire il PDF allegato a una mail Gmail. La funzione che
+      // scarica l'allegato c'era gia' da mesi e NESSUN tool la esponeva: per
+      // il modello non esisteva, e ha risposto all'Ingegnere «non ho un tool
+      // che apra un allegato di Gmail» mentre il codice era in casa.
+      'gmail_leggi_allegato',
       'gmail_read_thread',
       'gmail_create_draft',
       'gmail_list_drafts',

@@ -187,11 +187,16 @@ describe('differimento delle definizioni dei tool', () => {
   // Google e dice quali sono VIVE, col motivo se non lo sono. Prima di oggi
   // la domanda "la casella di La Real Estate funziona?" non aveva risposta:
   // la credenziale era salvata ma mai esercitata.
-  it('senza opzioni: 137 definizioni e la stessa impronta di main', () => {
+  it('senza opzioni: 138 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(137)
+    expect(defs).toHaveLength(138)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('0848ebc6c335bda6580cea6459eee647')
+  // LA DECISIONE, 14 settembre 2026 (sera). Da 137 a 138: e entrato
+  // gmail_leggi_allegato. La funzione che scarica un allegato Gmail esisteva
+  // da mesi e NESSUN tool la esponeva: il bot ha risposto all Ingegnere «non
+  // ho un tool che apra un allegato di Gmail» mentre il codice era in casa.
+  // Impronta presa DAL FALLIMENTO del test, non calcolata a parte.
+      .toBe('9d032bf3eedd40e8b5ae264d54753924')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
