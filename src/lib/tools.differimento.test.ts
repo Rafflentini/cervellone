@@ -220,16 +220,32 @@ describe('differimento delle definizioni dei tool', () => {
   // il contrario: per questo il cambio di descrizione paga il pedaggio
   // dell'impronta anche senza un tool in piu'.
   //
+  // LA DECISIONE, 14 settembre 2026 (il PDF da rivedere). Era 140 con impronta
+  // `1f2040fdd43a653c897ee0119d750d14`. E' stato aggiunto UN tool custom:
+  // `fic_pdf_documento` — il LINK al PDF di un documento EMESSO su Fatture in
+  // Cloud (fattura, autofattura/integrazione, nota di credito) dato il suo id.
+  //
+  // Nasce dalle parole dell'Ingegnere: «se gli richiedo da Cervellone il PDF
+  // della fattura o autofattura che ha compilato per controllarla, sa scaricare
+  // PDF e ridarmelo li' per controllare». Prima, per rivedere una bozza appena
+  // compilata, bisognava aprire il gestionale a mano.
+  //
+  // ⚠️ Restituisce un LINK e non il file, ed e' una scelta obbligata dalla
+  // regola dei DUE CANALI EQUIPOLLENTI: su Telegram Cervellone sa mandare solo
+  // testo (`telegram-helpers.ts` non ha `sendDocument`) e i tool ricevono
+  // `conversationId`, non l'id della chat. Un link si apre identico sui due
+  // canali. Il numero sale da 140 a 141 di proposito.
+  //
   // IL MERGE, 14 settembre 2026 (notte). I due rami dichiaravano ENTRAMBI
   // 139 con impronte diverse, perche' contavano insiemi diversi: quello di
   // `main` non aveva `compila_autofattura`, quello delle autofatture non
   // aveva `verifica_deriva_schema`. Numero e impronta qui sotto sono presi
   // DAL FALLIMENTO del test, non calcolati a parte.
-  it('senza opzioni: 140 definizioni e la stessa impronta di main', () => {
+  it('senza opzioni: 141 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(140)
+    expect(defs).toHaveLength(141)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('1f2040fdd43a653c897ee0119d750d14')
+      .toBe('8cffa9335b38f2f90440a35991fbdd11')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

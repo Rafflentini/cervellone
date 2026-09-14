@@ -43,6 +43,7 @@ import { DELEGA_TOOLS, executeDelegaTool } from './tools/delega-tools'
 import { DERIVA_TOOLS, executeDerivaTools } from './tools/deriva-schema-tools'
 import { ACCESSI_GOOGLE_TOOLS, executeAccessiGoogleTools } from './tools/accessi-google-tools'
 import { GMAIL_ALLEGATI_TOOLS, executeGmailAllegatiTools } from './tools/gmail-allegati-tools'
+import { FIC_PDF_TOOLS, executeFicPdfTool } from './tools/fic-pdf-tools'
 
 
 // ── IMAGE TOOLS (ri-aggancio pixel immagini caricate) ──
@@ -837,6 +838,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...DERIVA_TOOLS, // 2026-09-14: il database e' davvero allineato al repo?
   ...ACCESSI_GOOGLE_TOOLS, // 2026-09-14: le credenziali Google sono vive?
   ...GMAIL_ALLEGATI_TOOLS, // 2026-09-14: aprire un PDF allegato a una mail Gmail
+  ...FIC_PDF_TOOLS, // 2026-09-14: rivedere il PDF di un documento EMESSO su FIC prima di trasmetterlo
 ]
 
 /** Nomi di tutti i tool registrati. Esposto per moduli (es. tools/self) che
@@ -927,6 +929,21 @@ const nomiDi = (tools: ToolDefinition[]) => {
   return (n: string) => set.has(n)
 }
 
+/**
+ * 🚨 QUESTO WRAPPER DEVE RESTARE **PRIMA** DI `executeFicWrapper` IN `EXECUTORS`.
+ *
+ * `executeFicTool` si dichiara competente su QUALUNQUE nome che cominci per
+ * `fic_` — restituisce `null` solo per gli altri — e per un `fic_` che non
+ * conosce risponde `tool FIC sconosciuto`. E' una risposta, non un `null`:
+ * `executeTool` si ferma li' e non prova gli esecutori successivi. Messo dopo,
+ * `fic_pdf_documento` sarebbe un tool REGISTRATO E IRRAGGIUNGIBILE — esattamente
+ * il guasto del 13 settembre 2026 («il tool c'era, era registrato, ed era
+ * irraggiungibile: la catena si fermava prima»).
+ *
+ * L'ordine e' presidiato da un test (`tools/fic-pdf-tools.test.ts`): scambiare
+ * le due voci fa diventare rosso.
+ */
+const executeFicPdfWrapper = contabile(executeFicPdfTool, nomiDi(FIC_PDF_TOOLS))
 const executeFicWrapper = contabile(executeFicTool, (n) => n.startsWith('fic_'))
 const executeFicWriteWrapper = contabile(executeFicWriteTool, nomiDi(FIC_WRITE_TOOLS))
 // Stesso wrapper degli altri tool contabili: la societa' la decide la
@@ -937,7 +954,7 @@ const executeRiconciliazioneWrapper = contabile(executeRiconciliazioneTool, nomi
 const executePrimaNotaWrapper = contabile(executePrimaNotaTool, nomiDi(PRIMA_NOTA_TOOLS))
 const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI_TOOLS))
 
-const EXECUTORS = [executeDelegaTool, executeAnagraficaWrapper, executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeModelloTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper, executeDerivaTools, executeAccessiGoogleTools, executeGmailAllegatiTools]
+const EXECUTORS = [executeDelegaTool, executeAnagraficaWrapper, executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicPdfWrapper, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeModelloTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper, executeDerivaTools, executeAccessiGoogleTools, executeGmailAllegatiTools]
 
 export function getToolDefinitions(opzioni?: OpzioniTool) {
   // `soloQuesti` vince su tutto: e' uno specialista, e i suoi attrezzi sono

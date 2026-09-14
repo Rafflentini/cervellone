@@ -92,11 +92,20 @@ export const DOMINI: readonly Dominio[] = [
   {
     nome: 'Contabilita e fatture',
     contiene:
-      'Fatture in Cloud su entrambe le societa, prima nota, movimenti di banca e carte, riconciliazione, note spese',
+      // «il PDF di una fattura o autofattura da rivedere» sta nel testo
+      // INIETTATO, non solo nel registro qui sotto: col differimento acceso
+      // questa riga e' l'unica cosa che il modello vede, e alla richiesta
+      // «fammi vedere il PDF della fattura» doveva indovinare lo scaffale —
+      // «PDF» e «file» tirano verso l'Archivio, che e' quello sbagliato.
+      'Fatture in Cloud su entrambe le societa, prima nota, movimenti di banca e carte, riconciliazione, note spese, il PDF di una fattura o autofattura da rivedere',
     tool: [
       'fic_fatture_emesse',
       'fic_fatture_ricevute',
       'fic_dettaglio_documento',
+      // 2026-09-14: il PDF di un documento EMESSO, per RIVEDERLO prima di
+      // trasmetterlo allo SdI. Sta qui e non in Archivio: si chiede parlando
+      // di fatture e autofatture, non di file.
+      'fic_pdf_documento',
       'fic_leggi_allegato_fattura',
       'fic_modalita_pagamento_fornitore',
       'fic_cerca_anagrafica',
