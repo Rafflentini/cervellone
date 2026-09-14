@@ -10,20 +10,38 @@ import { buildDailySummary } from '../gmail-summary'
 import { MAIL_TOOL_EXECUTORS } from '@/v19/tools/email'
 import { recordSentMail } from '@/lib/sent-mail'
 import type { ChiaveCasella } from '../caselle'
+import { leggiSuTutteLeGoogle, type EsitoLettura } from '../politica-caselle'
 
 /**
- * I tool `gmail_*` rivolti al modello operano tutti sulla casella di
- * Restruktura — è la stessa scelta già scritta nelle descrizioni dei tool
- * qui sotto ("casella restruktura.drive@gmail.com"), ora esplicita anche nel
- * codice invece che solo nel testo per l'utente.
- *
- * Non è un predefinito nascosto in `gmail-tools.ts`: è la politica di QUESTO
- * livello, scritta qui perché è qui che si legge e si prova. Dare al modello
- * la scelta tra le caselle Google (`drive` / `larealestate`) è lavoro di un
- * task successivo, quando i tool avranno un parametro `casella` collegato
- * alla società attiva in conversazione.
+ * I tool `gmail_*` di SCRITTURA (bozza, invio, label, archivia, cestina)
+ * operano ancora tutti sulla casella di Restruktura — politica esplicita
+ * provvisoria del Task 2. In lettura questa costante non serve più: da qui in
+ * poi si guarda su TUTTE le caselle Google (vedi `leggiSuTutteLeGoogle`), e
+ * sarà il Task 4 a dare anche alla scrittura la scelta della casella giusta.
  */
 const CASELLA_TOOL_GMAIL: ChiaveCasella = 'drive'
+
+/** Le sole caselle indicate dal modello (se valide), o `undefined` = tutte. */
+function caselleRichieste(input: Record<string, unknown>): ChiaveCasella[] | undefined {
+  const raw = input.caselle
+  if (!Array.isArray(raw)) return undefined
+  const valide = raw.filter((c): c is ChiaveCasella => c === 'drive' || c === 'larealestate')
+  return valide.length > 0 ? valide : undefined
+}
+
+/** Il testo che avverte il modello delle caselle su cui NON si è potuto guardare. */
+function formatCaselleFallite(caselleFallite: EsitoLettura<unknown>['caselleFallite']): string {
+  if (caselleFallite.length === 0) return ''
+  return '\n\n' + caselleFallite
+    .map((f) => `⚠️ NON ho potuto guardare in ${f.casella}: ${f.errore}`)
+    .join('\n')
+}
+
+const SCHEMA_CASELLE = {
+  type: 'array' as const,
+  items: { type: 'string' as const, enum: ['drive', 'larealestate'] },
+  description: 'Quali caselle Google guardare. Se non lo dici, le guarda TUTTE e ti dice da quale viene ogni risultato.',
+}
 
 // 2026-05-24 V19 Mail (TopHost IMAP/SMTP per info@/raffaele.lentini@):
 // 5 tool — read_email, get_email_body, send_email, forward_email, mark_email
@@ -133,43 +151,51 @@ export async function executeMailWrapper(
 export const GMAIL_TOOLS: ToolDefinition[] = [
   {
     name: 'gmail_list_inbox',
-    description: 'Elenca le mail in inbox della casella restruktura.drive@gmail.com. Default 20 mail più recenti, filtri opzionali.',
+    description: 'Elenca le mail in inbox. Guarda TUTTE le caselle Google (drive, larealestate) salvo diversa indicazione. Default 20 mail più recenti, filtri opzionali.',
     input_schema: {
       type: 'object' as const,
       properties: {
         max_results: { type: 'string', description: 'Max risultati (default 20, max 100)' },
         only_unread: { type: 'string', description: '"true" per solo non lette' },
         since_days: { type: 'string', description: 'Solo ultimi N giorni' },
+        caselle: SCHEMA_CASELLE,
       },
     },
   },
   {
     name: 'gmail_search',
-    description: 'Cerca mail con sintassi Gmail nativa (es. "from:rossi after:2026-04-01", "subject:DURC", "has:attachment").',
+    description: 'Cerca mail con sintassi Gmail nativa (es. "from:rossi after:2026-04-01", "subject:DURC", "has:attachment"). Guarda TUTTE le caselle Google salvo diversa indicazione.',
     input_schema: {
       type: 'object' as const,
       properties: {
         query: { type: 'string', description: 'Query Gmail (sintassi nativa)' },
         max_results: { type: 'string', description: 'Max risultati (default 20)' },
+        caselle: SCHEMA_CASELLE,
       },
       required: ['query'],
     },
   },
   {
     name: 'gmail_read_message',
-    description: 'Legge il contenuto completo di una singola mail (corpo, headers, lista allegati).',
+    description: 'Legge il contenuto completo di una singola mail (corpo, headers, lista allegati). Se non sai in quale casella sta, prova TUTTE.',
     input_schema: {
       type: 'object' as const,
-      properties: { message_id: { type: 'string', description: 'Gmail message ID' } },
+      properties: {
+        message_id: { type: 'string', description: 'Gmail message ID' },
+        caselle: SCHEMA_CASELLE,
+      },
       required: ['message_id'],
     },
   },
   {
     name: 'gmail_read_thread',
-    description: 'Legge tutti i messaggi di un thread (conversazione email completa).',
+    description: 'Legge tutti i messaggi di un thread (conversazione email completa). Se non sai in quale casella sta, prova TUTTE.',
     input_schema: {
       type: 'object' as const,
-      properties: { thread_id: { type: 'string', description: 'Gmail thread ID' } },
+      properties: {
+        thread_id: { type: 'string', description: 'Gmail thread ID' },
+        caselle: SCHEMA_CASELLE,
+      },
       required: ['thread_id'],
     },
   },
@@ -190,15 +216,21 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'gmail_list_drafts',
-    description: 'Lista bozze pendenti (max 10).',
-    input_schema: { type: 'object' as const, properties: {} },
+    description: 'Lista bozze pendenti (max 10). Guarda TUTTE le caselle Google salvo diversa indicazione.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { caselle: SCHEMA_CASELLE },
+    },
   },
   {
     name: 'gmail_show_draft',
-    description: 'Mostra contenuto completo di una bozza per anteprima.',
+    description: 'Mostra contenuto completo di una bozza per anteprima. Se non sai in quale casella sta, prova TUTTE.',
     input_schema: {
       type: 'object' as const,
-      properties: { draft_id: { type: 'string' } },
+      properties: {
+        draft_id: { type: 'string' },
+        caselle: SCHEMA_CASELLE,
+      },
       required: ['draft_id'],
     },
   },
@@ -246,8 +278,11 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'gmail_list_labels',
-    description: 'Elenca tutte le label disponibili nell\'inbox.',
-    input_schema: { type: 'object' as const, properties: {} },
+    description: 'Elenca tutte le label disponibili nell\'inbox. Guarda TUTTE le caselle Google salvo diversa indicazione.',
+    input_schema: {
+      type: 'object' as const,
+      properties: { caselle: SCHEMA_CASELLE },
+    },
   },
   {
     name: 'gmail_mark_read',
@@ -278,23 +313,31 @@ export const GMAIL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'gmail_summary_inbox',
-    description: 'Riassunto delle mail non lette degli ultimi N giorni (default 1) — categorizzate, con highlight degli urgenti.',
+    description: 'Riassunto delle mail non lette degli ultimi N giorni (default 1) — categorizzate, con highlight degli urgenti. Guarda TUTTE le caselle Google salvo diversa indicazione.',
     input_schema: {
       type: 'object' as const,
-      properties: { since_days: { type: 'string', description: 'Numero giorni indietro (default 1)' } },
+      properties: {
+        since_days: { type: 'string', description: 'Numero giorni indietro (default 1)' },
+        caselle: SCHEMA_CASELLE,
+      },
     },
   },
 ]
 
-function formatGmailList(messages: GmailMessageMeta[]): string {
+function formatGmailList(messages: Array<GmailMessageMeta & { casella: ChiaveCasella }>): string {
   if (messages.length === 0) return 'Nessun messaggio trovato.'
   return messages.map(m =>
-    `📧 [${m.id}] ${m.date.slice(0, 16)} | ${m.from.slice(0, 40)} | ${m.subject.slice(0, 60)}\n   ${m.snippet.slice(0, 100)}`
+    `📧 [${m.casella}] [${m.id}] ${m.date.slice(0, 16)} | ${m.from.slice(0, 40)} | ${m.subject.slice(0, 60)}\n   ${m.snippet.slice(0, 100)}`
   ).join('\n\n')
 }
 
-function formatGmailMessage(m: GmailMessage): string {
+function formatGmailListMulti(esito: EsitoLettura<GmailMessageMeta>): string {
+  return formatGmailList(esito.risultati) + formatCaselleFallite(esito.caselleFallite)
+}
+
+function formatGmailMessage(m: GmailMessage & { casella?: ChiaveCasella }): string {
   const lines = [
+    ...(m.casella ? [`Casella: ${m.casella}`] : []),
     `Da: ${m.from}`,
     `A: ${m.to}`,
     `Data: ${m.date}`,
@@ -307,6 +350,14 @@ function formatGmailMessage(m: GmailMessage): string {
   return lines.join('\n')
 }
 
+/** Formatta uno o più messaggi trovati su più caselle, con l'avviso di quelle fallite. */
+function formatGmailMessagesMulti(esito: EsitoLettura<GmailMessage>): string {
+  const corpo = esito.risultati.length === 0
+    ? 'Nessun messaggio trovato.'
+    : esito.risultati.map(formatGmailMessage).join('\n\n---\n\n')
+  return corpo + formatCaselleFallite(esito.caselleFallite)
+}
+
 export async function executeGmailWrapper(
   name: string,
   input: Record<string, unknown>,
@@ -314,28 +365,31 @@ export async function executeGmailWrapper(
   if (!name.startsWith('gmail_')) return null
 
   const get = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '')
+  const caselle = caselleRichieste(input)
 
   try {
     switch (name) {
       case 'gmail_list_inbox': {
-        const res = await listInbox(CASELLA_TOOL_GMAIL, {
+        const esito = await leggiSuTutteLeGoogle(caselle, (c) => listInbox(c, {
           maxResults: parseInt(get('max_results') || '20', 10),
           onlyUnread: get('only_unread') === 'true',
           sinceDays: parseInt(get('since_days') || '0', 10) || undefined,
-        })
-        return formatGmailList(res)
+        }))
+        return formatGmailListMulti(esito)
       }
       case 'gmail_search': {
-        const res = await searchGmail(CASELLA_TOOL_GMAIL, get('query'), parseInt(get('max_results') || '20', 10))
-        return formatGmailList(res)
+        const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
+          searchGmail(c, get('query'), parseInt(get('max_results') || '20', 10)))
+        return formatGmailListMulti(esito)
       }
       case 'gmail_read_message': {
-        const m = await readMessage(CASELLA_TOOL_GMAIL, get('message_id'))
-        return formatGmailMessage(m)
+        const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
+          readMessage(c, get('message_id')).then((m) => [m]))
+        return formatGmailMessagesMulti(esito)
       }
       case 'gmail_read_thread': {
-        const t = await readThread(CASELLA_TOOL_GMAIL, get('thread_id'))
-        return t.map(formatGmailMessage).join('\n\n---\n\n')
+        const esito = await leggiSuTutteLeGoogle(caselle, (c) => readThread(c, get('thread_id')))
+        return formatGmailMessagesMulti(esito)
       }
       case 'gmail_create_draft': {
         const res = await createDraft(CASELLA_TOOL_GMAIL, {
@@ -348,13 +402,16 @@ export async function executeGmailWrapper(
         return `✅ Bozza creata. draft_id=${res.draftId}\nUsa gmail_show_draft per anteprima, poi gmail_send_draft DOPO conferma utente.`
       }
       case 'gmail_list_drafts': {
-        const drafts = await listDrafts(CASELLA_TOOL_GMAIL, 20)
-        if (drafts.length === 0) return 'Nessuna bozza pendente.'
-        return drafts.map(d => `📝 ${d.draftId}: A: ${d.to} | Oggetto: ${d.subject}`).join('\n')
+        const esito = await leggiSuTutteLeGoogle(caselle, (c) => listDrafts(c, 20))
+        const corpo = esito.risultati.length === 0
+          ? 'Nessuna bozza pendente.'
+          : esito.risultati.map(d => `📝 [${d.casella}] ${d.draftId}: A: ${d.to} | Oggetto: ${d.subject}`).join('\n')
+        return corpo + formatCaselleFallite(esito.caselleFallite)
       }
       case 'gmail_show_draft': {
-        const d = await showDraft(CASELLA_TOOL_GMAIL, get('draft_id'))
-        return formatGmailMessage(d)
+        const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
+          showDraft(c, get('draft_id')).then((d) => [d]))
+        return formatGmailMessagesMulti(esito)
       }
       case 'gmail_send_draft': {
         const res = await sendDraft(CASELLA_TOOL_GMAIL, get('draft_id'))
@@ -373,8 +430,11 @@ export async function executeGmailWrapper(
         return `🏷 Label rimossa.`
       }
       case 'gmail_list_labels': {
-        const labels = await listLabels(CASELLA_TOOL_GMAIL)
-        return labels.map(l => `- ${l.name} (id=${l.id})`).join('\n')
+        const esito = await leggiSuTutteLeGoogle(caselle, (c) => listLabels(c))
+        const corpo = esito.risultati.length === 0
+          ? 'Nessuna label trovata.'
+          : esito.risultati.map(l => `- [${l.casella}] ${l.name} (id=${l.id})`).join('\n')
+        return corpo + formatCaselleFallite(esito.caselleFallite)
       }
       case 'gmail_mark_read': {
         await markAsRead(CASELLA_TOOL_GMAIL, get('message_id'))
@@ -389,8 +449,12 @@ export async function executeGmailWrapper(
         return `🗑 Spostata nel cestino (recuperabile 30 giorni).`
       }
       case 'gmail_summary_inbox': {
-        const summary = await buildDailySummary(CASELLA_TOOL_GMAIL, parseInt(get('since_days') || '1', 10))
-        return summary.digest
+        const esito = await leggiSuTutteLeGoogle(caselle, (c) =>
+          buildDailySummary(c, parseInt(get('since_days') || '1', 10)).then((s) => [s]))
+        const corpo = esito.risultati.length === 0
+          ? 'Nessuna casella disponibile per il riassunto.'
+          : esito.risultati.map(s => `--- ${s.casella} ---\n${s.digest}`).join('\n\n')
+        return corpo + formatCaselleFallite(esito.caselleFallite)
       }
       default:
         return `Tool gmail "${name}" non riconosciuto.`

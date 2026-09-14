@@ -158,11 +158,21 @@ describe('differimento delle definizioni dei tool', () => {
   // centesimo» e il tool non aveva modo di saperlo — un bonifico parziale
   // avrebbe segnato pagata l'intera voce. Ora, se l'importo non combacia, la
   // fattura viene ESCLUSA e lo dice.
+  //
+  // LA DECISIONE, 14 settembre 2026 (caselle di posta, Task 3). Il NUMERO NON
+  // CAMBIA — restano 136 — ma l'impronta si', da `0e77f378c51bbd066553761b0161f8a2`
+  // a `881bc21612852e7a859a23c9824f4cc5`. Gli 8 tool `gmail_*` di sola lettura
+  // (list_inbox, search, read_message, read_thread, list_drafts, show_draft,
+  // list_labels, summary_inbox) hanno un parametro in piu', `caselle`
+  // (facoltativo): senza indicazione guardano TUTTE le caselle Google
+  // (drive, larealestate) e ogni risultato dichiara da quale viene. Le
+  // descrizioni dei tool sono cambiate di conseguenza — non piu'
+  // "casella restruktura.drive@gmail.com" fissa.
   it('senza opzioni: 136 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
     expect(defs).toHaveLength(136)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('bec89cf4b8eca133e2e64a6ee3f21d54')
+      .toBe('881bc21612852e7a859a23c9824f4cc5')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

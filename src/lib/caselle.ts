@@ -6,9 +6,11 @@
  * credenziale OAuth c'era gia' (autorizzata e verificata alle 13:01); mancava
  * il codice che la usa: cinque punti aprivano un client Google con la societa'
  * CABLATA. Questo file ne chiude QUATTRO (drive.ts, calendar-tools.ts,
- * document-saver.ts, hallucination-validator.ts) — il quinto resta
- * `gmail-tools.ts`, apposta: e' lavoro del Task 2, che da' ai 16 tool
- * `gmail_*` la scelta della casella per richiesta.
+ * document-saver.ts, hallucination-validator.ts) — il quinto e' `gmail-tools.ts`,
+ * dove il Task 2 ha reso `casella` un parametro obbligatorio delle funzioni di
+ * basso livello, senza ancora dare ai 16 tool `gmail_*` la scelta: quella e'
+ * lavoro del Task 3 (lettura su tutte, con provenienza) e del Task 4
+ * (scrittura sulla casella giusta).
  *
  * Perche' un registro e non un parametro qua e la': ne esistevano gia' DUE a
  * meta' — `societa.ts` per le societa' e `AccountKey` ('info'|'raffaele') per
