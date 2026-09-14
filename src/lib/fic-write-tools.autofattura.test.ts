@@ -202,7 +202,7 @@ describe('🚨 l\'IVA non si indovina', () => {
 })
 
 describe('il payload spedito a Fatture in Cloud', () => {
-  it('ha type self_supplier_invoice e e_invoice false', async () => {
+  it('🚨 ha type self_supplier_invoice e nasce ELETTRONICA: senza, non si puo trasmettere allo SdI', async () => {
     await compila({ fatture: BOOKING, vat_id: 21, numerazione: SERIE })
 
     const payload = (stato.inserite[0].payload as { documenti: Array<{ payload: Record<string, unknown> }> })
@@ -210,7 +210,10 @@ describe('il payload spedito a Fatture in Cloud', () => {
       // ⚠️ self_SUPPLIER_invoice: chi emette e' il cliente, il fornitore estero
       // e' il fornitore. `self_own_invoice` sarebbe il documento sbagliato.
       expect(d.payload.type).toBe('self_supplier_invoice')
-      expect(d.payload.e_invoice).toBe(false)
+      // 15 set 2026: era `false`, e su Fatture in Cloud il tasto per
+      // trasmettere non compariva nemmeno. Un'integrazione TD17 si assolve
+      // TRASMETTENDOLA: nascere non elettronica la rendeva inutile.
+      expect(d.payload.e_invoice).toBe(true)
       expect((d.payload.items_list as Array<{ vat: { id: number } }>)[0].vat.id).toBe(21)
     }
   })
@@ -355,7 +358,7 @@ describe('la conferma MASSIVA: N autofatture, UNA conferma', () => {
     // L'aliquota scelta, e il fatto che non si trasmette niente.
     expect(anteprima).toContain('N6.9')
     expect(anteprima).toContain('self_supplier_invoice')
-    expect(anteprima).toMatch(/NON trasmesse/)
+    expect(anteprima).toMatch(/NON vengono trasmesse/)
     // Una sola coppia di comandi per tutte e tre.
     expect(String(out.conferma_1)).toContain('fic_ok')
     // Niente e' ancora nato su Fatture in Cloud.

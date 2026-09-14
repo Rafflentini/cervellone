@@ -553,7 +553,19 @@ async function compilaDocumento(
     entity: entity.entity,
     items_list: itemsList,
     date: data,
-    e_invoice: false,
+    // 🚨 Una FATTURA nasce ELETTRONICA. Un rapporto d'intervento no: non e' un
+    // documento fiscale e allo SdI non ci va.
+    //
+    // 15 settembre 2026. Qui c'era `false` per entrambi, senza spiegazione. Su
+    // una fattura vera voleva dire che il documento restava nel gestionale e
+    // non passava MAI dallo SdI — e su Fatture in Cloud il tasto per
+    // trasmetterla non compariva nemmeno, perche' su un documento non
+    // elettronico non c'e'. Una fattura che sembra emessa e non lo e'.
+    //
+    // ⚠️ Elettronico NON vuol dire trasmesso: nessuna funzione di questo repo
+    // chiama l'endpoint di invio allo SdI. Il documento nasce pronto e resta
+    // fermo finche' l'Ingegnere non lo guarda e lo manda a mano.
+    e_invoice: tipo === 'fattura_emessa',
   }
   if (note) payload.notes = note
   // Il sezionale NON e' cosmetico: sceglie la serie di numerazione, cioe' il
@@ -1328,7 +1340,7 @@ function descriviAutofatture(input: {
     ...elencoTagliato(input.documenti, (f) => rigaAutofattura(f, input.etichettaIva), 'autofatture da creare'),
     '⚠️ L\'imponibile deve essere quello delle sole COMMISSIONI della piattaforma (fee sui pagamenti gestiti compresa). '
     + 'Gli incassi girati dalla piattaforma sono soldi degli ospiti e NON si integrano: se un importo qui sopra somiglia a un incasso, annulla.',
-    'Vengono COMPILATE e NON trasmesse allo SdI (e_invoice: false): la trasmissione la fai tu da Fatture in Cloud.',
+    'Nascono ELETTRONICHE ma NON vengono trasmesse: il documento e pronto per lo SdI e la trasmissione la fai tu da Fatture in Cloud, dopo averlo controllato.',
     `Tipo documento SdI: ${TIPO_DOCUMENTO_SDI} (integrazione art. 17 c.2 DPR 633/72, servizio generico art. 7-ter), impostato su ogni documento.`,
     '⚠️ I «dati fattura collegata» questo tool NON li compila: il riferimento alla fattura originale (numero e data) '
     + 'e\' scritto nella riga e nelle note, ma non nel campo strutturato. Controllalo su Fatture in Cloud prima di trasmettere.',
@@ -1568,8 +1580,16 @@ async function compilaAutofatture(
       date: r.dataRicezione,
       // Serie dedicata: senza, FIC numererebbe fra le fatture attive.
       numeration: numerazione,
-      // Si COMPILA, non si trasmette: l'invio allo SdI lo fa l'Ingegnere.
-      e_invoice: false,
+      // ⚠️ Il documento NASCE elettronico, e non e' un dettaglio: un'
+      // integrazione TD17 si assolve TRASMETTENDOLA allo SdI, e Fatture in
+      // Cloud il tasto per farlo non lo mostra nemmeno su un documento non
+      // elettronico. Prima qui c'era `false` con scritto accanto «l'invio lo
+      // fa l'Ingegnere»: non poteva farlo nessuno.
+      //
+      // Elettronico NON vuol dire trasmesso: nessuna funzione di questo repo
+      // chiama l'endpoint di invio. Il documento resta fermo su Fatture in
+      // Cloud finche' l'Ingegnere non lo guarda e lo manda a mano.
+      e_invoice: true,
     }
     // Il riferimento alla fattura originale viaggia nelle note ANCHE quando
     // l'Ingegnere ne ha scritte di sue: e' il dato che lega l'integrazione al
@@ -1611,7 +1631,8 @@ async function compilaAutofatture(
     id: pending.id,
     stato: 'in_attesa',
     tipo_documento_fic: TIPO_FIC_AUTOFATTURA,
-    e_invoice: false,
+    e_invoice: true,
+    trasmissione: 'il documento nasce elettronico ma NON viene trasmesso: l invio allo SdI lo fai tu da Fatture in Cloud, dopo averlo controllato.',
     iva: { id: idIva, etichetta: etichettaIva },
     numerazione,
     da_creare: documenti.length,
@@ -1700,7 +1721,10 @@ async function creaAutofatture(
   for (const d of dati.documenti) {
     const intestazione = `${d.fornitore} — fattura n.${d.numero} del ${d.data} — ${euro(d.imponibile)}`
     try {
-      const creato = await creaDocumentoFIC(d.payload, societa)
+      // 🚨 Un'integrazione in reverse charge non crea un credito: senza questo
+      // FIC la mostra «SCADUTA» col tasto «Manda sollecito» verso il
+      // fornitore estero. Visto sul 1INT/2026 il 15 settembre 2026.
+      const creato = await creaDocumentoFIC(d.payload, societa, { pagamentoNonDovuto: true })
       trattate++
       if (!creato.ok) {
         fallite.push(`❌ ${intestazione} — ${creato.error}`)

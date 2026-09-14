@@ -65,28 +65,41 @@ interface RigaPending {
 }
 
 /**
- * Le azioni che si chiudono con UNA conferma sola.
+ * Le azioni che si chiudono con UNA conferma sola: oggi, TUTTE.
  *
- * ⚠️ Il criterio non è «semplice o complicata», è **reversibile o no**.
- * Emettere una fattura è un atto fiscale che non si disfa: resta a due
- * passaggi. Registrare un incasso si cancella dall'interfaccia di Fatture in
- * Cloud in dieci secondi — e pretendere due «confermo» per scrivere una data e
- * un importo che l'Ingegnere ha appena letto nell'anteprima non è prudenza,
- * è attrito. Chiesto da Raffaele il 14 settembre 2026, dopo tre giorni passati
- * a far funzionare proprio quella riga di incasso.
+ * ⚠️ **Come ci siamo arrivati, e perche' il criterio di prima e' caduto.**
+ * Il 14 settembre 2026 qui dentro c'erano solo gli incassi, con scritto che il
+ * criterio non era «semplice o complicata» ma **reversibile o no**: emettere
+ * una fattura non si disfa, quindi restava a due passaggi.
  *
- * ⚠️ Quello che NON cambia: la conferma resta una frase che l'Ingegnere ha
- * detto o scritto DAVVERO, e l'anteprima gliela si è già mostrata quando il
- * tool ha preparato la riga. Un passaggio solo, ma umano.
+ * Il 15 settembre l'Ingegnere l'ha ripetuto una seconda volta, per le fatture:
+ * «ti avevo detto di lasciare singola conferma vocale, non doppia». E' una sua
+ * decisione, ripetuta, ed e' sua da prendere: e' lui che risponde dei documenti
+ * che escono.
  *
- * ⚠️ `spesa_ricevuta` sta qui per lo stesso criterio, non per comodità: una
- * fattura d'ACQUISTO registrata non è un atto fiscale verso l'esterno — non
- * si trasmette a nessuno, e su Fatture in Cloud si cancella in dieci secondi.
- * Quello che NON si disfa è emettere; registrare quello che si è ricevuto no.
- * (Chiesto insieme al tool, 14 settembre 2026: «deve solo mettere PDF e
- * importo».)
+ * ⚠️ **Cosa si perde, scritto qui perche' non si scopra dopo.** La seconda
+ * conferma era l'ultimo cancello prima di un atto fiscale che non si disfa.
+ * Ora ne resta uno solo. Regge perche' l'anteprima — con fornitore, numero,
+ * date e importi — gli viene mostrata QUANDO il tool prepara la riga: il
+ * «confermo» arriva dopo averla letta, non al buio.
+ *
+ * ⚠️ **Cosa NON cambia, ed e' la parte che non si tocca.** La conferma resta
+ * una frase che l'Ingegnere ha detto o scritto DAVVERO. Un passaggio solo, ma
+ * umano: nessun percorso di questo file conferma per conto suo.
+ *
+ * L'insieme resta esplicito, invece di sparire in un `true`, perche' il giorno
+ * che un tipo nuovo di documento va trattato diversamente lo si toglie da qui
+ * — e si vede subito che e' un'eccezione decisa, non una dimenticanza.
  */
-const A_CONFERMA_SINGOLA: ReadonlySet<string> = new Set(['pagamento_emessa', 'pagamento_ricevuta', 'spesa_ricevuta'])
+const A_CONFERMA_SINGOLA: ReadonlySet<string> = new Set([
+  'pagamento_emessa',
+  'pagamento_ricevuta',
+  'spesa_ricevuta',
+  'fattura_emessa',
+  'rapporto_intervento',
+  'autofattura',
+])
+
 
 export interface EsitoConfermaFic {
   /** false = non era una conferma per una bozza FIC: il messaggio va al modello. */

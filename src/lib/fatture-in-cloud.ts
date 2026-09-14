@@ -261,6 +261,8 @@ async function calcolaTotaliFIC(
 export async function creaDocumentoFIC(
   payload: Record<string, unknown>,
   societa: CodiceSocieta,
+  /** `pagamentoNonDovuto`: il documento non crea un credito (integrazione in reverse charge). */
+  opzioni?: { pagamentoNonDovuto?: boolean },
 ): Promise<FicCreateResult> {
   const s = getSocieta(societa)
   const token = getFicToken(societa)
@@ -271,7 +273,28 @@ export async function creaDocumentoFIC(
 
   const { number: _number, ...payloadWithoutNumber } = payload
   void _number
-  const forcedPayload: Record<string, unknown> = { ...payloadWithoutNumber, e_invoice: false }
+  // ⚠️ `e_invoice` NON si forza piu' a `false` alla cieca: si rispetta quello
+  // che il chiamante ha deciso, e il predefinito resta `false`.
+  //
+  // 15 settembre 2026. Questa riga imponeva `false` a OGNI documento, senza
+  // una riga di spiegazione. Sulle integrazioni TD17 voleva dire che
+  // l'Ingegnere, aperto il documento su Fatture in Cloud, NON trovava il tasto
+  // per trasmetterlo: un documento che non nasce elettronico non si manda allo
+  // SdI, e un'integrazione non trasmessa non assolve nessun obbligo. Era un
+  // adempimento che SEMBRAVA fatto.
+  //
+  // Peggio: accanto al payload dell'autofattura c'era scritto «si COMPILA, non
+  // si trasmette: l'invio lo fa l'Ingegnere» — un'intenzione che il codice
+  // rendeva impossibile. Un commento che descrive un comportamento inesistente
+  // e' il difetto che questa casa continua a ritrovarsi addosso.
+  //
+  // ⚠️ Qui si decide solo se il documento NASCE elettronico. NESSUNA funzione
+  // di questo repo chiama l'endpoint di trasmissione allo SdI: quel gesto
+  // resta dell'Ingegnere, a mano, dopo aver guardato il documento.
+  const forcedPayload: Record<string, unknown> = {
+    ...payloadWithoutNumber,
+    e_invoice: payloadWithoutNumber.e_invoice === true,
+  }
 
   // PIANO PAGAMENTI — senza questo, FIC rifiuta il documento con
   // "Il totale dei pagamenti non corrisponde al totale da pagare" (422):
@@ -289,10 +312,15 @@ export async function creaDocumentoFIC(
       const dataDoc = typeof forcedPayload.date === 'string' && forcedPayload.date
         ? forcedPayload.date
         : dataOggiRoma()
+      // 🚨 Su un'integrazione in reverse charge NON si deve niente a nessuno:
+      // l'IVA e' a debito e a credito insieme. Senza questa distinzione il
+      // piano a 30 giorni faceva comparire l'autofattura come «SCADUTA» su
+      // Fatture in Cloud, col tasto «Manda sollecito» — verso Booking.com.
+      // Visto sul documento 1INT/2026 il 15 settembre 2026.
       forcedPayload.payments_list = [{
-        due_date: aggiungiGiorniISO(dataDoc, GIORNI_SCADENZA_FIC),
+        due_date: opzioni?.pagamentoNonDovuto ? dataDoc : aggiungiGiorniISO(dataDoc, GIORNI_SCADENZA_FIC),
         amount: totale,
-        status: 'not_paid',
+        status: opzioni?.pagamentoNonDovuto ? 'paid' : 'not_paid',
       }]
     }
   }

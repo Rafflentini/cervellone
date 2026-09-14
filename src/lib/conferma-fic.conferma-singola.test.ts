@@ -77,8 +77,8 @@ describe('un INCASSO si chiude con una conferma sola', () => {
     // ⚠️ Il criterio resta «reversibile o no». Una spesa non si trasmette a
     // nessuno: e' la registrazione di un documento che abbiamo RICEVUTO, e su
     // Fatture in Cloud si cancella in dieci secondi. Quello che non si disfa
-    // e' EMETTERE — e infatti `fattura_emessa` e `autofattura` restano a due
-    // passaggi (v. i controlli positivi qui sotto).
+    // e' EMETTERE — ma dal 15 set anche quelli stanno a UNA conferma, per
+      // decisione esplicita dell Ingegnere (v. il blocco qui sotto).
     righe.valore = pending('spesa_ricevuta', { descrizione: 'Registro una SPESA (fattura RICEVUTA) su Fatture in Cloud' })
 
     const esito = await confermaFicPiuRecente('restruktura')
@@ -90,42 +90,46 @@ describe('un INCASSO si chiude con una conferma sola', () => {
   })
 })
 
-describe('CONTROLLO POSITIVO — quello che NON si disfa resta a due passaggi', () => {
-  it('🚨 fattura_emessa: il primo «confermo» NON scrive, ne chiede un altro', async () => {
-    // Senza questo, togliere la doppia conferma per TUTTI passerebbe i test
-    // qui sopra — e una fattura potrebbe nascere con un «ok» distratto.
+describe('🚨 UNA conferma sola, anche per i documenti che si EMETTONO', () => {
+  // ⚠️ Fino al 14 settembre 2026 il criterio era «reversibile o no»: emettere
+  // non si disfa, quindi fattura e autofattura restavano a due passaggi.
+  //
+  // Il 15 settembre l'Ingegnere l'ha chiesto una seconda volta, esplicitamente
+  // per le fatture: «ti avevo detto di lasciare singola conferma vocale, non
+  // doppia». E' una sua decisione, ripetuta, ed e' sua da prendere.
+  //
+  // Cosa regge al posto del secondo cancello: l'anteprima — fornitore, numero,
+  // date, importi — gli viene mostrata QUANDO il tool prepara la riga. Il
+  // «confermo» arriva dopo averla letta, non al buio.
+
+  it('fattura_emessa: il «confermo» scrive, e non ne chiede un altro', async () => {
     righe.valore = pending('fattura_emessa', { descrizione: 'Creo la fattura 30-ED' })
 
     const esito = await confermaFicPiuRecente('restruktura')
 
     expect(step1).toHaveBeenCalledTimes(1)
-    expect(step2).not.toHaveBeenCalled()
-    expect(esito.message).toContain('Conferma DEFINITIVA')
+    expect(step2).toHaveBeenCalledTimes(1)
+    expect(esito.message).not.toContain('Conferma DEFINITIVA')
   })
 
-  it('rapporto_intervento: idem, resta doppia', async () => {
+  it('rapporto_intervento: idem', async () => {
     righe.valore = pending('rapporto_intervento')
 
     await confermaFicPiuRecente('restruktura')
 
-    expect(step2).not.toHaveBeenCalled()
+    expect(step2).toHaveBeenCalledTimes(1)
   })
 
-  it('🚨 autofattura: crea documenti fiscali, quindi resta a DUE passaggi', async () => {
-    // La conferma MASSIVA e la conferma SINGOLA sono cose diverse: una
-    // conferma sola per N autofatture, ma in due passaggi. Un'autofattura fa
-    // nascere un documento fiscale che non si disfa — il criterio del registro
-    // e' «reversibile o no», e qui non lo e'. Se qualcuno la aggiungesse a
-    // `A_CONFERMA_SINGOLA`, quindici documenti nascerebbero con un solo «ok».
+  it('autofattura: N documenti, UN «confermo»', async () => {
+    // La conferma MASSIVA e la conferma SINGOLA sono due cose diverse, e qui
+    // valgono insieme: una riga sola per N autofatture, e un passaggio solo.
     righe.valore = pending('autofattura', { descrizione: 'Compilo 3 AUTOFATTURE (reverse charge, fatture estere)' })
 
     const esito = await confermaFicPiuRecente('restruktura')
 
     expect(step1).toHaveBeenCalledTimes(1)
-    expect(step2).not.toHaveBeenCalled()
-    expect(esito.message).toContain('Conferma DEFINITIVA')
-    // La descrizione non inizia con «Segno»: il testo dice «creo il documento».
-    expect(esito.message).toContain('creo il documento')
+    expect(step2).toHaveBeenCalledTimes(1)
+    expect(esito.message).not.toContain('Conferma DEFINITIVA')
   })
 
   it('un tipo sconosciuto resta PRUDENTE: doppia conferma', async () => {
