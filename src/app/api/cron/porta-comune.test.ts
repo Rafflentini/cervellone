@@ -116,6 +116,37 @@ describe('C43 — nessun cron si apre quando CRON_SECRET manca', () => {
     expect(ROTTE).toContain('scadenze')
   })
 
+  it('🚨 ogni cron PIANIFICATO su Vercel e fra quelli sorvegliati qui', () => {
+    // Il pavimento qui sopra non basta da solo: legge una CARTELLA, quindi
+    // non vedrebbe un cron scritto come `route.tsx`, annidato, o messo
+    // altrove — sparirebbe da questo test in silenzio, e il numero resterebbe
+    // undici. E non vedrebbe nemmeno una SOSTITUZIONE: una tolta e una messa
+    // lasciano il conto identico.
+    //
+    // La verita' su quali porte il mondo puo' bussare non sta nel filesystem,
+    // sta in `vercel.json`: quello e' l'elenco di cosa Vercel chiamera' davvero.
+    // Stesso patto gia' stretto in `src/lib/tools/automazioni.test.ts`.
+    const pianificati = (JSON.parse(fs.readFileSync('vercel.json', 'utf8')) as {
+      crons?: Array<{ path: string }>
+    }).crons ?? []
+
+    // Se un giorno `vercel.json` non avesse piu' cron, questo test diventerebbe
+    // verde e vuoto: e' esattamente il modo in cui smetterebbe di sorvegliare.
+    expect(pianificati.length).toBeGreaterThanOrEqual(11)
+
+    const scoperti = pianificati
+      .map(c => c.path)
+      .filter(p => {
+        const m = /^\/api\/cron\/(.+)$/.exec(p)
+        return !m || !ROTTE.includes(m[1])
+      })
+
+    expect(
+      scoperti,
+      `cron pianificati su Vercel ma NON sorvegliati da questo test: ${scoperti.join(', ')}`,
+    ).toEqual([])
+  })
+
   for (const rotta of ROTTE) {
     it(`🚨 ${rotta}: senza il segreto, «Bearer undefined» NON apre`, async () => {
       delete process.env.CRON_SECRET

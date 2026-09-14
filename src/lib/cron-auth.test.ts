@@ -1,5 +1,5 @@
 // src/lib/cron-auth.test.ts
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { rispostaSeFuoriDalCron, segretoCronValido } from './cron-auth'
 
 /**
@@ -26,11 +26,19 @@ function req(authorization?: string) {
 
 const SEGRETO_VERO = 'segreto-di-prova-del-cron'
 let segretoDiPrima: string | undefined
+let errori: ReturnType<typeof vi.spyOn>
+let avvisi: ReturnType<typeof vi.spyOn>
 
-beforeEach(() => { segretoDiPrima = process.env.CRON_SECRET })
+beforeEach(() => {
+  segretoDiPrima = process.env.CRON_SECRET
+  errori = vi.spyOn(console, 'error').mockImplementation(() => {})
+  avvisi = vi.spyOn(console, 'warn').mockImplementation(() => {})
+})
 afterEach(() => {
   if (segretoDiPrima === undefined) delete process.env.CRON_SECRET
   else process.env.CRON_SECRET = segretoDiPrima
+  errori.mockRestore()
+  avvisi.mockRestore()
 })
 
 describe('C43 — la porta dei cron: un segreto che manca CHIUDE, non apre', () => {
@@ -76,6 +84,50 @@ describe('C43 — la porta dei cron: un segreto che manca CHIUDE, non apre', () 
 
     expect(segretoCronValido(req(`Bearer ${SEGRETO_VERO}`))).toBe(true)
     expect(rispostaSeFuoriDalCron(req(`Bearer ${SEGRETO_VERO}`))).toBeNull()
+  })
+
+  it('🚨 un segreto che manca NON chiude in silenzio: lo scrive', () => {
+    // Un guasto che chiude senza dirlo e' la forma esatta dei difetti che
+    // questa casa si e' gia' presa (l'autodiagnosi mai consegnata, le fatture
+    // estere a zero per quattro mesi). Il caso gemello in auth.ts lo scrive
+    // gia': qui si allinea.
+    delete process.env.CRON_SECRET
+
+    segretoCronValido(req('Bearer qualunque'))
+
+    expect(errori).toHaveBeenCalledTimes(1)
+    expect(String(errori.mock.calls[0]?.[0])).toContain('CRON_SECRET')
+  })
+
+  it('un bearer soltanto SBAGLIATO non logga niente: quello e rumore', () => {
+    // Un log che urla a ogni tentativo respinto non lo legge piu' nessuno, e
+    // il giorno del guasto vero si perde in mezzo.
+    process.env.CRON_SECRET = SEGRETO_VERO
+
+    segretoCronValido(req('Bearer sbagliato'))
+
+    expect(errori).not.toHaveBeenCalled()
+    expect(avvisi).not.toHaveBeenCalled()
+  })
+
+  it('🚨 un CRON_SECRET con un a-capo in coda apre lo stesso, e AVVISA', () => {
+    // Il difetto che il solo `trim()` di validazione non vedeva: la variabile
+    // superava il controllo e poi non combaciava con NESSUNA intestazione —
+    // undici cron a 401 per sempre, in silenzio. In questa casa e' successo
+    // davvero: `TOOL_DEFER` e' valso `"1\n"` per giorni perche' scritta con
+    // `echo` invece che con `printf`.
+    process.env.CRON_SECRET = `${SEGRETO_VERO}\n`
+
+    expect(segretoCronValido(req(`Bearer ${SEGRETO_VERO}`))).toBe(true)
+    expect(avvisi).toHaveBeenCalledTimes(1)
+    expect(String(avvisi.mock.calls[0]?.[0])).toContain('printf')
+  })
+
+  it('ripulire il segreto non lo indebolisce: resta fuori chi manda gli spazi', () => {
+    process.env.CRON_SECRET = `  ${SEGRETO_VERO}  `
+
+    expect(segretoCronValido(req(`Bearer   ${SEGRETO_VERO}  `))).toBe(false)
+    expect(segretoCronValido(req(`Bearer ${SEGRETO_VERO}`))).toBe(true)
   })
 
   it('il rifiuto e un 401 col corpo che ciascuna rotta gia rispondeva', async () => {
