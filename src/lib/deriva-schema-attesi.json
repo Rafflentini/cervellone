@@ -1,0 +1,900 @@
+{
+  "oggetti": [
+    {
+      "tipo": "tabella",
+      "tabella": "google_oauth_credentials"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_google_oauth_email"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "model_health"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_model_health_model_canary_ts"
+    },
+    {
+      "tipo": "config",
+      "chiave": "model_stable"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "telegram_active_jobs"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_telegram_active_jobs_started_at"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "gmail_alert_rules"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_gmail_alert_rules_enabled"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "gmail_processed_messages"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_gmail_processed_thread"
+    },
+    {
+      "tipo": "config",
+      "chiave": "gmail_summary_last_run"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_anthropic_files"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_anthropic_files_expires"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_anthropic_files_conv"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "gmail_processed_messages",
+      "colonne": [
+        "message_id",
+        "bot_action"
+      ]
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_audit_runs"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_audit_runs_week"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_audit_runs_started"
+    },
+    {
+      "tipo": "config",
+      "chiave": "audit_silent_until"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_gmail_categorie"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_gmail_categorie_enabled"
+    },
+    {
+      "tipo": "config",
+      "chiave": "gmail_classify_last_run"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_memoria_esplicita"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_memoria_esplicita_conv"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_memoria_esplicita_created"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_summary_giornaliero"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_summary_giornaliero_data"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_entita_menzionate"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_entita_lastseen"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_memoria_extraction_runs"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_runs_date"
+    },
+    {
+      "tipo": "config",
+      "chiave": "memoria_extract_last_run"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "agent_runs"
+    },
+    {
+      "tipo": "indice",
+      "nome": "agent_runs_conversation_idx"
+    },
+    {
+      "tipo": "indice",
+      "nome": "agent_runs_parent_idx"
+    },
+    {
+      "tipo": "indice",
+      "nome": "agent_runs_status_idx"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "sub_agent_jobs"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "document_renders"
+    },
+    {
+      "tipo": "indice",
+      "nome": "document_renders_conversation_idx"
+    },
+    {
+      "tipo": "indice",
+      "nome": "document_renders_state_idx"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "e2b_sandboxes"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_email_log"
+    },
+    {
+      "tipo": "indice",
+      "nome": "ix_email_log_ts"
+    },
+    {
+      "tipo": "indice",
+      "nome": "ix_email_log_account_action"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_email_senders"
+    },
+    {
+      "tipo": "indice",
+      "nome": "ix_email_senders_cat"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_email_invoices_log"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_email_pending_send"
+    },
+    {
+      "tipo": "indice",
+      "nome": "ix_email_pending_status"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_doc_proposte"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_proposte_stato"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_scadenze"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_scadenze_data_attive"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_scadenze_soggetto"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "telegram_recent_uploads"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_recent_uploads_chat_unprocessed"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_drive_policy"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_drive_policy_pending"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_foto_pending"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_foto_pending_chat_stato"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "api_usage"
+    },
+    {
+      "tipo": "indice",
+      "nome": "api_usage_ts_idx"
+    },
+    {
+      "tipo": "indice",
+      "nome": "api_usage_entry_ts_idx"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "procedures"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "project_state"
+    },
+    {
+      "tipo": "indice",
+      "nome": "project_state_active_uniq"
+    },
+    {
+      "tipo": "indice",
+      "nome": "project_state_lookup_idx"
+    },
+    {
+      "tipo": "config",
+      "chiave": "working_memory_enabled"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "procedures",
+      "colonna": "keywords"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "agent_workflow_runs",
+      "colonna": "attempts"
+    },
+    {
+      "tipo": "indice",
+      "nome": "uniq_auto_bozza_content"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_pending_send",
+      "colonna": "conversation_id"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_share_proposte"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "document_templates"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "document_templates",
+      "colonna": "dati_fissi"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_document_templates_keywords"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "procedures",
+      "colonna": "output_preferences"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "procedures",
+      "colonna": "updated_by"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "last_debrief_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "project_state",
+      "colonna": "updated_by"
+    },
+    {
+      "tipo": "config",
+      "chiave": "auto_debrief_enabled"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_sal_pending"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_scadenze",
+      "colonna": "calendar_event_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_fic_pending",
+      "colonna": "societa"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_movimenti",
+      "colonna": "societa"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_riconciliazioni",
+      "colonna": "societa"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_movimenti_societa_data"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_riconciliazioni_societa_periodo"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_societa_attiva"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_foto_contesto"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_regole"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_cervellone_regole_attive"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_cervellone_regole_proposte"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "telegram_coda"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_telegram_coda_da_leggere"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_skills_versioni"
+    },
+    {
+      "tipo": "indice",
+      "nome": "cervellone_skills_versioni_skill_idx"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_email_invoices_log",
+      "colonna": "source_account"
+    },
+    {
+      "tipo": "indice",
+      "nome": "cervellone_email_invoices_log_unico"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "messages",
+      "colonna": "client_msg_id"
+    },
+    {
+      "tipo": "indice",
+      "nome": "uniq_messages_client_msg_id"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_tool_calls"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_tool_calls_created"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_tool_calls_nome"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_guardia_autorizzazioni"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_cervellone_guardia_autorizzazioni_ricerca"
+    }
+  ],
+  "nonInterpretate": [
+    {
+      "file": "2026-05-03-google-oauth-credentials.sql",
+      "testo": "ALTER TABLE google_oauth_credentials ENABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-03-google-oauth-credentials.sql",
+      "testo": "COMMENT ON TABLE google_oauth_credentials IS 'OAuth refresh_token per accesso Drive utente. Bypass quota Service Account.'"
+    },
+    {
+      "file": "2026-05-03-google-oauth-credentials.sql",
+      "testo": "COMMENT ON COLUMN google_oauth_credentials.refresh_token IS 'SENSITIVE — long-lived token per generare access_token'"
+    },
+    {
+      "file": "2026-05-03-google-oauth-credentials.sql",
+      "testo": "COMMENT ON COLUMN google_oauth_credentials.access_token IS 'Short-lived (1h), auto-refreshed da googleapis library'"
+    },
+    {
+      "file": "2026-05-04-circuit-breaker.sql",
+      "testo": "ALTER TABLE model_health DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-04-circuit-breaker.sql",
+      "testo": "COMMENT ON TABLE model_health IS 'Outcome storico per ogni request modello — usato dal Circuit Breaker per detection di regressioni e canary recovery.'"
+    },
+    {
+      "file": "2026-05-04-telegram-active-jobs.sql",
+      "testo": "ALTER TABLE telegram_active_jobs DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-05-disable-rls-model-health.sql",
+      "testo": "ALTER TABLE model_health DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-05-gmail-rw.sql",
+      "testo": "ALTER TABLE gmail_alert_rules DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-05-gmail-rw.sql",
+      "testo": "COMMENT ON TABLE gmail_alert_rules IS 'Regole keyword + sender VIP per critical alert push immediato.'"
+    },
+    {
+      "file": "2026-05-05-gmail-rw.sql",
+      "testo": "INSERT INTO gmail_alert_rules (rule_type, pattern, severity, notes) VALUES ('keyword', 'urgente', 'high', 'Parola chiave esplicita di urgenza'), ('keyword', 'scadenza', 'high', 'Scadenze fiscali o bur"
+    },
+    {
+      "file": "2026-05-05-gmail-rw.sql",
+      "testo": "ALTER TABLE gmail_processed_messages DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-05-gmail-rw.sql",
+      "testo": "COMMENT ON TABLE gmail_processed_messages IS 'Track mail viste/processate per anti-loop e idempotenza. PK composita (message_id, bot_action) — una mail può passare per più stati.'"
+    },
+    {
+      "file": "2026-05-06-anthropic-files-tracking.sql",
+      "testo": "ALTER TABLE cervellone_anthropic_files DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-06-anthropic-files-tracking.sql",
+      "testo": "COMMENT ON TABLE cervellone_anthropic_files IS 'Tracking file uploadati su Anthropic Files API. Cleanup cron pending (iter #5).'"
+    },
+    {
+      "file": "2026-05-06-gmail-processed-pk-fix.sql",
+      "testo": "ALTER TABLE gmail_processed_messages DROP CONSTRAINT IF EXISTS gmail_processed_messages_pkey"
+    },
+    {
+      "file": "2026-05-06-gmail-processed-pk-fix.sql",
+      "testo": "COMMENT ON TABLE gmail_processed_messages IS 'Track mail viste/processate per anti-loop e idempotenza. PK composita (message_id, bot_action) — una mail può passare per più stati distinti.'"
+    },
+    {
+      "file": "2026-05-07-cervellone-self-audit.sql",
+      "testo": "ALTER TABLE cervellone_audit_runs DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-07-cervellone-self-audit.sql",
+      "testo": "COMMENT ON TABLE cervellone_audit_runs IS 'Audit trail dei report self-audit settimanali. 1 row per lunedì cron run.'"
+    },
+    {
+      "file": "2026-05-07-gmail-classification.sql",
+      "testo": "ALTER TABLE cervellone_gmail_categorie DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-07-gmail-classification.sql",
+      "testo": "COMMENT ON TABLE cervellone_gmail_categorie IS 'Categorie classifier Gmail. description usata nel prompt LLM. seed_examples come hint.'"
+    },
+    {
+      "file": "2026-05-07-gmail-classification.sql",
+      "testo": "INSERT INTO cervellone_gmail_categorie (name, description, seed_examples) VALUES ('Cliente', 'Mail da committenti privati o aziende che richiedono lavori, sopralluoghi, preventivi, perizie', ARRAY['ri"
+    },
+    {
+      "file": "2026-05-07-gmail-classification.sql",
+      "testo": "ALTER TABLE gmail_processed_messages DROP CONSTRAINT IF EXISTS gmail_processed_messages_bot_action_check"
+    },
+    {
+      "file": "2026-05-07-gmail-classification.sql",
+      "testo": "ALTER TABLE gmail_processed_messages ADD CONSTRAINT gmail_processed_messages_bot_action_check CHECK (bot_action IN ( 'notified_critical','in_summary','draft_created','sent_reply', 'labeled','archived'"
+    },
+    {
+      "file": "2026-05-07-memoria-persistente.sql",
+      "testo": "ALTER TABLE cervellone_memoria_esplicita DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-07-memoria-persistente.sql",
+      "testo": "COMMENT ON TABLE cervellone_memoria_esplicita IS 'Decisioni e contesti salvati esplicitamente via /ricorda o tool. Priorità L1. TTL FOREVER.'"
+    },
+    {
+      "file": "2026-05-07-memoria-persistente.sql",
+      "testo": "ALTER TABLE cervellone_summary_giornaliero DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-07-memoria-persistente.sql",
+      "testo": "COMMENT ON TABLE cervellone_summary_giornaliero IS '1 riga per giorno. Prodotta da cron 23:30 Rome. TTL 2 anni (cleanup OUT-OF-SCOPE MVP).'"
+    },
+    {
+      "file": "2026-05-07-memoria-persistente.sql",
+      "testo": "ALTER TABLE cervellone_entita_menzionate DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-07-memoria-persistente.sql",
+      "testo": "COMMENT ON TABLE cervellone_entita_menzionate IS 'Registro aggregato entità named estratte dal cron. UPSERT su (name, type). TTL FOREVER.'"
+    },
+    {
+      "file": "2026-05-07-memoria-persistente.sql",
+      "testo": "ALTER TABLE cervellone_memoria_extraction_runs DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-07-memoria-persistente.sql",
+      "testo": "COMMENT ON TABLE cervellone_memoria_extraction_runs IS 'Log ogni run cron memoria-extract. Status started→ok|error. Per debug e stima costi LLM.'"
+    },
+    {
+      "file": "2026-05-09-v19-foundation.sql",
+      "testo": "alter table agent_runs disable row level security"
+    },
+    {
+      "file": "2026-05-09-v19-foundation.sql",
+      "testo": "alter table sub_agent_jobs disable row level security"
+    },
+    {
+      "file": "2026-05-09-v19-foundation.sql",
+      "testo": "alter table document_renders disable row level security"
+    },
+    {
+      "file": "2026-05-09-v19-foundation.sql",
+      "testo": "alter table e2b_sandboxes disable row level security"
+    },
+    {
+      "file": "2026-05-09-v19-memories-bucket.sql",
+      "testo": "insert into storage.buckets (id, name, public) values ('memories', 'memories', false) on conflict (id) do nothing"
+    },
+    {
+      "file": "2026-05-09-v19-memories-bucket.sql",
+      "testo": "do $$ begin if not exists ( select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects' and policyname = 'memories_service_role_full_access' ) then create policy \"memories_service"
+    },
+    {
+      "file": "2026-05-11-v19-email-subagent.sql",
+      "testo": "ALTER TABLE cervellone_email_log DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-11-v19-email-subagent.sql",
+      "testo": "ALTER TABLE cervellone_email_senders DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-11-v19-email-subagent.sql",
+      "testo": "INSERT INTO cervellone_email_senders (email, category, label) VALUES ('billing@anthropic.com', 'fatture_estere', 'Anthropic'), ('invoice@vercel.com', 'fatture_estere', 'Vercel'), ('support@openai.com'"
+    },
+    {
+      "file": "2026-05-11-v19-email-subagent.sql",
+      "testo": "ALTER TABLE cervellone_email_invoices_log DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-11-v19-email-subagent.sql",
+      "testo": "ALTER TABLE cervellone_email_pending_send DISABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-05-25-cervellone-doc-proposte.sql",
+      "testo": "alter table public.cervellone_doc_proposte enable row level security"
+    },
+    {
+      "file": "2026-05-25-cervellone-doc-proposte.sql",
+      "testo": "create policy \"deny_all_anon_auth\" on public.cervellone_doc_proposte for all to anon, authenticated using (false) with check (false)"
+    },
+    {
+      "file": "2026-05-25-cervellone-doc-proposte.sql",
+      "testo": "comment on table public.cervellone_doc_proposte is 'Proposte sentinella documenti personale (mail → scadenza). RLS deny-all anon/auth.'"
+    },
+    {
+      "file": "2026-05-25-cervellone-scadenze.sql",
+      "testo": "alter table public.cervellone_scadenze enable row level security"
+    },
+    {
+      "file": "2026-05-25-cervellone-scadenze.sql",
+      "testo": "create policy \"deny_all_anon_auth\" on public.cervellone_scadenze for all to anon, authenticated using (false) with check (false)"
+    },
+    {
+      "file": "2026-05-25-cervellone-scadenze.sql",
+      "testo": "comment on table public.cervellone_scadenze is 'Scadenzario generico Cervellone (documenti + reminder). RLS deny-all anon/auth"
+    },
+    {
+      "file": "2026-05-25-cervellone-scadenze.sql",
+      "testo": "accesso service_role server-side.'"
+    },
+    {
+      "file": "2026-05-25-telegram-recent-uploads.sql",
+      "testo": "alter table public.telegram_recent_uploads enable row level security"
+    },
+    {
+      "file": "2026-05-25-telegram-recent-uploads.sql",
+      "testo": "create policy \"deny_all_anon_auth\" on public.telegram_recent_uploads for all to anon, authenticated using (false) with check (false)"
+    },
+    {
+      "file": "2026-05-25-telegram-recent-uploads.sql",
+      "testo": "comment on table public.telegram_recent_uploads is 'Upload Telegram recenti (foto/doc) per allegarli al turno successivo (fix multi-foto). RLS deny-all anon/auth.'"
+    },
+    {
+      "file": "2026-05-26-cervellone-drive-policy.sql",
+      "testo": "alter table public.cervellone_drive_policy enable row level security"
+    },
+    {
+      "file": "2026-05-26-cervellone-drive-policy.sql",
+      "testo": "create policy \"deny_all_anon_auth\" on public.cervellone_drive_policy for all to anon, authenticated using (false) with check (false)"
+    },
+    {
+      "file": "2026-05-26-cervellone-drive-policy.sql",
+      "testo": "alter table public.cervellone_drive_policy_pending enable row level security"
+    },
+    {
+      "file": "2026-05-26-cervellone-drive-policy.sql",
+      "testo": "create policy \"deny_all_anon_auth\" on public.cervellone_drive_policy_pending for all to anon, authenticated using (false) with check (false)"
+    },
+    {
+      "file": "2026-05-26-cervellone-drive-policy.sql",
+      "testo": "insert into public.cervellone_drive_policy (folder_id, folder_name) values ('1fPrUX_GTZVYITQVk-CW0VuXSGs1Db3If','Studio Tecnico ATTIVI'), ('1-pExmiifvV9v8sfSzEkR0XNYi8tdXAkj','Studio Tecnico ARCHIVIO'"
+    },
+    {
+      "file": "2026-05-26-cervellone-foto-pending.sql",
+      "testo": "alter table public.cervellone_foto_pending enable row level security"
+    },
+    {
+      "file": "2026-05-26-cervellone-foto-pending.sql",
+      "testo": "create policy \"deny_all_anon_auth\" on public.cervellone_foto_pending for all to anon, authenticated using (false) with check (false)"
+    },
+    {
+      "file": "2026-06-04-api-usage-logging.sql",
+      "testo": "alter table api_usage enable row level security"
+    },
+    {
+      "file": "2026-06-04-working-memory-procedures.sql",
+      "testo": "alter table procedures enable row level security"
+    },
+    {
+      "file": "2026-06-04-working-memory-procedures.sql",
+      "testo": "alter table project_state enable row level security"
+    },
+    {
+      "file": "2026-06-04-working-memory-procedures.sql",
+      "testo": "insert into procedures (task_type, title, checklist, output_spec, save_location, lessons) values ( 'pos', 'POS Restruktura (impresa esecutrice) — Allegato XV D.Lgs 81/2008', '[ {\"step\": \"Leggi il DVR "
+    },
+    {
+      "file": "2026-06-04-working-memory-procedures.sql",
+      "testo": "chiedi SOLO ciò che manca dopo aver letto DVR+PSC+contratto\"} ]'::jsonb, '>=20 pagine A4 verticale, Allegato XV D.Lgs 81/2008, copertina + indice + analisi rischi P x D x R per ogni fase di lavorazion"
+    },
+    {
+      "file": "2026-06-06-workflow-run-attempts.sql",
+      "testo": "CREATE OR REPLACE FUNCTION public.increment_workflow_run_attempts(p_run_id text) RETURNS integer LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$ UPDATE public.agent_workflow_runs SET atte"
+    },
+    {
+      "file": "2026-06-06-workflow-run-attempts.sql",
+      "testo": "REVOKE ALL ON FUNCTION public.increment_workflow_run_attempts(text) FROM anon, authenticated"
+    },
+    {
+      "file": "2026-06-10-share-proposte.sql",
+      "testo": "alter table cervellone_share_proposte enable row level security"
+    },
+    {
+      "file": "2026-06-11-document-templates.sql",
+      "testo": "alter table document_templates enable row level security"
+    },
+    {
+      "file": "2026-06-11-document-templates.sql",
+      "testo": "drop policy if exists \"service_role_all_document_templates\" on document_templates"
+    },
+    {
+      "file": "2026-06-11-document-templates.sql",
+      "testo": "create policy \"service_role_all_document_templates\" on document_templates for all to service_role using (true) with check (true)"
+    },
+    {
+      "file": "2026-06-11-document-templates.sql",
+      "testo": "insert into document_templates (slug, titolo, parole_chiave, tipo_sorgente, metodo, formati_output, dove_salvare, mai_inviare, dati_fissi, campi) values ( 'cigo_allegato10', 'CIGO — Allegato 10 (relaz"
+    },
+    {
+      "file": "2026-08-13-sal-pending.sql",
+      "testo": "alter table public.cervellone_sal_pending enable row level security"
+    },
+    {
+      "file": "2026-08-17-scadenze-calendar-event-id.sql",
+      "testo": "comment on column public.cervellone_scadenze.calendar_event_id is 'ID evento Google Calendar creato da registra_scadenza. Serve a cancellare/aggiornare il vecchio evento quando la scadenza viene sosti"
+    },
+    {
+      "file": "2026-08-20-memoria-run-status-partial.sql",
+      "testo": "alter table public.cervellone_memoria_extraction_runs drop constraint if exists cervellone_memoria_extraction_runs_status_check"
+    },
+    {
+      "file": "2026-08-20-memoria-run-status-partial.sql",
+      "testo": "alter table public.cervellone_memoria_extraction_runs add constraint cervellone_memoria_extraction_runs_status_check check (status in ('started', 'ok', 'partial', 'error'))"
+    },
+    {
+      "file": "2026-08-21-movimenti-societa.sql",
+      "testo": "alter table public.cervellone_movimenti drop constraint if exists cervellone_movimenti_hash_key"
+    },
+    {
+      "file": "2026-08-21-movimenti-societa.sql",
+      "testo": "alter table public.cervellone_movimenti drop constraint if exists cervellone_movimenti_societa_hash_key"
+    },
+    {
+      "file": "2026-08-21-movimenti-societa.sql",
+      "testo": "alter table public.cervellone_movimenti add constraint cervellone_movimenti_societa_hash_key unique (societa, hash)"
+    },
+    {
+      "file": "2026-08-21-societa-attiva.sql",
+      "testo": "alter table public.cervellone_societa_attiva enable row level security"
+    },
+    {
+      "file": "2026-08-21-societa-attiva.sql",
+      "testo": "drop policy if exists \"deny_anon_societa_attiva\" on public.cervellone_societa_attiva"
+    },
+    {
+      "file": "2026-08-21-societa-attiva.sql",
+      "testo": "create policy \"deny_anon_societa_attiva\" on public.cervellone_societa_attiva for all to anon, authenticated using (false) with check (false)"
+    },
+    {
+      "file": "2026-09-02-foto-contesto.sql",
+      "testo": "alter table public.cervellone_foto_contesto enable row level security"
+    },
+    {
+      "file": "2026-09-02-foto-contesto.sql",
+      "testo": "drop policy if exists \"service_role_all_cervellone_foto_contesto\" on public.cervellone_foto_contesto"
+    },
+    {
+      "file": "2026-09-02-foto-contesto.sql",
+      "testo": "create policy \"service_role_all_cervellone_foto_contesto\" on public.cervellone_foto_contesto for all to service_role using (true) with check (true)"
+    },
+    {
+      "file": "2026-09-02-foto-contesto.sql",
+      "testo": "comment on table public.cervellone_foto_contesto is 'Ultimo cantiere/progetto su cui sono state archiviate foto, per conversazione. Separata da project_state di proposito: vedi 2026-09-02-foto-contest"
+    },
+    {
+      "file": "2026-09-02-regole-apprese.sql",
+      "testo": "alter table public.cervellone_regole enable row level security"
+    },
+    {
+      "file": "2026-09-02-regole-apprese.sql",
+      "testo": "drop policy if exists \"service_role_all_cervellone_regole\" on public.cervellone_regole"
+    },
+    {
+      "file": "2026-09-02-regole-apprese.sql",
+      "testo": "create policy \"service_role_all_cervellone_regole\" on public.cervellone_regole for all to service_role using (true) with check (true)"
+    },
+    {
+      "file": "2026-09-02-regole-apprese.sql",
+      "testo": "comment on table public.cervellone_regole is 'Regole permanenti che il bot propone su se stesso. Diventano attive solo dopo conferma esplicita dell''Ingegnere via /regola_ok_<id>. Vedi 2026-09-02-rego"
+    },
+    {
+      "file": "2026-09-02-telegram-coda.sql",
+      "testo": "alter table public.telegram_coda enable row level security"
+    },
+    {
+      "file": "2026-09-02-telegram-coda.sql",
+      "testo": "drop policy if exists \"service_role_all_telegram_coda\" on public.telegram_coda"
+    },
+    {
+      "file": "2026-09-02-telegram-coda.sql",
+      "testo": "create policy \"service_role_all_telegram_coda\" on public.telegram_coda for all to service_role using (true) with check (true)"
+    },
+    {
+      "file": "2026-09-02-telegram-coda.sql",
+      "testo": "comment on table public.telegram_coda is 'Messaggi arrivati mentre il bot stava gia elaborando. Prima venivano SCARTATI: nessuna coda, e il dedup era gia scritto, quindi Telegram non poteva riconsegna"
+    },
+    {
+      "file": "2026-09-03-model-health-run-aborted.sql",
+      "testo": "ALTER TABLE public.model_health DROP CONSTRAINT IF EXISTS model_health_outcome_check"
+    },
+    {
+      "file": "2026-09-03-model-health-run-aborted.sql",
+      "testo": "ALTER TABLE public.model_health ADD CONSTRAINT model_health_outcome_check CHECK (outcome = ANY (ARRAY[ 'success'::text, 'empty'::text, 'force_text'::text, 'hallucination'::text, 'api_error'::text, 'ti"
+    },
+    {
+      "file": "2026-09-03-skills-storico-versioni.sql",
+      "testo": "ALTER TABLE public.cervellone_skills_versioni ENABLE ROW LEVEL SECURITY"
+    },
+    {
+      "file": "2026-09-03-skills-storico-versioni.sql",
+      "testo": "INSERT INTO public.cervellone_skills_versioni (skill_id, versione, istruzioni, updated_by) SELECT id, versione, istruzioni, coalesce(updated_by, 'backfill 3 set 2026') FROM public.cervellone_skills WH"
+    },
+    {
+      "file": "2026-09-03-skills-storico-versioni.sql",
+      "testo": "INSERT INTO public.cervellone_skills_versioni (skill_id, versione, istruzioni, updated_by) SELECT id, GREATEST(versione - 1, 1), istruzioni_precedenti, 'backfill 3 set 2026: recuperata dall unico slot"
+    },
+    {
+      "file": "2026-09-05-fatture-estere-tre-caselle.sql",
+      "testo": "alter table cervellone_email_invoices_log alter column source_uid drop not null"
+    },
+    {
+      "file": "2026-09-05-fatture-estere-tre-caselle.sql",
+      "testo": "update cervellone_email_invoices_log set source_account = coalesce(source_account, 'raffaele'), source_key = coalesce(source_key, source_uid::text) where source_account is null or source_key is null"
+    },
+    {
+      "file": "2026-09-05-fatture-estere-tre-caselle.sql",
+      "testo": "alter table cervellone_email_invoices_log alter column source_account set not null, alter column source_key set not null"
+    },
+    {
+      "file": "2026-09-05-fatture-estere-tre-caselle.sql",
+      "testo": "comment on column cervellone_email_invoices_log.source_account is 'Casella di provenienza: info | raffaele | gmail'"
+    },
+    {
+      "file": "2026-09-05-fatture-estere-tre-caselle.sql",
+      "testo": "comment on column cervellone_email_invoices_log.source_key is 'Identificativo del messaggio nella sua casella: uid IMAP (numerico) o id Gmail (esadecimale).'"
+    },
+    {
+      "file": "2026-09-05-fatture-estere-tre-caselle.sql",
+      "testo": "alter table cervellone_email_invoices_log drop constraint if exists cervellone_email_invoices_log_month_ref_source_uid_source_f_key"
+    },
+    {
+      "file": "2026-09-11-registro-chiamate-tool.sql",
+      "testo": "alter table cervellone_tool_calls enable row level security"
+    },
+    {
+      "file": "2026-09-12-fic-pending-pagamento-ricevuta.sql",
+      "testo": "alter table public.cervellone_fic_pending drop constraint if exists cervellone_fic_pending_tipo_check"
+    },
+    {
+      "file": "2026-09-12-fic-pending-pagamento-ricevuta.sql",
+      "testo": "alter table public.cervellone_fic_pending add constraint cervellone_fic_pending_tipo_check check (tipo in ('fattura_emessa', 'rapporto_intervento', 'pagamento_ricevuta'))"
+    },
+    {
+      "file": "2026-09-12-guardia-autorizzazioni.sql",
+      "testo": "alter table public.cervellone_guardia_autorizzazioni enable row level security"
+    },
+    {
+      "file": "2026-09-12-guardia-autorizzazioni.sql",
+      "testo": "drop policy if exists \"service_role_all_cervellone_guardia_autorizzazioni\" on public.cervellone_guardia_autorizzazioni"
+    },
+    {
+      "file": "2026-09-12-guardia-autorizzazioni.sql",
+      "testo": "create policy \"service_role_all_cervellone_guardia_autorizzazioni\" on public.cervellone_guardia_autorizzazioni for all to service_role using (true) with check (true)"
+    },
+    {
+      "file": "2026-09-12-guardia-autorizzazioni.sql",
+      "testo": "comment on table public.cervellone_guardia_autorizzazioni is 'Autorizzazioni una tantum che sciolgono il blocco della guardia sui dati societari (src/lib/guardia-societa.ts) per UN documento preciso ("
+    }
+  ]
+}
