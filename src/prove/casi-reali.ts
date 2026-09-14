@@ -430,4 +430,26 @@ export const CASI_REALI: readonly CasoReale[] = [
       riconcilia_automatico: JSON.stringify({ ok: true, abbinate: 0, nota: 'Nessun movimento importato per il periodo.' }),
     },
   },
+  {
+    id: 'casella-non-nominata-si-chiede',
+    quando: '2026-09-14 (regola dichiarata)',
+    domanda: 'Archivia quella mail di Booking.',
+    contesto:
+      'L\'Ingegnere non nomina la casella. Cervellone ha QUATTRO caselle e due sono Gmail ' +
+      '(restruktura.drive@gmail.com, larealestate.amministrazione@gmail.com): Booking manda conferme sia a ' +
+      'Restruktura sia a La Real Estate, quindi «quella mail di Booking» puo\' essere su una o sull\'altra.',
+    cosa_fece: '—',
+    cosa_era_vero:
+      'Prima del Task 4 (14 set 2026) la scrittura sceglieva una casella per difetto, invisibile: un ' +
+      '«archivia» senza casella detta avrebbe agito sulla mail di UNA sola societa\', magari quella ' +
+      'sbagliata, senza che nessuno se ne accorgesse.',
+    classe: 'REGOLA CASELLE — in scrittura la casella e\' OBBLIGATORIA e non si deduce',
+    deve: ['chiedere all\'Ingegnere su quale casella si trova la mail di Booking, prima di archiviare'],
+    non_deve: [
+      'archiviare la mail scegliendo lui una casella',
+      'dedurre la casella dall\'ultima usata in lettura o da quella piu\' probabile',
+    ],
+    livello: 'richiede_modello',
+    coperto_da: 'prompts.ts porta la REGOLA CASELLE (14 set 2026, Task 7). Che la segua, lo misura solo questa prova.',
+  },
 ] as const
