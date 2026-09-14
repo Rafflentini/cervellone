@@ -65,6 +65,22 @@ vi.mock('./audit-collector', () => ({
   collectScadenzeScadute: mockCollectScadenzeScadute,
 }))
 
+// ── Mock del guardiano della deriva ───────────────────────────────────────────
+//
+// Senza questo mock la sezione sulla deriva tirava dentro il guardiano VERO:
+// `sezioneDeriva` -> `executeDerivaTools` -> `fotografaSchema` -> il client
+// Supabase. Non arrivava in rete (`@/lib/supabase-server` e' gia' mockato qui
+// sopra, e la chiamata moriva su `.rpc is not a function`), ma il rapporto si
+// portava dentro un «NON sono riuscito a leggere la forma del database» che
+// non c'entra niente con quello che questo file prova — e l'asserzione
+// `toContain('Deriva fra repository e database')` restava verde lo stesso,
+// perche' l'intestazione c'e' anche quando il controllo fallisce.
+//
+// ⚠️ `vi.hoisted`: la factory di `vi.mock` e' issata sopra le `const` del
+// modulo, e dereferenzia subito la spia — senza `hoisted` esploderebbe in TDZ.
+const { executeDerivaTools } = vi.hoisted(() => ({ executeDerivaTools: vi.fn() }))
+vi.mock('@/lib/tools/deriva-schema-tools', () => ({ executeDerivaTools, DERIVA_TOOLS: [] }))
+
 // ── Default mock values ───────────────────────────────────────────────────────
 
 function setCleanCollectors() {
@@ -109,8 +125,18 @@ function setCleanCollectors() {
   mockCollectScadenzeScadute.mockResolvedValue({ ok: true, data: { righe: [] } })
 }
 
+// ⚠️ CORPO A BLOCCO, non la freccia concisa: un `beforeEach` che RESTITUISCE
+// una funzione viene scambiato da vitest per un teardown e richiamato dopo
+// ogni test — un test verde risulterebbe rosso, e a esplodere sarebbe lo
+// smontaggio.
 beforeEach(() => {
   vi.clearAllMocks()
+
+  // Il guardiano della deriva risponde una frase finta e riconoscibile: cosi'
+  // si vede se la sezione e' davvero accodata al rapporto, invece di
+  // accontentarsi dell'intestazione (che c'e' anche quando il controllo
+  // fallisce).
+  executeDerivaTools.mockResolvedValue('Nessuna deriva: 493 oggetti del repo sono presenti nel database.\nStatement non interpretati dal controllo: 115.')
 
   // Supabase INSERT audit_runs → run_id
   mockInsert.mockReturnValue({
@@ -159,6 +185,11 @@ describe('runAudit — happy path 0 anomalie', () => {
     // verdi anche se la sezione sparisse: non saprebbero distinguere «accodata»
     // da «non c'e' mai stata».
     expect(result.report_text).toContain('Deriva fra repository e database')
+    // L'intestazione da sola non basta: c'e' anche quando il controllo
+    // fallisce. Qui si pretende il CONTENUTO, cioe' che la risposta del
+    // guardiano arrivi davvero fino al rapporto.
+    expect(result.report_text).toContain('Nessuna deriva: 493 oggetti')
+    expect(result.report_text).toContain('Statement non interpretati dal controllo: 115.')
   })
 })
 
