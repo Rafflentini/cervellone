@@ -12,7 +12,27 @@
 import type { ToolDefinition } from './types'
 import { confronta, descriviDeriva, type OggettiAttesi } from '@/lib/deriva-schema'
 import { fotografaSchema } from '@/lib/deriva-schema-db'
-import ATTESI from '@/lib/deriva-schema-attesi.json'
+
+/**
+ * L'elenco congelato si carica QUI DENTRO e non in cima al modulo.
+ *
+ * `deriva-schema-attesi.json` pesa **77 KB**, e `tools.ts` importa questo
+ * modulo: in cima, quei 77 KB entrerebbero nel grafo dei moduli a OGNI
+ * conversazione, anche in quelle che non parlano di database. E' lo stesso
+ * motivo per cui `automazioni.ts` tiene l'import della routine mail dentro la
+ * funzione invece che in cima.
+ *
+ * ⚠️ Un JSON importato dinamicamente puo' arrivare come `{ default: … }` o
+ * come l'oggetto stesso, a seconda della configurazione. Si accettano tutte e
+ * due le forme, perche' sbagliarla NON esplode: darebbe zero oggetti attesi e
+ * un «Nessuna deriva: 0 oggetti» — un «va tutto bene» falso. C'e' un test che
+ * pretende il numero vero.
+ */
+async function elencoCongelato(): Promise<OggettiAttesi> {
+  const modulo = await import('@/lib/deriva-schema-attesi.json')
+  const contenuto = (modulo as { default?: unknown }).default ?? modulo
+  return contenuto as unknown as OggettiAttesi
+}
 
 export const DERIVA_TOOLS: ToolDefinition[] = [
   {
@@ -31,7 +51,7 @@ async function testoDeriva(elencoFile: 'completo' | 'sintetico'): Promise<string
     return `NON sono riuscito a leggere la forma del database, quindi NON so dire se sia allineato al repository.\nMotivo: ${esito.errore}`
   }
 
-  const deriva = confronta(ATTESI as unknown as OggettiAttesi, esito.foto)
+  const deriva = confronta(await elencoCongelato(), esito.foto)
   return descriviDeriva(deriva, { elencoFile })
 }
 

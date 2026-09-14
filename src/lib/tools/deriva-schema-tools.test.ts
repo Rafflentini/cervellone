@@ -140,3 +140,38 @@ describe('derivaPerIlRapporto - la versione che passa da Telegram (reperto 6)', 
     expect(lungo!.length).toBeGreaterThan(1000)
   })
 })
+
+describe('l elenco congelato arriva DAVVERO, comunque lo si carichi', () => {
+  it('🚨 il numero di oggetti verificati e quello vero, non zero', async () => {
+    // ⚠️ Questo test esiste per una trappola precisa: l'elenco congelato si
+    // carica con un `await import()` (77 KB che non devono entrare nel grafo
+    // dei moduli di ogni conversazione), e un JSON importato dinamicamente
+    // puo' arrivare come `{ default: … }` invece che come l'oggetto stesso.
+    // Sbagliare quella forma NON esplode: da zero oggetti attesi, e il tool
+    // risponderebbe «Nessuna deriva: 0 oggetti» — un «va tutto bene» falso,
+    // cioe' il guasto che tutto questo lavoro esiste per uccidere.
+    const ATTESI = (await import('@/lib/deriva-schema-attesi.json')).default
+    const quanti = (ATTESI.oggetti as unknown[]).length
+    expect(quanti).toBeGreaterThan(450)
+
+    const foto = {
+      tabelle: [] as string[], colonne: [] as string[],
+      chiaviPrimarie: {} as Record<string, string[]>, indici: [] as string[], chiaviConfig: [] as string[],
+    }
+    for (const o of ATTESI.oggetti as unknown[]) {
+      const x = o as { tipo: string; tabella?: string; colonna?: string; nome?: string; chiave?: string; colonne?: string[] }
+      if (x.tipo === 'tabella') foto.tabelle.push(x.tabella!)
+      if (x.tipo === 'colonna') foto.colonne.push(`${x.tabella}.${x.colonna}`)
+      if (x.tipo === 'indice') foto.indici.push(x.nome!)
+      if (x.tipo === 'config') foto.chiaviConfig.push(x.chiave!)
+      if (x.tipo === 'chiave_primaria') foto.chiaviPrimarie[x.tabella!] = x.colonne!
+    }
+    fotografaSchema.mockResolvedValue({ ok: true, foto })
+
+    const testo = await executeDerivaTools('verifica_deriva_schema', {})
+
+    // Il numero nel testo e' quello vero: se l'elenco arrivasse vuoto, qui ci
+    // sarebbe uno zero.
+    expect(testo).toContain(`${quanti} oggetti`)
+  })
+})
