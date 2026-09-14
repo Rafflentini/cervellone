@@ -37,6 +37,21 @@ export interface Societa {
   /** Nome della variabile d'ambiente con l'id azienda FIC. MAI il valore. */
   ficCompanyIdEnv: string
   aliquotaIvaDefault: number
+  /**
+   * Data di iscrizione al VIES (YYYY-MM-DD), oppure assente se non la
+   * sappiamo.
+   *
+   * 🚨 Non e' un dato anagrafico qualsiasi: il reverse charge su un servizio
+   * intracomunitario vale PERCHE' la societa' e' iscritta al VIES. Una fattura
+   * estera ANTERIORE a questa data arriva con IVA italiana gia' esposta e NON
+   * si integra affatto — si registra come un normale acquisto con IVA
+   * detraibile. Un'autofattura costruita su di essa sarebbe un documento
+   * illegittimo, quindi `compila_autofattura` la rifiuta.
+   *
+   * Assente = non lo sappiamo, e allora non si autofattura: qui il silenzio
+   * non puo' valere «si'».
+   */
+  viesDal?: string
 }
 
 const REGISTRO: Record<CodiceSocieta, Societa> = {
@@ -59,6 +74,10 @@ const REGISTRO: Record<CodiceSocieta, Societa> = {
     ficTokenEnv: 'FIC_ACCESS_TOKEN_LAREALESTATE',
     ficCompanyIdEnv: 'FIC_COMPANY_ID_LAREALESTATE',
     aliquotaIvaDefault: 10,
+    // Detto dall'Ingegnere (fonte contabile) il 14 settembre 2026: da qui in
+    // poi le commissioni Booking/Airbnb arrivano senza IVA e si integrano.
+    // Prima di questa data riportano IVA italiana e NON si integrano.
+    viesDal: '2026-07-22',
   },
 }
 

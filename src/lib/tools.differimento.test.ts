@@ -193,20 +193,43 @@ describe('differimento delle definizioni dei tool', () => {
   // Google e dice quali sono VIVE, col motivo se non lo sono. Prima di oggi
   // la domanda "la casella di La Real Estate funziona?" non aveva risposta:
   // la credenziale era salvata ma mai esercitata.
-  it('senza opzioni: 139 definizioni e la stessa impronta di main', () => {
+  // LA DECISIONE, 14 settembre 2026 (sera, merge dei due rami). 136 -> 139.
+  // Tre tool nati nella stessa giornata su rami diversi: `verifica_deriva_schema`
+  // (quali migrazioni del repo non sono applicate al database),
+  // `verifica_accessi_google` (quali credenziali Google sono vive) e
+  // `gmail_leggi_allegato` — quest'ultimo perche' la funzione che scarica un
+  // allegato Gmail esisteva da mesi e NESSUN tool la esponeva.
+  //
+  // LA DECISIONE, 14 settembre 2026 (autofatture). E' entrato
+  // `compila_autofattura`: le INTEGRAZIONI in reverse charge per le fatture
+  // estere — il caso vero sono le commissioni mensili di Booking.com B.V. a
+  // LA REAL ESTATE, identiche per le fee di Airbnb Ireland UC.
+  //
+  // E' l'unico tool che crea N documenti fiscali con UNA conferma sola («non
+  // e che mi metto a confermare quindici fatture vocalmente»), e per questo
+  // la sua descrizione e' lunga: porta scritte le cose che NON decide —
+  // l'aliquota IVA (senza `vat_id` si ferma ed elenca quelle vere di Fatture
+  // in Cloud), la serie di numerazione dedicata, e i «dati fattura collegata»
+  // che vanno controllati a mano su FIC.
+  //
+  // LA DECISIONE, 14 settembre 2026 (TD17 in `ei_raw`). La documentazione
+  // ufficiale di Fatture in Cloud dice che il codice TD17 NON sta nel campo
+  // `type` ma in `ei_raw.FatturaElettronicaBody.DatiGenerali.
+  // DatiGeneraliDocumento.TipoDocumento`. Il tool ora lo imposta.
+  // Un tool che dice di NON fare una cosa che invece fa e' sbagliato quanto
+  // il contrario: per questo il cambio di descrizione paga il pedaggio
+  // dell'impronta anche senza un tool in piu'.
+  //
+  // IL MERGE, 14 settembre 2026 (notte). I due rami dichiaravano ENTRAMBI
+  // 139 con impronte diverse, perche' contavano insiemi diversi: quello di
+  // `main` non aveva `compila_autofattura`, quello delle autofatture non
+  // aveva `verifica_deriva_schema`. Numero e impronta qui sotto sono presi
+  // DAL FALLIMENTO del test, non calcolati a parte.
+  it('senza opzioni: 140 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(139)
-    // LA DECISIONE, 14 settembre 2026 (sera, merge dei due rami). 136 -> 139.
-    // Tre tool nati nella stessa giornata su rami diversi, che si incontrano
-    // qui: `verifica_deriva_schema` (quali migrazioni del repo non sono
-    // applicate al database), `verifica_accessi_google` (quali credenziali
-    // Google sono vive) e `gmail_leggi_allegato` — quest'ultimo perche' la
-    // funzione che scarica un allegato Gmail esisteva da mesi e NESSUN tool la
-    // esponeva: il bot rispondeva «non ho un tool che apra un allegato di
-    // Gmail» mentre il codice era in casa.
-    // L'impronta e' presa DAL FALLIMENTO del test, non calcolata a parte.
+    expect(defs).toHaveLength(140)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('8546d8c393467cb90bbf8f14f03c8e25')
+      .toBe('1f2040fdd43a653c897ee0119d750d14')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
