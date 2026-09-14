@@ -14,11 +14,20 @@ describe('registro societa', () => {
     }
   })
 
-  it('La Real Estate ha partita IVA e casella proprie', () => {
+  it('La Real Estate ha partita IVA propria', () => {
     const s = getSocieta('larealestate')
     expect(s.piva).toBe('02232730768')
-    expect(s.googleAccount).toBe('larealestate.amministrazione@gmail.com')
     expect(s.aliquotaIvaDefault).toBe(10)
+  })
+
+  // LA DECISIONE, 14 settembre 2026 (audit avversariale): `googleAccount` e'
+  // stato tolto dal registro perche' senza un solo chiamante era la seconda
+  // copia degli stessi indirizzi che vivono in `caselle.ts`. Questo test
+  // prova che sia rimasto tolto e non torni per distrazione.
+  it("il registro NON ha un campo 'googleAccount': la casella Google si chiede a caselle.ts", () => {
+    for (const s of listaSocieta()) {
+      expect(Object.keys(s)).not.toContain('googleAccount')
+    }
   })
 
   // Task 7: il campo `sede` non esisteva. Per Restruktura riusa ESATTAMENTE
