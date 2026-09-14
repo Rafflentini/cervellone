@@ -5,7 +5,10 @@
  * La segretaria deve poter leggere anche la posta de La Real Estate. La
  * credenziale OAuth c'era gia' (autorizzata e verificata alle 13:01); mancava
  * il codice che la usa: cinque punti aprivano un client Google con la societa'
- * CABLATA, e nessuno dei 16 tool `gmail_*` accettava una casella.
+ * CABLATA. Questo file ne chiude QUATTRO (drive.ts, calendar-tools.ts,
+ * document-saver.ts, hallucination-validator.ts) — il quinto resta
+ * `gmail-tools.ts`, apposta: e' lavoro del Task 2, che da' ai 16 tool
+ * `gmail_*` la scelta della casella per richiesta.
  *
  * Perche' un registro e non un parametro qua e la': ne esistevano gia' DUE a
  * meta' — `societa.ts` per le societa' e `AccountKey` ('info'|'raffaele') per
@@ -77,11 +80,19 @@ export function caselleDiTrasporto(t: TrasportoCasella): Casella[] {
   return listaCaselle().filter((c) => c.trasporto === t)
 }
 
-/** Alias riconosciuti nel testo dell'utente. Minuscoli, senza punteggiatura. */
+/**
+ * Alias riconosciuti nel testo dell'utente. Minuscoli, senza punteggiatura.
+ *
+ * ⚠️ Ogni alternativa deve ancorarsi all'indirizzo VERO, mai a un suffisso
+ * largo come `@dominio` o `@`: un suffisso scatta anche sull'indirizzo di un
+ * terzo (`marco.drive@gmail.com`, `mario.raffaele@x.com`), e qui un falso
+ * positivo e' peggio di un mancato riconoscimento — fa credere che
+ * l'Ingegnere abbia nominato una casella che non ha nominato.
+ */
 const ALIAS: Array<[RegExp, ChiaveCasella]> = [
-  [/\binfo@|\binfo\b(?!\s*rmazion)/, 'info'],
-  [/\braffaele\.lentini\b|\braffaele@/, 'raffaele'],
-  [/\brestruktura\.drive\b|\bdrive@/, 'drive'],
+  [/\binfo@|\binfo\b/, 'info'],
+  [/\braffaele\.lentini\b/, 'raffaele'],
+  [/\brestruktura\.drive\b/, 'drive'],
   [/\breal\s*estate\b|\blarealestate\b/, 'larealestate'],
 ]
 

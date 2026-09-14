@@ -41,4 +41,13 @@ describe('il registro delle caselle', () => {
     // Due nominate = ambiguo = null. Meglio chiedere che sceglierne una.
     expect(risolviCasella('confronta info@ e raffaele.lentini@')).toBeNull()
   })
+
+  it('🚨 NON scatta sull\'indirizzo di un terzo (falso positivo)', () => {
+    // `\bdrive@` e `\braffaele@` sono suffissi larghi: scattano anche
+    // sull'indirizzo di una persona che non ha nulla a che fare con le nostre
+    // caselle. Qui un falso positivo e' peggio di un mancato riconoscimento:
+    // fa credere che l'Ingegnere abbia nominato una casella che non ha nominato.
+    expect(risolviCasella('scrivi a marco.drive@gmail.com')).toBeNull()
+    expect(risolviCasella('scrivi a mario.raffaele@x.com')).toBeNull()
+  })
 })
