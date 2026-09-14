@@ -15,6 +15,7 @@ import {
 import { analyze, formatReport } from './audit-analyzer'
 import type { AnalysisInput } from './audit-analyzer'
 import { logApiUsage } from './api-usage'
+import { sezioneDeriva } from './audit-deriva'
 
 // ── Helper: ISO Week string ───────────────────────────────────────────────────
 
@@ -195,7 +196,13 @@ Output: solo testo markdown-safe, no JSON, no code block.`,
     }
 
     // Step 6: formatReport
-    const reportText = formatReport(analysisResult, isoWeek, narrative, runId)
+    //
+    // La sezione sulla deriva repo<->database si accoda QUI, dove il rapporto
+    // nasce, e non nella rotta del cron: `reportText` viene sia salvato in
+    // `cervellone_audit_runs.report_text` sia restituito al chiamante, quindi
+    // accodarla a valle farebbe divergere la copia consegnata da quella
+    // archiviata. Una sola fonte per un solo rapporto.
+    const reportText = `${formatReport(analysisResult, isoWeek, narrative, runId)}\n\n${await sezioneDeriva()}`
 
     // Step 7: UPDATE audit_runs status='ok' — il dato va salvato PRIMA di
     // qualunque tentativo di consegna: la consegna non deve poter far perdere

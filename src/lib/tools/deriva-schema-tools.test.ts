@@ -8,7 +8,11 @@ vi.mock('@/lib/deriva-schema-db', () => ({ fotografaSchema }))
 
 import { DERIVA_TOOLS, executeDerivaTools } from './deriva-schema-tools'
 
-beforeEach(() => fotografaSchema.mockReset())
+// ⚠️ CORPO A BLOCCO, non la freccia concisa: `mockReset()` restituisce la spia,
+// e vitest scambia un ritorno FUNZIONE per un teardown — richiamando la spia
+// dopo ogni test. Qui oggi e' innocuo, ma il giorno in cui una spia fosse
+// istruita a sollevare, il rosso arriverebbe dallo smontaggio e non dal codice.
+beforeEach(() => { fotografaSchema.mockReset() })
 
 describe('verifica_deriva_schema', () => {
   it('il tool e dichiarato una volta sola e ha un nome stabile', () => {

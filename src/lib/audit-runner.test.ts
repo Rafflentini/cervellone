@@ -153,6 +153,12 @@ describe('runAudit — happy path 0 anomalie', () => {
     expect(result.run_id).toBe('test-run-uuid')
     expect(result.anomalies_count).toBe(0)
     expect(result.report_text).toContain('Nessuna anomalia rilevata')
+    // 2026-09-14: il rapporto porta ANCHE la sezione sulla deriva fra il
+    // repository e il database, e la porta SEMPRE — anche a deriva zero.
+    // Senza questa riga le asserzioni qui sopra (tutte `toContain`) resterebbero
+    // verdi anche se la sezione sparisse: non saprebbero distinguere «accodata»
+    // da «non c'e' mai stata».
+    expect(result.report_text).toContain('Deriva fra repository e database')
   })
 })
 
