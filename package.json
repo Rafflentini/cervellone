@@ -12,6 +12,7 @@
     "test:live": "TEST_BASE_URL=https://cervellone-five.vercel.app npx playwright test",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
+    "genera:attesi": "tsx scripts/genera-attesi-schema.ts",
     "smoke:pdf": "tsx scripts/smoke-pdf-puppeteer.ts"
   },
   "dependencies": {

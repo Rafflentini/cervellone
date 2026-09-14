@@ -229,3 +229,20 @@ describe('la mappa arriva nel prompt VIVO di ENTRAMBI i canali', () => {
     expect(await getTelegramSystemPrompt('ciao', [])).toContain('DOVE STANNO GLI ATTREZZI')
   })
 })
+
+describe('lo scaffale «Se stesso» dice anche le parole del database (reperto 7)', () => {
+  it('🚨 «database», «schema», «migrazioni» e «allineato» compaiono nel testo iniettato', async () => {
+    // Col differimento dei tool acceso, il modello vede SOLO questo testo: il
+    // tool `verifica_deriva_schema` e' differito, e alla domanda «il database
+    // e allineato al repo?» nessuna di queste parole compariva da nessuna
+    // parte. Doveva indovinare lo scaffale — e cercare al buio e' il modo in
+    // cui un tool esistente risulta inesistente.
+    const { DOMINI } = await import('./mappa-officina')
+    const testo = DOMINI.map((d) => d.contiene).join(' | ').toLowerCase()
+
+    expect(testo).toContain('database')
+    expect(testo).toContain('schema')
+    expect(testo).toContain('migrazioni')
+    expect(testo).toContain('allineato')
+  })
+})
