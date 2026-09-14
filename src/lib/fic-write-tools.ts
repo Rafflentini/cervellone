@@ -56,7 +56,7 @@ interface ToolDefinition {
 }
 
 type PendingStato = 'in_attesa' | 'creata' | 'annullata'
-type PendingTipo = 'fattura_emessa' | 'rapporto_intervento' | 'pagamento_ricevuta' | 'pagamento_emessa'
+type PendingTipo = 'fattura_emessa' | 'rapporto_intervento' | 'pagamento_ricevuta' | 'pagamento_emessa' | 'autofattura'
 
 interface PendingRow {
   id: string
@@ -619,6 +619,32 @@ async function eliminaBozzaFic(input: Record<string, unknown>, societa: CodiceSo
     return ok({ id, stato: 'annullata', nota: 'Nessun pagamento era stato scritto.' })
   }
 
+  // 🚨 Un pending di AUTOFATTURE gia' creato porta N id nel `fic_document_id`
+  // (separati da virgola): `eliminaDocumentoFIC` ne cancellerebbe uno solo, e
+  // per di piu' con una stringa che non e' un id. Qui non si cancella: si
+  // elencano gli id e si manda l'Ingegnere a Fatture in Cloud, dove vede cosa
+  // sta eliminando. Prima della conferma, invece, non esiste ancora niente e
+  // annullare e' solo chiudere la riga.
+  if (row.tipo === 'autofattura') {
+    if (row.stato === 'creata') {
+      return fail(
+        'queste autofatture sono GIA state create su Fatture in Cloud: non le cancello da qui. '
+        + 'Sono piu documenti in una riga sola, e un\'eliminazione parziale silenziosa e peggio di nessuna. '
+        + 'Eliminale da Fatture in Cloud, dove vedi quali sono.',
+        { id, ids_documenti: row.fic_document_id },
+      )
+    }
+    const annullato = await supabase
+      .from('cervellone_fic_pending')
+      .update({ stato: 'annullata', updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('stato', 'in_attesa')
+      .select('id, stato')
+    if (annullato.error) return fail(annullato.error.message)
+    if (!annullato.data?.length) return fail('pending FIC gia elaborato', { id })
+    return ok({ id, stato: 'annullata', nota: 'Nessuna autofattura era stata creata.' })
+  }
+
   if (row.stato === 'creata') {
     if (!row.fic_document_id) return fail('bozza creata senza fic_document_id', { id })
     // La società viene dalla RIGA, non dal contesto corrente: la bozza puo
@@ -736,8 +762,14 @@ function descriviPagamenti(input: {
   ].filter(Boolean).join('\n')
 }
 
+/**
+ * Salva un pending la cui anteprima ha bisogno dell'id della riga per scrivere
+ * i comandi di conferma: si inserisce, si legge l'id, si riscrive la
+ * descrizione. Nato per i pagamenti, serve IDENTICO alle autofatture — il
+ * payload e' quindi un oggetto qualsiasi, non piu' il solo `PagamentiPayload`.
+ */
 async function salvaPendingPagamenti(
-  payload: PagamentiPayload,
+  payload: PagamentiPayload | AutofatturePayload,
   descrivi: (id: string) => string,
   societa: CodiceSocieta,
   tipo: PendingTipo,
@@ -1087,6 +1119,565 @@ async function eseguiPagamenti(
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * AUTOFATTURE in reverse charge (fatture estere) — N documenti, UNA conferma
+ * ------------------------------------------------------------------ */
+
+/**
+ * Il tipo documento di Fatture in Cloud per l'autofattura da fornitore estero.
+ *
+ * ⚠️ `self_supplier_invoice` e NON `self_own_invoice`: il primo e'
+ * «un'autofattura in cui chi emette compare come cliente, mentre l'altra
+ * azienda e' il fornitore» — il caso delle commissioni Booking a LA REAL
+ * ESTATE. Il secondo e' quello in cui si e' cliente e fornitore di se' stessi
+ * (autoconsumo), che qui sarebbe il documento sbagliato.
+ */
+const TIPO_FIC_AUTOFATTURA = 'self_supplier_invoice'
+
+interface AutofatturaRiga {
+  /** Denominazione del fornitore estero, risolta sull'anagrafica. */
+  fornitore: string
+  /** Numero della fattura ORIGINALE del fornitore, non dell'autofattura. */
+  numero: string
+  /** Data della fattura ORIGINALE. */
+  data: string
+  /**
+   * Data in cui la fattura estera e' stata RICEVUTA: e' la data che va
+   * sull'integrazione, non oggi e non la data di emissione se diversa.
+   * (Specifica contabile del 14 settembre 2026.)
+   */
+  data_ricezione: string
+  imponibile: number
+  /** Il payload FIC gia' costruito: quello che verra' spedito, senza ritocchi. */
+  payload: Record<string, unknown>
+}
+
+interface AutofatturePayload {
+  /** L'aliquota indicata nella chiamata, con l'etichetta letta da FIC. */
+  vat: { id: number; etichetta: string }
+  /** Serie di numerazione dedicata alle integrazioni. */
+  numerazione: string
+  documenti: AutofatturaRiga[]
+}
+
+/**
+ * Etichetta leggibile di una riga `vat_types` di Fatture in Cloud.
+ *
+ * Si compone SOLO con i campi che FIC ha davvero restituito (`cleanString`
+ * lascia cadere quelli assenti): niente natura inventata, niente «22%» di
+ * ripiego. L'elenco grezzo viaggia comunque intero nella risposta del tool.
+ */
+function etichettaAliquota(row: Record<string, unknown>): string {
+  const valore = parseAliquotaFic(row.value)
+  return [
+    `id ${String(row.id ?? '?')}`,
+    valore !== null ? `${valore}%` : null,
+    cleanString(row.description),
+    cleanString(row.ei_type) ? `natura ${cleanString(row.ei_type)}` : null,
+    cleanString(row.ei_description),
+    cleanString(row.notes),
+  ].filter(Boolean).join(' — ')
+}
+
+/**
+ * Importo di una riga, letto SENZA `parseNumber`.
+ *
+ * `parseNumber` cancella i punti perche' serve al formato italiano
+ * ("1.234,56"): su "18.32" restituirebbe 1832, cioe' cento volte l'imponibile
+ * vero su un documento fiscale. Qui si accetta un numero, oppure una stringa
+ * che Number() legge senza ambiguita'; tutto il resto viene RIFIUTATO invece
+ * di essere interpretato.
+ */
+function importoSenzaAmbiguita(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  const testo = cleanString(value)
+  if (!testo) return null
+  const n = Number(testo)
+  return Number.isFinite(n) ? n : null
+}
+
+function rigaAutofattura(f: AutofatturaRiga, etichettaIva: string): string {
+  return `- ${f.fornitore} — fattura n.${f.numero} del ${f.data}, ricevuta il ${f.data_ricezione} `
+    + `→ integrazione datata ${f.data_ricezione} — imponibile ${euro(f.imponibile)} — IVA: ${etichettaIva}`
+}
+
+function descriviAutofatture(input: {
+  id: string
+  societa: CodiceSocieta
+  numerazione: string
+  etichettaIva: string
+  documenti: AutofatturaRiga[]
+}): string {
+  const s = getSocieta(input.societa)
+  const totale = Math.round(input.documenti.reduce((somma, f) => somma + f.imponibile, 0) * 100) / 100
+  return [
+    `Compilo ${input.documenti.length} AUTOFATTURE (reverse charge, fatture estere) su Fatture in Cloud`,
+    `SOCIETA: ${s.denominazione} (P.IVA ${s.piva})`,
+    `Tipo documento FIC: ${TIPO_FIC_AUTOFATTURA} — chi emette compare come CLIENTE, il fornitore estero come fornitore`,
+    `Serie di numerazione: ${input.numerazione} (dedicata alle integrazioni, separata dalle fatture attive)`,
+    // ⚠️ L'etichetta NON dice «scelta dall'Ingegnere»: l'id arriva dalla
+    // chiamata, e chi chiama potrebbe essere il modello. Quello che il codice
+    // garantisce e' che l'aliquota ESISTE su Fatture in Cloud e che e' scritta
+    // qui, dove si legge prima dell'unica conferma — non chi l'ha scelta.
+    `IVA applicata a TUTTE (id indicato nella chiamata, letto da Fatture in Cloud): ${input.etichettaIva}`,
+    `DA CREARE: ${input.documenti.length} — totale imponibile ${euro(totale)}`,
+    ...elencoTagliato(input.documenti, (f) => rigaAutofattura(f, input.etichettaIva), 'autofatture da creare'),
+    '⚠️ L\'imponibile deve essere quello delle sole COMMISSIONI della piattaforma (fee sui pagamenti gestiti compresa). '
+    + 'Gli incassi girati dalla piattaforma sono soldi degli ospiti e NON si integrano: se un importo qui sopra somiglia a un incasso, annulla.',
+    'Vengono COMPILATE e NON trasmesse allo SdI (e_invoice: false): la trasmissione la fai tu da Fatture in Cloud.',
+    '⚠️ Due cose che questo tool NON imposta e che vanno controllate su Fatture in Cloud prima di trasmettere: '
+    + 'il codice tipo documento (deve risultare TD17) e i «dati fattura collegata». Il riferimento alla fattura originale '
+    + '(numero e data) e\' scritto nella riga e nelle note del documento, ma non nel campo strutturato.',
+    `1a conferma -> ${comandoDaMostrare('fic_ok', input.id)}`,
+    `annulla -> ${comandoDaMostrare('fic_no', input.id)}`,
+  ].filter(Boolean).join('\n')
+}
+
+/**
+ * Prepara N autofatture e le mette in UN solo pending, con UNA sola conferma.
+ *
+ * 🚨 L'IVA NON SI INDOVINA. Non c'e' nessun predefinito, nemmeno «quella del
+ * 22%»: senza `vat_id` il tool si ferma e restituisce l'elenco VERO delle
+ * aliquote di Fatture in Cloud — che portano dentro anche la natura N6.x —
+ * perche' scelga l'Ingegnere. E' la stessa forma con cui
+ * `segna_fatture_emesse_pagate` chiede il conto di pagamento.
+ *
+ * Il motivo e' la conferma unica: con un default sbagliato, un solo «confermo»
+ * farebbe nascere quindici documenti fiscali tutti errati allo stesso modo.
+ */
+async function compilaAutofatture(
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string> {
+  const grezze = Array.isArray(input.fatture) ? input.fatture : []
+  if (grezze.length === 0) {
+    return fail('serve l\'elenco delle fatture estere da autofatturare (`fatture`): fornitore, numero, data e imponibile di ognuna. Non ho preparato niente.')
+  }
+  if (grezze.length > TETTO_MASSIVO) {
+    return fail(
+      `la selezione tocca ${grezze.length} autofatture, oltre il tetto di ${TETTO_MASSIVO} per singola conferma: `
+      + 'spezzala e ripeti. Non ho preparato niente.',
+      { trovate: grezze.length, tetto: TETTO_MASSIVO },
+    )
+  }
+
+  // 🚨 LA DATA DEL VIES. Il reverse charge vale PERCHE' la societa' e'
+  // iscritta al VIES: una fattura estera anteriore a quella data riporta IVA
+  // italiana gia' esposta e NON si integra affatto — si registra come un
+  // normale acquisto con IVA detraibile. Autofatturarla produrrebbe un
+  // documento illegittimo, quindi qui e' un RIFIUTO, non un avviso.
+  //
+  // Societa' senza data VIES nota = non si autofattura: il silenzio non vale
+  // «si'» su un dato che decide la legittimita' del documento.
+  const s0 = getSocieta(societa)
+  const viesDal = s0.viesDal
+  if (!viesDal) {
+    return fail(
+      `non so da quando ${s0.denominazione} e' iscritta al VIES, e senza quella data non so se queste fatture estere `
+      + 'vadano integrate o registrate con l\'IVA italiana che riportano. Non ho preparato niente: '
+      + 'la data va scritta in `societa.ts` (campo viesDal).',
+    )
+  }
+
+  if (cleanString(input.data_documento) || cleanString(input.data)) {
+    return fail(
+      'la data dell\'integrazione non si passa: e\' la DATA DI RICEZIONE di ogni fattura estera (data_ricezione, una per fattura), '
+      + 'non una data unica del gruppo e non oggi. Non ho preparato niente.',
+    )
+  }
+  const note = cleanString(input.note)
+
+  // 1) Le righe, lette dall'input SENZA completarle. Un dato mancante si
+  //    rifiuta: su un'autofattura il numero e la data della fattura originale
+  //    sono l'unica traccia di cosa si sta autofatturando.
+  interface RigaGrezza {
+    fornitore: string
+    fornitoreId?: number
+    numero: string
+    data: string
+    dataRicezione: string
+    imponibile: number
+    descrizione: string
+  }
+  const righe: RigaGrezza[] = []
+  for (const g of grezze) {
+    const row = asObject(g)
+    const fornitore = cleanString(row.fornitore) ?? cleanString(row.nome) ?? cleanString(row.controparte)
+    if (!fornitore) return fail('ogni fattura da autofatturare richiede `fornitore` (es. "Booking.com B.V."). Non ho preparato niente.')
+
+    const numero = cleanString(row.numero) ?? cleanString(row.numero_fattura)
+    if (!numero) return fail(`manca il numero della fattura di ${fornitore}: non lo invento. Non ho preparato niente.`)
+
+    const data = cleanString(row.data) ?? cleanString(row.data_fattura)
+    if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+      return fail(`la data della fattura n.${numero} di ${fornitore} manca o non e' nel formato YYYY-MM-DD. Non ho preparato niente.`)
+    }
+
+    const dataRicezione = cleanString(row.data_ricezione)
+    if (!dataRicezione || !/^\d{4}-\d{2}-\d{2}$/.test(dataRicezione)) {
+      return fail(
+        `manca la data di RICEZIONE della fattura n.${numero} di ${fornitore} (data_ricezione, YYYY-MM-DD): `
+        + 'e\' la data che va sull\'integrazione, e non la invento. Non ho preparato niente.',
+      )
+    }
+
+    // Si guardano ENTRAMBE le date, emissione e ricezione. La specifica parla
+    // del documento «ricevuto prima» del VIES, ma una fattura EMESSA prima
+    // riporta gia' l'IVA italiana: rifiutare un caso di confine in piu' costa
+    // una domanda, integrarne uno di troppo costa un documento illegittimo.
+    const primaDelVies = [
+      data < viesDal ? `emessa il ${data}` : null,
+      dataRicezione < viesDal ? `ricevuta il ${dataRicezione}` : null,
+    ].filter(Boolean)
+    if (primaDelVies.length > 0) {
+      return fail(
+        `la fattura n.${numero} di ${fornitore} e' ${primaDelVies.join(' e ')}, cioe' PRIMA dell'iscrizione al VIES di `
+        + `${s0.denominazione} (${viesDal}): non si integra. Una fattura estera anteriore a quella data riporta gia' l'IVA `
+        + 'italiana al 22% e si registra come un normale acquisto con IVA detraibile — un\'autofattura qui sarebbe un '
+        + 'documento illegittimo. Non ho preparato niente, nemmeno le altre del gruppo.',
+        { numero, fornitore, vies_dal: viesDal },
+      )
+    }
+
+    const imponibile = importoSenzaAmbiguita(row.imponibile ?? row.importo ?? row.totale)
+    if (imponibile === null || imponibile <= 0) {
+      return fail(
+        `l'imponibile della fattura n.${numero} di ${fornitore} manca o non e' un numero leggibile `
+        + '(passa un numero, es. 18.32 — non "1.234,56"). Non ho preparato niente.',
+      )
+    }
+
+    const fornitoreIdGrezzo = row.fornitore_id ?? row.cliente_id
+    const fornitoreId = fornitoreIdGrezzo === undefined || fornitoreIdGrezzo === null || fornitoreIdGrezzo === ''
+      ? undefined
+      : Number(fornitoreIdGrezzo)
+    if (fornitoreId !== undefined && !Number.isFinite(fornitoreId)) return fail('fornitore_id non e\' un numero')
+
+    righe.push({
+      fornitore,
+      fornitoreId,
+      numero,
+      data,
+      dataRicezione,
+      imponibile: Math.round(imponibile * 100) / 100,
+      // Il riferimento alla fattura originale sta nel testo della riga: il
+      // campo strutturato «dati fattura collegata» questo tool NON lo compila,
+      // e l'anteprima lo dichiara invece di lasciarlo credere.
+      descrizione: cleanString(row.descrizione)
+        ?? `Integrazione art. 17 c.2 DPR 633/72 — ${fornitore}, fattura n.${numero} del ${data}`,
+    })
+  }
+
+  // 2) 🚨 L'IVA. Si legge l'elenco vero di Fatture in Cloud e ci si scrive
+  //    dentro l'id che l'Ingegnere ha indicato: un id assente dall'elenco e'
+  //    un id inventato, e su un documento fiscale non passa.
+  const elenco = await elencoAliquoteFic(societa)
+  if (!elenco.ok) return fail(`aliquote IVA non leggibili da Fatture in Cloud: ${elenco.error}`)
+
+  const vatId = intero(input.vat_id)
+  const scelta = vatId === undefined
+    ? undefined
+    : elenco.righe.find((row) => parseAliquotaFic(row.id) === vatId)
+
+  if (!scelta) {
+    return ok({
+      need: 'vat_id',
+      messaggio: vatId === undefined
+        ? 'Non scelgo io l\'aliquota IVA di un\'autofattura: la natura (N6.x) e l\'aliquota sono dati fiscali, e una conferma sola varrebbe per tutte le autofatture. Chiedi all\'Ingegnere QUALE di queste usare e richiamami con vat_id.'
+        : `l'id IVA ${vatId} non esiste fra le ${elenco.righe.length} aliquote di questa azienda su Fatture in Cloud. Chiedi all'Ingegnere quale usare e richiamami con vat_id.`,
+      // L'elenco e' quello GREZZO di Fatture in Cloud: descrizione, natura e
+      // note comprese. Ripulirlo vorrebbe dire scegliere quali campi contano
+      // in una decisione fiscale che non e' nostra.
+      aliquote_disponibili: elenco.righe,
+      // ⚠️ Un'INDICAZIONE da girare a chi sceglie, NON una scelta fatta qui:
+      // sopra non c'e' nessun predefinito, e questo campo non ne introduce uno
+      // (non nomina nessun id e nessuna percentuale). Serve perche' l'errore
+      // tipico e' confondere l'aliquota della commissione della piattaforma
+      // con quella degli affitti brevi, che e' un'altra operazione — quella
+      // che l'ospite paga all'albergatore.
+      contesto_per_l_ingegnere:
+        'Di norma la commissione di una piattaforma estera in reverse charge si integra con l\'aliquota ORDINARIA, '
+        + 'non con quella ridotta degli affitti brevi (che riguarda cio che l ospite paga, un altra operazione). '
+        + '⚠️ Girala all Ingegnere perche scelga LUI: non e una scelta che puoi fare tu, e senza la sua risposta non richiamarmi con un vat_id.',
+      autofatture_selezionate: righe.length,
+      nota: 'Non ho preparato niente e non ho scritto niente su Fatture in Cloud.',
+    })
+  }
+
+  const etichettaIva = etichettaAliquota(scelta)
+  const idIva = parseAliquotaFic(scelta.id) as number
+
+  // 3) La SERIE DI NUMERAZIONE. Le integrazioni vanno su una serie dedicata,
+  //    separata dalle fatture attive: senza `numeration` FIC userebbe la serie
+  //    predefinita, cioe' proprio quella delle attive. Un codice di sezionale
+  //    non si inventa — si chiede, come l'aliquota.
+  //
+  //    Si chiede DOPO l'aliquota di proposito: l'IVA e' la decisione che fa
+  //    danno, e deve essere la prima cosa che il tool rimanda all'Ingegnere.
+  const numerazione = cleanString(input.numerazione) ?? cleanString(input.sezionale)
+  if (!numerazione) {
+    return ok({
+      need: 'numerazione',
+      messaggio:
+        'Le integrazioni/autofatture vanno su una SERIE di numerazione dedicata, separata dalle fatture attive, e io non '
+        + 'invento un codice di sezionale. Chiedi all\'Ingegnere quale serie usare su Fatture in Cloud (la sigla che '
+        + 'vede nel menu della numerazione) e richiamami con `numerazione`.',
+      autofatture_selezionate: righe.length,
+      nota: 'Non ho preparato niente e non ho scritto niente su Fatture in Cloud.',
+    })
+  }
+
+  // 4) Il fornitore estero sull'anagrafica. Stessa risoluzione della fattura
+  //    emessa, avvisi compresi: se non risulta in anagrafica lo DICE, invece
+  //    di far nascere il documento su un nome scritto a mano senza dirlo.
+  const documenti: AutofatturaRiga[] = []
+  for (const r of righe) {
+    const entity = await resolveClientEntity(r.fornitore, societa, r.fornitoreId)
+    if (!entity.ok) return fail(`${r.fornitore}: ${entity.error}. Non ho preparato niente.`)
+
+    // 🚨 Qui l'anagrafica non e' facoltativa come su una fattura emessa.
+    // L'integrazione deve riportare i dati del CEDENTE estero — indirizzo e
+    // partita IVA comunitaria — e su un'entita' col solo nome quei dati non
+    // ci sono: uscirebbe un documento formalmente incompleto.
+    if (!asObject(entity.entity).id) {
+      return fail(
+        `«${r.fornitore}» non risulta in anagrafica su Fatture in Cloud, e un'integrazione senza i dati del cedente estero `
+        + '(indirizzo e partita IVA comunitaria) non e\' un documento valido. Crea prima l\'anagrafica con fic_crea_cliente '
+        + 'e richiamami con fornitore_id. Non ho preparato niente.',
+      )
+    }
+
+    const payload: Record<string, unknown> = {
+      type: TIPO_FIC_AUTOFATTURA,
+      entity: entity.entity,
+      items_list: [{
+        name: r.descrizione,
+        qty: 1,
+        net_price: r.imponibile,
+        // L'id arriva dall'elenco di FIC, non da una tabella nostra.
+        vat: { id: idIva },
+      }],
+      // La data dell'integrazione e' quella di RICEZIONE della fattura estera.
+      date: r.dataRicezione,
+      // Serie dedicata: senza, FIC numererebbe fra le fatture attive.
+      numeration: numerazione,
+      // Si COMPILA, non si trasmette: l'invio allo SdI lo fa l'Ingegnere.
+      e_invoice: false,
+    }
+    // Il riferimento alla fattura originale viaggia nelle note ANCHE quando
+    // l'Ingegnere ne ha scritte di sue: e' il dato che lega l'integrazione al
+    // documento estero, non un commento.
+    payload.notes = [`Riferimento: ${r.fornitore}, fattura n.${r.numero} del ${r.data}, ricevuta il ${r.dataRicezione}.`, note]
+      .filter(Boolean)
+      .join(' ')
+
+    documenti.push({
+      // La denominazione RISOLTA (con l'eventuale avviso): e' quella che
+      // l'Ingegnere legge prima dell'unica conferma.
+      fornitore: entity.descrizione,
+      numero: r.numero,
+      data: r.data,
+      data_ricezione: r.dataRicezione,
+      imponibile: r.imponibile,
+      payload,
+    })
+  }
+
+  const payloadPending: AutofatturePayload = {
+    vat: { id: idIva, etichetta: etichettaIva },
+    numerazione,
+    documenti,
+  }
+
+  const pending = await salvaPendingPagamenti(
+    payloadPending,
+    (id) => descriviAutofatture({ id, societa, numerazione, etichettaIva, documenti }),
+    societa,
+    'autofattura',
+  )
+  if (!pending.ok) return fail(pending.error)
+
+  const s = getSocieta(societa)
+  return ok({
+    societa: s.denominazione,
+    partita_iva: s.piva,
+    id: pending.id,
+    stato: 'in_attesa',
+    tipo_documento_fic: TIPO_FIC_AUTOFATTURA,
+    e_invoice: false,
+    iva: { id: idIva, etichetta: etichettaIva },
+    numerazione,
+    da_creare: documenti.length,
+    da_controllare_su_fic: 'il codice tipo documento deve risultare TD17, e i «dati fattura collegata» non li imposta questo tool.',
+    anteprima: pending.descrizione,
+    conferma_1: comandoDaMostrare('fic_ok', pending.id),
+    annulla: comandoDaMostrare('fic_no', pending.id),
+    nota: 'Mostra l anteprima COM E, con tutte le autofatture elencate: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte.',
+  })
+}
+
+function leggiAutofatturePayload(payload: unknown): AutofatturePayload | null {
+  const p = asObject(payload)
+  const vat = asObject(p.vat)
+  const id = Number(vat.id)
+  const etichetta = cleanString(vat.etichetta)
+  if (!Number.isFinite(id) || !etichetta) return null
+  const numerazione = cleanString(p.numerazione)
+  if (!numerazione) return null
+  const grezzi = Array.isArray(p.documenti) ? p.documenti.map(asObject) : []
+  if (grezzi.length === 0) return null
+  const documenti: AutofatturaRiga[] = []
+  for (const d of grezzi) {
+    const payloadDoc = asObject(d.payload)
+    // Un payload vuoto vorrebbe dire spedire un documento senza contenuto:
+    // meglio dichiarare il pending illeggibile che creare un guscio su FIC.
+    if (Object.keys(payloadDoc).length === 0) return null
+    documenti.push({
+      fornitore: cleanString(d.fornitore) ?? '(fornitore non indicato)',
+      numero: cleanString(d.numero) ?? '?',
+      data: cleanString(d.data) ?? '?',
+      data_ricezione: cleanString(d.data_ricezione) ?? '?',
+      imponibile: Number(d.imponibile) || 0,
+      payload: payloadDoc,
+    })
+  }
+  return { vat: { id, etichetta }, numerazione, documenti }
+}
+
+interface EsitoAutofatture {
+  messaggio: string
+  create: number
+  /** Create su FIC ma NON confermate dalla rilettura: non sono un successo. */
+  da_verificare: number
+  ids: string[]
+}
+
+/**
+ * Crea le N autofatture, UNA PER VOLTA, e riferisce PER DOCUMENTO.
+ *
+ * 🚨 Il conteggio delle riuscite NON viene dalla risposta della POST: dopo
+ * ogni creazione il documento si RILEGGE da Fatture in Cloud e si controlla
+ * che esista e che sia davvero del tipo giusto. Un «fatte tutte» su un gruppo
+ * in cui due non sono nate sarebbe il difetto peggiore introducibile qui.
+ *
+ * Tre esiti, mai confusi:
+ * - riuscita: creata E riletta;
+ * - NON riuscita: la POST ha rifiutato, il documento non esiste;
+ * - DA VERIFICARE: la POST ha risposto ma la rilettura no. Non e' un successo
+ *   e non e' un fallimento — e non si ritenta, perche' un secondo tentativo
+ *   creerebbe il doppione di un documento che forse c'e' gia'.
+ */
+async function creaAutofatture(
+  payload: unknown,
+  societa: CodiceSocieta,
+): Promise<EsitoAutofatture> {
+  const dati = leggiAutofatturePayload(payload)
+  if (!dati) {
+    return {
+      messaggio: 'NESSUNA autofattura creata: il pending non contiene un elenco leggibile.',
+      create: 0,
+      da_verificare: 0,
+      ids: [],
+    }
+  }
+
+  const s = getSocieta(societa)
+  const riuscite: string[] = []
+  const fallite: string[] = []
+  const daVerificare: string[] = []
+  const ids: string[] = []
+  let interruzione: string | null = null
+  let trattate = 0
+
+  for (const d of dati.documenti) {
+    const intestazione = `${d.fornitore} — fattura n.${d.numero} del ${d.data} — ${euro(d.imponibile)}`
+    try {
+      const creato = await creaDocumentoFIC(d.payload, societa)
+      trattate++
+      if (!creato.ok) {
+        fallite.push(`❌ ${intestazione} — ${creato.error}`)
+        continue
+      }
+      const riletta = await rileggiAutofattura(creato.id, societa)
+      if (!riletta.ok) {
+        ids.push(creato.id)
+        daVerificare.push(
+          `⚠️ ${intestazione} — Fatture in Cloud ha risposto con l'id ${creato.id}, ma la rilettura NON conferma: `
+          + `${riletta.error}. Controllala a mano su Fatture in Cloud prima di rifarla.`,
+        )
+        continue
+      }
+      ids.push(creato.id)
+      riuscite.push(`✅ ${intestazione} — autofattura ${TIPO_FIC_AUTOFATTURA} id ${creato.id}${creato.url ? ` — ${creato.url}` : ''}`)
+    } catch (err) {
+      // Rete, token, 429: si ferma qui e si DICE dove si e' fermata.
+      interruzione = err instanceof Error ? err.message : String(err)
+      break
+    }
+  }
+
+  const totale = dati.documenti.length
+  const nonTrattate = dati.documenti.slice(trattate)
+  const coda = [
+    riuscite.length > 0 ? `CREATE (${riuscite.length}), verificate rileggendo ogni documento su Fatture in Cloud:\n${riuscite.join('\n')}` : null,
+    fallite.length > 0 ? `NON CREATE (${fallite.length}), su Fatture in Cloud non esistono:\n${fallite.join('\n')}` : null,
+    daVerificare.length > 0 ? `DA VERIFICARE A MANO (${daVerificare.length}), non le conto fra le riuscite:\n${daVerificare.join('\n')}` : null,
+    interruzione
+      ? `⚠️ La creazione si e' INTERROTTA (${interruzione}). Le autofatture elencate come create RESTANO su `
+        + 'Fatture in Cloud: non tento nessun rollback. Da riprendere: '
+        + `${nonTrattate.map((f) => `${f.fornitore} n.${f.numero}`).join(', ') || 'nessuna'}.`
+      : null,
+    'Nessuna e\' stata trasmessa allo SdI: sono compilate. Controlla il codice tipo documento (TD17/TD18/TD19) su Fatture in Cloud.',
+  ].filter(Boolean).join('\n\n')
+
+  if (riuscite.length === 0) {
+    return {
+      messaggio: `NESSUNA autofattura creata su ${s.denominazione}: 0 su ${totale}.\n\n${coda}`,
+      create: 0,
+      da_verificare: daVerificare.length,
+      ids,
+    }
+  }
+  if (riuscite.length < totale) {
+    return {
+      messaggio: `AUTOFATTURE CREATE IN PARTE su ${s.denominazione}: ${riuscite.length} su ${totale}.\n\n${coda}`,
+      create: riuscite.length,
+      da_verificare: daVerificare.length,
+      ids,
+    }
+  }
+  return {
+    messaggio: `AUTOFATTURE CREATE su ${s.denominazione}: ${riuscite.length} su ${totale}.\n\n${coda}`,
+    create: riuscite.length,
+    da_verificare: daVerificare.length,
+    ids,
+  }
+}
+
+/**
+ * Rilegge da Fatture in Cloud il documento appena creato.
+ *
+ * Non basta che la POST abbia risposto 200: si controlla che l'id torni e che
+ * il tipo sia davvero quello dell'autofattura. E' l'unica prova che il
+ * documento esiste come lo volevamo.
+ */
+async function rileggiAutofattura(
+  id: string,
+  societa: CodiceSocieta,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const company = await getCompanyId(societa)
+  if (!company.ok) return { ok: false, error: company.error }
+  const r = await ficGet(`/c/${company.id}/issued_documents/${encodeURIComponent(id)}`, undefined, societa)
+  if (!r.ok) return { ok: false, error: r.error }
+  const doc = asObject(r.data?.data ?? r.data)
+  if (String(doc.id ?? '') !== String(id)) return { ok: false, error: 'la rilettura non ha restituito quel documento' }
+  const tipo = cleanString(doc.type)
+  if (tipo !== TIPO_FIC_AUTOFATTURA) {
+    return { ok: false, error: `su Fatture in Cloud risulta di tipo «${tipo ?? 'sconosciuto'}», non ${TIPO_FIC_AUTOFATTURA}` }
+  }
+  return { ok: true }
+}
+
 export async function confirmFicStep1(id: string): Promise<string> {
   const cleanId = cleanString(id)
   if (!cleanId) return 'ID bozza FIC richiesto.'
@@ -1160,6 +1751,41 @@ export async function confirmFicStep2(id: string): Promise<string> {
     // Almeno una scrittura e' andata: la riga si CHIUDE. Non si ritenta un
     // gruppo in cui qualcosa e' gia' stato scritto — un secondo giro su una
     // fattura gia' pagata e' esattamente l'errore contabile da evitare.
+    const chiusa = await supabase
+      .from('cervellone_fic_pending')
+      .update({
+        stato: 'creata',
+        fic_document_id: esito.ids.join(','),
+        fic_url: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', cleanId)
+      .eq('stato', 'in_attesa')
+      .eq('conferme', 2)
+      .select('id')
+
+    if (chiusa.error) return `${esito.messaggio}\n\n⚠️ Aggiornamento audit fallito: ${chiusa.error.message}`
+    return esito.messaggio
+  }
+
+  // Le AUTOFATTURE sono N documenti dentro UN pending: stessa doppia conferma
+  // e stessi comandi, ma la creazione e' un ciclo con esito PER DOCUMENTO.
+  if (row.tipo === 'autofattura') {
+    const esito = await creaAutofatture(row.payload, row.societa)
+
+    // 🚨 Si ritenta SOLO se non e' nato niente E non c'e' niente di incerto.
+    // Una riga rimessa a `conferme: 1` quando un documento potrebbe esistere
+    // gia' e' il modo per creare il doppione al secondo «confermo».
+    if (esito.create === 0 && esito.da_verificare === 0) {
+      await supabase
+        .from('cervellone_fic_pending')
+        .update({ conferme: 1, updated_at: new Date().toISOString() })
+        .eq('id', cleanId)
+        .eq('stato', 'in_attesa')
+        .eq('conferme', 2)
+      return esito.messaggio
+    }
+
     const chiusa = await supabase
       .from('cervellone_fic_pending')
       .update({
@@ -1347,8 +1973,14 @@ async function confermaBozzaFic(
   // Il verbo cambia col verso (PAGAMENTI sulle ricevute, INCASSI sulle
   // emesse): riconoscere un solo verbo rifaceva la stessa bugia sull'altro
   // (audit del 14 set 2026).
+  //
+  // Le autofatture portano un terzo verbo (AUTOFATTURE CREATE): senza
+  // riconoscerlo, un gruppo creato davvero verrebbe riferito come NON riuscito.
   const parziale = /^(PAGAMENTI|INCASSI) REGISTRATI IN PARTE/.test(messaggio)
-  const eseguita = messaggio.startsWith('BOZZA creata su FIC') || /^(PAGAMENTI|INCASSI) REGISTRATI/.test(messaggio)
+    || /^AUTOFATTURE CREATE IN PARTE/.test(messaggio)
+  const eseguita = messaggio.startsWith('BOZZA creata su FIC')
+    || /^(PAGAMENTI|INCASSI) REGISTRATI/.test(messaggio)
+    || /^AUTOFATTURE CREATE/.test(messaggio)
   return ok({
     id: riga.id,
     passo: 2,
@@ -1482,6 +2114,43 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    // Nome al SINGOLARE ma accetta N fatture: come i due tool dei pagamenti,
+    // il caso singolo e' il massivo con un elemento. Una conferma sola per N
+    // autofatture e' il motivo per cui esiste — «non e che mi metto a
+    // confermare quindici fatture vocalmente».
+    name: 'compila_autofattura',
+    description: 'Compila su Fatture in Cloud le AUTOFATTURE/INTEGRAZIONI in reverse charge per le fatture ESTERE (il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, scadenza fiscale il 16 del mese; identico per le fee di Airbnb Ireland UC). Prepara UN documento per ogni fattura estera, tipo FIC self_supplier_invoice (chi emette compare come CLIENTE, il fornitore estero come fornitore), integrazione ex art. 17 c.2 DPR 633/72 su servizio generico art. 7-ter. I documenti vengono COMPILATI e NON trasmessi allo SdI: li controlla e li invia l Ingegnere. Accetta N fatture in una volta sola e chiede UNA SOLA conferma per tutte (in due passaggi: /fic_ok_<id> poi /fic_ok2_<id>, ma una conferma sola per tutto il gruppo). REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: non scegliere tu l aliquota ne la natura. Se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote IVA di quell azienda lette da Fatture in Cloud — con descrizione e natura — e tu CHIEDI all Ingegnere quale usare, poi richiami con vat_id. Non esiste nessun predefinito; (2) 🚨 SI INTEGRA SOLO LA FATTURA COMMISSIONI (fee sui pagamenti gestiti dalla piattaforma compresa). Gli INCASSI girati dalla piattaforma sono soldi degli ospiti riscossi per conto della societa e NON si integrano: se non sei sicuro che l importo sia una commissione, FERMATI E CHIEDI invece di chiamarmi; (3) 🚨 il tool RIFIUTA le fatture anteriori all iscrizione al VIES della societa: quelle riportano IVA italiana e si registrano come normali acquisti con IVA detraibile, non si integrano. Se te lo dice, riportalo e non insistere; (4) il fornitore estero deve essere IN ANAGRAFICA con indirizzo e partita IVA comunitaria: fic_cerca_anagrafica, se non c e fic_crea_cliente, poi passa qui fornitore_id. Senza anagrafica il tool rifiuta; (5) numero, data, data di RICEZIONE e imponibile sono quelli della fattura ORIGINALE e non si inventano: se non li hai, chiedili. La data dell integrazione e la data di RICEZIONE, non oggi; (6) serve una SERIE di numerazione dedicata alle integrazioni, separata dalle fatture attive: se non la passi il tool te la chiede, non la inventa; (7) mostra l anteprima COM E — elenca tutte le autofatture con fornitore, numero, date e imponibile: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte; (8) l esito e PER DOCUMENTO e viene da una RILETTURA su Fatture in Cloud: riporta quali si e quali no col motivo, e NON dire «fatte tutte»; (9) il tool NON imposta il codice tipo documento (deve risultare TD17) ne i «dati fattura collegata»: dillo all Ingegnere, vanno controllati su Fatture in Cloud prima di trasmettere.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        fatture: {
+          type: 'array',
+          description: 'Le fatture estere di COMMISSIONI da integrare, una voce per documento. Una sola voce = una sola autofattura. Mai gli incassi girati dalla piattaforma.',
+          items: {
+            type: 'object',
+            properties: {
+              fornitore: { type: 'string', description: 'Denominazione del fornitore estero, es. "Booking.com B.V." o "Airbnb Ireland UC".' },
+              fornitore_id: { type: 'number', description: 'Id dell anagrafica su Fatture in Cloud, da fic_cerca_anagrafica o fic_crea_cliente. Senza anagrafica il tool rifiuta: un integrazione deve riportare indirizzo e partita IVA comunitaria del cedente.' },
+              numero: { type: 'string', description: 'Numero della fattura ORIGINALE del fornitore estero. Obbligatorio: non si inventa.' },
+              data: { type: 'string', description: 'Data di emissione della fattura ORIGINALE, YYYY-MM-DD. Obbligatoria: non si inventa.' },
+              data_ricezione: { type: 'string', description: 'Data in cui la fattura estera e stata RICEVUTA, YYYY-MM-DD. Obbligatoria: e la data che va sull integrazione (non oggi, non la data di emissione se diversa).' },
+              imponibile: { type: 'number', description: 'Imponibile in euro delle sole COMMISSIONI, fee sui pagamenti gestiti compresa, come numero (es. 300 oppure 18.32). Mai l importo di un incasso girato dalla piattaforma.' },
+              descrizione: { type: 'string', description: 'Descrizione della riga. Se omessa viene composta dai dati della fattura originale.' },
+            },
+            required: ['fornitore', 'numero', 'data', 'data_ricezione', 'imponibile'],
+          },
+        },
+        vat_id: {
+          type: 'number',
+          description: '🚨 Id dell aliquota IVA di Fatture in Cloud da usare (porta con se anche la natura). NON sceglierlo tu e non tirarlo a indovinare: se non ti e stato detto quale, chiama SENZA questo parametro — il tool ti restituisce l elenco vero delle aliquote dell azienda e tu chiedi all Ingegnere quale. Un id inventato viene rifiutato.',
+        },
+        numerazione: { type: 'string', description: 'Sigla della serie di numerazione DEDICATA alle integrazioni su Fatture in Cloud, separata dalle fatture attive. Se non ce l hai chiama senza: il tool te la chiede invece di inventarne una.' },
+        note: { type: 'string', description: 'Note aggiuntive riportate su ogni autofattura del gruppo. Il riferimento alla fattura originale viene scritto comunque.' },
+      },
+      required: ['fatture'],
+    },
+  },
+  {
     name: 'lista_bozze_fic',
     description: 'Lista le bozze FIC pending, create o annullate registrate in cervellone_fic_pending.',
     input_schema: {
@@ -1508,6 +2177,7 @@ export async function executeFicWriteTool(
   try {
     if (name === 'compila_fattura_emessa') return compilaDocumento(input, 'fattura_emessa', societa)
     if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento', societa)
+    if (name === 'compila_autofattura') return compilaAutofatture(input, societa)
     if (name === 'segna_fatture_ricevute_pagate') return segnaFatturePagate(input, societa, 'ricevuta')
     if (name === 'segna_fatture_emesse_pagate') return segnaFatturePagate(input, societa, 'emessa')
     if (name === 'conferma_bozza_fic') return confermaBozzaFic(input, societa)

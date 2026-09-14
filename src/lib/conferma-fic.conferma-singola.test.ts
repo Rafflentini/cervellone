@@ -95,6 +95,23 @@ describe('CONTROLLO POSITIVO — quello che NON si disfa resta a due passaggi', 
     expect(step2).not.toHaveBeenCalled()
   })
 
+  it('🚨 autofattura: crea documenti fiscali, quindi resta a DUE passaggi', async () => {
+    // La conferma MASSIVA e la conferma SINGOLA sono cose diverse: una
+    // conferma sola per N autofatture, ma in due passaggi. Un'autofattura fa
+    // nascere un documento fiscale che non si disfa — il criterio del registro
+    // e' «reversibile o no», e qui non lo e'. Se qualcuno la aggiungesse a
+    // `A_CONFERMA_SINGOLA`, quindici documenti nascerebbero con un solo «ok».
+    righe.valore = pending('autofattura', { descrizione: 'Compilo 3 AUTOFATTURE (reverse charge, fatture estere)' })
+
+    const esito = await confermaFicPiuRecente('restruktura')
+
+    expect(step1).toHaveBeenCalledTimes(1)
+    expect(step2).not.toHaveBeenCalled()
+    expect(esito.message).toContain('Conferma DEFINITIVA')
+    // La descrizione non inizia con «Segno»: il testo dice «creo il documento».
+    expect(esito.message).toContain('creo il documento')
+  })
+
   it('un tipo sconosciuto resta PRUDENTE: doppia conferma', async () => {
     // Se domani nasce un tipo nuovo e nessuno aggiorna il registro, deve
     // ereditare il comportamento severo, non quello permissivo.
