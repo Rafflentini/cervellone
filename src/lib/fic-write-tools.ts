@@ -1244,6 +1244,9 @@ const TIPO_FIC_AUTOFATTURA = 'self_supplier_invoice'
  * TD17 = integrazione/autofattura per acquisto di servizi dall'estero,
  * art. 17 c.2 DPR 633/72, servizio generico ex art. 7-ter.
  */
+/** Metodo di pagamento formale dell integrazione: e il predefinito che il form di Fatture in Cloud propone per una TD17. Su un reverse charge non si paga niente, ma FIC lo pretende sui documenti elettronici. */
+const METODO_PAGAMENTO_INTEGRAZIONE = 'MP01'
+
 const TIPO_DOCUMENTO_SDI = 'TD17'
 
 /**
@@ -1657,6 +1660,22 @@ async function compilaAutofatture(
       }],
       // 🚨 Il codice TD17 viaggia QUI, non nel `type`: senza questa struttura
       // il documento sarebbe una normale autofattura, non un'integrazione.
+      // 🚨 Fatture in Cloud PRETENDE un metodo di pagamento su un documento
+      // elettronico: senza, rifiuta la creazione con 422
+      // «ei_data.payment_method: il metodo di pagamento e' obbligatorio in un
+      // documento elettronico». E' la conseguenza diretta dell'aver reso
+      // l'integrazione elettronica — che serve, perche' una TD17 si assolve
+      // solo trasmettendola.
+      //
+      // ⚠️ Su un'integrazione in reverse charge NON si paga niente: il valore
+      // e' formale. Si usa `MP01` (contanti), che e' il predefinito che
+      // Fatture in Cloud stesso propone nel proprio form per una TD17 —
+      // scelto perche' e' quello che farebbe FIC, non perche' ci piace.
+      //
+      // ⬜ Da confermare sull'XML del primo documento vero: l'integrazione
+      // TD17 valida che l'Ingegnere ha fornito NON contiene alcun blocco
+      // `DatiPagamento`, quindi questo campo probabilmente nemmeno ci arriva.
+      ei_data: { payment_method: METODO_PAGAMENTO_INTEGRAZIONE },
       ei_raw: eiRawIntegrazione(TIPO_DOCUMENTO_SDI, { numero: r.numero, data: r.data }),
       // La data dell'integrazione e' quella di RICEZIONE della fattura estera.
       date: r.dataRicezione,
@@ -2475,6 +2494,38 @@ async function creaSpesa(payload: unknown, societa: CodiceSocieta): Promise<Esit
   }
 }
 
+/**
+ * I tipi che si chiudono con UNA conferma sola: oggi, tutti.
+ *
+ * ⚠️ **Perche' sta QUI e non in `conferma-fic.ts`.** Ci stava, e non bastava:
+ * quel file governa solo il percorso VOCALE («confermo», «procedi»), mentre i
+ * comandi `/fic_ok_<id>` arrivano dalle rotte — `api/chat` e `api/telegram` —
+ * che chiamano `confirmFicStep1` DIRITTO, saltando la regola. Risultato: il 15
+ * settembre 2026 l'Ingegnere ha chiesto la conferma singola per la seconda
+ * volta, l'ha avuta sul percorso vocale, e ha continuato a vedersene chiedere
+ * due perche' usava i comandi.
+ *
+ * Messa dentro `confirmFicStep1`, vale per OGNI chiamante — vocale, chat web,
+ * Telegram — e i due canali restano equipollenti senza doverlo ricordare in
+ * tre posti.
+ *
+ * ⚠️ Cosa regge al posto del secondo cancello: l'anteprima con fornitore,
+ * numero, date e importi viene mostrata QUANDO il tool prepara la riga. La
+ * conferma arriva dopo averla letta, non al buio. E resta una frase che
+ * l'Ingegnere ha detto o scritto DAVVERO.
+ *
+ * Un tipo SCONOSCIUTO non e' qui dentro: se domani ne nasce uno nuovo e nessuno
+ * aggiorna l'elenco, eredita il comportamento severo.
+ */
+export const A_CONFERMA_SINGOLA: ReadonlySet<string> = new Set([
+  'pagamento_emessa',
+  'pagamento_ricevuta',
+  'spesa_ricevuta',
+  'fattura_emessa',
+  'rapporto_intervento',
+  'autofattura',
+])
+
 export async function confirmFicStep1(id: string): Promise<string> {
   const cleanId = cleanString(id)
   if (!cleanId) return 'ID bozza FIC richiesto.'
@@ -2485,15 +2536,20 @@ export async function confirmFicStep1(id: string): Promise<string> {
     .eq('id', cleanId)
     .eq('stato', 'in_attesa')
     .eq('conferme', 0)
-    .select('id, societa')
+    .select('id, societa, tipo')
 
   if (error) return `Errore conferma bozza FIC: ${error.message}`
   if (!data?.length) return 'Bozza FIC non trovata o gia confermata/elaborata.'
 
+  const riga = data[0] as { societa: CodiceSocieta; tipo: string | null }
+
+  // Una conferma sola: si scrive subito, senza chiederne un'altra.
+  if (A_CONFERMA_SINGOLA.has(riga.tipo ?? '')) return confirmFicStep2(cleanId)
+
   // Il nome dell'azienda va ripetuto QUI, sull'ultimo passaggio prima della
   // creazione: e l'ultima occasione in cui l'Ingegnere puo accorgersi che la
   // fattura sta per nascere dalla societa sbagliata.
-  const s = getSocieta((data[0] as { societa: CodiceSocieta }).societa)
+  const s = getSocieta(riga.societa)
   return `Prima conferma registrata per *${s.denominazione}* (P.IVA ${s.piva}).\nConferma DEFINITIVA -> ${comandoDaMostrare('fic_ok2', cleanId)}`
 }
 

@@ -1,17 +1,26 @@
 /**
- * src/lib/conferma-fic.conferma-singola.test.ts — un incasso si conferma UNA volta.
+ * src/lib/conferma-fic.conferma-singola.test.ts — il percorso VOCALE riporta
+ * l'esito del primo passaggio, e non ne chiede un secondo di sua iniziativa.
  *
- * ⚠️ **Il criterio non è «semplice o complicata», è reversibile o no.**
- * Emettere una fattura è un atto fiscale che non si disfa: resta a due
- * passaggi. Registrare un incasso si cancella dall'interfaccia di Fatture in
- * Cloud in dieci secondi — e pretendere due «confermo» per una data e un
- * importo che l'Ingegnere ha appena letto nell'anteprima non è prudenza, è
- * attrito. Chiesto da Raffaele il 14 settembre 2026.
+ * ⚠️ **Dove sta la regola, e perche' e' stata spostata.** Fino al 15 settembre
+ * 2026 l'elenco dei tipi «a conferma singola» viveva in `conferma-fic.ts`,
+ * cioe' governava solo il percorso vocale («confermo», «procedi»). I comandi
+ * `/fic_ok_<id>` arrivano invece dalle rotte — `api/chat` e `api/telegram` —
+ * che chiamano `confirmFicStep1` DIRITTO: la regola non passava di li'.
  *
- * ⚠️ E questo file nasce perché `conferma-fic.ts` **non aveva un solo test**,
- * pur essendo il punto in cui una scrittura contabile diventa definitiva. È lo
- * stesso difetto che oggi ha fatto perdere due giorni sulla fattura 19-ED: una
- * difesa scritta e mai provata sul percorso vero.
+ * Risultato: l'Ingegnere ha chiesto la conferma singola DUE volte, l'ha avuta
+ * sul percorso vocale, e ha continuato a vedersene chiedere due perche' usava
+ * i comandi. Ora la regola sta dentro `confirmFicStep1`, dove la vedono tutti
+ * i chiamanti, e i due canali restano equipollenti senza ricordarselo in tre
+ * posti.
+ *
+ * ⚠️ Cosa prova QUESTO file, allora: che il percorso vocale **riporta com'e'**
+ * quello che il primo passaggio ha risposto — sia quando ha gia' scritto, sia
+ * quando serve ancora una conferma — e che non chiama `confirmFicStep2` di
+ * testa sua, perche' quello vorrebbe dire scrivere due volte.
+ *
+ * ⚠️ E questo file nasce perche' `conferma-fic.ts` non aveva un solo test, pur
+ * essendo il punto in cui una scrittura contabile diventa definitiva.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -50,109 +59,68 @@ beforeEach(() => {
   // vitest la richiamerebbe come teardown dopo ogni test.
   step1.mockClear()
   step2.mockClear()
+  step1.mockResolvedValue('Anteprima pronta. Conferma con /fic_ok2_abc')
 })
 
-describe('un INCASSO si chiude con una conferma sola', () => {
-  it('🚨 pagamento_emessa: un «confermo» scrive, senza chiederne un secondo', async () => {
-    righe.valore = pending('pagamento_emessa')
+describe('quando il primo passaggio ha GIA scritto, non si chiede altro', () => {
+  // E' quello che fa `confirmFicStep1` per i tipi a conferma singola: scrive e
+  // restituisce l'esito, senza `/fic_ok2_` dentro.
+  const ESITO = '✅ Scritto su Fatture in Cloud.'
 
-    const esito = await confermaFicPiuRecente('restruktura')
+  for (const tipo of ['pagamento_emessa', 'pagamento_ricevuta', 'spesa_ricevuta', 'fattura_emessa', 'rapporto_intervento', 'autofattura']) {
+    it(`🚨 ${tipo}: l esito arriva com e, e non parte una seconda scrittura`, async () => {
+      step1.mockResolvedValue(ESITO)
+      righe.valore = pending(tipo)
 
-    expect(step1).toHaveBeenCalledTimes(1)
-    expect(step2).toHaveBeenCalledTimes(1)
-    expect(esito.message).toContain('Scritto su Fatture in Cloud')
-    // Non deve restare in giro la richiesta di una seconda conferma.
-    expect(esito.message).not.toContain('un\'ultima volta')
-  })
+      const esito = await confermaFicPiuRecente('restruktura')
 
-  it('pagamento_ricevuta: stessa regola, e la fa il registro non un if sparso', async () => {
-    righe.valore = pending('pagamento_ricevuta')
-
-    await confermaFicPiuRecente('restruktura')
-
-    expect(step2).toHaveBeenCalledTimes(1)
-  })
-
-  it('spesa_ricevuta: registrare una fattura d ACQUISTO si disfa, quindi una conferma sola', async () => {
-    // ⚠️ Il criterio resta «reversibile o no». Una spesa non si trasmette a
-    // nessuno: e' la registrazione di un documento che abbiamo RICEVUTO, e su
-    // Fatture in Cloud si cancella in dieci secondi. Quello che non si disfa
-    // e' EMETTERE — ma dal 15 set anche quelli stanno a UNA conferma, per
-      // decisione esplicita dell Ingegnere (v. il blocco qui sotto).
-    righe.valore = pending('spesa_ricevuta', { descrizione: 'Registro una SPESA (fattura RICEVUTA) su Fatture in Cloud' })
-
-    const esito = await confermaFicPiuRecente('restruktura')
-
-    expect(step1).toHaveBeenCalledTimes(1)
-    expect(step2).toHaveBeenCalledTimes(1)
-    expect(esito.message).toContain('Scritto su Fatture in Cloud')
-    expect(esito.message).not.toContain('un\'ultima volta')
-  })
+      expect(esito.intercettato).toBe(true)
+      expect(esito.message).toBe(ESITO)
+      expect(step1).toHaveBeenCalledTimes(1)
+      // 🚨 La prova che conta: NON si scrive due volte. Finche' la regola
+      // stava anche qui, questo punto chiamava `confirmFicStep2` una seconda
+      // volta su un documento gia' creato.
+      expect(step2).not.toHaveBeenCalled()
+      expect(esito.message).not.toContain('un\'ultima volta')
+    })
+  }
 })
 
-describe('🚨 UNA conferma sola, anche per i documenti che si EMETTONO', () => {
-  // ⚠️ Fino al 14 settembre 2026 il criterio era «reversibile o no»: emettere
-  // non si disfa, quindi fattura e autofattura restavano a due passaggi.
-  //
-  // Il 15 settembre l'Ingegnere l'ha chiesto una seconda volta, esplicitamente
-  // per le fatture: «ti avevo detto di lasciare singola conferma vocale, non
-  // doppia». E' una sua decisione, ripetuta, ed e' sua da prendere.
-  //
-  // Cosa regge al posto del secondo cancello: l'anteprima — fornitore, numero,
-  // date, importi — gli viene mostrata QUANDO il tool prepara la riga. Il
-  // «confermo» arriva dopo averla letta, non al buio.
-
-  it('fattura_emessa: il «confermo» scrive, e non ne chiede un altro', async () => {
-    righe.valore = pending('fattura_emessa', { descrizione: 'Creo la fattura 30-ED' })
-
-    const esito = await confermaFicPiuRecente('restruktura')
-
-    expect(step1).toHaveBeenCalledTimes(1)
-    expect(step2).toHaveBeenCalledTimes(1)
-    expect(esito.message).not.toContain('Conferma DEFINITIVA')
-  })
-
-  it('rapporto_intervento: idem', async () => {
-    righe.valore = pending('rapporto_intervento')
-
-    await confermaFicPiuRecente('restruktura')
-
-    expect(step2).toHaveBeenCalledTimes(1)
-  })
-
-  it('autofattura: N documenti, UN «confermo»', async () => {
-    // La conferma MASSIVA e la conferma SINGOLA sono due cose diverse, e qui
-    // valgono insieme: una riga sola per N autofatture, e un passaggio solo.
-    righe.valore = pending('autofattura', { descrizione: 'Compilo 3 AUTOFATTURE (reverse charge, fatture estere)' })
-
-    const esito = await confermaFicPiuRecente('restruktura')
-
-    expect(step1).toHaveBeenCalledTimes(1)
-    expect(step2).toHaveBeenCalledTimes(1)
-    expect(esito.message).not.toContain('Conferma DEFINITIVA')
-  })
-
-  it('un tipo sconosciuto resta PRUDENTE: doppia conferma', async () => {
-    // Se domani nasce un tipo nuovo e nessuno aggiorna il registro, deve
-    // ereditare il comportamento severo, non quello permissivo.
+describe('CONTROLLO POSITIVO — quando il primo passaggio ne chiede un altro, si chiede', () => {
+  it('🚨 il testo dice cosa sta per succedere e su quale societa', async () => {
+    // Senza questo, un percorso che riportasse sempre e solo il messaggio di
+    // step1 passerebbe i test qui sopra e farebbe sparire il secondo cancello
+    // anche dove serve — per esempio su un tipo di documento nuovo, che non e'
+    // nell'elenco e deve ereditare il comportamento severo.
     righe.valore = pending('tipo_che_non_esiste_ancora')
 
-    await confermaFicPiuRecente('restruktura')
+    const esito = await confermaFicPiuRecente('restruktura')
 
+    expect(esito.intercettato).toBe(true)
+    expect(esito.message).toContain('Conferma DEFINITIVA')
+    expect(esito.message).toContain('un\'ultima volta')
     expect(step2).not.toHaveBeenCalled()
+  })
+
+  it('la denominazione viene dalla RIGA: una conferma che nomina l azienda sbagliata e peggio di una che non la nomina', async () => {
+    righe.valore = pending('tipo_che_non_esiste_ancora', { societa: 'larealestate' })
+
+    const esito = await confermaFicPiuRecente('larealestate')
+
+    expect(esito.message).toContain('LA REAL ESTATE')
   })
 })
 
-describe('il primo passaggio che fallisce non diventa una scrittura', () => {
-  it('🚨 se step1 non prepara niente, step2 NON parte nemmeno su un incasso', async () => {
-    // `confirmFicStep1` segnala il guasto restituendo un testo senza il
-    // comando del secondo passaggio: da lì non si va avanti.
-    step1.mockResolvedValueOnce('❌ Non sono riuscito a preparare la scrittura.')
-    righe.valore = pending('pagamento_emessa')
+describe('🚨 il registro dei tipi a conferma singola', () => {
+  it('contiene tutti i tipi di documento, come chiesto dall Ingegnere due volte', async () => {
+    // La regola vive in fic-write-tools: qui si pinna il CONTENUTO, cosi' se
+    // qualcuno toglie un tipo lo fa sapendo di cambiare una decisione presa.
+    const vero = await vi.importActual<typeof import('./fic-write-tools')>('./fic-write-tools')
 
-    const esito = await confermaFicPiuRecente('restruktura')
-
-    expect(step2).not.toHaveBeenCalled()
-    expect(esito.message).toContain('Non sono riuscito')
-  })
+    for (const tipo of ['pagamento_emessa', 'pagamento_ricevuta', 'spesa_ricevuta', 'fattura_emessa', 'rapporto_intervento', 'autofattura']) {
+      expect(vero.A_CONFERMA_SINGOLA.has(tipo)).toBe(true)
+    }
+    // CONTROLLO POSITIVO: un tipo sconosciuto NON c'e', e resta prudente.
+    expect(vero.A_CONFERMA_SINGOLA.has('tipo_che_non_esiste_ancora')).toBe(false)
+  }, 30_000)
 })

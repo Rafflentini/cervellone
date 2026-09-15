@@ -64,41 +64,12 @@ interface RigaPending {
   tipo: string | null
 }
 
-/**
- * Le azioni che si chiudono con UNA conferma sola: oggi, TUTTE.
- *
- * ⚠️ **Come ci siamo arrivati, e perche' il criterio di prima e' caduto.**
- * Il 14 settembre 2026 qui dentro c'erano solo gli incassi, con scritto che il
- * criterio non era «semplice o complicata» ma **reversibile o no**: emettere
- * una fattura non si disfa, quindi restava a due passaggi.
- *
- * Il 15 settembre l'Ingegnere l'ha ripetuto una seconda volta, per le fatture:
- * «ti avevo detto di lasciare singola conferma vocale, non doppia». E' una sua
- * decisione, ripetuta, ed e' sua da prendere: e' lui che risponde dei documenti
- * che escono.
- *
- * ⚠️ **Cosa si perde, scritto qui perche' non si scopra dopo.** La seconda
- * conferma era l'ultimo cancello prima di un atto fiscale che non si disfa.
- * Ora ne resta uno solo. Regge perche' l'anteprima — con fornitore, numero,
- * date e importi — gli viene mostrata QUANDO il tool prepara la riga: il
- * «confermo» arriva dopo averla letta, non al buio.
- *
- * ⚠️ **Cosa NON cambia, ed e' la parte che non si tocca.** La conferma resta
- * una frase che l'Ingegnere ha detto o scritto DAVVERO. Un passaggio solo, ma
- * umano: nessun percorso di questo file conferma per conto suo.
- *
- * L'insieme resta esplicito, invece di sparire in un `true`, perche' il giorno
- * che un tipo nuovo di documento va trattato diversamente lo si toglie da qui
- * — e si vede subito che e' un'eccezione decisa, non una dimenticanza.
- */
-const A_CONFERMA_SINGOLA: ReadonlySet<string> = new Set([
-  'pagamento_emessa',
-  'pagamento_ricevuta',
-  'spesa_ricevuta',
-  'fattura_emessa',
-  'rapporto_intervento',
-  'autofattura',
-])
+// La regola di QUALE tipo si chiude con una conferma sola vive dentro
+// `confirmFicStep1` (fic-write-tools.ts): li' la vedono TUTTI i chiamanti —
+// il percorso vocale di questo file, i comandi /fic_ok_ della chat web e
+// quelli di Telegram. Tenerla qui la lasciava fuori dalle rotte, e per un
+// giorno intero l'Ingegnere ha continuato a vedersi chiedere due conferme
+// mentre il percorso vocale ne chiedeva una.
 
 
 export interface EsitoConfermaFic {
@@ -152,16 +123,20 @@ async function avanzaUnPasso(righe: RigaPending[]): Promise<EsitoConfermaFic> {
 
   if (conferme === 0) {
     const message = await confirmFicStep1(riga.id)
-    // Se il primo passaggio non e' andato a buon fine il testo va riportato
-    // com'e': non si finge di aver registrato niente.
+    // ⚠️ Qui arrivano DUE esiti diversi, e vanno riportati tutti e due com'e'.
+    //
+    // Se il tipo si chiude con una conferma sola, `confirmFicStep1` ha gia'
+    // scritto su Fatture in Cloud e questo messaggio e' l'ESITO: non contiene
+    // `/fic_ok2_`, e non si deve chiedere altro. Se invece il primo passaggio
+    // non e' andato a buon fine, il testo va riportato com'e' lo stesso: non
+    // si finge di aver registrato niente.
+    //
+    // La regola di QUALI tipi si chiudano con una conferma sola non sta piu'
+    // qui: sta dentro `confirmFicStep1`, dove la vedono anche i comandi
+    // /fic_ok_ delle due rotte. Applicarla anche in questo punto voleva dire
+    // chiamare `confirmFicStep2` una seconda volta.
     if (!message.includes('/fic_ok2_')) return { intercettato: true, message }
 
-    // Un incasso si chiude qui: l'anteprima l'Ingegnere l'ha gia' vista quando
-    // il tool ha preparato la riga, e questo «confermo» e' l'atto umano. Il
-    // secondo passaggio resta per cio' che NON si disfa (v. A_CONFERMA_SINGOLA).
-    if (A_CONFERMA_SINGOLA.has(riga.tipo ?? '')) {
-      return { intercettato: true, message: await confirmFicStep2(riga.id) }
-    }
     // La denominazione si legge dalla riga, non da un default: una conferma
     // che nomina l'azienda sbagliata e' peggio di una che non la nomina.
     const codice = (riga.societa ?? '') as CodiceSocieta
