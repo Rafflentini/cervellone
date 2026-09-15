@@ -501,6 +501,74 @@ describe('le altre difese di casa, sul tipo nuovo', () => {
     expect(stato.eliminate).toEqual([])
   })
 
+  /**
+   * Il CODICE DESTINATARIO, nato il 15 settembre 2026 insieme a
+   * `verifica_documento_fic`.
+   *
+   * 🚨 Perche' proprio questo campo e non altri. La verifica trova sei difetti
+   * possibili su un'integrazione TD17, e cinque si riparano da Fatture in
+   * Cloud o rifacendo il documento. Il codice destinatario NO: su un documento
+   * gia' creato FIC non lo lascia toccare a mano. Era l'unico rilievo che il
+   * tool sapeva trovare e nessuno sapeva correggere.
+   */
+  describe('il codice destinatario: l unico difetto che solo l API sa riparare', () => {
+    it('🚨 CONTROLLO POSITIVO — da XXXXXXX a M5UXCR1: anteprima, e sulla PUT cambia SOLO ei_code', async () => {
+      const doc = documento()
+      ;(doc.entity as Record<string, unknown>).ei_code = 'XXXXXXX'
+      stato.documenti.set('77', doc)
+
+      const out = await compilaEConferma({ codice_destinatario: 'M5UXCR1' })
+
+      expect(out).toContain('DOCUMENTO MODIFICATO')
+      expect(stato.descrizione).toContain('codice destinatario: XXXXXXX → M5UXCR1')
+      const entity = stato.put[0].body.entity as Record<string, unknown>
+      expect(entity.ei_code).toBe('M5UXCR1')
+      // Il resto della controparte esce com'era: si tocca un campo solo.
+      expect(entity.name).toBe('Booking.com B.V.')
+      expect(entity.id).toBe(9)
+      // I campi di sola lettura dell'anagrafica restano fuori, come prima.
+      expect(entity.created_at).toBeUndefined()
+    })
+
+    it('un codice della misura sbagliata non lo interpreta: rifiuta e non scrive', async () => {
+      const out = await compila({ codice_destinatario: 'ABC' })
+      expect(out.ok).toBe(false)
+      expect(out.error).toContain('codice destinatario SdI')
+      expect(stato.put).toEqual([])
+    })
+
+    it('lo normalizza in maiuscolo, invece di spedire due valori diversi', async () => {
+      const doc = documento()
+      ;(doc.entity as Record<string, unknown>).ei_code = 'XXXXXXX'
+      stato.documenti.set('77', doc)
+      await compilaEConferma({ codice_destinatario: 'm5uxcr1' })
+      expect((stato.put[0].body.entity as Record<string, unknown>).ei_code).toBe('M5UXCR1')
+    })
+
+    it('🚨 se la controparte non si legge, NON la riscrive: cancellerebbe il fornitore', async () => {
+      stato.documenti.set('77', documento({ entity: undefined }))
+      const out = await compila({ codice_destinatario: 'M5UXCR1' })
+      expect(out.ok).toBe(false)
+      expect(out.error).toContain('controparte')
+      expect(stato.put).toEqual([])
+    })
+
+    it('se e gia M5UXCR1 non tocca il documento', async () => {
+      const out = await compila({ codice_destinatario: 'M5UXCR1' })
+      expect(out.ok).toBe(false)
+      expect(out.error).toContain('gia')
+      expect(stato.put).toEqual([])
+    })
+
+    it('🚨 su un documento TRASMESSO si rifiuta, come per ogni altro campo', async () => {
+      stato.documenti.set('77', documento({ locked: true }))
+      const out = await compila({ codice_destinatario: 'M5UXCR1' })
+      expect(out.ok).toBe(false)
+      expect(out.error).toContain('BLOCCATO')
+      expect(stato.put).toEqual([])
+    })
+  })
+
   it('il tool e nell elenco, con l id obbligatorio e le due regole in descrizione', () => {
     const tool = FIC_WRITE_TOOLS.find((t) => t.name === 'modifica_documento_fic')
     expect(tool).toBeDefined()
