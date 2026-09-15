@@ -1325,50 +1325,57 @@ const METODO_PAGAMENTO_INTEGRAZIONE = 'MP05'
  * dell'Ingegnere e il form di FIC che lo prefilla per La Real Estate — e poi
  * VERIFICATO sull'anteprima elettronica del documento generato da qui.
  */
+/** Regime fiscale del cedente ESTERO: RF18 «Altro». Campo obbligatorio che FIC non deriva dall anagrafica — verificato sul gestionale il 15 set 2026, risultava vuoto e in rosso. */
+const REGIME_FISCALE_CEDENTE_ESTERO = 'RF18'
+
+/** Provincia del cedente ESTERO: EE. Campo obbligatorio, stessa verifica. */
+const PROVINCIA_ESTERO = 'EE'
+
 const CODICE_DESTINATARIO_INTEGRAZIONE = 'M5UXCR1'
 
 /**
- * Il blocco `ei_raw` dell'integrazione: tipo documento SdI + riferimento alla
- * fattura estera che si sta integrando.
+ * Il blocco `ei_raw` dell'integrazione: tipo documento SdI TD17 e regime
+ * fiscale del cedente estero.
  *
- * ⚠️ **`DatiFattureCollegate` non e' un di piu'.** Il 15 settembre 2026
- * l'Ingegnere ha fornito l'XML di una TD17 vera e valida (integrazione di una
- * fattura Dropbox Irlanda), e quel blocco c'e':
+ * 🚨 **PERCHE' `DatiFattureCollegate` NON C'E' PIU'.** Il 15 settembre 2026
+ * l'avevo aggiunto, avendo visto quel blocco nell'XML di una TD17 valida. Era
+ * giusto il contenuto e sbagliato il modo: passato cosi', Fatture in Cloud lo
+ * serializza come attributi SCIOLTI `2.1.6.x` e produce blocchi
+ * `DatiFattureCollegate` SENZA `IdDocumento`. La Verifica formale di FIC dava
+ * due errori su ognuna delle quattro autofatture — «dovrebbe esserci
+ * l'elemento IdDocumento» — e lo SdI le avrebbe SCARTATE.
  *
- *     <DatiFattureCollegate>
- *       <IdDocumento>NC2CQNXC5QL2</IdDocumento>
- *       <Data>2025-12-18</Data>
- *     </DatiFattureCollegate>
+ * Peggio: quegli attributi, una volta scritti via API, dall'interfaccia di FIC
+ * **non sono ne' modificabili ne' eliminabili**. Un difetto che si ripara solo
+ * cancellando e rifacendo il documento.
  *
- * E' il campo STRUTTURATO che lega l'integrazione al documento estero. Fino a
- * quel momento il riferimento viaggiava solo nella riga e nelle note — cioe'
- * come testo che un umano legge e una macchina no — e il tool lo dichiarava
- * come cosa «da controllare a mano su FIC».
+ * La specifica Rev.03 dell'Ingegnere (§8.1) lo mette per iscritto: non
+ * impostare attributi 2.1.6 sciolti; il riferimento alla fattura estera sta
+ * nella descrizione della riga e nelle note, che per l'Agenzia delle Entrate
+ * basta — `DatiFattureCollegate` e' consigliato, non obbligatorio.
  *
- * ⚠️ Cosa NON si tocca, e perche'. Lo stesso XML porta `RegimeFiscale RF18`
- * sul cedente estero, e qui non lo mettiamo: non sappiamo se Fatture in Cloud
- * lo derivi gia' dall'anagrafica, e la stessa notte due «migliorie» dedotte da
- * un sintomo senza prova hanno rotto la creazione del documento. Si guarda
- * l'XML prodotto dal prossimo documento vero, poi si decide.
+ * ⚠️ La lezione, perche' e' la terza volta oggi: avere il DATO giusto non
+ * basta, serve la FORMA che il destinatario accetta. L'XML valido me lo diceva,
+ * ma l'XML valido non e' stato prodotto da questa API.
+ *
+ * ✅ **`RegimeFiscale RF18` invece CI VA.** Stamattina non l'avevo messo per
+ * prudenza — «non so se lo derivi FIC» — e la verifica sul gestionale ha
+ * detto che no, non lo deriva: il campo risultava VUOTO ed e' obbligatorio,
+ * segnato in rosso. Stesso discorso per la provincia del cedente (v.
+ * `PROVINCIA_ESTERO`). RF18 = «Altro», il regime che si usa per un fornitore
+ * estero, ed e' anche quello che porta l'XML valido dell'Ingegnere.
  */
 export { eiRawIntegrazione as eiRawIntegrazionePerTest }
 
-function eiRawIntegrazione(
-  codice: string,
-  fatturaCollegata?: { numero: string; data: string },
-): Record<string, unknown> {
-  const datiGenerali: Record<string, unknown> = {
-    DatiGeneraliDocumento: { TipoDocumento: codice },
+function eiRawIntegrazione(codice: string): Record<string, unknown> {
+  return {
+    FatturaElettronicaBody: {
+      DatiGenerali: { DatiGeneraliDocumento: { TipoDocumento: codice } },
+    },
+    FatturaElettronicaHeader: {
+      CedentePrestatore: { DatiAnagrafici: { RegimeFiscale: REGIME_FISCALE_CEDENTE_ESTERO } },
+    },
   }
-  // Solo se ci sono ENTRAMBI: un riferimento a meta' su un documento fiscale
-  // e' peggio di nessun riferimento, perche' sembra compilato.
-  if (fatturaCollegata?.numero && fatturaCollegata?.data) {
-    datiGenerali.DatiFattureCollegate = {
-      IdDocumento: fatturaCollegata.numero,
-      Data: fatturaCollegata.data,
-    }
-  }
-  return { FatturaElettronicaBody: { DatiGenerali: datiGenerali } }
 }
 
 /**
@@ -1747,7 +1754,15 @@ async function compilaAutofatture(
       // ⚠️ Si scrive sul DOCUMENTO, non sull'anagrafica di Booking: quella
       // resta quella che e'. E l'Ingegnere non poteva correggerlo a mano —
       // su un documento gia' creato FIC non lo lascia toccare.
-      entity: { ...asObject(entity.entity), ei_code: CODICE_DESTINATARIO_INTEGRAZIONE },
+      entity: {
+        ...asObject(entity.entity),
+        ei_code: CODICE_DESTINATARIO_INTEGRAZIONE,
+        // 🚨 Provincia del cedente estero: campo OBBLIGATORIO che FIC non
+        // deriva. Verificato sul gestionale il 15 set 2026: risultava vuoto e
+        // in rosso su tutte e quattro le autofatture. Solo se l anagrafica non
+        // ne porta una sua: quella vera, se c e, vince.
+        address_province: cleanString(asObject(entity.entity).address_province) ?? PROVINCIA_ESTERO,
+      },
       items_list: [{
         name: r.descrizione,
         qty: 1,
@@ -1773,7 +1788,7 @@ async function compilaAutofatture(
       // TD17 valida che l'Ingegnere ha fornito NON contiene alcun blocco
       // `DatiPagamento`, quindi questo campo probabilmente nemmeno ci arriva.
       ei_data: { payment_method: METODO_PAGAMENTO_INTEGRAZIONE },
-      ei_raw: eiRawIntegrazione(TIPO_DOCUMENTO_SDI, { numero: r.numero, data: r.data }),
+      ei_raw: eiRawIntegrazione(TIPO_DOCUMENTO_SDI),
       // La data dell'integrazione e' quella di RICEZIONE della fattura estera.
       date: r.dataRicezione,
       // Serie dedicata: senza, FIC numererebbe fra le fatture attive.
