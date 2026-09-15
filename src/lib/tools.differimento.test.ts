@@ -265,17 +265,30 @@ describe('differimento delle definizioni dei tool', () => {
   //
   // LA DECISIONE, 14 settembre 2026 (il fornitore nel suo elenco). Il NUMERO
   // NON CAMBIA — restano 142 — ma l'impronta si', da
-  // `6d2b95c878cf6cdc4100f244971a8ce1`. `fic_crea_cliente` aveva
+  // `a348c8411c5fb76c6c87bf8f177ae5fe`. `fic_crea_cliente` aveva
   // `entities/clients` CABLATO e sapeva creare solo clienti: Booking.com B.V.
   // e' un FORNITORE, e su Fatture in Cloud i due elenchi sono separati.
   // Adesso accetta `elenco: 'fornitore'`, e siccome una capacita' che non e'
   // nello schema per il modello NON ESISTE, la descrizione cambia con lui e
   // paga il pedaggio dell'impronta.
+  //
+  // LA DECISIONE, 15 settembre 2026 (l'integrazione a norma). Il numero NON
+  // cambia — restano 142 — ma l'impronta si'. La descrizione di
+  // `compila_autofattura` diceva due cose che non sono piu' vere: che NON
+  // compila i «dati fattura collegata» (ora li compila, in `ei_raw`, ed e'
+  // visibile sull'anteprima elettronica come «Fatt.Coll.») e non diceva nulla
+  // del codice destinatario SdI, che ora e' il NOSTRO e non quello del
+  // fornitore estero.
+  //
+  // ⚠️ Una descrizione che mente al modello e' un difetto, non un dettaglio:
+  // e' su quella che decide se e quando usare il tool, e cosa dire
+  // all'Ingegnere dopo. Per questo il cambio di parole paga il pedaggio
+  // dell'impronta anche senza un tool in piu'.
   it('senza opzioni: 142 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
     expect(defs).toHaveLength(142)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('6d2b95c878cf6cdc4100f244971a8ce1')
+      .toBe('a348c8411c5fb76c6c87bf8f177ae5fe')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

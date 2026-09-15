@@ -1245,6 +1245,9 @@ const TIPO_FIC_AUTOFATTURA = 'self_supplier_invoice'
  * art. 17 c.2 DPR 633/72, servizio generico ex art. 7-ter.
  */
 /** Metodo di pagamento formale dell integrazione: e il predefinito che il form di Fatture in Cloud propone per una TD17. Su un reverse charge non si paga niente, ma FIC lo pretende sui documenti elettronici. */
+/** Codice destinatario SdI dell integrazione: e il NOSTRO, non quello del fornitore estero. Letto da due fonti il 15 set 2026 — il TD17 valido dell Ingegnere e il form di FIC per La Real Estate. */
+const CODICE_DESTINATARIO_INTEGRAZIONE = 'M5UXCR1'
+
 const METODO_PAGAMENTO_INTEGRAZIONE = 'MP01'
 
 const TIPO_DOCUMENTO_SDI = 'TD17'
@@ -1650,7 +1653,26 @@ async function compilaAutofatture(
 
     const payload: Record<string, unknown> = {
       type: TIPO_FIC_AUTOFATTURA,
-      entity: entity.entity,
+      // 🚨 Il CODICE DESTINATARIO di un'integrazione e' il NOSTRO, non quello
+      // del fornitore estero.
+      //
+      // Fatture in Cloud lo ricava dall'anagrafica della controparte. Su una
+      // TD17 la controparte e' il fornitore estero, che un codice SdI non ce
+      // l'ha: FIC ripiega su `XXXXXXX`, che e' il codice riservato ai
+      // destinatari ESTERI. Ma un'integrazione torna a NOI — il
+      // cessionario/committente e' la nostra societa' — e con `XXXXXXX` il
+      // Sistema di Interscambio potrebbe non restituircela.
+      //
+      // Visto sull'anteprima elettronica del documento 1INT/2026 il 15
+      // settembre 2026: `Codice destinatario XXXXXXX`, mentre l'integrazione
+      // TD17 VALIDA fornita dall'Ingegnere porta `M5UXCR1` — lo stesso valore
+      // che il form di Fatture in Cloud prefilla per La Real Estate. Due
+      // conferme indipendenti dello stesso codice.
+      //
+      // ⚠️ Si scrive sul DOCUMENTO, non sull'anagrafica di Booking: quella
+      // resta quella che e'. E l'Ingegnere non poteva correggerlo a mano —
+      // su un documento gia' creato FIC non lo lascia toccare.
+      entity: { ...asObject(entity.entity), ei_code: CODICE_DESTINATARIO_INTEGRAZIONE },
       items_list: [{
         name: r.descrizione,
         qty: 1,
@@ -1738,7 +1760,7 @@ async function compilaAutofatture(
     numerazione,
     da_creare: documenti.length,
     tipo_documento_sdi: TIPO_DOCUMENTO_SDI,
-    da_controllare_su_fic: 'i «dati fattura collegata» non li imposta questo tool: il riferimento alla fattura originale sta nella riga e nelle note, non nel campo strutturato.',
+    da_controllare_su_fic: 'i «dati fattura collegata» non li imposta questo tool: il riferimento alla fattura originale sta ANCHE nel campo strutturato (dati fattura collegata), oltre che nella riga e nelle note.',
     anteprima: pending.descrizione,
     conferma_1: comandoDaMostrare('fic_ok', pending.id),
     annulla: comandoDaMostrare('fic_no', pending.id),
@@ -3024,7 +3046,7 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     // autofatture e' il motivo per cui esiste — «non e che mi metto a
     // confermare quindici fatture vocalmente».
     name: 'compila_autofattura',
-    description: 'Compila su Fatture in Cloud le AUTOFATTURE/INTEGRAZIONI in reverse charge per le fatture ESTERE (il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, scadenza fiscale il 16 del mese; identico per le fee di Airbnb Ireland UC). Prepara UN documento per ogni fattura estera, tipo FIC self_supplier_invoice (chi emette compare come CLIENTE, il fornitore estero come fornitore), integrazione ex art. 17 c.2 DPR 633/72 su servizio generico art. 7-ter. I documenti vengono COMPILATI e NON trasmessi allo SdI: li controlla e li invia l Ingegnere. Accetta N fatture in una volta sola e chiede UNA SOLA conferma per tutte (in due passaggi: /fic_ok_<id> poi /fic_ok2_<id>, ma una conferma sola per tutto il gruppo). REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: non scegliere tu l aliquota ne la natura. Se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote IVA di quell azienda lette da Fatture in Cloud — con descrizione e natura — e tu CHIEDI all Ingegnere quale usare, poi richiami con vat_id. Non esiste nessun predefinito; (2) 🚨 SI INTEGRA SOLO LA FATTURA COMMISSIONI (fee sui pagamenti gestiti dalla piattaforma compresa). Gli INCASSI girati dalla piattaforma sono soldi degli ospiti riscossi per conto della societa e NON si integrano: se non sei sicuro che l importo sia una commissione, FERMATI E CHIEDI invece di chiamarmi; (3) 🚨 il tool RIFIUTA le fatture anteriori all iscrizione al VIES della societa: quelle riportano IVA italiana e si registrano come normali acquisti con IVA detraibile, non si integrano. Se te lo dice, riportalo e non insistere; (4) il fornitore estero deve essere IN ANAGRAFICA con indirizzo e partita IVA comunitaria: fic_cerca_anagrafica, se non c e fic_crea_cliente, poi passa qui fornitore_id. Senza anagrafica il tool rifiuta; (5) numero, data, data di RICEZIONE e imponibile sono quelli della fattura ORIGINALE e non si inventano: se non li hai, chiedili. La data dell integrazione e la data di RICEZIONE, non oggi; (6) serve una SERIE di numerazione dedicata alle integrazioni, separata dalle fatture attive: se non la passi il tool te la chiede, non la inventa; (7) mostra l anteprima COM E — elenca tutte le autofatture con fornitore, numero, date e imponibile: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte; (8) l esito e PER DOCUMENTO e viene da una RILETTURA su Fatture in Cloud: riporta quali si e quali no col motivo, e NON dire «fatte tutte»; (9) il tool imposta il tipo documento SdI TD17 (in ei_raw, non nel campo type), ma NON compila i «dati fattura collegata»: il riferimento alla fattura originale sta nella riga e nelle note, e il campo strutturato va controllato su Fatture in Cloud prima di trasmettere.',
+    description: 'Compila su Fatture in Cloud le AUTOFATTURE/INTEGRAZIONI in reverse charge per le fatture ESTERE (il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, scadenza fiscale il 16 del mese; identico per le fee di Airbnb Ireland UC). Prepara UN documento per ogni fattura estera, tipo FIC self_supplier_invoice (chi emette compare come CLIENTE, il fornitore estero come fornitore), integrazione ex art. 17 c.2 DPR 633/72 su servizio generico art. 7-ter. I documenti vengono COMPILATI e NON trasmessi allo SdI: li controlla e li invia l Ingegnere. Accetta N fatture in una volta sola e chiede UNA SOLA conferma per tutte (in due passaggi: /fic_ok_<id> poi /fic_ok2_<id>, ma una conferma sola per tutto il gruppo). REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: non scegliere tu l aliquota ne la natura. Se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote IVA di quell azienda lette da Fatture in Cloud — con descrizione e natura — e tu CHIEDI all Ingegnere quale usare, poi richiami con vat_id. Non esiste nessun predefinito; (2) 🚨 SI INTEGRA SOLO LA FATTURA COMMISSIONI (fee sui pagamenti gestiti dalla piattaforma compresa). Gli INCASSI girati dalla piattaforma sono soldi degli ospiti riscossi per conto della societa e NON si integrano: se non sei sicuro che l importo sia una commissione, FERMATI E CHIEDI invece di chiamarmi; (3) 🚨 il tool RIFIUTA le fatture anteriori all iscrizione al VIES della societa: quelle riportano IVA italiana e si registrano come normali acquisti con IVA detraibile, non si integrano. Se te lo dice, riportalo e non insistere; (4) il fornitore estero deve essere IN ANAGRAFICA con indirizzo e partita IVA comunitaria: fic_cerca_anagrafica, se non c e fic_crea_cliente, poi passa qui fornitore_id. Senza anagrafica il tool rifiuta; (5) numero, data, data di RICEZIONE e imponibile sono quelli della fattura ORIGINALE e non si inventano: se non li hai, chiedili. La data dell integrazione e la data di RICEZIONE, non oggi; (6) serve una SERIE di numerazione dedicata alle integrazioni, separata dalle fatture attive: se non la passi il tool te la chiede, non la inventa; (7) mostra l anteprima COM E — elenca tutte le autofatture con fornitore, numero, date e imponibile: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte; (8) l esito e PER DOCUMENTO e viene da una RILETTURA su Fatture in Cloud: riporta quali si e quali no col motivo, e NON dire «fatte tutte»; (9) il tool imposta il tipo documento SdI TD17 (in ei_raw, non nel campo type), e compila i «dati fattura collegata» (numero e data della fattura estera) nel campo strutturato. Il codice destinatario SdI e quello della NOSTRA societa, non del fornitore estero: un integrazione torna a noi.',
     input_schema: {
       type: 'object',
       properties: {
