@@ -261,6 +261,8 @@ async function calcolaTotaliFIC(
 export async function creaDocumentoFIC(
   payload: Record<string, unknown>,
   societa: CodiceSocieta,
+  /** `pagamentoStornato`: il documento non crea un credito (integrazione in reverse charge). */
+  opzioni?: { pagamentoStornato?: boolean },
 ): Promise<FicCreateResult> {
   const s = getSocieta(societa)
   const token = getFicToken(societa)
@@ -326,10 +328,26 @@ export async function creaDocumentoFIC(
       // ⬜ La strada giusta, quando ci sara' tempo di provarla sul vero: un
       // conto di saldo CHIESTO all'Ingegnere (come si fa gia' per l'aliquota
       // IVA), mai indovinato. Finche' non c'e', si crea e basta.
+      // 🚨 STORNATO, quando chi crea dice che non c'e' niente da pagare.
+      //
+      // Su un'integrazione in reverse charge l'IVA e' a debito e a credito
+      // insieme: nessuno deve niente. Col piano a 30 giorni Fatture in Cloud
+      // mostrava l'autofattura come «SCADUTA», col tasto «Manda sollecito»
+      // verso il fornitore estero. Visto sul documento 1INT/2026.
+      //
+      // ⚠️ `reversed` e non `paid`. Un pagamento `paid` pretende il conto di
+      // saldo e faceva rifiutare la creazione con 422 — ci e' costato due giri
+      // a vuoto stanotte. `reversed` («stornato») e' il valore che la guida
+      // ufficiale di Fatture in Cloud indica per l'autofattura TD17, ed e' uno
+      // dei tre ammessi dall'enum `IssuedDocumentStatus` (`not_paid`, `paid`,
+      // `reversed`): verificato sul modello ufficiale dell'SDK, non dedotto.
+      //
+      // L'importo e' quello che ha appena calcolato FIC, non uno nostro: un
+      // piano che non combacia col totale fa rifiutare il documento.
       forcedPayload.payments_list = [{
-        due_date: aggiungiGiorniISO(dataDoc, GIORNI_SCADENZA_FIC),
+        due_date: opzioni?.pagamentoStornato ? dataDoc : aggiungiGiorniISO(dataDoc, GIORNI_SCADENZA_FIC),
         amount: totale,
-        status: 'not_paid',
+        status: opzioni?.pagamentoStornato ? 'reversed' : 'not_paid',
       }]
     }
   }

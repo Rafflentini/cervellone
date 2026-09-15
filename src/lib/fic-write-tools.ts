@@ -1922,7 +1922,7 @@ async function creaAutofatture(
 
 
 
-      const creato = await creaDocumentoFIC(d.payload, societa)
+      const creato = await creaDocumentoFIC(d.payload, societa, { pagamentoStornato: true })
       trattate++
       if (!creato.ok) {
         fallite.push(`❌ ${intestazione} — ${creato.error}`)
