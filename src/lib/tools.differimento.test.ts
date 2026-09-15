@@ -290,9 +290,24 @@ describe('differimento delle definizioni dei tool', () => {
   // accetta ora `metodo_pagamento`, perche' Fatture in Cloud lo PRETENDE su un
   // documento elettronico. Senza, la prima fattura di soggiorno sarebbe morta
   // con lo stesso 422 dell'autofattura.
-  it('senza opzioni: 142 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 15 settembre 2026 (modificare invece di cancellare e
+  // rifare). Da 142 a 143: nasce `modifica_documento_fic`, che cambia i campi
+  // di un documento EMESSO gia' creato e non ancora trasmesso. Prima l'unica
+  // strada per correggere un'autofattura sbagliata era cancellarla e rifarla,
+  // e su una serie di numerazione fiscale questo lascia un BUCO: il numero
+  // bruciato non torna.
+  //
+  // ⚠️ Numero e impronta vengono DAL FALLIMENTO del test, non calcolati a
+  // parte. ⚠️ In questo checkout `node_modules` e' incompleto (la cartella
+  // `pino` e' VUOTA, mancano puppeteer-core, @sparticuz/chromium, pdf-parse,
+  // rimraf) e QUESTO FILE non si importa affatto — insieme ad altri 33. La
+  // misura e' stata presa facendo fallire lo stesso `expect` in un file
+  // temporaneo che stuzzava solo quei pacchetti, che le definizioni dei tool
+  // non toccano; il conteggio letto li' era 143, cioe' esattamente 142 + 1.
+  it('senza opzioni: 143 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(142)
+    expect(defs).toHaveLength(143)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
       .toBe('873a2973612199d616af1368ddb8ee65')
   })

@@ -107,8 +107,12 @@ const CAMPI_NON_SCRIVIBILI = new Set([
  * `amount_vat`, ritenute, cassa, rivalsa), non scritti — e i campi che vivono
  * dopo l'emissione (`ei_status`, `seen_date`, `permanent_token`, gli url).
  * `amount_due_discount` invece e' SCRIVIBILE e si rispedisce com'e'.
+ *
+ * ⚠️ Esportato perche' lo usa anche `fic-modifica.ts`, che rispedisce il
+ * documento INTERO: due elenchi di campi di sola lettura che possono divergere
+ * sarebbero due verita' diverse su cosa Fatture in Cloud accetta.
  */
-const CAMPI_NON_SCRIVIBILI_EMESSA = new Set([
+export const CAMPI_NON_SCRIVIBILI_EMESSA = new Set([
   ...CAMPI_NON_SCRIVIBILI,
   'amount_net',
   'amount_vat',

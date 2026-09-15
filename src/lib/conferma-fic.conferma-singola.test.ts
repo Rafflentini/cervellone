@@ -67,7 +67,7 @@ describe('quando il primo passaggio ha GIA scritto, non si chiede altro', () => 
   // restituisce l'esito, senza `/fic_ok2_` dentro.
   const ESITO = '✅ Scritto su Fatture in Cloud.'
 
-  for (const tipo of ['pagamento_emessa', 'pagamento_ricevuta', 'spesa_ricevuta', 'fattura_emessa', 'rapporto_intervento', 'autofattura']) {
+  for (const tipo of ['pagamento_emessa', 'pagamento_ricevuta', 'spesa_ricevuta', 'fattura_emessa', 'rapporto_intervento', 'autofattura', 'modifica_documento']) {
     it(`🚨 ${tipo}: l esito arriva com e, e non parte una seconda scrittura`, async () => {
       step1.mockResolvedValue(ESITO)
       righe.valore = pending(tipo)
@@ -117,7 +117,7 @@ describe('🚨 il registro dei tipi a conferma singola', () => {
     // qualcuno toglie un tipo lo fa sapendo di cambiare una decisione presa.
     const vero = await vi.importActual<typeof import('./fic-write-tools')>('./fic-write-tools')
 
-    for (const tipo of ['pagamento_emessa', 'pagamento_ricevuta', 'spesa_ricevuta', 'fattura_emessa', 'rapporto_intervento', 'autofattura']) {
+    for (const tipo of ['pagamento_emessa', 'pagamento_ricevuta', 'spesa_ricevuta', 'fattura_emessa', 'rapporto_intervento', 'autofattura', 'modifica_documento']) {
       expect(vero.A_CONFERMA_SINGOLA.has(tipo)).toBe(true)
     }
     // CONTROLLO POSITIVO: un tipo sconosciuto NON c'e', e resta prudente.

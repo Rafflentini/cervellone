@@ -22,6 +22,14 @@ import {
   type FatturaRicevuta,
   type Verso,
 } from './fic-pagamenti'
+import {
+  leggiDocumentoEmesso,
+  modificaDocumento,
+  preparaModifica,
+  type Cambio,
+  type EsitoModifica,
+  type ModificheRichieste,
+} from './fic-modifica'
 import { scegliAllegatoMail, scaricaAllegatoScelto, CASELLE_GOOGLE } from './spesa-allegato'
 import type { ChiaveCasella } from './caselle'
 
@@ -60,7 +68,7 @@ interface ToolDefinition {
 }
 
 type PendingStato = 'in_attesa' | 'creata' | 'annullata'
-type PendingTipo = 'fattura_emessa' | 'rapporto_intervento' | 'pagamento_ricevuta' | 'pagamento_emessa' | 'autofattura' | 'spesa_ricevuta'
+type PendingTipo = 'fattura_emessa' | 'rapporto_intervento' | 'pagamento_ricevuta' | 'pagamento_emessa' | 'autofattura' | 'spesa_ricevuta' | 'modifica_documento'
 
 interface PendingRow {
   id: string
@@ -749,6 +757,27 @@ async function eliminaBozzaFic(input: Record<string, unknown>, societa: CodiceSo
     return annullaPendingInAttesa(id, 'Nessuna autofattura era stata creata.')
   }
 
+  // 🚨 Una MODIFICA gia' eseguita porta nel `fic_document_id` l'id di un
+  // documento che ESISTEVA PRIMA di noi: e' la fattura dell'Ingegnere, non una
+  // bozza nostra. Senza questa guardia il ramo sotto chiamerebbe
+  // `eliminaDocumentoFIC` e la CANCELLEREBBE — un «annulla» che, invece di
+  // tornare indietro di un passo, distrugge il documento. E' la stessa famiglia
+  // del difetto dei pagamenti e delle spese, qui sopra.
+  //
+  // ⚠️ E annullare non vuol dire nemmeno «rimetti i valori di prima»: quello
+  // sarebbe un'altra modifica, e la decide l'Ingegnere guardando il documento.
+  if (row.tipo === 'modifica_documento') {
+    if (row.stato === 'creata') {
+      return fail(
+        'questa e\' una MODIFICA gia\' scritta su un documento che esisteva prima: non si annulla da qui e '
+        + 'NON cancello il documento. Se i valori di prima vanno rimessi, dimmelo e preparo la modifica inversa, '
+        + 'che vedrai nel suo prima/dopo.',
+        { id, id_documento: row.fic_document_id },
+      )
+    }
+    return annullaPendingInAttesa(id, 'Nessuna modifica era stata scritta: il documento e\' rimasto com\'era.')
+  }
+
   if (row.stato === 'creata') {
     if (!row.fic_document_id) return fail('bozza creata senza fic_document_id', { id })
     // La società viene dalla RIGA, non dal contesto corrente: la bozza puo
@@ -873,7 +902,7 @@ function descriviPagamenti(input: {
  * payload e' quindi un oggetto qualsiasi, non piu' il solo `PagamentiPayload`.
  */
 async function salvaPendingPagamenti(
-  payload: PagamentiPayload | AutofatturePayload | SpesaRicevutaPayload,
+  payload: PagamentiPayload | AutofatturePayload | SpesaRicevutaPayload | ModificaPayload,
   descrivi: (id: string) => string,
   societa: CodiceSocieta,
   tipo: PendingTipo,
@@ -2562,6 +2591,242 @@ async function creaSpesa(payload: unknown, societa: CodiceSocieta): Promise<Esit
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * MODIFICARE un documento emesso gia' creato (autofattura, fattura, nota)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Perche' questo tool esiste (15 settembre 2026).
+ *
+ * `compila_autofattura` sa CREARE l'integrazione e `elimina_bozza_fic` sa
+ * CANCELLARLA. In mezzo non c'era niente: un documento con la data sbagliata o
+ * un imponibile sbagliato si poteva solo cancellare e rifare — e su una serie
+ * di numerazione fiscale questo lascia un BUCO, perche' il numero bruciato non
+ * torna. Le parole dell'Ingegnere: «vorrei che il tool sapesse anche
+ * modificarle, le autofatture».
+ *
+ * Il motore sta in `fic-modifica.ts`, con dentro il vincolo che ne decide la
+ * forma (la semantica del PUT di Fatture in Cloud non e' documentata) e le due
+ * difese che non si negoziano: un documento trasmesso non si tocca, e un campo
+ * non passato non si tocca.
+ */
+interface ModificaPayload {
+  documento_id: number
+  modifiche: ModificheRichieste
+  /**
+   * I valori PRIMA come l'Ingegnere li ha letti nell'anteprima. Alla conferma
+   * si ricontrollano: un «confermo» vale per quello che si e' letto, non per
+   * quello che nel frattempo e' diventato.
+   */
+  confronto: Cambio[]
+  /** L'identita' del documento, per l'anteprima e per il messaggio. */
+  documento: { numero: string; data: string; controparte: string; tipo: string; totale: number }
+}
+
+/**
+ * L'ANTEPRIMA, campo per campo, PRIMA → DOPO.
+ *
+ * 🚨 E' l'unica cosa che l'Ingegnere legge prima di confermare una modifica a
+ * un documento fiscale, e con la conferma singola non c'e' un secondo cancello
+ * dietro. «Cambio la data» non basta: ci vuole «data: 2026-08-03 → 2026-08-05»,
+ * altrimenti sta dicendo si' a un valore che non ha visto.
+ */
+function descriviModifica(input: {
+  id: string
+  societa: CodiceSocieta
+  payload: ModificaPayload
+}): string {
+  const s = getSocieta(input.societa)
+  const d = input.payload.documento
+  const cambi = input.payload.confronto.filter((c) => c.prima !== c.dopo)
+  const invariati = input.payload.confronto.filter((c) => c.prima === c.dopo)
+  const righeToccate = (input.payload.modifiche.righe?.length ?? 0) > 0
+  return [
+    'MODIFICO un documento GIA CREATO su Fatture in Cloud (non ne creo uno nuovo)',
+    `SOCIETA: ${s.denominazione} (P.IVA ${s.piva})`,
+    `Documento: ${d.tipo} n.${d.numero} del ${d.data} — ${d.controparte} (id ${input.payload.documento_id})`,
+    `Totale attuale: ${euro(d.totale)}`,
+    'COSA CAMBIA:',
+    ...cambi.map((c) => `- ${c.campo}: ${c.prima || '(vuoto)'} → ${c.dopo}`),
+    invariati.length > 0
+      ? `Gia' cosi', non li tocco: ${invariati.map((c) => `${c.campo} = ${c.dopo}`).join(', ')}`
+      : null,
+    // Chi legge deve sapere anche cosa NON succede: e' la meta' della promessa.
+    'Tutto il resto resta com\'e\': numero, serie, cliente/fornitore e le righe che non sono elencate qui sopra.',
+    righeToccate
+      ? '⚠️ Cambiando una riga, i TOTALI del documento li ricalcola Fatture in Cloud: li rileggo dopo la modifica e te li riporto.'
+      : null,
+    '⚠️ Se nel frattempo il documento e\' stato trasmesso allo SdI, la modifica NON parte: una fattura elettronica trasmessa si corregge con una nota di variazione.',
+    'Dopo la scrittura RILEGGO il documento e ti dico i valori VERI: se un campo non risulta cambiato te lo dico, invece di dire «fatto».',
+    `conferma -> ${comandoDaMostrare('fic_ok', input.id)} (a voce basta un «confermo»: e' una conferma sola)`,
+    `annulla -> ${comandoDaMostrare('fic_no', input.id)}`,
+  ].filter(Boolean).join('\n')
+}
+
+/**
+ * Legge dalla chiamata SOLO i campi che ci sono davvero.
+ *
+ * 🚨 Un campo assente resta `undefined` e non arriva mai al documento: e' il
+ * modo in cui «un campo non passato non si tocca» diventa codice invece di
+ * essere una promessa. E un campo passato VUOTO non vuol dire «cancella»: lo
+ * rifiuta `confrontoModifiche`, che sta nel motore insieme alle altre regole.
+ */
+function leggiModifiche(input: Record<string, unknown>): { ok: true; valore: ModificheRichieste } | { ok: false; error: string } {
+  const m: ModificheRichieste = {}
+
+  if (input.data !== undefined) {
+    if (typeof input.data !== 'string') return { ok: false, error: 'la data deve essere una stringa YYYY-MM-DD' }
+    m.data = input.data.trim()
+  }
+  if (input.note !== undefined) {
+    if (typeof input.note !== 'string') return { ok: false, error: 'le note devono essere una stringa' }
+    m.note = input.note
+  }
+
+  if (input.righe !== undefined) {
+    if (!Array.isArray(input.righe)) return { ok: false, error: 'righe deve essere un elenco di { riga, descrizione, importo }' }
+    const righe: NonNullable<ModificheRichieste['righe']> = []
+    for (const grezza of input.righe) {
+      const r = asObject(grezza)
+      const indice = intero(r.riga)
+      if (indice === undefined) return { ok: false, error: 'ogni riga vuole il suo numero (`riga`: 1 = la prima)' }
+      const voce: { riga: number; descrizione?: string; importo?: number } = { riga: indice }
+      if (r.descrizione !== undefined) {
+        if (typeof r.descrizione !== 'string') return { ok: false, error: `la descrizione della riga ${indice} deve essere una stringa` }
+        voce.descrizione = r.descrizione
+      }
+      if (r.importo !== undefined) {
+        // ⚠️ `importoSenzaAmbiguita`, non `parseNumber`: quello cancella i punti
+        // (serve al formato italiano "1.234,56") e su "18.32" darebbe 1832,
+        // cioe' cento volte l'imponibile su un documento fiscale.
+        const n = importoSenzaAmbiguita(r.importo)
+        if (n === null) return { ok: false, error: `l'importo della riga ${indice} non e' un numero leggibile: scrivilo come 218.44` }
+        voce.importo = n
+      }
+      righe.push(voce)
+    }
+    if (righe.length === 0) return { ok: false, error: 'righe e\' un elenco vuoto: dimmi quale riga cambiare' }
+    m.righe = righe
+  }
+
+  if (input.fattura_collegata !== undefined) {
+    const f = asObject(input.fattura_collegata)
+    m.fattura_collegata = { numero: cleanString(f.numero) ?? '', data: cleanString(f.data) ?? '' }
+  }
+
+  return { ok: true, valore: m }
+}
+
+/**
+ * Prepara la modifica e la mette in attesa di conferma. NON scrive niente su
+ * Fatture in Cloud.
+ *
+ * Legge il documento VERO per costruire l'anteprima: il «prima» non viene da
+ * quello che il modello crede, viene da Fatture in Cloud.
+ */
+async function compilaModificaDocumento(
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string> {
+  const s = getSocieta(societa)
+
+  const id = intero(input.id) ?? intero(input.documento_id)
+  if (id === undefined || id <= 0) {
+    return fail('serve l\'id del documento da modificare su Fatture in Cloud (quello di fic_fatture_emesse / fic_dettaglio_documento). Non ho preparato niente.')
+  }
+
+  const modifiche = leggiModifiche(input)
+  if (!modifiche.ok) return fail(`${modifiche.error}. Non ho preparato niente.`)
+
+  const doc = await leggiDocumentoEmesso(id, societa)
+  if (!doc.ok) return fail(`${doc.error}. Non ho preparato niente.`, { id })
+
+  const preparata = preparaModifica(doc.valore, modifiche.valore)
+  if (!preparata.ok) return fail(`${preparata.error} Non ho preparato niente.`, { id })
+
+  const { dati, confronto } = preparata.valore
+  const payload: ModificaPayload = {
+    documento_id: id,
+    modifiche: modifiche.valore,
+    confronto,
+    documento: {
+      numero: dati.numero,
+      data: dati.data,
+      controparte: dati.controparte,
+      tipo: dati.tipo,
+      totale: dati.totale,
+    },
+  }
+
+  const pending = await salvaPendingPagamenti(
+    payload,
+    (pendingId) => descriviModifica({ id: pendingId, societa, payload }),
+    societa,
+    'modifica_documento',
+  )
+  if (!pending.ok) return fail(pending.error)
+
+  return ok({
+    societa: s.denominazione,
+    partita_iva: s.piva,
+    id: pending.id,
+    stato: 'in_attesa',
+    documento: { id, ...payload.documento },
+    cambi: preparata.valore.cambi,
+    invariati: confronto.filter((c) => c.prima === c.dopo),
+    anteprima: pending.descrizione,
+    conferma: comandoDaMostrare('fic_ok', pending.id),
+    annulla: comandoDaMostrare('fic_no', pending.id),
+    nota: 'Mostra l anteprima COM E, col PRIMA e il DOPO di ogni campo: e l unica cosa che l Ingegnere legge prima di confermare. Non ho scritto niente su Fatture in Cloud.',
+  })
+}
+
+function leggiModificaPayload(payload: unknown): ModificaPayload | null {
+  const p = asObject(payload)
+  const id = intero(p.documento_id)
+  if (id === undefined || id <= 0) return null
+  const modifiche = asObject(p.modifiche) as ModificheRichieste
+  if (Object.keys(modifiche).length === 0) return null
+  const confronto = Array.isArray(p.confronto)
+    ? p.confronto.map(asObject).map((c) => ({
+      campo: cleanString(c.campo) ?? '',
+      prima: typeof c.prima === 'string' ? c.prima : String(c.prima ?? ''),
+      dopo: typeof c.dopo === 'string' ? c.dopo : String(c.dopo ?? ''),
+    })).filter((c) => c.campo)
+    : []
+  const d = asObject(p.documento)
+  return {
+    documento_id: id,
+    modifiche,
+    confronto,
+    documento: {
+      numero: cleanString(d.numero) ?? '?',
+      data: cleanString(d.data) ?? '?',
+      controparte: cleanString(d.controparte) ?? '?',
+      tipo: cleanString(d.tipo) ?? '?',
+      totale: Number(d.totale) || 0,
+    },
+  }
+}
+
+/**
+ * Esegue la modifica confermata. L'esito viene dalla RILETTURA, non dalla
+ * risposta della PUT.
+ */
+async function eseguiModifica(payload: unknown, societa: CodiceSocieta): Promise<EsitoModifica> {
+  const dati = leggiModificaPayload(payload)
+  if (!dati) {
+    return {
+      stato: 'non_modificato',
+      messaggio: 'DOCUMENTO NON MODIFICATO: il pending non contiene una modifica leggibile. Non ho scritto niente.',
+      scritto: false,
+      cambi: [],
+      id: null,
+    }
+  }
+  return modificaDocumento(dati.documento_id, dati.modifiche, societa, dati.confronto)
+}
+
 /**
  * I tipi che si chiudono con UNA conferma sola: oggi, tutti.
  *
@@ -2592,6 +2857,7 @@ export const A_CONFERMA_SINGOLA: ReadonlySet<string> = new Set([
   'fattura_emessa',
   'rapporto_intervento',
   'autofattura',
+  'modifica_documento',
 ])
 
 export async function confirmFicStep1(id: string): Promise<string> {
@@ -2754,6 +3020,45 @@ export async function confirmFicStep2(id: string): Promise<string> {
         // `fic_document_id` di un documento che non abbiamo creato manderebbe
         // un futuro «annulla» a cancellare la fattura di qualcun altro.
         fic_document_id: nato ? esito.id : null,
+        fic_url: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', cleanId)
+      .eq('stato', 'in_attesa')
+      .eq('conferme', 2)
+      .select('id')
+
+    if (chiusa.error) return `${esito.messaggio}\n\n⚠️ Aggiornamento audit fallito: ${chiusa.error.message}`
+    return esito.messaggio
+  }
+
+  // La MODIFICA di un documento gia' creato non crea niente: riscrive. Stessa
+  // riga, stessa conferma, ma l'esito viene dalla RILETTURA.
+  //
+  // 🚨 Si ritenta SOLO se la PUT non e' mai partita (o e' stata rifiutata: in
+  // quel caso il documento e' rimasto com'era). Se la scrittura e' andata —
+  // anche solo forse, con la rilettura che non conferma — la riga si CHIUDE:
+  // un secondo giro riscriverebbe un documento che nel frattempo e' cambiato.
+  if (row.tipo === 'modifica_documento') {
+    const esito = await eseguiModifica(row.payload, row.societa)
+
+    if (!esito.scritto) {
+      await supabase
+        .from('cervellone_fic_pending')
+        .update({ conferme: 1, updated_at: new Date().toISOString() })
+        .eq('id', cleanId)
+        .eq('stato', 'in_attesa')
+        .eq('conferme', 2)
+      return esito.messaggio
+    }
+
+    const chiusa = await supabase
+      .from('cervellone_fic_pending')
+      .update({
+        stato: 'creata',
+        // L'id del documento MODIFICATO: e' la traccia di audit. Non e' un
+        // documento nostro da cancellare, e `elimina_bozza_fic` lo sa.
+        fic_document_id: esito.id === null ? null : String(esito.id),
         fic_url: null,
         updated_at: new Date().toISOString(),
       })
@@ -2946,11 +3251,12 @@ async function confermaBozzaFic(
   // Cloud ha risposto ma la rilettura non conferma». Quello non e' ne' un si'
   // ne' un no, e riferirlo come uno dei due sarebbe mentire in una delle due
   // direzioni.
-  const daVerificare = /^SPESA DA VERIFICARE/.test(messaggio)
+  const daVerificare = /^SPESA DA VERIFICARE/.test(messaggio) || /^MODIFICA DA VERIFICARE/.test(messaggio)
   const eseguita = messaggio.startsWith('BOZZA creata su FIC')
     || /^(PAGAMENTI|INCASSI) REGISTRATI/.test(messaggio)
     || /^AUTOFATTURE CREATE/.test(messaggio)
     || /^SPESA REGISTRATA/.test(messaggio)
+    || /^DOCUMENTO MODIFICATO/.test(messaggio)
   return ok({
     id: riga.id,
     passo: 2,
@@ -3164,6 +3470,46 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    // ⚠️ Il tool NON e' al plurale e non accetta N documenti, al contrario dei
+    // pagamenti e delle autofatture: li' il caso massivo nasceva da un bisogno
+    // vero, qui ogni modifica ha il SUO prima/dopo da leggere, e una conferma
+    // in blocco vorrebbe dire dire «si» a correzioni mai viste una per una.
+    name: 'modifica_documento_fic',
+    description:
+      "MODIFICA un documento EMESSO gia creato su Fatture in Cloud (autofattura/integrazione TD17, fattura, nota) cambiandone i campi sbagliati, INVECE di cancellarlo e rifarlo: cancellare e rifare brucia il numero e lascia un BUCO nella serie di numerazione fiscale. Il caso vero: un'autofattura appena compilata con la data, l'imponibile o il riferimento alla fattura estera sbagliati. PUOI cambiare: la data del documento, le note, la descrizione e l'importo di una RIGA ESISTENTE (per posizione), e i «dati fattura collegata» (numero e data della fattura estera integrata). NON puoi: aggiungere o togliere righe, cambiare il numero, la serie, il cliente/fornitore o l'aliquota IVA — per quelle serve rifare il documento. REGOLE FERREE: (1) 🚨 UN DOCUMENTO TRASMESSO NON SI TOCCA: se risulta bloccato (locked) o gia mandato allo SdI il tool RIFIUTA, e non e un avviso. Una fattura elettronica trasmessa si corregge con una NOTA DI VARIAZIONE, non riscrivendola: se te lo dice, riportalo e non insistere; (2) 🚨 un campo che NON passi NON viene toccato, e un campo vuoto NON vuol dire «cancella»: passa solo i campi da cambiare, col valore NUOVO; (3) non scrive niente subito: prepara l'anteprima e serve la conferma (/fic_ok_<id>, oppure un «confermo» a voce: e una conferma sola); (4) 🚨 l'anteprima mostra il PRIMA e il DOPO di ogni campo, letti da Fatture in Cloud: RIPORTALA COM E — «cambio la data» non basta, l'Ingegnere deve vedere «data: 2026-08-03 → 2026-08-05» prima di confermare; (5) l'esito viene da una RILETTURA, non dalla risposta di Fatture in Cloud: se un campo non risulta cambiato il messaggio lo dice, e allora NON dire che e stato modificato; (6) se Fatture in Cloud rifiuta, il messaggio riporta la sua risposta TESTUALE (stato e testo): riportala com e, non interpretarla e non inventare spiegazioni; (7) l'id e quello del documento su Fatture in Cloud (da fic_fatture_emesse / fic_dettaglio_documento), non l'id di una bozza pending.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer', description: 'Id del documento EMESSO su Fatture in Cloud da modificare (fic_fatture_emesse / fic_dettaglio_documento). Obbligatorio.' },
+        data: { type: 'string', description: 'Nuova data del documento, YYYY-MM-DD. Passala SOLO se va cambiata.' },
+        note: { type: 'string', description: 'Nuove note del documento: sostituiscono quelle che ci sono. Passale SOLO se vanno cambiate; una stringa vuota viene rifiutata, non letta come «cancella».' },
+        righe: {
+          type: 'array',
+          description: 'Le righe ESISTENTI da correggere, per posizione. Non aggiunge e non toglie righe: se la riga non esiste il tool rifiuta ed elenca quelle che ci sono. Cambiando un importo, i totali li ricalcola Fatture in Cloud.',
+          items: {
+            type: 'object',
+            properties: {
+              riga: { type: 'integer', description: 'Quale riga: 1 = la prima. Obbligatorio.' },
+              descrizione: { type: 'string', description: 'Nuova descrizione della riga. Passala solo se va cambiata.' },
+              importo: { type: 'number', description: 'Nuovo imponibile della riga in euro, come numero (es. 218.44). Passalo solo se va cambiato.' },
+            },
+            required: ['riga'],
+          },
+        },
+        fattura_collegata: {
+          type: 'object',
+          description: 'Il riferimento STRUTTURATO alla fattura estera integrata (DatiFattureCollegate di una TD17). Vuole numero e data INSIEME: un riferimento a meta sembra compilato e non lo e.',
+          properties: {
+            numero: { type: 'string', description: 'Numero della fattura ORIGINALE del fornitore estero.' },
+            data: { type: 'string', description: 'Data della fattura ORIGINALE, YYYY-MM-DD.' },
+          },
+          required: ['numero', 'data'],
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'lista_bozze_fic',
     description: 'Lista le bozze FIC pending, create o annullate registrate in cervellone_fic_pending.',
     input_schema: {
@@ -3192,6 +3538,7 @@ export async function executeFicWriteTool(
     if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento', societa)
     if (name === 'compila_autofattura') return compilaAutofatture(input, societa)
     if (name === 'registra_spesa_fornitore') return compilaSpesaFornitore(input, societa)
+    if (name === 'modifica_documento_fic') return compilaModificaDocumento(input, societa)
     if (name === 'segna_fatture_ricevute_pagate') return segnaFatturePagate(input, societa, 'ricevuta')
     if (name === 'segna_fatture_emesse_pagate') return segnaFatturePagate(input, societa, 'emessa')
     if (name === 'conferma_bozza_fic') return confermaBozzaFic(input, societa)

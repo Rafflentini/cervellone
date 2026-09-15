@@ -2922,6 +2922,14 @@
     {
       "file": "2026-09-14-fotografia-schema.sql",
       "testo": "GRANT EXECUTE ON FUNCTION public.fotografia_schema() TO service_role"
+    },
+    {
+      "file": "2026-09-15-fic-pending-modifica-documento.sql",
+      "testo": "alter table public.cervellone_fic_pending drop constraint if exists cervellone_fic_pending_tipo_check"
+    },
+    {
+      "file": "2026-09-15-fic-pending-modifica-documento.sql",
+      "testo": "alter table public.cervellone_fic_pending add constraint cervellone_fic_pending_tipo_check check (tipo in ('fattura_emessa', 'rapporto_intervento', 'pagamento_ricevuta', 'pagamento_emessa', 'autofattu"
     }
   ]
 }

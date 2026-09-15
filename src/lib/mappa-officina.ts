@@ -114,6 +114,9 @@ export const DOMINI: readonly Dominio[] = [
       'compila_rapporto_intervento',
       'compila_autofattura',
       'registra_spesa_fornitore',
+      // 2026-09-15: correggere un documento gia' creato e non ancora trasmesso,
+      // invece di cancellarlo e rifarlo (che brucia il numero della serie).
+      'modifica_documento_fic',
       'conferma_bozza_fic',
       'segna_fatture_ricevute_pagate',
       'segna_fatture_emesse_pagate',
