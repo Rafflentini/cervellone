@@ -170,6 +170,8 @@ function escapeFicQuery(value: string): string {
  * `/settings/` e in fallback quello precedente, cosi' il fix non dipende da
  * quale dei due risponda.
  */
+export { elencoAliquoteFic as elencoAliquoteFicPerTest }
+
 async function elencoAliquoteFic(
   societa: CodiceSocieta,
 ): Promise<{ ok: true; righe: Record<string, unknown>[] } | { ok: false; error: string }> {
@@ -177,6 +179,18 @@ async function elencoAliquoteFic(
   if (!company.ok) return { ok: false, error: company.error }
 
   const righe: Record<string, unknown>[] = []
+  // ⚠️ Gli id gia' visti. `settings/vat_types` di Fatture in Cloud NON e'
+  // paginato: ignora `page` e restituisce ogni volta la stessa lista intera.
+  // Senza questa guardia il ciclo girava tutte e 10 le volte — visto nel log
+  // delle richieste dell'app il 15 settembre 2026, dieci chiamate identiche in
+  // quattro secondi — e `righe` finiva per contenere ogni aliquota DIECI
+  // VOLTE. Cioe' l'elenco che il tool mostra all'Ingegnere quando gli chiede
+  // quale aliquota usare era dieci volte piu' lungo del vero.
+  //
+  // Fermarsi su `last_page` non bastava: quel campo qui non arriva. La regola
+  // che regge in entrambi i casi e' un'altra — se una pagina non porta NESSUN
+  // id nuovo, non c'e' altro da leggere.
+  const idVisti = new Set<string>()
   for (let page = 1; page <= 10; page++) {
     const r = await ficGet(`/c/${company.id}/settings/vat_types`, { per_page: 100, page }, societa)
     if (!r.ok) {
@@ -187,8 +201,15 @@ async function elencoAliquoteFic(
       return { ok: true, righe: lista }
     }
     const lista = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
-    righe.push(...lista)
-    if (lista.length === 0) break
+    const nuove = lista.filter((x) => {
+      const id = String(x?.id ?? "")
+      if (!id || idVisti.has(id)) return false
+      idVisti.add(id)
+      return true
+    })
+    righe.push(...nuove)
+    // Nessun id nuovo = non c'e' una pagina dopo, comunque FIC risponda.
+    if (nuove.length === 0) break
     const meta = (r.data as unknown as Record<string, unknown> | undefined) ?? {}
     const ultima = parseAliquotaFic(meta.last_page)
     if (ultima !== null && page >= ultima) break
