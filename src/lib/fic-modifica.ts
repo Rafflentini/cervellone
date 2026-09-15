@@ -116,22 +116,38 @@ function importo(n: number): string {
 const DATA_ISO = /^\d{4}-\d{2}-\d{2}$/
 
 /**
- * Gli stati SdI che significano «questo documento non e' mai partito».
+ * Gli stati SdI che sono PROVA che il documento e' partito.
  *
- * ⚠️ L'elenco e' CORTO di proposito, e chi lo legge deve sapere perche': lo
- * stato vuoto o assente e' il documento appena creato che nessuno ha
- * trasmesso, `not_sent` e' il valore che Fatture in Cloud usa per lo stesso
- * caso. Qualunque ALTRO valore — compreso uno che non conosciamo — vale
- * «trasmesso» e fa rifiutare il tool.
+ * ⚠️ **Perche' una lista di «trasmesso» e non una di «non trasmesso».** La
+ * prima versione faceva il contrario: ammetteva solo `''` e `not_sent`, e
+ * qualunque altro valore — compreso uno sconosciuto — faceva rifiutare. Il
+ * ragionamento era «si sbaglia dalla parte giusta», ed e' un ragionamento che
+ * in questa casa ha gia' fatto danni: **una guardia che blocca il caso normale
+ * e' peggio del buco che voleva chiudere.** L'elenco vero degli `ei_status` di
+ * Fatture in Cloud non l'abbiamo mai visto: bastava che un documento appena
+ * creato ne portasse uno diverso da questi due perche' il tool rifiutasse
+ * SEMPRE, su ogni documento, e nessun test se ne accorgesse — i test non
+ * parlano con FIC.
  *
- * Si sbaglia dalla parte giusta: un rifiuto costa una cancella-e-rifai, cioe'
- * esattamente quello che si faceva prima; un permesso di troppo riscriverebbe
- * una fattura elettronica gia' andata allo SdI. E il messaggio di rifiuto
- * riporta il valore VERO, cosi' se domani compare uno stato legittimo che qui
- * manca lo si vede e lo si aggiunge con la prova in mano, invece di indovinarlo
- * adesso.
+ * La difesa vera non e' questa lista: e' `locked`, che Fatture in Cloud impone
+ * dal proprio lato e che viene controllato PRIMA. Un documento trasmesso e'
+ * bloccato, e se anche qualcosa sfuggisse e' FIC a rifiutare il PUT — e il suo
+ * rifiuto lo riportiamo testualmente, che e' un'informazione migliore di una
+ * nostra congettura.
+ *
+ * Quindi: si rifiuta su PROVA di trasmissione. Uno stato sconosciuto non e'
+ * una prova, e non blocca — ma viene riportato nell'esito, cosi' se un giorno
+ * ne compare uno che significa «trasmessa» lo si aggiunge qui avendolo VISTO.
  */
-export const STATI_SDI_NON_TRASMESSO: ReadonlySet<string> = new Set(['', 'not_sent'])
+export const STATI_SDI_TRASMESSO: ReadonlySet<string> = new Set([
+  'sent',
+  'delivered',
+  'not_delivered',
+  'rejected',
+  'accepted',
+  'expired_terms',
+  'attempt_failed',
+])
 
 /**
  * Il `TipoDocumento` SdI del documento, o `undefined` se la rilettura non
@@ -196,7 +212,7 @@ export function documentoModificabile(
     }
   }
   const stato = dati.stato_sdi.toLowerCase()
-  if (!STATI_SDI_NON_TRASMESSO.has(stato)) {
+  if (STATI_SDI_TRASMESSO.has(stato)) {
     return {
       ok: false,
       motivo: `il documento ${dati.numero} risulta gia' mandato al Sistema di Interscambio `

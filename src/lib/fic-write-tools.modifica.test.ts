@@ -260,11 +260,34 @@ describe('l anteprima: il PRIMA e il DOPO, campo per campo', () => {
     expect(stato.put).toEqual([])
   })
 
-  it('uno stato SdI SCONOSCIUTO vale «trasmesso»: si sbaglia dalla parte che non riscrive', async () => {
+  it('🚨 uno stato SdI SCONOSCIUTO non blocca: non e una prova di trasmissione', async () => {
+    // ⚠️ Prima qui c'era l'opposto — «uno stato sconosciuto vale trasmesso, si
+    // sbaglia dalla parte che non riscrive» — e sembrava prudenza. Non lo era:
+    // l'elenco vero degli `ei_status` di Fatture in Cloud non l'abbiamo mai
+    // visto, e bastava che un documento appena creato ne portasse uno diverso
+    // dai due ammessi perche' il tool rifiutasse SEMPRE, su ogni documento.
+    // Una guardia che blocca il caso normale e' peggio del buco che chiude.
+    //
+    // La difesa vera e' `locked`, che FIC impone dal proprio lato ed e'
+    // controllata prima (v. il test qui sopra). Se anche qualcosa sfuggisse, e'
+    // FIC a rifiutare il PUT, e il suo rifiuto lo riportiamo testualmente.
     stato.documenti = new Map([['77', documento({ ei_status: 'uno_stato_mai_visto' })]])
+
     const out = await compila({ data: '2026-08-05' })
+
+    expect(out.ok).toBe(true)
+  })
+
+  it('CONTROLLO POSITIVO: uno stato che PROVA la trasmissione blocca eccome', async () => {
+    // Senza questo, invertire la guardia avrebbe aperto la porta a riscrivere
+    // una fattura elettronica gia' andata allo SdI.
+    stato.documenti = new Map([['77', documento({ ei_status: 'delivered' })]])
+
+    const out = await compila({ data: '2026-08-05' })
+
     expect(out.ok).toBe(false)
-    expect(out.error).toContain('uno_stato_mai_visto')
+    expect(out.error).toContain('delivered')
+    expect(stato.put).toEqual([])
   })
 
   it('un valore gia scritto non fa toccare il documento', async () => {
