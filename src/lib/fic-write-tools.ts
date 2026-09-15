@@ -1548,7 +1548,25 @@ async function compilaAutofatture(
   //    di far nascere il documento su un nome scritto a mano senza dirlo.
   const documenti: AutofatturaRiga[] = []
   for (const r of righe) {
+    // ⚠️ `clients` e non `suppliers`, e la ragione va scritta perche' e' una
+    // domanda APERTA, non una certezza.
+    //
+    // Su una TD17 il cedente/prestatore e' il fornitore estero: verrebbe da
+    // cercarlo fra i FORNITORI. Il 15 settembre 2026, notte, l'ho cambiato —
+    // e ho sbagliato metodo: l'ho fatto sulla base dell'etichetta
+    // «DESTINATARIO» letta su un PDF, senza una prova che Fatture in Cloud
+    // voglia un'entita' dell'elenco fornitori su un `issued_document`.
+    //
+    // I fatti che abbiamo: con l'id preso dall'elenco CLIENTI, FIC ha accettato
+    // il documento senza obiezioni sull'anagrafica (l'unico 422 riguardava il
+    // conto di saldo, altra cosa). E l'elenco fornitori, su La Real Estate,
+    // risponde 403: forzarlo bloccherebbe tutto invece di correggere.
+    //
+    // ⬜ Da chiarire guardando l'XML di un documento vero, non un'etichetta del
+    // PDF: e' l'XML che decide chi e' cedente e chi cessionario.
     const entity = await resolveEntitaFic(r.fornitore, societa, r.fornitoreId)
+
+
     if (!entity.ok) return fail(`${r.fornitore}: ${entity.error}. Non ho preparato niente.`)
 
     // 🚨 Qui l'anagrafica non e' facoltativa come su una fattura emessa.
@@ -1559,7 +1577,7 @@ async function compilaAutofatture(
       return fail(
         `«${r.fornitore}» non risulta in anagrafica su Fatture in Cloud, e un'integrazione senza i dati del cedente estero `
         + '(indirizzo e partita IVA comunitaria) non e\' un documento valido. Crea prima l\'anagrafica con fic_crea_cliente '
-        + 'e richiamami con fornitore_id. Non ho preparato niente.',
+        + 'e richiamami con fornitore_id. ⚠️ Il fornitore estero va creato fra i FORNITORI: fic_crea_cliente con elenco fornitore, non fra i clienti. Non ho preparato niente.',
       )
     }
 
@@ -1721,10 +1739,10 @@ async function creaAutofatture(
   for (const d of dati.documenti) {
     const intestazione = `${d.fornitore} — fattura n.${d.numero} del ${d.data} — ${euro(d.imponibile)}`
     try {
-      // 🚨 Un'integrazione in reverse charge non crea un credito: senza questo
-      // FIC la mostra «SCADUTA» col tasto «Manda sollecito» verso il
-      // fornitore estero. Visto sul 1INT/2026 il 15 settembre 2026.
-      const creato = await creaDocumentoFIC(d.payload, societa, { pagamentoNonDovuto: true })
+
+
+
+      const creato = await creaDocumentoFIC(d.payload, societa)
       trattate++
       if (!creato.ok) {
         fallite.push(`❌ ${intestazione} — ${creato.error}`)

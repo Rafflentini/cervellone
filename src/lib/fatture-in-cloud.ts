@@ -261,8 +261,6 @@ async function calcolaTotaliFIC(
 export async function creaDocumentoFIC(
   payload: Record<string, unknown>,
   societa: CodiceSocieta,
-  /** `pagamentoNonDovuto`: il documento non crea un credito (integrazione in reverse charge). */
-  opzioni?: { pagamentoNonDovuto?: boolean },
 ): Promise<FicCreateResult> {
   const s = getSocieta(societa)
   const token = getFicToken(societa)
@@ -312,15 +310,26 @@ export async function creaDocumentoFIC(
       const dataDoc = typeof forcedPayload.date === 'string' && forcedPayload.date
         ? forcedPayload.date
         : dataOggiRoma()
-      // 🚨 Su un'integrazione in reverse charge NON si deve niente a nessuno:
-      // l'IVA e' a debito e a credito insieme. Senza questa distinzione il
-      // piano a 30 giorni faceva comparire l'autofattura come «SCADUTA» su
-      // Fatture in Cloud, col tasto «Manda sollecito» — verso Booking.com.
-      // Visto sul documento 1INT/2026 il 15 settembre 2026.
+      // ⚠️ `not_paid`, SEMPRE. Non si marca saldato.
+      //
+      // Il 15 settembre 2026, per togliere la scritta «SCADUTA» che Fatture in
+      // Cloud mostrava su un'autofattura in reverse charge, questa riga e'
+      // stata cambiata in `status: 'paid'`. Risultato: FIC ha rifiutato la
+      // creazione con 422 «E' necessario impostare il conto di saldo nel
+      // pagamento» — un pagamento saldato pretende di sapere SU QUALE CONTO.
+      //
+      // Cioe' un difetto COSMETICO (una scritta sbagliata nello scadenzario) e'
+      // stato scambiato con uno BLOCCANTE: il documento non nasceva piu'.
+      // Sull'autofattura la scritta «scaduta» e' brutta ma innocua; un
+      // documento che non esiste no.
+      //
+      // ⬜ La strada giusta, quando ci sara' tempo di provarla sul vero: un
+      // conto di saldo CHIESTO all'Ingegnere (come si fa gia' per l'aliquota
+      // IVA), mai indovinato. Finche' non c'e', si crea e basta.
       forcedPayload.payments_list = [{
-        due_date: opzioni?.pagamentoNonDovuto ? dataDoc : aggiungiGiorniISO(dataDoc, GIORNI_SCADENZA_FIC),
+        due_date: aggiungiGiorniISO(dataDoc, GIORNI_SCADENZA_FIC),
         amount: totale,
-        status: opzioni?.pagamentoNonDovuto ? 'paid' : 'not_paid',
+        status: 'not_paid',
       }]
     }
   }
