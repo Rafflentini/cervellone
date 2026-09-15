@@ -75,12 +75,12 @@ vi.mock('./fatture-in-cloud', () => ({
     if (path.includes('/settings/vat_types')) {
       return { ok: true, data: { data: stato.aliquote, last_page: 1 } }
     }
-    const scheda = /\/entities\/clients\/(\d+)$/.exec(path)
+    const scheda = /\/entities\/(?:clients|suppliers)\/(\d+)$/.exec(path)
     if (scheda) {
       const trovata = stato.schede.get(scheda[1])
       return trovata ? { ok: true, data: { data: trovata } } : { ok: false, error: 'anagrafica non trovata' }
     }
-    if (path.includes('/entities/clients')) return { ok: true, data: { data: stato.anagrafica } }
+    if (path.includes('/entities/')) return { ok: true, data: { data: stato.anagrafica } }
     const documento = /\/issued_documents\/(.+)$/.exec(path)
     if (documento) {
       const trovato = stato.riletture.get(documento[1])

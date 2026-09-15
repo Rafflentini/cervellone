@@ -1603,23 +1603,32 @@ async function compilaAutofatture(
   //    di far nascere il documento su un nome scritto a mano senza dirlo.
   const documenti: AutofatturaRiga[] = []
   for (const r of righe) {
-    // ⚠️ `clients` e non `suppliers`, e la ragione va scritta perche' e' una
-    // domanda APERTA, non una certezza.
+    // 🚨 `suppliers`, NON `clients` — e questa volta con la prova.
     //
-    // Su una TD17 il cedente/prestatore e' il fornitore estero: verrebbe da
-    // cercarlo fra i FORNITORI. Il 15 settembre 2026, notte, l'ho cambiato —
-    // e ho sbagliato metodo: l'ho fatto sulla base dell'etichetta
-    // «DESTINATARIO» letta su un PDF, senza una prova che Fatture in Cloud
-    // voglia un'entita' dell'elenco fornitori su un `issued_document`.
+    // Su una TD17 la controparte e' il FORNITORE estero. Lo dicono tre fonti
+    // indipendenti, raccolte il 15 settembre 2026:
+    //  · l'XML di un'integrazione VALIDA: `CedentePrestatore` = fornitore
+    //    estero, `CessionarioCommittente` = la nostra societa';
+    //  · il form di Fatture in Cloud per una TD17: il campo si chiama
+    //    «Fornitore», e la pagina avvisa «per questo TD sei solo cliente»;
+    //  · il tentativo vero: l'anagrafica Booking.com B.V. sta nell'elenco
+    //    FORNITORI con id 54043577, e letta fra i clienti da 404.
     //
-    // I fatti che abbiamo: con l'id preso dall'elenco CLIENTI, FIC ha accettato
-    // il documento senza obiezioni sull'anagrafica (l'unico 422 riguardava il
-    // conto di saldo, altra cosa). E l'elenco fornitori, su La Real Estate,
-    // risponde 403: forzarlo bloccherebbe tutto invece di correggere.
+    // ⚠️ STORIA DI QUESTA RIGA, perche' non venga tolta una terza volta.
+    // La notte fra il 14 e il 15 era stata messa a `suppliers` sulla base
+    // dell'etichetta «DESTINATARIO» letta su un PDF — un sintomo, non una
+    // prova — e poi RIMOSSA, giustamente: l'elenco fornitori rispondeva 403
+    // perche' all'app CERVELLONE-LRE mancava lo scope `entity.suppliers`, e
+    // forzarla avrebbe bloccato tutto invece di correggere. Rimessa ora che
+    // l'Ingegnere ha riautorizzato l'app e il permesso c'e'.
     //
-    // ⬜ Da chiarire guardando l'XML di un documento vero, non un'etichetta del
-    // PDF: e' l'XML che decide chi e' cedente e chi cessionario.
-    const entity = await resolveEntitaFic(r.fornitore, societa, r.fornitoreId)
+    // ⬜ Resta aperta UNA cosa, e non si tocca senza prova: il tipo FIC. Il
+    // form dice «sei solo cliente», che nella FAQ sviluppatori corrisponde a
+    // `self_own_invoice`, mentre noi usiamo `self_supplier_invoice`. Le due
+    // descrizioni della documentazione si contraddicono. Si decide leggendo
+    // l'XML del primo documento che nasce da qui, non prima.
+    const entity = await resolveEntitaFic(r.fornitore, societa, r.fornitoreId, 'suppliers')
+
 
 
     if (!entity.ok) return fail(`${r.fornitore}: ${entity.error}. Non ho preparato niente.`)
