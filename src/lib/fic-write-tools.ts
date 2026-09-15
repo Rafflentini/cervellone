@@ -40,6 +40,28 @@ import {
   type TipoVerifica,
 } from './fic-verifica'
 import { verificaFormaleXml, rigaVerificaFormale } from './fic-verifica-formale'
+import { elencoAliquoteFic } from './fic-aliquote'
+import { executeAnagraficaTool } from './fic-anagrafica'
+import {
+  ALIQUOTA_ALLOGGIO,
+  CAP_ESTERO,
+  EI_CODE_ESTERO,
+  EI_CODE_PRIVATO_ITALIANO,
+  PROVINCIA_ESTERO as PROVINCIA_ESTERO_OSPITE,
+  anniDaCercare,
+  cercaFatturaPrenotazione,
+  costruisciPayloadFatturaOspite,
+  creaFatturaOspite,
+  euroIt,
+  intestazioneFatturaOspite,
+  leggiDatiFatturaOspite,
+  nomeRigaSoggiorno,
+  noteFattura,
+  oggettoFattura,
+  risolviIdFic,
+  type DatiFatturaOspite,
+  type FatturaOspitePayload,
+} from './fic-fattura-ospite'
 import { scegliAllegatoMail, scaricaAllegatoScelto, CASELLE_GOOGLE } from './spesa-allegato'
 import type { ChiaveCasella } from './caselle'
 // 🚨 CHI SCRIVE I DOCUMENTI AGGIORNA IL REGISTRO. Una funzione sola, in un
@@ -83,7 +105,7 @@ interface ToolDefinition {
 }
 
 type PendingStato = 'in_attesa' | 'creata' | 'annullata'
-type PendingTipo = 'fattura_emessa' | 'rapporto_intervento' | 'pagamento_ricevuta' | 'pagamento_emessa' | 'autofattura' | 'spesa_ricevuta' | 'modifica_documento'
+type PendingTipo = 'fattura_emessa' | 'rapporto_intervento' | 'pagamento_ricevuta' | 'pagamento_emessa' | 'autofattura' | 'spesa_ricevuta' | 'modifica_documento' | 'fattura_ospite'
 
 interface PendingRow {
   id: string
@@ -186,59 +208,11 @@ function escapeFicQuery(value: string): string {
 }
 
 /**
- * Elenco COMPLETO delle aliquote IVA dell'azienda.
- *
- * Prima si leggeva una pagina sola: un'aliquota perfettamente esistente ma
- * oltre la prima pagina risultava inesistente. Si prova il path con
- * `/settings/` e in fallback quello precedente, cosi' il fix non dipende da
- * quale dei due risponda.
+ * L'elenco delle aliquote IVA vive in `fic-aliquote.ts`: lo leggono due moduli
+ * (qui per VALORE, `fic-fattura-ospite.ts` per la natura N1, che si riconosce
+ * dalla descrizione). Ri-esportato col nome di prima per i test che c'erano.
  */
-export { elencoAliquoteFic as elencoAliquoteFicPerTest }
-
-async function elencoAliquoteFic(
-  societa: CodiceSocieta,
-): Promise<{ ok: true; righe: Record<string, unknown>[] } | { ok: false; error: string }> {
-  const company = await getCompanyId(societa)
-  if (!company.ok) return { ok: false, error: company.error }
-
-  const righe: Record<string, unknown>[] = []
-  // ⚠️ Gli id gia' visti. `settings/vat_types` di Fatture in Cloud NON e'
-  // paginato: ignora `page` e restituisce ogni volta la stessa lista intera.
-  // Senza questa guardia il ciclo girava tutte e 10 le volte — visto nel log
-  // delle richieste dell'app il 15 settembre 2026, dieci chiamate identiche in
-  // quattro secondi — e `righe` finiva per contenere ogni aliquota DIECI
-  // VOLTE. Cioe' l'elenco che il tool mostra all'Ingegnere quando gli chiede
-  // quale aliquota usare era dieci volte piu' lungo del vero.
-  //
-  // Fermarsi su `last_page` non bastava: quel campo qui non arriva. La regola
-  // che regge in entrambi i casi e' un'altra — se una pagina non porta NESSUN
-  // id nuovo, non c'e' altro da leggere.
-  const idVisti = new Set<string>()
-  for (let page = 1; page <= 10; page++) {
-    const r = await ficGet(`/c/${company.id}/settings/vat_types`, { per_page: 100, page }, societa)
-    if (!r.ok) {
-      if (page > 1) break
-      const legacy = await ficGet(`/c/${company.id}/vat_types`, { per_page: 100 }, societa)
-      if (!legacy.ok) return { ok: false, error: legacy.error }
-      const lista = Array.isArray(legacy.data?.data) ? legacy.data.data as Record<string, unknown>[] : []
-      return { ok: true, righe: lista }
-    }
-    const lista = Array.isArray(r.data?.data) ? r.data.data as Record<string, unknown>[] : []
-    const nuove = lista.filter((x) => {
-      const id = String(x?.id ?? "")
-      if (!id || idVisti.has(id)) return false
-      idVisti.add(id)
-      return true
-    })
-    righe.push(...nuove)
-    // Nessun id nuovo = non c'e' una pagina dopo, comunque FIC risponda.
-    if (nuove.length === 0) break
-    const meta = (r.data as unknown as Record<string, unknown> | undefined) ?? {}
-    const ultima = parseAliquotaFic(meta.last_page)
-    if (ultima !== null && page >= ultima) break
-  }
-  return { ok: true, righe }
-}
+export { elencoAliquoteFic, elencoAliquoteFic as elencoAliquoteFicPerTest } from './fic-aliquote'
 
 async function resolveVatId(
   aliquota: number,
@@ -917,7 +891,7 @@ function descriviPagamenti(input: {
  * payload e' quindi un oggetto qualsiasi, non piu' il solo `PagamentiPayload`.
  */
 async function salvaPendingPagamenti(
-  payload: PagamentiPayload | AutofatturePayload | SpesaRicevutaPayload | ModificaPayload,
+  payload: PagamentiPayload | AutofatturePayload | SpesaRicevutaPayload | ModificaPayload | FatturaOspitePayload,
   descrivi: (id: string) => string,
   societa: CodiceSocieta,
   tipo: PendingTipo,
@@ -3099,6 +3073,186 @@ async function creaSpesa(payload: unknown, societa: CodiceSocieta): Promise<Esit
 }
 
 /* ------------------------------------------------------------------ *
+ * LA FATTURA AL CLIENTE PER UN SOGGIORNO (La Real Estate, Booking)
+ * ------------------------------------------------------------------ */
+
+/**
+ * L'anteprima della fattura di soggiorno.
+ *
+ * ⚠️ Conferma SINGOLA: l'Ingegnere legge QUESTO e dice «confermo» una volta
+ * sola. Quindi qui dentro devono stare, per esteso, tutte le cose che sbagliate
+ * producono un documento fiscale sbagliato senza che nessuno se ne accorga:
+ * l'anagrafica intestataria, il prezzo LORDO, l'imposta col suo conteggio, le
+ * date di incasso e — se ci sono — gli avvisi su id non letti da Fatture in
+ * Cloud.
+ */
+function descriviFatturaOspite(input: {
+  id: string
+  societa: CodiceSocieta
+  dati: DatiFatturaOspite
+  entita: string
+  payload: FatturaOspitePayload
+}): string {
+  const s = getSocieta(input.societa)
+  const d = input.dati
+  const imposta = d.imposta
+  const totale = Math.round((d.prezzo + (imposta?.importo ?? 0)) * 100) / 100
+  return [
+    'Fattura di SOGGIORNO su Fatture in Cloud (elettronica, NON trasmessa allo SdI)',
+    `SOCIETA EMITTENTE: ${s.denominazione} (P.IVA ${s.piva})`,
+    `Cliente: ${input.entita}`,
+    d.estero ? `⚠️ Cliente ESTERO (${d.ospite.paese}): niente codice fiscale, CAP 00000, provincia EE, codice destinatario XXXXXXX.` : null,
+    `Oggetto: ${oggettoFattura(d)}`,
+    `Data documento: ${d.data} — numerazione Principale`,
+    `Riga 1 — ${nomeRigaSoggiorno(d)}: ${euroIt(d.prezzo)} LORDI, IVA ${ALIQUOTA_ALLOGGIO}% inclusa (Fatture in Cloud scorpora).`,
+    '   ⚠️ E\' il prezzo Booking alloggio + pulizie con la COMMISSIONE DENTRO, non il payout netto: se hai passato il netto, annulla.',
+    imposta
+      ? `Riga 2 — imposta di soggiorno: ${euroIt(imposta.importo)} (${imposta.persone} x ${imposta.notti} x ${euroIt(imposta.tariffa)}), `
+        + 'fuori base imponibile con la natura «Iva esclusa ex art. 15».'
+      : 'Riga 2 — NESSUNA: l\'imposta di soggiorno e\' zero o non e\' stata indicata.',
+    `TOTALE documento: ${euroIt(totale)}`,
+    `Incasso: ${euroIt(d.prezzo)} sul conto id ${input.payload.ids.contoBanca} con data ${d.check_out} (check-out)`
+    + (imposta ? `, ${euroIt(imposta.importo)} in contanti (conto id ${input.payload.ids.contoContanti}) con data ${d.check_in} (check-in)` : '')
+    + '. Entrambi gia\' SALDATI: la fattura non entra nello scadenzario.',
+    `Note in fattura: ${noteFattura(d)}`,
+    '🚨 In Fatture in Cloud NON scrivo data e luogo di nascita degli ospiti e non allego documenti (divieto del Garante, 29/04/2026).',
+    'Ho gia\' controllato che su Fatture in Cloud non ci sia una fattura per questa prenotazione, e lo ricontrollo prima di crearla.',
+    'Dopo averla creata la rileggo e chiedo a Fatture in Cloud la VERIFICA FORMALE dell\'XML: se non passa, te lo dico invece di dichiarare successo.',
+    ...input.payload.avvisi,
+    `conferma -> ${comandoDaMostrare('fic_ok', input.id)} (a voce basta un «confermo»: e' una conferma sola)`,
+    `annulla -> ${comandoDaMostrare('fic_no', input.id)}`,
+  ].filter(Boolean).join('\n')
+}
+
+/**
+ * Prepara la fattura del soggiorno: legge i parametri, VALIDA il codice
+ * fiscale, cerca il doppione, legge gli id veri da Fatture in Cloud, risolve o
+ * crea l'anagrafica, costruisce il documento e lo mette in attesa di conferma.
+ *
+ * ⚠️ **L'anagrafica si risolve QUI, prima della conferma, e non al momento
+ * della scrittura.** Due motivi: l'anteprima deve poter dire A CHI sara'
+ * intestata la fattura (e con quale id), e un guasto sull'anagrafica deve
+ * emergere PRIMA che l'Ingegnere abbia detto «confermo». Creare una scheda
+ * anagrafica e' reversibile e non lascia traccia fiscale — emettere una fattura
+ * no: e' l'unica delle due cose che sta dietro la conferma.
+ */
+async function compilaFatturaOspite(
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string> {
+  const s = getSocieta(societa)
+
+  // 1) I parametri. 🚨 Qui dentro si ferma il codice fiscale malformato, PRIMA
+  //    di toccare l'anagrafica: due CF su 47 nel file vero erano storti.
+  const letto = leggiDatiFatturaOspite(input)
+  if (!letto.ok) return fail(letto.error)
+  const dati = letto.dati
+
+  // 2) 🚨 ANTI-DOPPIONE, prima di tutto il resto: se la fattura c'e' gia', non
+  //    ha senso nemmeno creare l'anagrafica. Un elenco illeggibile o troncato
+  //    qui e' un RIFIUTO, non un via libera.
+  const anni = anniDaCercare(dati)
+  const doppione = await cercaFatturaPrenotazione(dati.prenotazione, anni, societa)
+  if (!doppione.ok) return fail(`${doppione.error}. Non ho preparato niente.`)
+  if (doppione.esistente) {
+    return fail(
+      `su Fatture in Cloud c'e' GIA' la fattura n. ${doppione.esistente.numero} del ${doppione.esistente.data} `
+      + `(id ${doppione.esistente.id}, ${euroIt(doppione.esistente.importo)}) per la prenotazione ${dati.prenotazione}: `
+      + 'non ne preparo una seconda. Se e\' sbagliata, correggila o annullala su Fatture in Cloud.',
+      { fattura_esistente: doppione.esistente },
+    )
+  }
+
+  // 3) Gli id VERI di aliquote e conti.
+  const ids = await risolviIdFic(societa)
+  if (!ids.ok) return fail(ids.error)
+
+  // 4) L'anagrafica. Si riusa `fic_crea_cliente`, che ha gia' l'anti-doppione
+  //    sull'anagrafica (cerca per CF, per P.IVA e per nome) e che NON crea una
+  //    seconda scheda se una c'e' gia'.
+  let clienteId = dati.cliente_id
+  let entita = `${dati.ospite.nome}${clienteId !== undefined ? ` (id ${clienteId})` : ''}`
+  if (clienteId === undefined) {
+    const grezzo = await executeAnagraficaTool('fic_crea_cliente', {
+      nome: dati.ospite.nome,
+      elenco: 'cliente',
+      tipo: 'privato',
+      // 🚨 Al Garante: qui passano nome, indirizzo e codice fiscale. NON la
+      // data di nascita, NON il luogo di nascita, NON copie di documenti.
+      codice_fiscale: dati.ospite.codice_fiscale,
+      indirizzo: dati.ospite.indirizzo,
+      cap: dati.estero ? CAP_ESTERO : dati.ospite.cap,
+      citta: dati.ospite.citta,
+      provincia: dati.estero ? PROVINCIA_ESTERO_OSPITE : dati.ospite.provincia,
+      paese: dati.ospite.paese,
+      email: dati.ospite.email,
+      codice_destinatario: dati.ospite.codice_destinatario
+        ?? (dati.estero ? EI_CODE_ESTERO : EI_CODE_PRIVATO_ITALIANO),
+    }, societa)
+    const risposta = asObject(grezzo ? JSON.parse(grezzo) : {})
+    if (risposta.ok !== true) {
+      return fail(`anagrafica non pronta: ${cleanString(risposta.error) ?? 'Fatture in Cloud non ha risposto'}. Non ho preparato nessuna fattura.`)
+    }
+    const id = Number(risposta.cliente_id)
+    if (!Number.isFinite(id)) {
+      return fail('Fatture in Cloud non ha restituito l\'id dell\'anagrafica: non intesto una fattura a un id che non ho. Non ho preparato niente.')
+    }
+    clienteId = id
+    const trovati = Array.isArray(risposta.clienti) ? risposta.clienti.length : 0
+    entita = `${dati.ospite.nome} (id ${id})`
+      + (risposta.creato === true ? ' — anagrafica CREATA adesso' : ' — anagrafica gia\' in archivio')
+      // ⚠️ Se le schede che combaciano erano piu' di una, l'Ingegnere deve
+      // saperlo PRIMA di confermare: e' stato preso il primo.
+      + (trovati > 1 ? ` ⚠️ ATTENZIONE: in anagrafica ce n'erano ${trovati} che combaciano, ho preso il primo. Se non e' questo, annulla.` : '')
+  }
+
+  const conId: DatiFatturaOspite = { ...dati, cliente_id: clienteId }
+  const documento = costruisciPayloadFatturaOspite(conId, ids.ids)
+
+  const payload: FatturaOspitePayload = {
+    documento,
+    prenotazione: conId.prenotazione,
+    prezzo: conId.prezzo,
+    imposta: conId.imposta?.importo ?? 0,
+    anni,
+    ids: {
+      aliquota10: ids.ids.aliquota10,
+      naturaArt15: ids.ids.naturaArt15,
+      contoBanca: ids.ids.contoBanca,
+      contoContanti: ids.ids.contoContanti,
+    },
+    cliente_id: clienteId,
+    intestazione: intestazioneFatturaOspite(conId),
+    avvisi: ids.ids.avvisi,
+  }
+
+  const pending = await salvaPendingPagamenti(
+    payload,
+    (id) => descriviFatturaOspite({ id, societa, dati: conId, entita, payload }),
+    societa,
+    'fattura_ospite',
+  )
+  if (!pending.ok) return fail(pending.error)
+
+  return ok({
+    societa: s.denominazione,
+    partita_iva: s.piva,
+    id: pending.id,
+    stato: 'in_attesa',
+    cliente: entita,
+    prenotazione: conId.prenotazione,
+    oggetto: oggettoFattura(conId),
+    prezzo_lordo: conId.prezzo,
+    imposta_soggiorno: conId.imposta?.importo ?? 0,
+    totale: Math.round((conId.prezzo + (conId.imposta?.importo ?? 0)) * 100) / 100,
+    anteprima: pending.descrizione,
+    conferma: comandoDaMostrare('fic_ok', pending.id),
+    annulla: comandoDaMostrare('fic_no', pending.id),
+    nota: 'Mostra l anteprima COM E. Non ho scritto nessuna fattura su Fatture in Cloud.',
+  })
+}
+
+/* ------------------------------------------------------------------ *
  * MODIFICARE un documento emesso gia' creato (autofattura, fattura, nota)
  * ------------------------------------------------------------------ */
 
@@ -3430,6 +3584,7 @@ export const A_CONFERMA_SINGOLA: ReadonlySet<string> = new Set([
   'rapporto_intervento',
   'autofattura',
   'modifica_documento',
+  'fattura_ospite',
 ])
 
 export async function confirmFicStep1(id: string): Promise<string> {
@@ -3598,6 +3753,49 @@ export async function confirmFicStep2(id: string): Promise<string> {
         // Se il documento NON e' nato, qui non ci va nessun id: il
         // `fic_document_id` di un documento che non abbiamo creato manderebbe
         // un futuro «annulla» a cancellare la fattura di qualcun altro.
+        fic_document_id: nato ? esito.id : null,
+        fic_url: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', cleanId)
+      .eq('stato', 'in_attesa')
+      .eq('conferme', 2)
+      .select('id')
+
+    if (chiusa.error) return `${esito.messaggio}\n\n⚠️ Aggiornamento audit fallito: ${chiusa.error.message}`
+    return esito.messaggio
+  }
+
+  // La FATTURA DI SOGGIORNO e' UN documento EMESSO, elettronico, che nasce
+  // gia' incassato. Stessa riga e stessa conferma singola; l'esito viene dalla
+  // RILETTURA e poi dalla VERIFICA FORMALE di Fatture in Cloud.
+  if (row.tipo === 'fattura_ospite') {
+    const esito = await creaFatturaOspite(row.payload, row.societa)
+
+    // 🚨 Si ritenta SOLO se non e' nato niente E niente e' incerto. Una riga
+    // rimessa a `conferme: 1` quando il documento potrebbe esistere gia' e' il
+    // modo per creare il doppione al secondo «confermo» — e qui il doppione
+    // sarebbe una SECONDA fattura elettronica allo stesso ospite, che non si
+    // cancella: si corregge con una nota di credito.
+    if (!esito.creata && !esito.da_verificare && !esito.bloccato) {
+      await supabase
+        .from('cervellone_fic_pending')
+        .update({ conferme: 1, updated_at: new Date().toISOString() })
+        .eq('id', cleanId)
+        .eq('stato', 'in_attesa')
+        .eq('conferme', 2)
+      return esito.messaggio
+    }
+
+    const nato = esito.creata || esito.da_verificare
+    const chiusa = await supabase
+      .from('cervellone_fic_pending')
+      .update({
+        stato: nato ? 'creata' : 'annullata',
+        // Se il documento NON e' nato, qui non ci va nessun id: il
+        // `fic_document_id` di un documento che non abbiamo creato manderebbe
+        // un futuro «annulla» a cancellare la fattura di qualcun altro (per
+        // esempio il DOPPIONE che abbiamo appena trovato e non toccato).
         fic_document_id: nato ? esito.id : null,
         fic_url: null,
         updated_at: new Date().toISOString(),
@@ -4138,6 +4336,78 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'fic_crea_fattura_ospite',
+    description:
+      'LA FATTURA AL CLIENTE PER UN SOGGIORNO prenotato su Booking, per LA REAL ESTATE. '
+      + 'Usalo al posto di compila_fattura_emessa quando si fattura un soggiorno: qui l\'aliquota 10%, l\'imposta di '
+      + 'soggiorno fuori base imponibile (natura art. 15), i due incassi gia\' saldati e le descrizioni sono gia\' quelli '
+      + 'dei documenti veri — con compila_fattura_emessa li dovresti indovinare uno per uno. '
+      + 'CREA ANCHE L\'ANAGRAFICA se l\'ospite non c\'e\' (e non ne crea un doppione se c\'e\'): non serve chiamare prima fic_crea_cliente. '
+      + 'Prepara una bozza e chiede UNA conferma: mostra l\'anteprima COM\'E\'. '
+      + '⛔ NON trasmette allo SdI: la fattura nasce elettronica e resta ferma, l\'invio lo fa l\'Ingegnere a mano. '
+      + '🚨 NON passarmi MAI data e luogo di nascita degli ospiti: in Fatture in Cloud non ci vanno (divieto del Garante). '
+      + 'Se mi dai date_nascita le uso SOLO per contare adulti e bambini e non finiscono da nessuna parte. '
+      + '🚨 Il prezzo e\' il LORDO Booking (alloggio + pulizie, IVA inclusa, COMMISSIONE INCLUSA), non il payout netto.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        unita: { type: 'string', description: "Nome dell'appartamento, es. «Blue Maison 1». Va in oggetto e in descrizione: non inventarlo." },
+        indirizzo_unita: { type: 'string', description: "Indirizzo dell'appartamento, es. «Via Fiumicello, Maratea (PZ)». Finisce nella descrizione della riga." },
+        check_in: { type: 'string', description: 'Data di arrivo, aaaa-mm-gg. E anche la data in cui risulta incassata l imposta di soggiorno.' },
+        check_out: { type: 'string', description: 'Data di partenza, aaaa-mm-gg. E anche la data in cui risulta incassato il soggiorno.' },
+        prenotazione: { type: 'string', description: 'Numero di prenotazione Booking.com. Serve anche a riconoscere il doppione: senza, non fatturo.' },
+        prezzo: {
+          type: 'number',
+          description:
+            'Prezzo LORDO Booking del soggiorno: alloggio + pulizie, IVA 10% INCLUSA e commissione Booking INCLUSA. '
+            + 'NON e il payout netto che arriva in banca. Fatture in Cloud scorpora da se.',
+        },
+        adulti: { type: 'number', description: 'Quanti adulti. Va nella descrizione della riga.' },
+        bambini: { type: 'number', description: 'Quanti bambini. Va nella descrizione della riga.' },
+        date_nascita: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Alternativa ad adulti/bambini: le date di nascita (aaaa-mm-gg) servono SOLO a contarli qui in memoria. '
+            + 'NON finiscono su Fatture in Cloud: e un divieto del Garante, non una preferenza.',
+        },
+        imposta_soggiorno: {
+          type: 'object',
+          description:
+            "L'imposta di soggiorno riscossa in struttura. Se manca o e zero, la riga NON viene creata. "
+            + 'Vuole tutti e quattro i numeri: importo, persone, notti, tariffa — e importo deve essere persone x notti x tariffa, '
+            + 'altrimenti rifiuto (la descrizione direbbe una cosa e ne addebiterebbe un altra, su denaro del Comune).',
+          properties: {
+            importo: { type: 'number' },
+            persone: { type: 'number' },
+            notti: { type: 'number' },
+            tariffa: { type: 'number', description: 'Euro per persona e per notte.' },
+          },
+        },
+        ospite: {
+          type: 'object',
+          description: "L'intestatario della fattura. 🚨 NIENTE data o luogo di nascita.",
+          properties: {
+            nome: { type: 'string', description: 'Cognome e nome come sul documento.' },
+            codice_fiscale: { type: 'string', description: 'Obbligatorio per un cliente ITALIANO. Lo VALIDO: se non passa il controllo mi fermo prima di creare qualsiasi cosa.' },
+            indirizzo: { type: 'string' },
+            cap: { type: 'string' },
+            citta: { type: 'string' },
+            provincia: { type: 'string', description: 'Sigla, es. MI. Per un estero la metto io a EE.' },
+            paese: { type: 'string', description: "Nazione per esteso: «Italia», «Francia». Se non e Italia la fattura esce nella forma ESTERA (niente codice fiscale, CAP 00000, provincia EE, codice destinatario XXXXXXX)." },
+            passaporto: { type: 'string', description: 'Solo per un ospite estero, e solo se ce l hai: finisce nelle NOTE della fattura. Il numero, non la copia del documento.' },
+            codice_destinatario: { type: 'string', description: 'Codice destinatario SdI, se lo sai. Altrimenti lo metto io: 0000000 per un privato italiano, XXXXXXX per un estero.' },
+            email: { type: 'string' },
+          },
+          required: ['nome', 'indirizzo', 'citta'],
+        },
+        cliente_id: { type: 'number', description: "Id dell'anagrafica su Fatture in Cloud, se ce l'hai gia da fic_cerca_anagrafica. Con questo non tocco l'anagrafica." },
+        data: { type: 'string', description: 'Data del DOCUMENTO, aaaa-mm-gg. Predefinita: oggi.' },
+      },
+      required: ['unita', 'indirizzo_unita', 'check_in', 'check_out', 'prenotazione', 'prezzo', 'ospite'],
+    },
+  },
+  {
     name: 'elimina_bozza_fic',
     description: 'Annulla una bozza FIC pending o elimina da FIC una bozza gia creata, poi marca il pending come annullato.',
     input_schema: {
@@ -4158,6 +4428,7 @@ export async function executeFicWriteTool(
     if (name === 'compila_rapporto_intervento') return compilaDocumento(input, 'rapporto_intervento', societa)
     if (name === 'compila_autofattura') return compilaAutofatture(input, societa)
     if (name === 'registra_spesa_fornitore') return compilaSpesaFornitore(input, societa)
+    if (name === 'fic_crea_fattura_ospite') return compilaFatturaOspite(input, societa)
     if (name === 'modifica_documento_fic') return compilaModificaDocumento(input, societa)
     if (name === 'verifica_documento_fic') return verificaDocumentoFic(input, societa)
     if (name === 'segna_fatture_ricevute_pagate') return segnaFatturePagate(input, societa, 'ricevuta')
