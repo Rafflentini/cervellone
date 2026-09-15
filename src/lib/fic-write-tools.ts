@@ -1244,13 +1244,37 @@ const TIPO_FIC_AUTOFATTURA = 'self_supplier_invoice'
  * TD17 = integrazione/autofattura per acquisto di servizi dall'estero,
  * art. 17 c.2 DPR 633/72, servizio generico ex art. 7-ter.
  */
-/** Metodo di pagamento formale dell integrazione: e il predefinito che il form di Fatture in Cloud propone per una TD17. Su un reverse charge non si paga niente, ma FIC lo pretende sui documenti elettronici. */
-/** Codice destinatario SdI dell integrazione: e il NOSTRO, non quello del fornitore estero. Letto da due fonti il 15 set 2026 — il TD17 valido dell Ingegnere e il form di FIC per La Real Estate. */
-const CODICE_DESTINATARIO_INTEGRAZIONE = 'M5UXCR1'
-
-const METODO_PAGAMENTO_INTEGRAZIONE = 'MP01'
-
 const TIPO_DOCUMENTO_SDI = 'TD17'
+
+/**
+ * Metodo di pagamento dell'integrazione: `MP05`, bonifico.
+ *
+ * ⚠️ Fatture in Cloud PRETENDE questo campo su un documento elettronico (422
+ * «il metodo di pagamento e' obbligatorio»), anche se su un reverse charge non
+ * si paga niente e il valore e' formale: l'integrazione TD17 valida fornita
+ * dall'Ingegnere non ha nemmeno il blocco `DatiPagamento`. Qui c'e' solo
+ * perche' FIC lo esige.
+ *
+ * Era `MP01` (contanti), che e' il predefinito del form di FIC. L'Ingegnere ha
+ * chiesto di cambiarlo e ha ragione nel merito: la commissione Booking non si
+ * paga in contanti, viene trattenuta dal bonifico dei soggiorni. Se un campo
+ * formale si deve mettere, che dica almeno una cosa vera.
+ */
+const METODO_PAGAMENTO_INTEGRAZIONE = 'MP05'
+
+/**
+ * Codice destinatario SdI dell'integrazione: e' il NOSTRO, non quello del
+ * fornitore estero.
+ *
+ * Fatture in Cloud lo ricava dall'anagrafica della controparte, che su una
+ * TD17 e' il fornitore estero: non avendo un codice SdI, FIC ripiega su
+ * `XXXXXXX`, riservato ai destinatari ESTERI. Ma un'integrazione torna a noi.
+ *
+ * Letto da DUE fonti il 15 settembre 2026 — l'integrazione TD17 valida
+ * dell'Ingegnere e il form di FIC che lo prefilla per La Real Estate — e poi
+ * VERIFICATO sull'anteprima elettronica del documento generato da qui.
+ */
+const CODICE_DESTINATARIO_INTEGRAZIONE = 'M5UXCR1'
 
 /**
  * Il blocco `ei_raw` dell'integrazione: tipo documento SdI + riferimento alla
