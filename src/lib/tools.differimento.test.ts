@@ -265,7 +265,7 @@ describe('differimento delle definizioni dei tool', () => {
   //
   // LA DECISIONE, 14 settembre 2026 (il fornitore nel suo elenco). Il NUMERO
   // NON CAMBIA — restano 142 — ma l'impronta si', da
-  // `a348c8411c5fb76c6c87bf8f177ae5fe`. `fic_crea_cliente` aveva
+  // `873a2973612199d616af1368ddb8ee65`. `fic_crea_cliente` aveva
   // `entities/clients` CABLATO e sapeva creare solo clienti: Booking.com B.V.
   // e' un FORNITORE, e su Fatture in Cloud i due elenchi sono separati.
   // Adesso accetta `elenco: 'fornitore'`, e siccome una capacita' che non e'
@@ -284,11 +284,17 @@ describe('differimento delle definizioni dei tool', () => {
   // e' su quella che decide se e quando usare il tool, e cosa dire
   // all'Ingegnere dopo. Per questo il cambio di parole paga il pedaggio
   // dell'impronta anche senza un tool in piu'.
+  //
+  // LA DECISIONE, 15 settembre 2026 (il metodo di pagamento sulle fatture ai
+  // clienti). Numero invariato — 142 — impronta cambiata: `compila_fattura_emessa`
+  // accetta ora `metodo_pagamento`, perche' Fatture in Cloud lo PRETENDE su un
+  // documento elettronico. Senza, la prima fattura di soggiorno sarebbe morta
+  // con lo stesso 422 dell'autofattura.
   it('senza opzioni: 142 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
     expect(defs).toHaveLength(142)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('a348c8411c5fb76c6c87bf8f177ae5fe')
+      .toBe('873a2973612199d616af1368ddb8ee65')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

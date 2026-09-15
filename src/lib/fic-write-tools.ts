@@ -569,8 +569,9 @@ async function compilaDocumento(
     itemsList.push(item)
   }
 
+  const elettronica = tipo === 'fattura_emessa'
   const payload: Record<string, unknown> = {
-    type: tipo === 'fattura_emessa' ? 'invoice' : 'work_report',
+    type: elettronica ? 'invoice' : 'work_report',
     entity: entity.entity,
     items_list: itemsList,
     date: data,
@@ -586,7 +587,28 @@ async function compilaDocumento(
     // ⚠️ Elettronico NON vuol dire trasmesso: nessuna funzione di questo repo
     // chiama l'endpoint di invio allo SdI. Il documento nasce pronto e resta
     // fermo finche' l'Ingegnere non lo guarda e lo manda a mano.
-    e_invoice: tipo === 'fattura_emessa',
+    e_invoice: elettronica,
+  }
+  // 🚨 Fatture in Cloud PRETENDE il metodo di pagamento su un documento
+  // ELETTRONICO: senza, rifiuta la creazione con 422 «ei_data.payment_method:
+  // il metodo di pagamento e' obbligatorio in un documento elettronico».
+  //
+  // ⚠️ Questa riga nasce da un difetto che avevo introdotto io il 15 settembre
+  // 2026: rendendo elettroniche le fatture emesse — che e' giusto, altrimenti
+  // non si possono trasmettere allo SdI — ho messo `ei_data` SOLO
+  // sull'autofattura. La fattura al cliente sarebbe morta con lo stesso 422 al
+  // primo soggiorno fatturato, e nessun test l'avrebbe detto: i test non
+  // parlano con Fatture in Cloud.
+  //
+  // Il valore predefinito e' `MP05` (bonifico), che e' come arrivano gli
+  // incassi dei soggiorni: dalle piattaforme e dai bonifici degli ospiti. Chi
+  // chiama puo' passarne un altro con `metodo_pagamento` — e l'anteprima lo
+  // mostra, cosi' se e' sbagliato l'Ingegnere lo vede PRIMA di confermare.
+  //
+  // Il rapporto d'intervento non e' elettronico e non ne ha bisogno.
+  if (elettronica) {
+    const metodo = cleanString(input.metodo_pagamento) ?? METODO_PAGAMENTO_INTEGRAZIONE
+    payload.ei_data = { payment_method: metodo }
   }
   if (note) payload.notes = note
   // Il sezionale NON e' cosmetico: sceglie la serie di numerazione, cioe' il
@@ -2960,6 +2982,11 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
+        metodo_pagamento: {
+          type: 'string',
+          description:
+            "Codice SdI del metodo di pagamento, es. MP05 bonifico, MP08 carta, MP01 contanti. Fatture in Cloud lo PRETENDE su una fattura elettronica. Se non lo passi vale MP05 (bonifico), che e come arrivano gli incassi dei soggiorni: se e sbagliato si vede nell anteprima e lo correggi prima di confermare.",
+        },
         cliente: { type: 'string', description: "Nome del cliente. Se hai il cliente_id usa QUELLO: il nome serve solo a ritrovarlo." },
         cliente_id: {
           type: 'number',

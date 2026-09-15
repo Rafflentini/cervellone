@@ -27,7 +27,11 @@ const sorgente = (f: string) => readFileSync(join(process.cwd(), 'src/lib', f), 
 
 describe('i documenti fiscali nascono elettronici', () => {
   it('🚨 la FATTURA emessa si', () => {
-    expect(sorgente('fic-write-tools.ts')).toContain("e_invoice: tipo === 'fattura_emessa'")
+    const t = sorgente('fic-write-tools.ts')
+    // 15 set 2026: la condizione ha un nome, cosi la legge anche il ramo che
+    // aggiunge ei_data — FIC pretende il metodo di pagamento sugli elettronici.
+    expect(t).toContain("const elettronica = tipo === 'fattura_emessa'")
+    expect(t).toContain('e_invoice: elettronica,')
   })
 
   it('🚨 l AUTOFATTURA si: un integrazione TD17 si assolve trasmettendola', () => {
