@@ -117,6 +117,9 @@ export const DOMINI: readonly Dominio[] = [
       'fic_aggiorna_anagrafica',
       'compila_fattura_emessa',
       'compila_rapporto_intervento',
+      // La fattura al CLIENTE per un soggiorno Booking: lavoro da contabile,
+      // accanto agli altri verbi che scrivono su Fatture in Cloud.
+      'fic_crea_fattura_ospite',
       'compila_autofattura',
       'registra_spesa_fornitore',
       // 2026-09-15: correggere un documento gia' creato e non ancora trasmesso,

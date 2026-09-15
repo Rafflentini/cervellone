@@ -391,11 +391,25 @@ describe('differimento delle definizioni dei tool', () => {
   // la rilettura, e se la scrittura fallisce il tool lo DICE con l'id vero) e
   // `compila_autofattura` (regola (12), identica dal lato dell'integrazione).
   // Una capacita' che non e' nello SCHEMA, per il modello NON ESISTE.
-  it('senza opzioni: 147 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 15 settembre 2026 (la fattura all'ospite). E' entrato
+  // `fic_crea_fattura_ospite`: la fattura al cliente per un soggiorno Booking,
+  // costruita rispecchiando DUE documenti veri — uno a cliente italiano e uno
+  // a cliente francese — creati e verificati a mano sul gestionale.
+  //
+  // ⚠️ Il metodo, non il tool, e' la cosa da ricordare. Tre campi che la
+  // specifica scritta dava in un modo e i documenti veri in un altro:
+  // `payment_method` del documento e' VUOTO (il bonifico sta solo in
+  // `ei_data`), `numeration` e' stringa vuota e non «Principale», e sul
+  // cliente estero `tax_code` non e' una stringa vuota — non c'e' proprio.
+  // Nessuno dei tre si legge da una specifica: si leggono da un documento.
+  //
+  // ⚠️ Numero e impronta qui sotto sono presi DAL FALLIMENTO del test.
+  it('senza opzioni: 148 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(147)
+    expect(defs).toHaveLength(148)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('ced0b10d884212aefaaabccea4313a25')
+      .toBe('2d393c2684d2b90759a633d1928c9e32')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
