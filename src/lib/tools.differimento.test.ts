@@ -297,6 +297,9 @@ describe('differimento delle definizioni dei tool', () => {
   // strada per correggere un'autofattura sbagliata era cancellarla e rifarla,
   // e su una serie di numerazione fiscale questo lascia un BUCO: il numero
   // bruciato non torna.
+  // L'impronta passa da `873a2973…` (quella di main dopo il metodo di
+  // pagamento) a `15b0192d…`: rimisurata DOPO il rebase, perche' le definizioni
+  // di main erano cambiate sotto.
   //
   // ⚠️ Numero e impronta vengono DAL FALLIMENTO del test, non calcolati a
   // parte. ⚠️ In questo checkout `node_modules` e' incompleto (la cartella
@@ -309,7 +312,7 @@ describe('differimento delle definizioni dei tool', () => {
     const defs = getToolDefinitions()
     expect(defs).toHaveLength(143)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('873a2973612199d616af1368ddb8ee65')
+      .toBe('15b0192dd7ec21bcefcff45c50655b25')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
