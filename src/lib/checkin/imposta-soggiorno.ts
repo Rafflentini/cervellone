@@ -39,11 +39,36 @@ export interface RegoleImposta {
 }
 
 /**
- * ⚠️ `esenzioneEtaMax: 12` e' la lettura adottata di "minori di eta' non
- * superiore al dodicesimo anno": esente fino a 12 anni compiuti, pagante da 13.
- * La formula ammette anche la lettura piu' stretta (esente fino all'11).
- * DA CONFERMARE all'Ufficio Entrate e Tributi del Comune (0973 874111).
- * Non e' una decisione tecnica: e' denaro di terzi.
+ * Le regole di Maratea, dal regolamento VERO.
+ *
+ * 📜 FONTE: D.C.C. n. 8/2012, ultima modifica D.C.C. n. 3 del 24/02/2026.
+ * https://www.comune.maratea.pz.it/Regolamentidettagli?ID=82511-3
+ * Letto per intero l'11 agosto 2026.
+ *
+ * ✅ `esenzioneEtaMax: 12` NON e' piu' una lettura adottata: l'art. 5.1 esenta
+ * i minori fino a 12 anni. Qui c'era un avviso che chiedeva di confermarlo
+ * all'Ufficio Tributi — confermato dalla lettura del regolamento.
+ *
+ * ✅ `tariffa: 2.5` per case vacanza e locazioni turistiche, dal 01/05/2026.
+ * ⚠️ Prima di quella data la tariffa era **1,50 €**: le fatture agli ospiti di
+ * luglio e agosto 2026 riportano 1,50 ed e' giusto cosi'. Chi legge un importo
+ * vecchio non deve «correggerlo».
+ *
+ * 🚨 `stagioneDal: '01/05'` E' IL PUNTO APERTO, ed e' l'unico.
+ * L'art. 2 c.1 del regolamento dice **dal 1° APRILE** al 31 ottobre. Il
+ * comunicato sulle tariffe dice «dal 1° maggio al 31 ottobre 2026», e la
+ * lettura adottata e' che il 1° maggio sia la data da cui valgono le NUOVE
+ * TARIFFE, non l'inizio del periodo d'imposta.
+ *
+ * Se quella lettura e' giusta, questa costante e' SBAGLIATA: un soggiorno di
+ * aprile risulterebbe non tassato, mentre l'imposta sarebbe dovuta alla
+ * tariffa vecchia. Da confermare all'Ufficio Entrate e Tributi
+ * (0973 874111) prima della stagione 2027 — e comunque prima di fatturare un
+ * soggiorno di aprile. Non e' una decisione tecnica: e' denaro di terzi.
+ *
+ * ⬜ NON implementato: lo sconto del 50% per gruppi da 25 persone in su
+ * (art. 5.2.a). Nessuna prenotazione lo ha mai richiesto, e una regola mai
+ * esercitata scritta male e' peggio di una regola assente.
  */
 export const REGOLE_MARATEA: RegoleImposta = {
   tariffa: 2.5,
