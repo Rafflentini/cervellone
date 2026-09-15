@@ -1225,14 +1225,48 @@ const TIPO_FIC_AUTOFATTURA = 'self_supplier_invoice'
  */
 const TIPO_DOCUMENTO_SDI = 'TD17'
 
-function eiRawTipoDocumento(codice: string): Record<string, unknown> {
-  return {
-    FatturaElettronicaBody: {
-      DatiGenerali: {
-        DatiGeneraliDocumento: { TipoDocumento: codice },
-      },
-    },
+/**
+ * Il blocco `ei_raw` dell'integrazione: tipo documento SdI + riferimento alla
+ * fattura estera che si sta integrando.
+ *
+ * ⚠️ **`DatiFattureCollegate` non e' un di piu'.** Il 15 settembre 2026
+ * l'Ingegnere ha fornito l'XML di una TD17 vera e valida (integrazione di una
+ * fattura Dropbox Irlanda), e quel blocco c'e':
+ *
+ *     <DatiFattureCollegate>
+ *       <IdDocumento>NC2CQNXC5QL2</IdDocumento>
+ *       <Data>2025-12-18</Data>
+ *     </DatiFattureCollegate>
+ *
+ * E' il campo STRUTTURATO che lega l'integrazione al documento estero. Fino a
+ * quel momento il riferimento viaggiava solo nella riga e nelle note — cioe'
+ * come testo che un umano legge e una macchina no — e il tool lo dichiarava
+ * come cosa «da controllare a mano su FIC».
+ *
+ * ⚠️ Cosa NON si tocca, e perche'. Lo stesso XML porta `RegimeFiscale RF18`
+ * sul cedente estero, e qui non lo mettiamo: non sappiamo se Fatture in Cloud
+ * lo derivi gia' dall'anagrafica, e la stessa notte due «migliorie» dedotte da
+ * un sintomo senza prova hanno rotto la creazione del documento. Si guarda
+ * l'XML prodotto dal prossimo documento vero, poi si decide.
+ */
+export { eiRawIntegrazione as eiRawIntegrazionePerTest }
+
+function eiRawIntegrazione(
+  codice: string,
+  fatturaCollegata?: { numero: string; data: string },
+): Record<string, unknown> {
+  const datiGenerali: Record<string, unknown> = {
+    DatiGeneraliDocumento: { TipoDocumento: codice },
   }
+  // Solo se ci sono ENTRAMBI: un riferimento a meta' su un documento fiscale
+  // e' peggio di nessun riferimento, perche' sembra compilato.
+  if (fatturaCollegata?.numero && fatturaCollegata?.data) {
+    datiGenerali.DatiFattureCollegate = {
+      IdDocumento: fatturaCollegata.numero,
+      Data: fatturaCollegata.data,
+    }
+  }
+  return { FatturaElettronicaBody: { DatiGenerali: datiGenerali } }
 }
 
 /**
@@ -1593,7 +1627,7 @@ async function compilaAutofatture(
       }],
       // 🚨 Il codice TD17 viaggia QUI, non nel `type`: senza questa struttura
       // il documento sarebbe una normale autofattura, non un'integrazione.
-      ei_raw: eiRawTipoDocumento(TIPO_DOCUMENTO_SDI),
+      ei_raw: eiRawIntegrazione(TIPO_DOCUMENTO_SDI, { numero: r.numero, data: r.data }),
       // La data dell'integrazione e' quella di RICEZIONE della fattura estera.
       date: r.dataRicezione,
       // Serie dedicata: senza, FIC numererebbe fra le fatture attive.
