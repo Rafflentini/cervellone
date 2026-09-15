@@ -144,3 +144,29 @@ create policy "service_role_all_cervellone_registro_portali"
 
 comment on table public.cervellone_registro_portali is
   'Registro a stati delle fatture di commissione dei portali (Booking, Airbnb). Una riga per fattura del fornitore. NON e la verita: Fatture in Cloud lo e — vedi registro_portali_riconcilia.';
+
+-- ✅ PROVATA CONTRO POSTGRES, non contro un finto database — 15 settembre 2026.
+--
+-- Chi ha scritto questa migrazione non poteva verificarla: i suoi test parlano
+-- con un finto Supabase che IMITA il 23505, e la colonna generata la dava per
+-- buona leggendo il testo di questo file. Erano due cose diverse.
+--
+-- Applicata al database vero, poi messa alla prova con lo stesso numero scritto
+-- in due modi, in un'unica istruzione:
+--
+--     insert ... values ('larealestate', 'booking', '1660950537',   '2026-08-03')
+--     insert ... values ('larealestate', 'booking', '1660-950.537', '2026-08-03')
+--
+-- Postgres:
+--     ERROR 23505: duplicate key value violates unique constraint
+--     "uniq_registro_portali_fattura"
+--     DETAIL: Key (societa, portale, numero_chiave)
+--             = (larealestate, booking, 1660950537) already exists.
+--
+-- Quindi: la colonna generata normalizza davvero (trattini e punti cadono), e
+-- l'indice unico morde sulla chiave normalizzata, non sul testo grezzo.
+--
+-- ⚠️ E la tabella e' rimasta a ZERO righe: le due insert stavano in una sola
+-- istruzione, quindi il fallimento le ha annullate entrambe. Nessun dato di
+-- collaudo e' rimasto in produzione — che in questa casa e' gia' successo, e
+-- si e' scoperto mesi dopo.
