@@ -308,11 +308,31 @@ describe('differimento delle definizioni dei tool', () => {
   // misura e' stata presa facendo fallire lo stesso `expect` in un file
   // temporaneo che stuzzava solo quei pacchetti, che le definizioni dei tool
   // non toccano; il conteggio letto li' era 143, cioe' esattamente 142 + 1.
-  it('senza opzioni: 143 definizioni e la stessa impronta di main', () => {
+  // LA DECISIONE, 15 settembre 2026 (verificare un documento gia' compilato).
+  // Da 143 a 144: nasce `verifica_documento_fic`, che LEGGE un'autofattura
+  // TD17 o una spesa estera gia' creata e dice, regola per regola, cosa non va
+  // — e non scrive niente, quindi non chiede nessuna conferma. Prima il bot
+  // sapeva creare quei documenti e da un giorno sapeva modificarli, ma non
+  // sapeva GUARDARLI: un documento nato sbagliato restava sbagliato, perche'
+  // nessuno apriva i campi uno per uno.
+  // Nello stesso giro cambia anche la definizione di `modifica_documento_fic`,
+  // che accetta ora `codice_destinatario`: e' l'unico dei sei difetti di una
+  // TD17 che Fatture in Cloud, a documento gia' creato, NON lascia correggere
+  // a mano. Trovarlo senza poterlo riparare sarebbe stato meta' lavoro.
+  // L'impronta passa da `15b0192d…` a `55cf2336…`.
+  //
+  // ⚠️ Numero e impronta vengono DAL FALLIMENTO del test, non calcolati a
+  // parte. ⚠️ In questo checkout `node_modules` e' incompleto (`pino` VUOTA,
+  // mancano rimraf, puppeteer-core, @sparticuz/chromium, pdf-parse) e QUESTO
+  // FILE non si importa affatto. La misura e' stata presa facendo fallire lo
+  // stesso `expect` in un file temporaneo che stuzzava solo quei pacchetti —
+  // che le definizioni dei tool non toccano — e il conteggio letto li' era
+  // 144, cioe' esattamente 143 + 1.
+  it('senza opzioni: 144 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(143)
+    expect(defs).toHaveLength(144)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('15b0192dd7ec21bcefcff45c50655b25')
+      .toBe('55cf233681e54bb869283ef1042ceee4')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

@@ -30,6 +30,15 @@ import {
   type EsitoModifica,
   type ModificheRichieste,
 } from './fic-modifica'
+import {
+  verificaDocumento,
+  riepilogo,
+  intestazione,
+  CODICE_DESTINATARIO_INTEGRAZIONE,
+  CODICE_DESTINATARIO_ESTERI,
+  TIPO_DOCUMENTO_SDI,
+  type TipoVerifica,
+} from './fic-verifica'
 import { scegliAllegatoMail, scaricaAllegatoScelto, CASELLE_GOOGLE } from './spesa-allegato'
 import type { ChiaveCasella } from './caselle'
 
@@ -1284,18 +1293,15 @@ async function eseguiPagamenti(
 const TIPO_FIC_AUTOFATTURA = 'self_supplier_invoice'
 
 /**
- * 🚨 Il codice TD17 NON sta nel campo `type`: sta in `ei_raw`.
+ * 🚨 `TIPO_DOCUMENTO_SDI` e `CODICE_DESTINATARIO_INTEGRAZIONE` NON stanno piu'
+ * qui: vivono in `fic-verifica.ts`, insieme alle regole che li fanno valere.
  *
- * `type` sceglie la FORMA del documento su Fatture in Cloud; il tipo documento
- * dell'XML SdI e' un'altra cosa, e senza questa struttura il documento non e'
- * un'integrazione TD17 — e' una normale autofattura, corretta in apparenza e
- * sbagliata nella sostanza. Era il punto su cui questo lavoro poteva essere
- * silenziosamente sbagliato (documentazione ufficiale FIC, FAQ sviluppatori).
- *
- * TD17 = integrazione/autofattura per acquisto di servizi dall'estero,
- * art. 17 c.2 DPR 633/72, servizio generico ex art. 7-ter.
+ * Erano due costanti definite accanto al codice che CREA le autofatture. Dal
+ * 15 settembre 2026 c'e' anche del codice che le VERIFICA, e due costanti
+ * uguali in due file sono due costanti che un giorno divergono — il giorno in
+ * cui divergono, la verifica dichiara «a norma» un documento sbagliato. Una
+ * sola definizione, importata da chi crea e da chi controlla.
  */
-const TIPO_DOCUMENTO_SDI = 'TD17'
 
 /**
  * Metodo di pagamento dell'integrazione: `MP05`, bonifico.
@@ -1330,8 +1336,6 @@ const REGIME_FISCALE_CEDENTE_ESTERO = 'RF18'
 
 /** Provincia del cedente ESTERO: EE. Campo obbligatorio, stessa verifica. */
 const PROVINCIA_ESTERO = 'EE'
-
-const CODICE_DESTINATARIO_INTEGRAZIONE = 'M5UXCR1'
 
 /**
  * Il blocco `ei_raw` dell'integrazione: tipo documento SdI TD17 e regime
@@ -2729,6 +2733,14 @@ function leggiModifiche(input: Record<string, unknown>): { ok: true; valore: Mod
     m.fattura_collegata = { numero: cleanString(f.numero) ?? '', data: cleanString(f.data) ?? '' }
   }
 
+  if (input.codice_destinatario !== undefined) {
+    if (typeof input.codice_destinatario !== 'string') return { ok: false, error: 'il codice destinatario deve essere una stringa (es. M5UXCR1)' }
+    // La forma la controlla `confrontoModifiche`, nel motore, insieme alle
+    // altre regole: qui si LEGGE e basta. Un secondo posto dove validare e' un
+    // secondo posto dove le due validazioni un giorno divergono.
+    m.codice_destinatario = input.codice_destinatario
+  }
+
   return { ok: true, valore: m }
 }
 
@@ -2793,6 +2805,63 @@ async function compilaModificaDocumento(
     conferma: comandoDaMostrare('fic_ok', pending.id),
     annulla: comandoDaMostrare('fic_no', pending.id),
     nota: 'Mostra l anteprima COM E, col PRIMA e il DOPO di ogni campo: e l unica cosa che l Ingegnere legge prima di confermare. Non ho scritto niente su Fatture in Cloud.',
+  })
+}
+
+/**
+ * VERIFICA un documento gia' compilato. NON scrive niente, e per questo non
+ * passa dal pending e non chiede nessuna conferma.
+ *
+ * 🚨 L'esito e' un ELENCO PER REGOLA. Il riepilogo numerico c'e', ma ACCANTO
+ * all'elenco, non al suo posto: «3 rilievi» non dice a nessuno cosa c'e' di
+ * sbagliato, e su un documento fiscale la differenza fra «c'e' un problema» e
+ * «il codice destinatario e' XXXXXXX invece di M5UXCR1» e' tutta.
+ *
+ * 🚨 E i `non_verificati` viaggiano come TERZA colonna, separata dagli «a
+ * norma». Sommarli ai passati sarebbe il difetto peggiore che questa casa
+ * conosce: un guasto di lettura travestito da esito buono.
+ */
+async function verificaDocumentoFic(
+  input: Record<string, unknown>,
+  societa: CodiceSocieta,
+): Promise<string> {
+  const id = intero(input.id) ?? intero(input.documento_id)
+  if (id === undefined || id <= 0) {
+    return fail('serve l\'id del documento da verificare su Fatture in Cloud (fic_fatture_emesse per le autofatture, fic_fatture_ricevute per le spese).')
+  }
+
+  const tipo = cleanString(input.tipo)
+  // ⚠️ Niente predefinito e niente «provo prima l'uno e poi l'altro»: gli id
+  // dei documenti emessi e quelli delle spese ricevute sono due numerazioni
+  // che si SOVRAPPONGONO, e indovinare vuol dire, prima o poi, verificare un
+  // documento diverso da quello di cui l'Ingegnere sta parlando — e dirgli che
+  // e' a norma.
+  if (tipo !== 'autofattura' && tipo !== 'spesa') {
+    return fail(
+      `non mi hai detto in quale registro sta il documento ${id}: «autofattura» per un documento EMESSO (l'integrazione `
+      + `${TIPO_DOCUMENTO_SDI}) oppure «spesa» per un documento RICEVUTO (la fattura del fornitore estero). Non lo indovino: `
+      + 'i due registri hanno numerazioni diverse che si sovrappongono.',
+      { id },
+    )
+  }
+
+  const esito = await verificaDocumento(id, tipo as TipoVerifica, societa)
+  // La risposta di Fatture in Cloud si riporta COM'E', senza interpretarla.
+  if (!esito.ok) return fail(esito.error, { id, tipo })
+
+  const v = esito.valore
+  return ok({
+    ...intestazione(societa),
+    verifica: tipo,
+    documento: v.documento,
+    riepilogo: riepilogo(v.controlli),
+    controlli: v.controlli,
+    correzione_bloccata: v.correzione_bloccata,
+    da_controllare_a_mano: v.da_controllare_a_mano,
+    nota: 'Non ho scritto niente: questa e una verifica. Riporta l ELENCO regola per regola, non un riassunto: per ogni '
+      + 'voce cosa dice la regola e cosa c e davvero sul documento. «non_verificato» NON vuol dire «a posto», vuol dire '
+      + 'che quel campo non l ho letto. E riporta SEMPRE da_controllare_a_mano: sono i controlli che l API non permette '
+      + 'e che quindi non fa nessuno se non lo dici tu.',
   })
 }
 
@@ -3491,7 +3560,7 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     // in blocco vorrebbe dire dire «si» a correzioni mai viste una per una.
     name: 'modifica_documento_fic',
     description:
-      "MODIFICA un documento EMESSO gia creato su Fatture in Cloud (autofattura/integrazione TD17, fattura, nota) cambiandone i campi sbagliati, INVECE di cancellarlo e rifarlo: cancellare e rifare brucia il numero e lascia un BUCO nella serie di numerazione fiscale. Il caso vero: un'autofattura appena compilata con la data, l'imponibile o il riferimento alla fattura estera sbagliati. PUOI cambiare: la data del documento, le note, la descrizione e l'importo di una RIGA ESISTENTE (per posizione), e i «dati fattura collegata» (numero e data della fattura estera integrata). NON puoi: aggiungere o togliere righe, cambiare il numero, la serie, il cliente/fornitore o l'aliquota IVA — per quelle serve rifare il documento. REGOLE FERREE: (1) 🚨 UN DOCUMENTO TRASMESSO NON SI TOCCA: se risulta bloccato (locked) o gia mandato allo SdI il tool RIFIUTA, e non e un avviso. Una fattura elettronica trasmessa si corregge con una NOTA DI VARIAZIONE, non riscrivendola: se te lo dice, riportalo e non insistere; (2) 🚨 un campo che NON passi NON viene toccato, e un campo vuoto NON vuol dire «cancella»: passa solo i campi da cambiare, col valore NUOVO; (3) non scrive niente subito: prepara l'anteprima e serve la conferma (/fic_ok_<id>, oppure un «confermo» a voce: e una conferma sola); (4) 🚨 l'anteprima mostra il PRIMA e il DOPO di ogni campo, letti da Fatture in Cloud: RIPORTALA COM E — «cambio la data» non basta, l'Ingegnere deve vedere «data: 2026-08-03 → 2026-08-05» prima di confermare; (5) l'esito viene da una RILETTURA, non dalla risposta di Fatture in Cloud: se un campo non risulta cambiato il messaggio lo dice, e allora NON dire che e stato modificato; (6) se Fatture in Cloud rifiuta, il messaggio riporta la sua risposta TESTUALE (stato e testo): riportala com e, non interpretarla e non inventare spiegazioni; (7) l'id e quello del documento su Fatture in Cloud (da fic_fatture_emesse / fic_dettaglio_documento), non l'id di una bozza pending.",
+      "MODIFICA un documento EMESSO gia creato su Fatture in Cloud (autofattura/integrazione TD17, fattura, nota) cambiandone i campi sbagliati, INVECE di cancellarlo e rifarlo: cancellare e rifare brucia il numero e lascia un BUCO nella serie di numerazione fiscale. Il caso vero: un'autofattura appena compilata con la data, l'imponibile o il riferimento alla fattura estera sbagliati. PUOI cambiare: la data del documento, le note, la descrizione e l'importo di una RIGA ESISTENTE (per posizione), i «dati fattura collegata» (numero e data della fattura estera integrata) e il CODICE DESTINATARIO SdI del documento. NON puoi: aggiungere o togliere righe, cambiare il numero, la serie, il cliente/fornitore, l'aliquota IVA, il tipo documento SdI (TD17), lo stato del piano pagamenti o e_invoice — per quelle serve rifare il documento o correggerlo a mano su Fatture in Cloud. REGOLE FERREE: (1) 🚨 UN DOCUMENTO TRASMESSO NON SI TOCCA: se risulta bloccato (locked) o gia mandato allo SdI il tool RIFIUTA, e non e un avviso. Una fattura elettronica trasmessa si corregge con una NOTA DI VARIAZIONE, non riscrivendola: se te lo dice, riportalo e non insistere; (2) 🚨 un campo che NON passi NON viene toccato, e un campo vuoto NON vuol dire «cancella»: passa solo i campi da cambiare, col valore NUOVO; (3) non scrive niente subito: prepara l'anteprima e serve la conferma (/fic_ok_<id>, oppure un «confermo» a voce: e una conferma sola); (4) 🚨 l'anteprima mostra il PRIMA e il DOPO di ogni campo, letti da Fatture in Cloud: RIPORTALA COM E — «cambio la data» non basta, l'Ingegnere deve vedere «data: 2026-08-03 → 2026-08-05» prima di confermare; (5) l'esito viene da una RILETTURA, non dalla risposta di Fatture in Cloud: se un campo non risulta cambiato il messaggio lo dice, e allora NON dire che e stato modificato; (6) se Fatture in Cloud rifiuta, il messaggio riporta la sua risposta TESTUALE (stato e testo): riportala com e, non interpretarla e non inventare spiegazioni; (7) l'id e quello del documento su Fatture in Cloud (da fic_fatture_emesse / fic_dettaglio_documento), non l'id di una bozza pending.",
     input_schema: {
       type: 'object',
       properties: {
@@ -3520,8 +3589,39 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
           },
           required: ['numero', 'data'],
         },
+        codice_destinatario: {
+          type: 'string',
+          description:
+            `Codice destinatario SdI scritto sul DOCUMENTO (6 o 7 caratteri alfanumerici). Su un'integrazione TD17 deve essere il NOSTRO, ${CODICE_DESTINATARIO_INTEGRAZIONE}: l'integrazione torna a noi. Se ci trovi ${CODICE_DESTINATARIO_ESTERI} e sbagliato — e il codice riservato ai destinatari ESTERI, che Fatture in Cloud mette da solo quando la controparte non ha un codice SdI. ⚠️ Su un documento gia creato questo campo su Fatture in Cloud NON si tocca a mano: l'API e l'unica strada.`,
+        },
       },
       required: ['id'],
+    },
+  },
+  {
+    // ⚠️ Sta fra i tool di SCRITTURA perche' e' lo stesso esecutore e la stessa
+    // famiglia, ma NON scrive: e' una lettura, e per questo non chiede nessuna
+    // conferma. Verificare e correggere sono due atti diversi.
+    name: 'verifica_documento_fic',
+    description:
+      `VERIFICA un documento GIA COMPILATO su Fatture in Cloud e dice COSA C'E DI SBAGLIATO, regola per regola: un'AUTOFATTURA/integrazione ${TIPO_DOCUMENTO_SDI} (documento emesso) oppure una SPESA di fornitore estero in reverse charge (documento ricevuto). Chiamalo quando l'Ingegnere dice «controlla questa autofattura», «verifica la spesa», «e giusta questa integrazione?», e anche PRIMA di trasmettere allo SdI un'integrazione appena creata. `
+      + `🚨 NON SCRIVE NIENTE: e solo una lettura, non serve nessuna conferma. Se qualcosa va corretto, il tool te lo DICE e ti passa la chiamata da fare (di solito modifica_documento_fic), ma la correzione e un atto separato che passa dalla sua conferma. `
+      + `COSA CONTROLLA su un'autofattura: (1) il tipo documento SdI ${TIPO_DOCUMENTO_SDI}, (2) i dati fattura collegata, (3) il codice destinatario ${CODICE_DESTINATARIO_INTEGRAZIONE}, (4) il piano pagamenti STORNATO, (5) e_invoice, (6) partita IVA e indirizzo del fornitore estero. Su una spesa: (7) che NON sia elettronica, (8) l'allegato col PDF del fornitore, (9) che risulti saldata, (10) numero e data (la chiave anti-doppione). `
+      + `🚨 COSA NON PUO CONTROLLARE, e che devi RIPORTARE ogni volta: le due RILEVAZIONI contabili — «Rileva ricavo» sull'autofattura e «Rileva IVA a debito» sulla spesa — non esistono nell'API di Fatture in Cloud e vanno guardate A MANO sul gestionale. Il tool te le elenca nel campo da_controllare_a_mano con scritto cosa succede se sono sbagliate (ricavo fittizio che gonfia il fatturato; IVA contata due volte in liquidazione): riportale, non ometterle perche il resto risulta a posto. `
+      + `🚨 COME SI LEGGE L'ESITO: ogni controllo ha TRE esiti, non due. «a_norma», «rilievo» e «non_verificato» — e non_verificato NON vuol dire a posto, vuol dire che quel campo non si e potuto leggere: dillo cosi. RIPORTA L'ELENCO COM E, regola per regola, con cosa dice la regola e cosa c'e davvero sul documento: «ci sono dei problemi» non e una risposta. `
+      + `⚠️ Se il documento e gia stato TRASMESSO allo SdI la verifica si fa lo stesso, ma nessuna correzione viene proposta: li serve una nota di variazione, e il campo correzione_bloccata lo dice. `
+      + `⚠️ tipo e OBBLIGATORIO e non lo indovinare: gli id dei documenti emessi e quelli delle spese ricevute sono due numerazioni diverse che si sovrappongono, e sbagliarlo vuol dire verificare un altro documento.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer', description: 'Id del documento su Fatture in Cloud (da fic_fatture_emesse per le autofatture, fic_fatture_ricevute per le spese). Obbligatorio.' },
+        tipo: {
+          type: 'string',
+          enum: ['autofattura', 'spesa'],
+          description: 'In quale registro sta il documento: "autofattura" per un documento EMESSO (l\'integrazione TD17), "spesa" per un documento RICEVUTO (la fattura del fornitore estero). Obbligatorio: non tirarlo a indovinare, gli id si sovrappongono fra i due registri.',
+        },
+      },
+      required: ['id', 'tipo'],
     },
   },
   {
@@ -3554,6 +3654,7 @@ export async function executeFicWriteTool(
     if (name === 'compila_autofattura') return compilaAutofatture(input, societa)
     if (name === 'registra_spesa_fornitore') return compilaSpesaFornitore(input, societa)
     if (name === 'modifica_documento_fic') return compilaModificaDocumento(input, societa)
+    if (name === 'verifica_documento_fic') return verificaDocumentoFic(input, societa)
     if (name === 'segna_fatture_ricevute_pagate') return segnaFatturePagate(input, societa, 'ricevuta')
     if (name === 'segna_fatture_emesse_pagate') return segnaFatturePagate(input, societa, 'emessa')
     if (name === 'conferma_bozza_fic') return confermaBozzaFic(input, societa)

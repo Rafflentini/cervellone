@@ -117,6 +117,10 @@ export const DOMINI: readonly Dominio[] = [
       // 2026-09-15: correggere un documento gia' creato e non ancora trasmesso,
       // invece di cancellarlo e rifarlo (che brucia il numero della serie).
       'modifica_documento_fic',
+      // 2026-09-15: CONTROLLARE un'autofattura TD17 o una spesa estera gia'
+      // compilata e dire cosa c'e' di sbagliato, regola per regola. Non
+      // scrive: e' l'atto che viene PRIMA di modifica_documento_fic.
+      'verifica_documento_fic',
       'conferma_bozza_fic',
       'segna_fatture_ricevute_pagate',
       'segna_fatture_emesse_pagate',

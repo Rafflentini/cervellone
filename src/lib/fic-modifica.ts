@@ -59,6 +59,20 @@ export interface ModificheRichieste {
   righe?: Array<{ riga: number; descrizione?: string; importo?: number }>
   /** Il riferimento strutturato alla fattura estera integrata (TD17). */
   fattura_collegata?: { numero: string; data: string }
+  /**
+   * Il CODICE DESTINATARIO SdI scritto sul DOCUMENTO (`entity.ei_code`).
+   *
+   * 🚨 Su un'integrazione TD17 e' il NOSTRO codice, non quello del fornitore
+   * estero: l'integrazione torna a noi. Fatture in Cloud lo ricava
+   * dall'anagrafica della controparte e, su un fornitore estero che un codice
+   * SdI non ce l'ha, ripiega su `XXXXXXX` — il codice riservato ai
+   * destinatari ESTERI.
+   *
+   * ⚠️ Si scrive QUI e non in anagrafica: e' un campo del documento. E a
+   * documento gia' creato Fatture in Cloud NON lo lascia toccare a mano —
+   * l'API e' l'unica strada, ed e' il motivo per cui questo campo esiste.
+   */
+  codice_destinatario?: string
 }
 
 /** I dati del documento che contano per una modifica. */
@@ -76,6 +90,8 @@ export interface DatiDocumento {
   note: string
   righe: RigaLetta[]
   fattura_collegata: { numero: string; data: string } | null
+  /** Il codice destinatario SdI scritto sul documento (`entity.ei_code`). */
+  codice_destinatario: string
 }
 
 /** Un campo che l'Ingegnere ha chiesto di cambiare: prima -> dopo. */
@@ -188,6 +204,7 @@ export function datiDocumento(doc: Record<string, unknown>): DatiDocumento {
     note: testo(doc.notes),
     righe,
     fattura_collegata: fatturaCollegataDi(doc),
+    codice_destinatario: testo(oggetto(doc.entity).ei_code),
   }
 }
 
@@ -296,8 +313,20 @@ export function confrontoModifiche(
     out.push({ campo: 'fattura collegata · data', prima: dati.fattura_collegata?.data ?? '(assente)', dopo: data })
   }
 
+  if (m.codice_destinatario !== undefined) {
+    const code = testo(m.codice_destinatario).toUpperCase()
+    // 6 caratteri = Codice Univoco Ufficio della Pubblica Amministrazione,
+    // 7 = codice destinatario privato (M5UXCR1, XXXXXXX). Fuori da queste due
+    // misure non e' un codice SdI, e conviene dirlo qui che vederselo
+    // rifiutare da Fatture in Cloud con un messaggio che non nomina il campo.
+    if (!/^[A-Z0-9]{6,7}$/.test(code)) {
+      return { ok: false, error: `«${m.codice_destinatario}» non e' un codice destinatario SdI (6 o 7 caratteri alfanumerici): non lo interpreto io` }
+    }
+    out.push({ campo: 'codice destinatario', prima: dati.codice_destinatario || '(assente)', dopo: code })
+  }
+
   if (out.length === 0) {
-    return { ok: false, error: 'non mi hai detto COSA cambiare: passa almeno uno fra data, note, righe e fattura_collegata' }
+    return { ok: false, error: 'non mi hai detto COSA cambiare: passa almeno uno fra data, note, righe, fattura_collegata e codice_destinatario' }
   }
   return { ok: true, valore: out }
 }
@@ -339,6 +368,18 @@ export function preparaModifica(
     }
   }
 
+  // 🚨 Il codice destinatario vive DENTRO la controparte (`entity.ei_code`).
+  // Se la rilettura non espone `entity`, scriverlo vorrebbe dire spedire una
+  // controparte fatta del solo codice — e, se il PUT e' una sostituzione,
+  // CANCELLARE il fornitore estero dal documento. Si rifiuta.
+  if (m.codice_destinatario !== undefined && Object.keys(oggetto(doc.entity)).length === 0) {
+    return {
+      ok: false,
+      error: 'non riesco a leggere la controparte (entity) di questo documento, e il codice destinatario vive li\' dentro: '
+        + 'riscrivendola rischierei di cancellare il fornitore dal documento. Non tocco niente.',
+    }
+  }
+
   const confronto = confrontoModifiche(dati, m)
   if (!confronto.ok) return confronto
 
@@ -374,7 +415,14 @@ export function corpoModificato(
   if (Object.keys(entity).length > 0) {
     const { created_at: _c, updated_at: _u, ...resto } = entity
     void _c; void _u
-    corpo.entity = resto
+    // Si tocca SOLO `ei_code`: nome, partita IVA e indirizzo del fornitore
+    // escono di qui esattamente come sono entrati. E se la controparte non
+    // si e' letta non si inventa: `preparaModifica` ha gia' rifiutato, e qui
+    // l'assenza di `entity` lascia il campo dov'era invece di crearne una
+    // fatta del solo codice.
+    corpo.entity = m.codice_destinatario !== undefined
+      ? { ...resto, ei_code: testo(m.codice_destinatario).toUpperCase() }
+      : resto
   }
 
   if (m.data !== undefined) corpo.date = m.data
