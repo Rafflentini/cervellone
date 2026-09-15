@@ -97,7 +97,7 @@ export const DOMINI: readonly Dominio[] = [
       // questa riga e' l'unica cosa che il modello vede, e alla richiesta
       // «fammi vedere il PDF della fattura» doveva indovinare lo scaffale —
       // «PDF» e «file» tirano verso l'Archivio, che e' quello sbagliato.
-      'Fatture in Cloud su entrambe le societa, prima nota, movimenti di banca e carte, riconciliazione, note spese, il PDF di una fattura o autofattura da rivedere',
+      'Fatture in Cloud su entrambe le societa, prima nota, movimenti di banca e carte, riconciliazione, note spese, il PDF di una fattura o autofattura da rivedere, il registro delle commissioni dei portali (Booking, Airbnb) e a che punto sono',
     tool: [
       'fic_fatture_emesse',
       'fic_fatture_ricevute',
@@ -131,6 +131,12 @@ export const DOMINI: readonly Dominio[] = [
       'segna_fatture_emesse_pagate',
       'lista_bozze_fic',
       'elimina_bozza_fic',
+      // 2026-09-15: IL REGISTRO A STATI delle commissioni dei portali —
+      // «a che punto siamo?» e «questa riga dice la verita'?». Sta qui perche'
+      // si chiede parlando di fatture e adempimenti, non di case: il dominio
+      // degli affitti brevi e' il check-in degli ospiti, questo e' contabilita'.
+      'registro_portali_situazione',
+      'registro_portali_riconcilia',
       'genera_prima_nota',
       'estrai_movimenti',
       'lista_movimenti',

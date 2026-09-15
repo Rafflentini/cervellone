@@ -42,6 +42,11 @@ import {
 import { verificaFormaleXml, rigaVerificaFormale } from './fic-verifica-formale'
 import { scegliAllegatoMail, scaricaAllegatoScelto, CASELLE_GOOGLE } from './spesa-allegato'
 import type { ChiaveCasella } from './caselle'
+// 🚨 CHI SCRIVE I DOCUMENTI AGGIORNA IL REGISTRO. Una funzione sola, in un
+// file suo, chiamata da tutti e due i posti: un registro tenuto da due copie
+// di codice diverse diverge in tre settimane, ed e' esattamente cosi' che e'
+// morta la memoria di lavoro di questo progetto.
+import { aggiornaRegistroPortali, avvisoRegistroNonScritto, portaleDelFornitore, type EsitoRegistro } from './registro-portali'
 
 /**
  * Le tre operazioni di I/O per verso, prese per NOME dal modulo: i test le
@@ -1291,7 +1296,7 @@ async function eseguiPagamenti(
  * Fatture in Cloud risultasse sbagliata, il valore da provare e'
  * `self_own_invoice` e si cambia solo questa riga.
  */
-const TIPO_FIC_AUTOFATTURA = 'self_supplier_invoice'
+export const TIPO_FIC_AUTOFATTURA = 'self_supplier_invoice'
 
 /**
  * 🚨 `TIPO_DOCUMENTO_SDI` e `CODICE_DESTINATARIO_INTEGRAZIONE` NON stanno piu'
@@ -2013,6 +2018,27 @@ interface EsitoAutofatture {
  *   e non e' un fallimento — e non si ritenta, perche' un secondo tentativo
  *   creerebbe il doppione di un documento che forse c'e' gia'.
  */
+/**
+ * I dati della fattura del portale che finiscono nel registro, presi dalla
+ * riga confermata e non ricostruiti: sono gli stessi che l'Ingegnere ha letto
+ * nell'anteprima.
+ *
+ * 🚨 `regime: 'RC'` non e' una deduzione: un'integrazione TD17 esiste SOLO in
+ * reverse charge, e `compilaAutofatture` rifiuta tutto quello che sta prima
+ * dell'iscrizione al VIES. Se questa riga sta nascendo, il regime e' quello.
+ */
+function registroDaRiga(d: AutofatturaRiga, societa: CodiceSocieta) {
+  return {
+    societa,
+    fornitore: d.fornitore,
+    numero: d.numero,
+    data: d.data,
+    dataRicezione: d.data_ricezione,
+    imponibile: d.imponibile,
+    regime: 'RC' as const,
+  }
+}
+
 async function creaAutofatture(
   payload: unknown,
   societa: CodiceSocieta,
@@ -2037,6 +2063,16 @@ async function creaAutofatture(
   let interruzione: string | null = null
   let trattate = 0
 
+  // 🚨 UN REGISTRO CHE MENTE E' PEGGIO DI NESSUN REGISTRO. Se la scrittura sul
+  // registro fallisce DOPO che il documento e' nato su Fatture in Cloud, il
+  // tool lo DICE, con l'id vero: un documento esistente col registro che dice
+  // «non fatto» si ripara a mano in un minuto, il contrario no.
+  const avvisiRegistro: string[] = []
+  const avvisaRegistro = (esito: EsitoRegistro, descrizione: string, ficId: string | null) => {
+    const avviso = avvisoRegistroNonScritto(esito, { descrizione, ficId })
+    if (avviso) avvisiRegistro.push(avviso)
+  }
+
   for (const d of dati.documenti) {
     const intestazione = `${d.fornitore} — fattura n.${d.numero} del ${d.data} — ${euro(d.imponibile)}`
     try {
@@ -2056,6 +2092,17 @@ async function creaAutofatture(
           `⚠️ ${intestazione} — Fatture in Cloud ha risposto con l'id ${creato.id}, ma la rilettura NON conferma: `
           + `${riletta.error}. Controllala a mano su Fatture in Cloud prima di rifarla.`,
         )
+        // 🚨 LO STATO NON AVANZA. La risposta di una creazione non e' un fatto:
+        // e' esattamente l'id 552625594 del 15 settembre 2026, restituito da
+        // una POST fallita con 422 e inseguito per un'ora. L'id finisce nella
+        // NOTA, non in `td17_fic_id`: scriverlo li' vorrebbe dire far citare al
+        // registro un documento che forse non esiste.
+        avvisaRegistro(await aggiornaRegistroPortali({
+          ...registroDaRiga(d, societa),
+          stato: 'da_verificare',
+          nota: `integrazione TD17 NON confermata dalla rilettura: ${riletta.error}. `
+            + `Fatture in Cloud aveva risposto con l'id ${creato.id}: da controllare a mano, NON rifare.`,
+        }), `l'integrazione di ${intestazione}`, creato.id)
         continue
       }
       ids.push(creato.id)
@@ -2074,9 +2121,29 @@ async function creaAutofatture(
         // ⚠️ Creata ma NON riuscita. E nemmeno «da rifare»: il documento c'e',
         // e va corretto o cancellato a mano — rifarlo creerebbe il doppione.
         daCorreggere.push(`🚨 ${riga}\n   ${rigaVerificaFormale(formale)}`)
+        // Qui l'id SI scrive: la rilettura ha confermato che quel documento
+        // esiste ed e' l'integrazione. Quello che NON avanza e' lo stato —
+        // l'XML non passerebbe lo SdI, e dirlo `td17_generata` sarebbe far
+        // credere concluso un adempimento che verrebbe scartato.
+        avvisaRegistro(await aggiornaRegistroPortali({
+          ...registroDaRiga(d, societa),
+          stato: 'da_verificare',
+          td17FicId: creato.id,
+          td17Numero: riletta.numero,
+          nota: `integrazione TD17 creata (id ${creato.id}) ma BOCCIATA dalla verifica formale di Fatture in Cloud: `
+            + `${rigaVerificaFormale(formale)}. Correggila o eliminala su FIC: NON rifarla, sarebbe un doppione.`,
+        }), `l'integrazione di ${intestazione}`, creato.id)
         continue
       }
       riuscite.push(`✅ ${riga}\n   ${rigaVerificaFormale(formale)}`)
+      // ✅ IL FATTO VERIFICATO: il documento e' stato riletto ED e' passato
+      // dalla verifica formale. Solo qui lo stato avanza.
+      avvisaRegistro(await aggiornaRegistroPortali({
+        ...registroDaRiga(d, societa),
+        stato: 'td17_generata',
+        td17FicId: creato.id,
+        td17Numero: riletta.numero,
+      }), `l'integrazione di ${intestazione}`, creato.id)
     } catch (err) {
       // Rete, token, 429: si ferma qui e si DICE dove si e' fermata.
       interruzione = err instanceof Error ? err.message : String(err)
@@ -2097,6 +2164,7 @@ async function creaAutofatture(
         + `e un secondo tentativo sarebbe un doppione. Correggile o eliminale su Fatture in Cloud:\n${daCorreggere.join('\n')}`
       : null,
     daVerificare.length > 0 ? `DA VERIFICARE A MANO (${daVerificare.length}), non le conto fra le riuscite:\n${daVerificare.join('\n')}` : null,
+    avvisiRegistro.length > 0 ? avvisiRegistro.join('\n') : null,
     interruzione
       ? `⚠️ La creazione si e' INTERROTTA (${interruzione}). Le autofatture elencate come create RESTANO su `
         + 'Fatture in Cloud: non tento nessun rollback. Da riprendere: '
@@ -2145,7 +2213,7 @@ async function creaAutofatture(
 async function rileggiAutofattura(
   id: string,
   societa: CodiceSocieta,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; numero: string | null } | { ok: false; error: string }> {
   const company = await getCompanyId(societa)
   if (!company.ok) return { ok: false, error: company.error }
   const r = await ficGet(`/c/${company.id}/issued_documents/${encodeURIComponent(id)}`, undefined, societa)
@@ -2170,7 +2238,18 @@ async function rileggiAutofattura(
         + 'il documento c\'e\' ma non e\' l\'integrazione confermata',
     }
   }
-  return { ok: true }
+  // Il NUMERO dell'integrazione, letto dalla rilettura e non dedotto: finisce
+  // nel registro dei portali, dove serve a ritrovare il documento su Fatture
+  // in Cloud senza avere l'id sottomano. Se FIC non lo espone resta `null` —
+  // un numero inventato punterebbe a un altro documento.
+  // ⚠️ Su Fatture in Cloud `number` e' un INTERO, non una stringa: con il solo
+  // `cleanString` il numero dell'integrazione arrivava sempre nullo nel
+  // registro — trovato da un test, non in produzione.
+  const numeroLetto = typeof doc.number === 'number' && Number.isFinite(doc.number)
+    ? String(doc.number)
+    : cleanString(doc.number)
+  const serie = cleanString(doc.numeration)
+  return { ok: true, numero: numeroLetto ? `${numeroLetto}${serie ? `/${serie}` : ''}` : null }
 }
 
 /* ------------------------------------------------------------------ *
@@ -2183,7 +2262,7 @@ async function rileggiAutofattura(
  * emesse: qui non si emette niente, si REGISTRA quello che ci ha mandato il
  * fornitore.
  */
-const TIPO_FIC_SPESA = 'expense'
+export const TIPO_FIC_SPESA = 'expense'
 
 /**
  * La CATEGORIA della spesa su Fatture in Cloud.
@@ -2280,6 +2359,20 @@ interface SpesaRicevutaPayload {
   descrizione: string
   /** Dove sta il PDF. Si scarica alla conferma, non prima: v. `spesa-allegato.ts`. */
   allegato: { casella: string; message_id: string; attachment_id: string; filename: string; oggetto: string }
+  /**
+   * I dati che servono al REGISTRO DEI PORTALI, e che altrimenti si
+   * perderebbero: `compilaSpesaFornitore` li usa per comporre la descrizione e
+   * poi li butta. Tutti facoltativi — stanno sul PDF, che qui non si legge, e
+   * nessuno di loro si inventa.
+   */
+  registro: {
+    struttura?: string
+    struttura_id?: string
+    periodo_dal?: string
+    periodo_al?: string
+    /** Quando la fattura estera e' stata RICEVUTA: da qui nasce la scadenza dell'invio. */
+    data_ricezione?: string
+  }
   /** Il payload FIC gia' costruito, SENZA `attachment_token`: quello nasce al caricamento. */
   payload: Record<string, unknown>
 }
@@ -2453,6 +2546,14 @@ function descriviSpesa(input: { id: string; societa: CodiceSocieta; spesa: Spesa
     '⚠️ Il PDF viene scaricato e caricato su Fatture in Cloud al momento della conferma: se in quel momento non si scarica, '
     + 'la spesa NON nasce affatto — non nasce senza il suo documento.',
     'Ho gia\' controllato che su Fatture in Cloud non ci sia una fattura di questo fornitore con questo numero, e lo ricontrollo prima di crearla.',
+    // Il registro dei portali si nomina QUI, dove si legge prima di confermare:
+    // la scadenza dell'invio nasce dalla data di RICEZIONE, e se quella manca
+    // la riga nascera' senza scadenza. Meglio saperlo prima che dopo.
+    portaleDelFornitore(d.fornitore)
+      ? (d.registro.data_ricezione
+        ? `Registro portali: la riga di questa fattura risultera' RICEVUTA il ${d.registro.data_ricezione}, quindi l'integrazione va inviata entro il 15 del mese successivo.`
+        : '⚠️ Registro portali: non so QUANDO questa fattura e\' stata ricevuta (data_ricezione), quindi la riga nascera\' SENZA scadenza di invio. Non la deduco: dimmela e richiamami, oppure conferma sapendolo.')
+      : null,
     `conferma -> ${comandoDaMostrare('fic_ok', input.id)} (a voce basta un «confermo»: e' una conferma sola)`,
     `annulla -> ${comandoDaMostrare('fic_no', input.id)}`,
   ].filter(Boolean).join('\n')
@@ -2498,6 +2599,17 @@ async function compilaSpesaFornitore(
   const data = cleanString(input.data) ?? cleanString(input.data_fattura)
   if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data)) {
     return fail(`la data della fattura n.${numero} di ${fornitore} manca o non e' nel formato YYYY-MM-DD. Non ho preparato niente.`)
+  }
+
+  // La data di RICEZIONE della fattura estera: da lei nasce la scadenza
+  // dell'invio dell'integrazione (il 15 del mese dopo) nel registro dei
+  // portali. 🚨 Facoltativa e MAI dedotta: se non arriva, il registro resta
+  // senza scadenza e lo DICE. Ripiegare sulla data del documento, o su oggi,
+  // sposterebbe in avanti un termine vero — e il registro direbbe «in tempo»
+  // proprio quando non lo e'.
+  const dataRicezione = cleanString(input.data_ricezione)
+  if (dataRicezione && !/^\d{4}-\d{2}-\d{2}$/.test(dataRicezione)) {
+    return fail(`la data di ricezione «${dataRicezione}» non e' nel formato YYYY-MM-DD. Non ho preparato niente.`)
   }
 
   // `importoSenzaAmbiguita` e non `parseNumber`: quello cancella i punti per il
@@ -2694,6 +2806,13 @@ async function compilaSpesaFornitore(
       filename: scelto.allegato.filename,
       oggetto: scelto.oggetto,
     },
+    registro: {
+      struttura: cleanString(input.struttura),
+      struttura_id: cleanString(input.struttura_id),
+      periodo_dal: cleanString(input.periodo_dal),
+      periodo_al: cleanString(input.periodo_al),
+      data_ricezione: dataRicezione,
+    },
     payload: payloadFic,
   }
 
@@ -2777,6 +2896,16 @@ function leggiSpesaPayload(payload: unknown): SpesaRicevutaPayload | null {
       attachment_id: attachmentId,
       filename,
       oggetto: cleanString(allegato.oggetto) ?? '(oggetto non registrato)',
+    },
+    // ⚠️ Un pending vecchio (scritto prima che il registro esistesse) non ha
+    // questo blocco: si legge come vuoto invece di far fallire la lettura, che
+    // renderebbe inconfermabile una spesa gia' approvata dall'Ingegnere.
+    registro: {
+      struttura: cleanString(asObject(p.registro).struttura),
+      struttura_id: cleanString(asObject(p.registro).struttura_id),
+      periodo_dal: cleanString(asObject(p.registro).periodo_dal),
+      periodo_al: cleanString(asObject(p.registro).periodo_al),
+      data_ricezione: cleanString(asObject(p.registro).data_ricezione),
     },
     payload: payloadDoc,
   }
@@ -2899,18 +3028,52 @@ async function creaSpesa(payload: unknown, societa: CodiceSocieta): Promise<Esit
   if (!creato.ok) return non(`Fatture in Cloud ha rifiutato la creazione: ${creato.error}.`)
 
   const riletta = await rileggiSpesa(creato.id, societa)
+
+  // I dati della fattura del portale per il registro: gli stessi della riga
+  // confermata, non ricostruiti.
+  const perRegistro = {
+    societa,
+    fornitore: dati.fornitore,
+    numero: dati.numero,
+    data: dati.data,
+    dataRicezione: dati.registro.data_ricezione ?? null,
+    imponibile: dati.imponibile,
+    iva: dati.iva,
+    struttura: dati.registro.struttura ?? null,
+    strutturaId: dati.registro.struttura_id ?? null,
+    periodoDal: dati.registro.periodo_dal ?? null,
+    periodoAl: dati.registro.periodo_al ?? null,
+  }
+
   if (!riletta.ok) {
+    // 🚨 LO STATO NON AVANZA: la POST ha risposto, ma la risposta di una
+    // creazione non e' un fatto. L'id va nella NOTA e non in `spesa_fic_id` —
+    // far citare al registro un documento che forse non esiste e' esattamente
+    // l'id 552625594 inseguito per un'ora il 15 settembre 2026.
+    const reg = await aggiornaRegistroPortali({
+      ...perRegistro,
+      stato: 'da_verificare',
+      nota: `spesa NON confermata dalla rilettura: ${riletta.error}. `
+        + `Fatture in Cloud aveva risposto con l'id ${creato.id}: da controllare a mano, NON rifare.`,
+    })
+    const avviso = avvisoRegistroNonScritto(reg, { descrizione: `la spesa ${intestazione}`, ficId: creato.id })
     return {
       messaggio: `SPESA DA VERIFICARE su ${s.denominazione}: ${intestazione}.\n\n`
         + `Fatture in Cloud ha risposto con l'id ${creato.id}, ma la rilettura NON conferma: ${riletta.error}. `
         + 'Controllala a mano su Fatture in Cloud prima di rifarla: non la conto fra le riuscite e non ritento, '
-        + 'perche\' un secondo tentativo creerebbe il doppione di un documento che forse c\'e\' gia\'.',
+        + 'perche\' un secondo tentativo creerebbe il doppione di un documento che forse c\'e\' gia\'.'
+        + (avviso ? `\n\n${avviso}` : ''),
       creata: false,
       da_verificare: true,
       bloccato: true,
       id: creato.id,
     }
   }
+
+  // ✅ IL FATTO VERIFICATO: il documento e' stato RILETTO su Fatture in Cloud.
+  // Solo qui lo stato avanza e l'id entra nel registro.
+  const reg = await aggiornaRegistroPortali({ ...perRegistro, stato: 'spesa_registrata', spesaFicId: creato.id })
+  const avvisoRegistro = avvisoRegistroNonScritto(reg, { descrizione: `la spesa ${intestazione}`, ficId: creato.id })
 
   return {
     messaggio: [
@@ -2922,7 +3085,12 @@ async function creaSpesa(payload: unknown, societa: CodiceSocieta): Promise<Esit
       riletta.allegato === 'verificato'
         ? `Allegato «${dati.allegato.filename}»: c'e', l'ho riletto sul documento.`
         : `⚠️ Allegato «${dati.allegato.filename}»: caricato, ma la rilettura non espone il campo dell'allegato, quindi NON l'ho verificato. Controllalo su Fatture in Cloud.`,
-    ].join('\n'),
+      // 🚨 Se il registro non si e' scritto, si DICE: qui il documento fiscale
+      // esiste, e un registro che tace il proprio guasto e' peggio di nessun
+      // registro.
+      avvisoRegistro,
+      reg.ok && reg.scritto ? `Registro portali: riga aggiornata a «${reg.stato}».` : null,
+    ].filter(Boolean).join('\n'),
     creata: true,
     da_verificare: false,
     bloccato: true,
@@ -3814,7 +3982,7 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     // autofatture e' il motivo per cui esiste — «non e che mi metto a
     // confermare quindici fatture vocalmente».
     name: 'compila_autofattura',
-    description: 'Compila su Fatture in Cloud le AUTOFATTURE/INTEGRAZIONI in reverse charge per le fatture ESTERE (il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, scadenza fiscale il 16 del mese; identico per le fee di Airbnb Ireland UC). Prepara UN documento per ogni fattura estera, tipo FIC self_supplier_invoice (chi emette compare come CLIENTE, il fornitore estero come fornitore), integrazione ex art. 17 c.2 DPR 633/72 su servizio generico art. 7-ter. I documenti vengono COMPILATI e NON trasmessi allo SdI: li controlla e li invia l Ingegnere. Accetta N fatture in una volta sola e chiede UNA SOLA conferma per tutte (in due passaggi: /fic_ok_<id> poi /fic_ok2_<id>, ma una conferma sola per tutto il gruppo). REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: non scegliere tu l aliquota ne la natura. Se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote IVA di quell azienda lette da Fatture in Cloud — con descrizione e natura — e tu CHIEDI all Ingegnere quale usare, poi richiami con vat_id. Non esiste nessun predefinito; (2) 🚨 SI INTEGRA SOLO LA FATTURA COMMISSIONI (fee sui pagamenti gestiti dalla piattaforma compresa). Gli INCASSI girati dalla piattaforma sono soldi degli ospiti riscossi per conto della societa e NON si integrano: se non sei sicuro che l importo sia una commissione, FERMATI E CHIEDI invece di chiamarmi; (3) 🚨 il tool RIFIUTA le fatture anteriori all iscrizione al VIES della societa: quelle riportano IVA italiana e si registrano come normali acquisti con IVA detraibile, non si integrano. Se te lo dice, riportalo e non insistere; (4) il fornitore estero deve essere IN ANAGRAFICA con indirizzo e partita IVA comunitaria: fic_cerca_anagrafica, se non c e fic_crea_cliente, poi passa qui fornitore_id. Senza anagrafica il tool rifiuta; (5) numero, data, data di RICEZIONE e imponibile sono quelli della fattura ORIGINALE e non si inventano: se non li hai, chiedili. La data dell integrazione e la data di RICEZIONE, non oggi; (6) serve una SERIE di numerazione dedicata alle integrazioni, separata dalle fatture attive: se non la passi il tool te la chiede, non la inventa; (7) mostra l anteprima COM E — elenca tutte le autofatture con fornitore, numero, date e imponibile: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte; (8) l esito e PER DOCUMENTO e viene da una RILETTURA su Fatture in Cloud: riporta quali si e quali no col motivo, e NON dire «fatte tutte»; (9) il tool imposta il tipo documento SdI TD17 (in ei_raw, non nel campo type). Il codice destinatario SdI e quello della NOSTRA societa, non del fornitore estero: un integrazione torna a noi. I «dati fattura collegata» il tool NON li compila: il riferimento alla fattura estera sta nella riga e nelle note, e l anteprima lo dichiara; (10) 🚨 DOPO la creazione ogni documento passa dalla VERIFICA FORMALE di Fatture in Cloud (una lettura, non un invio). Se l XML non passerebbe lo SdI il tool NON dichiara successo: ti da l id del documento creato E gli errori testuali, e non lo rifa da solo — il documento esiste gia e rifarlo sarebbe un doppione. Riporta quegli errori COM E; (11) il tool imposta le rilevazioni contabili dell integrazione: «Rileva IVA a debito» SI e «Rileva ricavo» NO. Senza la prima l IVA del reverse charge non entra in liquidazione, con la seconda l imponibile gonfia il fatturato.',
+    description: 'Compila su Fatture in Cloud le AUTOFATTURE/INTEGRAZIONI in reverse charge per le fatture ESTERE (il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, scadenza fiscale il 16 del mese; identico per le fee di Airbnb Ireland UC). Prepara UN documento per ogni fattura estera, tipo FIC self_supplier_invoice (chi emette compare come CLIENTE, il fornitore estero come fornitore), integrazione ex art. 17 c.2 DPR 633/72 su servizio generico art. 7-ter. I documenti vengono COMPILATI e NON trasmessi allo SdI: li controlla e li invia l Ingegnere. Accetta N fatture in una volta sola e chiede UNA SOLA conferma per tutte (in due passaggi: /fic_ok_<id> poi /fic_ok2_<id>, ma una conferma sola per tutto il gruppo). REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: non scegliere tu l aliquota ne la natura. Se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote IVA di quell azienda lette da Fatture in Cloud — con descrizione e natura — e tu CHIEDI all Ingegnere quale usare, poi richiami con vat_id. Non esiste nessun predefinito; (2) 🚨 SI INTEGRA SOLO LA FATTURA COMMISSIONI (fee sui pagamenti gestiti dalla piattaforma compresa). Gli INCASSI girati dalla piattaforma sono soldi degli ospiti riscossi per conto della societa e NON si integrano: se non sei sicuro che l importo sia una commissione, FERMATI E CHIEDI invece di chiamarmi; (3) 🚨 il tool RIFIUTA le fatture anteriori all iscrizione al VIES della societa: quelle riportano IVA italiana e si registrano come normali acquisti con IVA detraibile, non si integrano. Se te lo dice, riportalo e non insistere; (4) il fornitore estero deve essere IN ANAGRAFICA con indirizzo e partita IVA comunitaria: fic_cerca_anagrafica, se non c e fic_crea_cliente, poi passa qui fornitore_id. Senza anagrafica il tool rifiuta; (5) numero, data, data di RICEZIONE e imponibile sono quelli della fattura ORIGINALE e non si inventano: se non li hai, chiedili. La data dell integrazione e la data di RICEZIONE, non oggi; (6) serve una SERIE di numerazione dedicata alle integrazioni, separata dalle fatture attive: se non la passi il tool te la chiede, non la inventa; (7) mostra l anteprima COM E — elenca tutte le autofatture con fornitore, numero, date e imponibile: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte; (8) l esito e PER DOCUMENTO e viene da una RILETTURA su Fatture in Cloud: riporta quali si e quali no col motivo, e NON dire «fatte tutte»; (9) il tool imposta il tipo documento SdI TD17 (in ei_raw, non nel campo type). Il codice destinatario SdI e quello della NOSTRA societa, non del fornitore estero: un integrazione torna a noi. I «dati fattura collegata» il tool NON li compila: il riferimento alla fattura estera sta nella riga e nelle note, e l anteprima lo dichiara; (10) 🚨 DOPO la creazione ogni documento passa dalla VERIFICA FORMALE di Fatture in Cloud (una lettura, non un invio). Se l XML non passerebbe lo SdI il tool NON dichiara successo: ti da l id del documento creato E gli errori testuali, e non lo rifa da solo — il documento esiste gia e rifarlo sarebbe un doppione. Riporta quegli errori COM E; (11) il tool imposta le rilevazioni contabili dell integrazione: «Rileva IVA a debito» SI e «Rileva ricavo» NO. Senza la prima l IVA del reverse charge non entra in liquidazione, con la seconda l imponibile gonfia il fatturato; (12) 🚨 se il fornitore e un PORTALE (Booking, Airbnb) il tool aggiorna anche il REGISTRO A STATI delle commissioni — una riga per fattura del portale, che dice a che punto e l adempimento. Lo stato avanza a td17_generata SOLO per i documenti riletti E passati dalla verifica formale: quelli bocciati, e quelli che la rilettura non conferma, finiscono da_verificare col motivo. Se la scrittura sul registro fallisce dopo che il documento su Fatture in Cloud e nato, il messaggio TE LO DICE con l id vero: riportalo, il registro si allinea a mano e il documento NON si rifa. Lo stato del registro si legge con registro_portali_situazione.',
     input_schema: {
       type: 'object',
       properties: {
@@ -3854,7 +4022,7 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     // vorrebbe dire dire «si» a quindici documenti mai visti uno per uno.
     name: 'registra_spesa_fornitore',
     description:
-      "Registra su Fatture in Cloud la FATTURA D ACQUISTO di un fornitore (documento RICEVUTO, la SPESA) prendendo il PDF da una mail di Gmail e allegandoglielo. Il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, quella per cui compila_autofattura crea l integrazione TD17. Le due cose sono le due meta dello stesso adempimento: l autofattura mette l IVA a DEBITO, questa registra il COSTO e la fattura passiva a monte. Senza, l integrazione resta a meta. COSA SERVE: la mail col PDF (casella e message_id, da gmail_search), il fornitore, il numero e la data della sua fattura, e l IMPONIBILE. Nient altro: il PDF non lo leggo e nessun importo lo ricavo da solo. REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote di quell azienda lette da Fatture in Cloud (con descrizione e natura) — tu CHIEDI all Ingegnere quale usare e richiami con vat_id. Non esiste nessun predefinito, e l aliquota decide se l IVA e detraibile, in reverse charge o esclusa; (2) 🚨 nemmeno il CONTO di pagamento si indovina: senza modalita_pagamento il tool torna l elenco vero dei conti dell azienda e chiede; (3) la spesa nasce GIA SALDATA alla data del documento, per COMPENSAZIONE (la piattaforma trattiene le commissioni dal bonifico dei soggiorni): non deve finire nello scadenzario, e per questo il piano pagamenti viene scritto esplicitamente; (4) 🚨 ANTI-DOPPIONE: prima di preparare, e di nuovo prima di creare, il tool cerca su Fatture in Cloud se esiste gia una fattura ricevuta di quel fornitore con quel numero. Se c e NON ne crea una seconda: te lo dice e ti da l id di quella esistente. Se l elenco non si legge o e troncato il tool RIFIUTA, perche su un elenco incompleto non si puo dire che il doppione non c e; (5) l allegato: se la mail ha un solo allegato lo usa, se ne ha piu di uno e non passi nome_file si RIFIUTA e li elenca — aprire quello sbagliato vuol dire registrare una spesa vera col documento di un altra; (6) non scrive niente subito: prepara l anteprima e serve la conferma (/fic_ok_<id>, oppure un «confermo» a voce: e una conferma sola). Il PDF viene scaricato e caricato SOLO dopo la conferma, e se non si scarica la spesa NON nasce affatto; (7) l esito viene da una RILETTURA su Fatture in Cloud, non dalla risposta della creazione: se dice DA VERIFICARE il documento potrebbe esserci o no, riporta il messaggio testualmente e NON ritentare; (8) la spesa nasce con CATEGORIA («Commissioni portali», salvo che tu ne passi un altra) e con una DESCRIZIONE strutturata: struttura e id, periodo, dettaglio prenotazioni + costo transazione, e la coda del reverse charge art. 17 c.2. Struttura, periodo e importi di dettaglio il tool NON li sa: stanno sul PDF, che non legge. Passali se li hai — se non li hai NON inventarli, la descrizione si compone con quello che c e; (9) deducibilita del costo e detraibilita dell IVA nascono PIENE: se questa spesa e parzialmente deducibile non usare questo tool, registrala a mano.",
+      "Registra su Fatture in Cloud la FATTURA D ACQUISTO di un fornitore (documento RICEVUTO, la SPESA) prendendo il PDF da una mail di Gmail e allegandoglielo. Il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, quella per cui compila_autofattura crea l integrazione TD17. Le due cose sono le due meta dello stesso adempimento: l autofattura mette l IVA a DEBITO, questa registra il COSTO e la fattura passiva a monte. Senza, l integrazione resta a meta. COSA SERVE: la mail col PDF (casella e message_id, da gmail_search), il fornitore, il numero e la data della sua fattura, e l IMPONIBILE. Nient altro: il PDF non lo leggo e nessun importo lo ricavo da solo. REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote di quell azienda lette da Fatture in Cloud (con descrizione e natura) — tu CHIEDI all Ingegnere quale usare e richiami con vat_id. Non esiste nessun predefinito, e l aliquota decide se l IVA e detraibile, in reverse charge o esclusa; (2) 🚨 nemmeno il CONTO di pagamento si indovina: senza modalita_pagamento il tool torna l elenco vero dei conti dell azienda e chiede; (3) la spesa nasce GIA SALDATA alla data del documento, per COMPENSAZIONE (la piattaforma trattiene le commissioni dal bonifico dei soggiorni): non deve finire nello scadenzario, e per questo il piano pagamenti viene scritto esplicitamente; (4) 🚨 ANTI-DOPPIONE: prima di preparare, e di nuovo prima di creare, il tool cerca su Fatture in Cloud se esiste gia una fattura ricevuta di quel fornitore con quel numero. Se c e NON ne crea una seconda: te lo dice e ti da l id di quella esistente. Se l elenco non si legge o e troncato il tool RIFIUTA, perche su un elenco incompleto non si puo dire che il doppione non c e; (5) l allegato: se la mail ha un solo allegato lo usa, se ne ha piu di uno e non passi nome_file si RIFIUTA e li elenca — aprire quello sbagliato vuol dire registrare una spesa vera col documento di un altra; (6) non scrive niente subito: prepara l anteprima e serve la conferma (/fic_ok_<id>, oppure un «confermo» a voce: e una conferma sola). Il PDF viene scaricato e caricato SOLO dopo la conferma, e se non si scarica la spesa NON nasce affatto; (7) l esito viene da una RILETTURA su Fatture in Cloud, non dalla risposta della creazione: se dice DA VERIFICARE il documento potrebbe esserci o no, riporta il messaggio testualmente e NON ritentare; (8) la spesa nasce con CATEGORIA («Commissioni portali», salvo che tu ne passi un altra) e con una DESCRIZIONE strutturata: struttura e id, periodo, dettaglio prenotazioni + costo transazione, e la coda del reverse charge art. 17 c.2. Struttura, periodo e importi di dettaglio il tool NON li sa: stanno sul PDF, che non legge. Passali se li hai — se non li hai NON inventarli, la descrizione si compone con quello che c e; (9) deducibilita del costo e detraibilita dell IVA nascono PIENE: se questa spesa e parzialmente deducibile non usare questo tool, registrala a mano; (10) 🚨 se il fornitore e un PORTALE (Booking, Airbnb) il tool aggiorna anche il REGISTRO A STATI delle commissioni — una riga per fattura, che dice a che punto e l adempimento — e lo fa SOLO dopo che la rilettura ha confermato il documento. Se la rilettura non conferma, la riga viene marcata da_verificare col motivo e lo stato NON avanza. Se la scrittura sul registro fallisce dopo che il documento su Fatture in Cloud e nato, il messaggio TE LO DICE con l id del documento vero: riportalo, perche il registro va allineato a mano e il documento NON va rifatto. Per la scadenza dell invio passa data_ricezione. Lo stato del registro si legge con registro_portali_situazione.",
     input_schema: {
       type: 'object',
       properties: {
@@ -3869,6 +4037,7 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
         fornitore_id: { type: 'number', description: 'Id dell anagrafica FORNITORI su Fatture in Cloud (fic_cerca_anagrafica con tipo fornitore). Con l id il documento punta il fornitore giusto senza ambiguita.' },
         numero: { type: 'string', description: 'Numero della fattura DEL FORNITORE, come sta scritto sul documento. Obbligatorio: e la chiave con cui controllo che non sia gia registrata.' },
         data: { type: 'string', description: 'Data della fattura del fornitore, YYYY-MM-DD. Obbligatoria: e anche la data a cui la spesa risulta pagata.' },
+        data_ricezione: { type: 'string', description: 'Quando la fattura estera e stata RICEVUTA, YYYY-MM-DD. Serve al REGISTRO DEI PORTALI: la scadenza dell invio dell integrazione e il giorno 15 del mese SUCCESSIVO a questa data. Se non la sai NON inventarla e non passarla: la riga del registro nascera senza scadenza e il registro lo dira. Una scadenza calcolata su una data finta sposta in avanti un termine vero.' },
         imponibile: { type: 'number', description: 'Imponibile in euro come numero (es. 218.44). Lo dice l Ingegnere: dal PDF non lo ricavo io.' },
         vat_id: {
           type: 'number',

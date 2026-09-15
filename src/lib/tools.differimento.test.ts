@@ -368,11 +368,34 @@ describe('differimento delle definizioni dei tool', () => {
   // esiste per impedire.
   //
   // ⚠️ Numero e impronta qui sotto sono presi DAL FALLIMENTO del test.
-  it('senza opzioni: 145 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 15 settembre 2026 (il REGISTRO A STATI dei portali). Da 145
+  // a 147: nascono `registro_portali_situazione` (a che punto siamo con le
+  // fatture di commissione di Booking e Airbnb: quante per stato, quali in
+  // ritardo, quali da verificare e perche') e `registro_portali_riconcilia`
+  // (rilegge da Fatture in Cloud i documenti che una riga CITA e dice se
+  // combaciano — una TD17 cancellata a mano si scopre solo cosi').
+  //
+  // Il difetto che chiudono: la mattina del 15 settembre, per quattro fatture
+  // Booking, nessuno sapeva se un documento esistesse. L'id `552625594` e'
+  // stato inseguito per un'ora su FIC — emessi, ricevuti, elenco per anno, e
+  // perfino l'altra societa' — prima di capire che non era MAI stato creato: la
+  // POST era fallita con un 422 e il tool aveva restituito un id rimasto da un
+  // tentativo precedente. Con una riga per fattura e uno stato, quella domanda
+  // ha un posto solo dove si risponde.
+  //
+  // ⚠️ Nello stesso giro cambiano DUE descrizioni, e pagano il pedaggio
+  // dell'impronta insieme ai due tool nuovi: `registra_spesa_fornitore`
+  // (nuovo parametro `data_ricezione` — da lui nasce la scadenza dell'invio,
+  // il 15 del mese dopo — e la regola (10): il registro si aggiorna solo dopo
+  // la rilettura, e se la scrittura fallisce il tool lo DICE con l'id vero) e
+  // `compila_autofattura` (regola (12), identica dal lato dell'integrazione).
+  // Una capacita' che non e' nello SCHEMA, per il modello NON ESISTE.
+  it('senza opzioni: 147 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(145)
+    expect(defs).toHaveLength(147)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('be1bd99e0a67252a4d1ef90d2e6aed4d')
+      .toBe('ced0b10d884212aefaaabccea4313a25')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

@@ -2444,6 +2444,144 @@
     {
       "tipo": "indice",
       "nome": "idx_cervellone_guardia_autorizzazioni_ricerca"
+    },
+    {
+      "tipo": "tabella",
+      "tabella": "cervellone_registro_portali"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "id"
+    },
+    {
+      "tipo": "chiave_primaria",
+      "tabella": "cervellone_registro_portali",
+      "colonne": [
+        "id"
+      ]
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "societa"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "portale"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "struttura"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "struttura_id_portale"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "numero_fattura"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "data_fattura"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "data_ricezione"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "periodo_dal"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "periodo_al"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "imponibile"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "iva"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "regime"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "stato"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "spesa_fic_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "td17_fic_id"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "td17_numero"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "stato_sdi"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "scadenza_invio"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "note"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "created_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "updated_at"
+    },
+    {
+      "tipo": "colonna",
+      "tabella": "cervellone_registro_portali",
+      "colonna": "numero_chiave"
+    },
+    {
+      "tipo": "indice",
+      "nome": "uniq_registro_portali_fattura"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_registro_portali_stato"
+    },
+    {
+      "tipo": "indice",
+      "nome": "idx_registro_portali_data"
     }
   ],
   "nonInterpretate": [
@@ -2930,6 +3068,22 @@
     {
       "file": "2026-09-15-fic-pending-modifica-documento.sql",
       "testo": "alter table public.cervellone_fic_pending add constraint cervellone_fic_pending_tipo_check check (tipo in ('fattura_emessa', 'rapporto_intervento', 'pagamento_ricevuta', 'pagamento_emessa', 'autofattu"
+    },
+    {
+      "file": "2026-09-15-registro-portali.sql",
+      "testo": "alter table public.cervellone_registro_portali enable row level security"
+    },
+    {
+      "file": "2026-09-15-registro-portali.sql",
+      "testo": "drop policy if exists \"service_role_all_cervellone_registro_portali\" on public.cervellone_registro_portali"
+    },
+    {
+      "file": "2026-09-15-registro-portali.sql",
+      "testo": "create policy \"service_role_all_cervellone_registro_portali\" on public.cervellone_registro_portali for all to service_role using (true) with check (true)"
+    },
+    {
+      "file": "2026-09-15-registro-portali.sql",
+      "testo": "comment on table public.cervellone_registro_portali is 'Registro a stati delle fatture di commissione dei portali (Booking, Airbnb). Una riga per fattura del fornitore. NON e la verita: Fatture in Clo"
     }
   ]
 }

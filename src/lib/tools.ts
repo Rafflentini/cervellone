@@ -41,6 +41,7 @@ import { CHECKIN_TOOLS, executeCheckinTool } from './checkin/tools'
 import { registraChiamataTool } from './tool-call-log'
 import { DELEGA_TOOLS, executeDelegaTool } from './tools/delega-tools'
 import { DERIVA_TOOLS, executeDerivaTools } from './tools/deriva-schema-tools'
+import { REGISTRO_PORTALI_TOOLS, executeRegistroPortaliTools } from './tools/registro-portali-tools'
 import { ACCESSI_GOOGLE_TOOLS, executeAccessiGoogleTools } from './tools/accessi-google-tools'
 import { GMAIL_ALLEGATI_TOOLS, executeGmailAllegatiTools } from './tools/gmail-allegati-tools'
 import { FIC_PDF_TOOLS, executeFicPdfTool } from './tools/fic-pdf-tools'
@@ -839,6 +840,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   ...ACCESSI_GOOGLE_TOOLS, // 2026-09-14: le credenziali Google sono vive?
   ...GMAIL_ALLEGATI_TOOLS, // 2026-09-14: aprire un PDF allegato a una mail Gmail
   ...FIC_PDF_TOOLS, // 2026-09-14: rivedere il PDF di un documento EMESSO su FIC prima di trasmetterlo
+  ...REGISTRO_PORTALI_TOOLS, // 2026-09-15: a che punto siamo con le commissioni dei portali, e il registro dice la verita'?
 ]
 
 /** Nomi di tutti i tool registrati. Esposto per moduli (es. tools/self) che
@@ -964,6 +966,10 @@ const executeFicPdfWrapper = contabile(executeFicPdfTool, nomiDi(FIC_PDF_TOOLS))
 const executeFicWrapper = contabile(executeFicTool, nomiDi(FIC_READ_TOOLS))
 
 const executeFicWriteWrapper = contabile(executeFicWriteTool, nomiDi(FIC_WRITE_TOOLS))
+// Il registro dei portali e' contabilita': la societa' la decide la
+// CONVERSAZIONE, mai l'input. Da un contesto Restruktura non si leggono le
+// commissioni de La Real Estate.
+const executeRegistroPortaliWrapper = contabile(executeRegistroPortaliTools, nomiDi(REGISTRO_PORTALI_TOOLS))
 // Stesso wrapper degli altri tool contabili: la societa' la decide la
 // CONVERSAZIONE, mai l'input. Senza, si creerebbe il cliente sull'azienda
 // sbagliata — e un'anagrafica finita nella societa' sbagliata non si nota.
@@ -972,7 +978,7 @@ const executeRiconciliazioneWrapper = contabile(executeRiconciliazioneTool, nomi
 const executePrimaNotaWrapper = contabile(executePrimaNotaTool, nomiDi(PRIMA_NOTA_TOOLS))
 const executeMovimentiWrapper = contabile(executeMovimentiTool, nomiDi(MOVIMENTI_TOOLS))
 
-const EXECUTORS = [executeDelegaTool, executeAnagraficaWrapper, executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicPdfWrapper, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeModelloTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper, executeDerivaTools, executeAccessiGoogleTools, executeGmailAllegatiTools]
+const EXECUTORS = [executeDelegaTool, executeAnagraficaWrapper, executeAutomazioniTools, executeCheckinTool, executeStudioTecnico, executeSalTool, executeImageTools, executeSelfTools, executePdfTools, executeDriveWrapper, executeGithubWrapper, executeWeatherWrapper, executeScadenzeWrapper, executeLeggiAllegatoTool, executeDrivePolicyTool, executeFotoArchiveTool, executeFicPdfWrapper, executeFicWrapper, executeMovimentiWrapper, executeRiconciliazioneWrapper, executePrimaNotaWrapper, executeFicWriteWrapper, executeRegistroPortaliWrapper, executeGmailWrapper, executeCalendarTool, executeMemoriaWrapper, executeWorkingMemoryWrapper, executeProjectWrapper, executeSocietaTool, executeModelloTool, executeDraftWrapper, executeDocumentTemplateTool, executeMailWrapper, executeDerivaTools, executeAccessiGoogleTools, executeGmailAllegatiTools]
 
 export function getToolDefinitions(opzioni?: OpzioniTool) {
   // `soloQuesti` vince su tutto: e' uno specialista, e i suoi attrezzi sono
