@@ -356,11 +356,23 @@ describe('differimento delle definizioni dei tool', () => {
   // md5 ha stampato «Expected 55cf2336… / Received 456f7d56…», e il conteggio
   // e' rimasto 144. In questo worktree `node_modules` e' completo
   // (`npm install` dal lock) e il file si importa davvero.
-  it('senza opzioni: 144 definizioni e la stessa impronta di main', () => {
+  //
+  // LA DECISIONE, 15 settembre 2026 (correggere un'anagrafica). E' entrato
+  // `fic_aggiorna_anagrafica`: MODIFICA una scheda cliente o fornitore che
+  // esiste gia' su Fatture in Cloud.
+  //
+  // Le parole dell'Ingegnere: «deve saper anche modificare una anagrafica
+  // cliente o fornitore se serve». Prima Cervellone sapeva creare una scheda e
+  // cercarla, non correggerla: davanti a una sbagliata l'unica strada era
+  // crearne un'altra, cioe' fabbricare il DOPPIONE che `fic-anagrafica.ts`
+  // esiste per impedire.
+  //
+  // ⚠️ Numero e impronta qui sotto sono presi DAL FALLIMENTO del test.
+  it('senza opzioni: 145 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
-    expect(defs).toHaveLength(144)
+    expect(defs).toHaveLength(145)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('456f7d5643d3577e11d0fffbad3b427c')
+      .toBe('be1bd99e0a67252a4d1ef90d2e6aed4d')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {

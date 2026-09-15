@@ -526,13 +526,26 @@ describe('LE REGOLE DELLA SPESA', () => {
   })
 })
 
-describe('⬜ quello che l API non permette di controllare, e che va DETTO', () => {
+describe('⬜ quello che questa verifica NON controlla ancora, e che va DETTO', () => {
+  // ⚠️ Il titolo di questo blocco diceva «quello che l'API non permette di
+  // controllare». Era falso, e la differenza non e' di parole: per mezza
+  // giornata le rilevazioni contabili sono state dichiarate impossibili da
+  // impostare, perche' non compaiono nei modelli dell'SDK. Stanno in
+  // `extra_data`, che e' un oggetto libero — e si e' visto leggendo il JSON di
+  // un documento vero, non la documentazione.
+  //
+  // Quindi qui non si dice piu' «l'API non le espone»: si dice «questo
+  // controllo manca». Un limite nostro non va raccontato come un limite altrui.
+
   it('sull autofattura nomina «Rileva ricavo» e cosa succede se e sbagliato', () => {
     const [v] = daControllareAMano('autofattura')
     expect(v.voce).toContain('Rileva ricavo')
     expect(v.deve_essere).toContain('NO')
     expect(v.se_sbagliato).toContain('fatturato')
-    expect(v.perche_non_via_api).toContain('IssuedDocument')
+    // 🚨 Il motivo dev'essere ONESTO: e' un controllo che manca qui, non una
+    // mancanza dell'API.
+    expect(v.perche_non_via_api).toContain('extra_data')
+    expect(v.perche_non_via_api).not.toContain('non e\' esposto dall\'API')
   })
 
   it('sulla spesa nomina «Rileva IVA a debito» e la doppia contabilizzazione', () => {
