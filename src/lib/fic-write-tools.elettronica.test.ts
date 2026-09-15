@@ -20,10 +20,23 @@
  * documento nasce pronto, e l'invio resta un gesto umano.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, readdirSync } from 'node:fs'
+import { join, basename } from 'node:path'
 
-const sorgente = (f: string) => readFileSync(join(process.cwd(), 'src/lib', f), 'utf8')
+const CARTELLA = join(process.cwd(), 'src/lib')
+const sorgente = (f: string) => readFileSync(join(CARTELLA, f), 'utf8')
+
+/**
+ * Tutti i sorgenti di `src/lib`, test esclusi.
+ *
+ * ⚠️ Si elencano dal DISCO, non da una lista scritta a mano: una lista scritta
+ * a mano dimentica esattamente il file nuovo, che e' quello da controllare.
+ */
+function tuttiISorgenti(): string[] {
+  return readdirSync(CARTELLA, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.ts') && !e.name.includes('.test.'))
+    .map((e) => join(CARTELLA, e.name))
+}
 
 describe('i documenti fiscali nascono elettronici', () => {
   it('🚨 la FATTURA emessa si', () => {
@@ -54,11 +67,36 @@ describe('i documenti fiscali nascono elettronici', () => {
     // La difesa vera di questa storia. Il documento nasce pronto, ma chi
     // decide di mandarlo resta l Ingegnere: se un giorno qualcuno aggiungesse
     // l invio automatico, questo test lo dice.
-    for (const f of ['fic-write-tools.ts', 'fatture-in-cloud.ts']) {
-      const testo = sorgente(f)
-      expect(testo).not.toContain('/e_invoice/send')
-      expect(testo).not.toMatch(/e_invoice\/xml/)
+    //
+    // ⚠️ 15 set 2026 (sera): il controllo guardava DUE file soli. Da oggi
+    // esiste `fic-verifica-formale.ts`, che parla con lo stesso ramo
+    // `e_invoice` dell API — e una guardia che copre due file su cinquanta
+    // e una guardia che il prossimo file scavalca senza accorgersene.
+    // Adesso si legge TUTTO `src/lib`.
+    for (const f of tuttiISorgenti()) {
+      const testo = readFileSync(f, 'utf8')
+      expect(`${f}: ${testo}`).not.toContain('/e_invoice/send')
+      // `dry_run` e l opzione che fa girare a vuoto l INVIO: se compare, vuol
+      // dire che qualcuno ha preso quella strada invece della verifica.
+      expect(`${f}: ${testo}`).not.toContain('dry_run')
     }
+  })
+
+  it('🚨 l unico endpoint e_invoice toccato e quello di VERIFICA, e sta in un file solo', () => {
+    // Un secondo giro sullo stesso perimetro, dal verso opposto: non «cosa
+    // non c e» ma «cosa c e, e dove».
+    // Si cerca la COSTRUZIONE del percorso, non la parola: `fic-allegato.ts`
+    // nomina `e_invoice/xml` in un commento per dire che quegli endpoint
+    // stanno altrove, e un test che bocciasse anche i commenti costringerebbe
+    // a togliere le spiegazioni per far passare le guardie.
+    const COSTRUISCE_IL_PERCORSO = /issued_documents\/[^\n]*\/e_invoice\//
+    const conEInvoice = tuttiISorgenti().filter((f) => COSTRUISCE_IL_PERCORSO.test(readFileSync(f, 'utf8')))
+
+    expect(conEInvoice.map((f) => basename(f))).toEqual(['fic-verifica-formale.ts'])
+    const testo = sorgente('fic-verifica-formale.ts')
+    expect(testo).toContain("const PERCORSO_VERIFICA = 'xml_verify'")
+    // ⛔ In quel file non si POSTa: la verifica e una lettura.
+    expect(testo).not.toMatch(/method:\s*'POST'/)
   })
 
   it('🚨 creaDocumentoFIC non impone piu il valore: lo decide il chiamante', () => {

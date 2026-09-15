@@ -213,6 +213,155 @@ beforeEach(() => {
   stato.eliminate = []
 })
 
+/**
+ * 🚨 IL DOCUMENTO MODELLO — `received_documents/435116342`, letto dal
+ * gestionale il 15 settembre 2026.
+ *
+ * E' la spesa di commissioni Booking che l'Ingegnere ha CORRETTO A MANO dopo
+ * che i nostri tool l'avevano creata sbagliata. Non e' un esempio: e' il
+ * documento giusto, e questo blocco confronta campo per campo quello che il
+ * tool spedisce con quello che c'e' scritto li'.
+ *
+ * ⚠️ Sulla spesa il modello NON porta `extra_data`: le rilevazioni contabili
+ * stanno sull'autofattura, e qui inventarle sarebbe esattamente il difetto che
+ * questo metodo esiste per evitare.
+ */
+const MODELLO_SPESA = {
+  type: 'expense',
+  category: 'Commissioni portali',
+  description: 'Commissioni Booking.com - Blue Maison (ID 14744428) - periodo 22/07-31/07/2026 '
+    + '(prenotazioni 797,24 + costo transazione 79,72) - reverse charge art. 17 c.2, integrata con autofattura TD17 n. 1/INT',
+  invoice_number: '1660950537',
+  amount_net: 876.96,
+  amount_vat: 0,
+  amount_gross: 876.96,
+  date: '2026-08-03',
+  vat_id: 11,
+  conto: { id: 1570742, nome: 'BANCA MONTEPRUNO' },
+} as const
+
+describe('🚨 RISPECCHIAMENTO — il payload ricalca la spesa CORRETTA A MANO', () => {
+  /**
+   * La stessa spesa del modello, coi dati variabili che l'Ingegnere passa al
+   * tool. Struttura, periodo e dettaglio degli importi stanno SOLO sul PDF —
+   * che questo tool non legge — quindi arrivano come parametri.
+   */
+  const COME_IL_MODELLO = {
+    casella: 'larealestate',
+    message_id: 'm-1',
+    fornitore: 'Booking.com',
+    fornitore_id: 9,
+    numero: MODELLO_SPESA.invoice_number,
+    data: MODELLO_SPESA.date,
+    imponibile: MODELLO_SPESA.amount_net,
+    vat_id: MODELLO_SPESA.vat_id,
+    modalita_pagamento: MODELLO_SPESA.conto.nome,
+    struttura: 'Blue Maison',
+    struttura_id: '14744428',
+    periodo: '22/07-31/07/2026',
+    prenotazioni: 797.24,
+    costo_transazione: 79.72,
+    autofattura: '1/INT',
+  }
+
+  beforeEach(() => {
+    // L'aliquota 11 del modello: inversione contabile art. 7 ter, IVA zero.
+    stato.aliquote = [
+      { id: 0, value: 22, description: 'Aliquota 22%' },
+      { id: 11, value: 0, description: 'Inversione contabile, art.7 ter', ei_type: 'N6.9' },
+    ]
+    stato.conti = [{ id: MODELLO_SPESA.conto.id, name: MODELLO_SPESA.conto.nome }]
+    stato.schedeFornitori = new Map([['9', { id: 9, name: 'Booking.com' }]])
+  })
+
+  async function payloadDelModello(): Promise<Record<string, unknown>> {
+    await executeFicWriteTool('registra_spesa_fornitore', COME_IL_MODELLO, 'larealestate')
+    const pending = stato.inserite[stato.inserite.length - 1].payload as { payload: Record<string, unknown> }
+    return pending.payload
+  }
+
+  it('🚨 category e description: i due campi che il tool non scriveva affatto', async () => {
+    // Senza `category` la spesa nasceva in «(nessuna categoria)»; senza
+    // `description` non diceva di quale appartamento e di quale periodo
+    // fossero quelle commissioni. Due campi che il documento corretto porta e
+    // che nessuno impostava.
+    const p = await payloadDelModello()
+
+    expect(p.category).toBe(MODELLO_SPESA.category)
+    expect(p.description).toBe(MODELLO_SPESA.description)
+  })
+
+  it('tipo, numero del fornitore, data e importi sono quelli del modello', async () => {
+    const p = await payloadDelModello()
+
+    expect(p.type).toBe(MODELLO_SPESA.type)
+    expect(p.invoice_number).toBe(MODELLO_SPESA.invoice_number)
+    expect(p.date).toBe(MODELLO_SPESA.date)
+    expect(p.amount_net).toBe(MODELLO_SPESA.amount_net)
+    // Con l'aliquota 11 (0%) l'IVA e' zero e il lordo coincide col netto,
+    // come sul documento vero.
+    expect(p.amount_vat).toBe(MODELLO_SPESA.amount_vat)
+    expect(p.amount_gross).toBe(MODELLO_SPESA.amount_gross)
+    expect((p.items_list as Array<{ vat: { id: number } }>)[0].vat.id).toBe(MODELLO_SPESA.vat_id)
+  })
+
+  it('payments_list: saldata alla data del documento, sul conto del modello', async () => {
+    const p = await payloadDelModello()
+    const pagamenti = p.payments_list as Array<Record<string, unknown>>
+
+    expect(pagamenti).toHaveLength(1)
+    expect(pagamenti[0].amount).toBe(MODELLO_SPESA.amount_gross)
+    expect(pagamenti[0].due_date).toBe(MODELLO_SPESA.date)
+    expect(pagamenti[0].paid_date).toBe(MODELLO_SPESA.date)
+    expect(pagamenti[0].status).toBe('paid')
+    expect(pagamenti[0].payment_account).toEqual({ id: MODELLO_SPESA.conto.id })
+  })
+
+  it('deducibilita del costo e detraibilita dell IVA: piene, in punti percentuali', async () => {
+    // ⚠️ Questi due NON stanno nel JSON del documento riletto: sono letti sul
+    // modello `ReceivedDocument` della documentazione ufficiale dell'API, che
+    // li dichiara «percentage», e sulle fixture ufficiali dell'SDK che li
+    // valorizzano 50 e 100 — cioe' punti percentuali, non frazioni.
+    const p = await payloadDelModello()
+
+    expect(p.tax_deductibility).toBe(100)
+    expect(p.vat_deductibility).toBe(100)
+  })
+
+  it('⬜ sulla SPESA non si scrive extra_data: il modello non lo porta', async () => {
+    // Le rilevazioni contabili stanno sull'AUTOFATTURA. Metterle anche qui
+    // sarebbe inventare un campo su un documento contabile vero.
+    const p = await payloadDelModello()
+
+    expect(p.extra_data).toBeUndefined()
+  })
+
+  it('se struttura e periodo NON si sanno, la descrizione si compone con quello che c e', async () => {
+    // 🚨 Il punto della regola: il tool non legge il PDF. Senza quei dati non
+    // li inventa — li lascia fuori. Una descrizione che nomina l'appartamento
+    // sbagliato e' peggio di una che non lo nomina affatto.
+    await executeFicWriteTool(
+      'registra_spesa_fornitore',
+      { ...COME_IL_MODELLO, struttura: undefined, struttura_id: undefined, periodo: undefined, prenotazioni: undefined, costo_transazione: undefined, autofattura: undefined },
+      'larealestate',
+    )
+    const p = (stato.inserite[stato.inserite.length - 1].payload as { payload: Record<string, unknown> }).payload
+
+    expect(p.description).toBe('Commissioni Booking.com - reverse charge art. 17 c.2')
+    expect(String(p.description)).not.toContain('Blue Maison')
+    expect(String(p.description)).not.toContain('periodo')
+    expect(String(p.description)).not.toContain('(ID')
+  })
+
+  it('CONTROLLO POSITIVO — il confronto saprebbe FALLIRE su un payload diverso', async () => {
+    const p = await payloadDelModello()
+
+    expect(p.category).not.toBe('')
+    expect(p.description).not.toBe(`${MODELLO_SPESA.invoice_number}`)
+    expect(p.tax_deductibility).not.toBe(1)
+  })
+})
+
 describe('🚨 NIENTE SI INDOVINA: aliquota e conto vengono da Fatture in Cloud', () => {
   it('senza vat_id NON prepara niente e restituisce l elenco VERO delle aliquote', async () => {
     const r = await json(chiama({ vat_id: undefined }))
@@ -232,6 +381,34 @@ describe('🚨 NIENTE SI INDOVINA: aliquota e conto vengono da Fatture in Cloud'
     // nel campo accanto, che e' un DATO, non un consiglio.
     expect(testo).not.toMatch(/\d+\s*%/)
     expect(testo).not.toMatch(/\b(22|10|4)\b/)
+  })
+
+  it('🚨 SUGGERIRE NON E SCEGLIERE: il rifiuto nomina l id 11 ma non prepara niente', async () => {
+    // L'Ingegnere ha chiesto di NOMINARE l'id che la specifica indica per il
+    // reverse charge da fornitore UE — tacerlo lo costringe a ricavarlo ogni
+    // volta da un elenco di aliquote omonime. Ma il tool continua a NON
+    // sceglierlo: senza `vat_id` non prepara niente e non scrive niente.
+    const r = await json(chiama({ vat_id: undefined }))
+
+    expect(r.need).toBe('vat_id')
+    expect(String(r.messaggio)).toContain('id 11')
+    expect(String(r.messaggio)).toContain('Indicazione, non scelta')
+    // 🚨 La prova che e' rimasta un'indicazione: niente pending, niente FIC.
+    expect(stato.inserite).toHaveLength(0)
+    expect(stato.creati).toHaveLength(0)
+  })
+
+  it('🚨 il rifiuto sul conto nomina BANCA MONTEPRUNO, e l IBAN non sta da nessuna parte', async () => {
+    // Stessa forma: si dice quale conto porta la spesa gia' registrata a mano,
+    // senza sceglierlo. ⚠️ L'IBAN del documento modello NON entra nel codice:
+    // il repository e' pubblico.
+    const r = await json(chiama({ modalita_pagamento: undefined }))
+
+    expect(r.need).toBe('modalita_pagamento')
+    expect(String(r.messaggio)).toContain('BANCA MONTEPRUNO')
+    expect(String(r.messaggio)).toContain('1570742')
+    expect(stato.inserite).toHaveLength(0)
+    expect(JSON.stringify(r)).not.toMatch(/IT\d{2}[A-Z]\d{10}/)
   })
 
   it('un vat_id che non esiste su quell azienda viene rifiutato', async () => {

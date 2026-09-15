@@ -39,6 +39,7 @@ import {
   TIPO_DOCUMENTO_SDI,
   type TipoVerifica,
 } from './fic-verifica'
+import { verificaFormaleXml, rigaVerificaFormale } from './fic-verifica-formale'
 import { scegliAllegatoMail, scaricaAllegatoScelto, CASELLE_GOOGLE } from './spesa-allegato'
 import type { ChiaveCasella } from './caselle'
 
@@ -1308,16 +1309,64 @@ const TIPO_FIC_AUTOFATTURA = 'self_supplier_invoice'
  *
  * ⚠️ Fatture in Cloud PRETENDE questo campo su un documento elettronico (422
  * «il metodo di pagamento e' obbligatorio»), anche se su un reverse charge non
- * si paga niente e il valore e' formale: l'integrazione TD17 valida fornita
- * dall'Ingegnere non ha nemmeno il blocco `DatiPagamento`. Qui c'e' solo
- * perche' FIC lo esige.
+ * si paga niente e il valore e' formale. Qui c'e' solo perche' FIC lo esige.
  *
  * Era `MP01` (contanti), che e' il predefinito del form di FIC. L'Ingegnere ha
  * chiesto di cambiarlo e ha ragione nel merito: la commissione Booking non si
  * paga in contanti, viene trattenuta dal bonifico dei soggiorni. Se un campo
  * formale si deve mettere, che dica almeno una cosa vera.
+ *
+ * 🚨 **I DUE DIVERGONO, ED E' SCRITTO QUI INVECE CHE CORRETTO IN SILENZIO.**
+ * L'autofattura TD17 che l'Ingegnere ha corretto a mano e INVIATO
+ * (`issued_documents/552759661`, il modello di questo lavoro) porta
+ * `ei_data.payment_method: "MP01"`. Il codice manda `MP05`.
+ *
+ * Non si cambia di iniziativa nostra, per due ragioni che tirano nello stesso
+ * verso: l'Ingegnere ha chiesto ESPRESSAMENTE di non usare «contanti», e la
+ * specifica dice che su un reverse charge il campo e' ininfluente. Quale dei
+ * due valori mettere su un campo formale e' una decisione sua, non di chi
+ * scrive il codice: sta nel rapporto, e finche' non risponde resta `MP05`.
+ *
+ * ⚠️ Nota che smentisce una vecchia riga di questo file: si diceva «l'XML
+ * valido non ha nemmeno il blocco DatiPagamento, quindi questo campo
+ * probabilmente non ci arriva nemmeno». Il modello dimostra il contrario — il
+ * campo c'e', valorizzato — quindi quello che scriviamo qui finisce davvero
+ * sul documento.
  */
 const METODO_PAGAMENTO_INTEGRAZIONE = 'MP05'
+
+/**
+ * 🚨 LE DUE RILEVAZIONI CONTABILI DELL'INTEGRAZIONE — e la scoperta del 15
+ * settembre 2026.
+ *
+ * Fino a oggi questo repo credeva che «Rileva IVA a debito» e «Rileva ricavo»
+ * NON fossero impostabili via API: non stanno nel modello ufficiale
+ * `IssuedDocument` dell'SDK, e `fic-verifica.ts` le elencava fra le cose «da
+ * controllare a mano su Fatture in Cloud».
+ *
+ * Non era vero. `extra_data` e' un oggetto LIBERO — per questo la
+ * documentazione non ne elenca le chiavi — e l'autofattura TD17 corretta a
+ * mano dall'Ingegnere e poi inviata allo SdI porta esattamente:
+ *
+ *     "extra_data": { "debt_vat_detect": true, "revenue_detect": false }
+ *
+ * Non sono un dettaglio contabile. Senza:
+ *  - `debt_vat_detect: true` → l'IVA 22% dell'integrazione NON entra in
+ *    liquidazione, e il reverse charge resta monco: l'adempimento sembra fatto
+ *    e non lo e';
+ *  - `revenue_detect: false` → l'imponibile diventa un RICAVO fittizio e
+ *    gonfia il fatturato della societa' di tutte le commissioni Booking
+ *    dell'anno.
+ *
+ * ⚠️ Letti dal DOCUMENTO VERO, non dedotti da un'etichetta: e' il metodo che
+ * l'Ingegnere ha imposto dopo che ogni campo dedotto di questa settimana si e'
+ * rivelato sbagliato.
+ *
+ * ⚠️ Sulla SPESA non ci vanno: il documento ricevuto corretto
+ * (`received_documents/435116342`) NON porta `extra_data` affatto, e
+ * aggiungercelo sarebbe inventare.
+ */
+const RILEVAZIONI_INTEGRAZIONE = { debt_vat_detect: true, revenue_detect: false } as const
 
 /**
  * Codice destinatario SdI dell'integrazione: e' il NOSTRO, non quello del
@@ -1411,6 +1460,21 @@ interface AutofatturaRiga {
    */
   data_ricezione: string
   imponibile: number
+  /**
+   * Cosa MANCA all'anagrafica del cedente estero, se manca qualcosa.
+   *
+   * 🚨 Un avviso, non un rifiuto, e la differenza e' ragionata. Il modello
+   * corretto porta sul cedente `country` («Paesi Bassi») e `vat_number`
+   * («NL805734958B01»): sono i dati del CedentePrestatore di una TD17, e senza
+   * l'XML e' incompleto. Ma quei dati non si inventano — si copiano
+   * dall'anagrafica o non ci sono — e una guardia che BLOCCA un caso che
+   * Fatture in Cloud accetterebbe e' peggio del buco che chiude (lezione della
+   * guardia sui modelli .docx). Quindi: si dice, forte, nell'anteprima che
+   * l'Ingegnere legge prima dell'unica conferma; e la verifica formale di
+   * Fatture in Cloud, che ora gira dopo la creazione, lo boccia comunque se
+   * conta davvero.
+   */
+  avvisoCedente: string | null
   /** Il payload FIC gia' costruito: quello che verra' spedito, senza ritocchi. */
   payload: Record<string, unknown>
 }
@@ -1462,6 +1526,26 @@ function importoSenzaAmbiguita(value: unknown): number | null {
 function rigaAutofattura(f: AutofatturaRiga, etichettaIva: string): string {
   return `- ${f.fornitore} — fattura n.${f.numero} del ${f.data}, ricevuta il ${f.data_ricezione} `
     + `→ integrazione datata ${f.data_ricezione} — imponibile ${euro(f.imponibile)} — IVA: ${etichettaIva}`
+    + (f.avvisoCedente ? `\n  ⚠️ ${f.avvisoCedente}` : '')
+}
+
+/**
+ * Cosa manca all'anagrafica del cedente estero perche' l'integrazione riporti
+ * i suoi dati, come nel modello. Null = non manca niente.
+ *
+ * Si guardano SOLO i due campi che il modello porta e che una TD17 pretende
+ * sul CedentePrestatore: la partita IVA comunitaria e il paese. Aggiungerne
+ * altri «per prudenza» sarebbe dedurre, ed e' quello che questa settimana ha
+ * sbagliato ogni volta.
+ */
+function avvisoCedenteEstero(entity: Record<string, unknown>): string | null {
+  const mancanti = [
+    cleanString(entity.vat_number) ? null : 'la PARTITA IVA comunitaria (vat_number)',
+    cleanString(entity.country) ? null : 'il PAESE (country)',
+  ].filter(Boolean)
+  if (mancanti.length === 0) return null
+  return `l'anagrafica di questo fornitore su Fatture in Cloud non ha ${mancanti.join(' ne\' ')}: `
+    + 'l\'integrazione nascera\' senza quel dato del cedente estero. Correggi l\'anagrafica e rifai, oppure conferma sapendolo.'
 }
 
 function descriviAutofatture(input: {
@@ -1489,8 +1573,15 @@ function descriviAutofatture(input: {
     + 'Gli incassi girati dalla piattaforma sono soldi degli ospiti e NON si integrano: se un importo qui sopra somiglia a un incasso, annulla.',
     'Nascono ELETTRONICHE ma NON vengono trasmesse: il documento e pronto per lo SdI e la trasmissione la fai tu da Fatture in Cloud, dopo averlo controllato.',
     `Tipo documento SdI: ${TIPO_DOCUMENTO_SDI} (integrazione art. 17 c.2 DPR 633/72, servizio generico art. 7-ter), impostato su ogni documento.`,
+    // 🚨 Le due rilevazioni contabili si DICHIARANO nell'anteprima: sono
+    // quelle che decidono se l'IVA entra in liquidazione e se l'imponibile
+    // gonfia il fatturato, e finora nessuno le impostava.
+    'Rilevazioni contabili impostate su ogni integrazione: «Rileva IVA a debito» SI (senza, l\'IVA del reverse charge non entra '
+    + 'in liquidazione), «Rileva ricavo» NO (con, l\'imponibile diventerebbe un ricavo fittizio e gonfierebbe il fatturato).',
     '⚠️ I «dati fattura collegata» questo tool NON li compila: il riferimento alla fattura originale (numero e data) '
     + 'e\' scritto nella riga e nelle note, ma non nel campo strutturato. Controllalo su Fatture in Cloud prima di trasmettere.',
+    'Dopo la creazione ogni documento passa dalla VERIFICA FORMALE di Fatture in Cloud, e l\'esito te lo riporto: '
+    + 'se l\'XML non e\' valido NON dico che e\' andata bene.',
     `1a conferma -> ${comandoDaMostrare('fic_ok', input.id)}`,
     `annulla -> ${comandoDaMostrare('fic_no', input.id)}`,
   ].filter(Boolean).join('\n')
@@ -1784,15 +1875,16 @@ async function compilaAutofatture(
       // solo trasmettendola.
       //
       // ⚠️ Su un'integrazione in reverse charge NON si paga niente: il valore
-      // e' formale. Si usa `MP01` (contanti), che e' il predefinito che
-      // Fatture in Cloud stesso propone nel proprio form per una TD17 —
-      // scelto perche' e' quello che farebbe FIC, non perche' ci piace.
-      //
-      // ⬜ Da confermare sull'XML del primo documento vero: l'integrazione
-      // TD17 valida che l'Ingegnere ha fornito NON contiene alcun blocco
-      // `DatiPagamento`, quindi questo campo probabilmente nemmeno ci arriva.
+      // e' formale. ⬜ Il modello corretto dall'Ingegnere porta `MP01`, questo
+      // codice manda `MP05`: la divergenza e' VOLUTA e in attesa di una sua
+      // decisione — v. `METODO_PAGAMENTO_INTEGRAZIONE`.
       ei_data: { payment_method: METODO_PAGAMENTO_INTEGRAZIONE },
       ei_raw: eiRawIntegrazione(TIPO_DOCUMENTO_SDI),
+      // 🚨 LE RILEVAZIONI CONTABILI. Senza «Rileva IVA a debito» l'IVA
+      // dell'integrazione non entra in liquidazione; senza «NON rilevare
+      // ricavo» l'imponibile gonfia il fatturato. Lette dal documento vero:
+      // v. `RILEVAZIONI_INTEGRAZIONE`.
+      extra_data: { ...RILEVAZIONI_INTEGRAZIONE },
       // La data dell'integrazione e' quella di RICEZIONE della fattura estera.
       date: r.dataRicezione,
       // Serie dedicata: senza, FIC numererebbe fra le fatture attive.
@@ -1823,6 +1915,7 @@ async function compilaAutofatture(
       data: r.data,
       data_ricezione: r.dataRicezione,
       imponibile: r.imponibile,
+      avvisoCedente: avvisoCedenteEstero(asObject(entity.entity)),
       payload,
     })
   }
@@ -1884,6 +1977,7 @@ function leggiAutofatturePayload(payload: unknown): AutofatturePayload | null {
       data: cleanString(d.data) ?? '?',
       data_ricezione: cleanString(d.data_ricezione) ?? '?',
       imponibile: Number(d.imponibile) || 0,
+      avvisoCedente: cleanString(d.avvisoCedente) ?? null,
       payload: payloadDoc,
     })
   }
@@ -1895,6 +1989,12 @@ interface EsitoAutofatture {
   create: number
   /** Create su FIC ma NON confermate dalla rilettura: non sono un successo. */
   da_verificare: number
+  /**
+   * Create, rilette, e BOCCIATE dalla verifica formale di Fatture in Cloud:
+   * l'XML non passerebbe lo SdI. Non sono un successo e NON si ritentano —
+   * il documento esiste, e rifarlo creerebbe il doppione.
+   */
+  da_correggere: number
   ids: string[]
 }
 
@@ -1923,6 +2023,7 @@ async function creaAutofatture(
       messaggio: 'NESSUNA autofattura creata: il pending non contiene un elenco leggibile.',
       create: 0,
       da_verificare: 0,
+      da_correggere: 0,
       ids: [],
     }
   }
@@ -1931,6 +2032,7 @@ async function creaAutofatture(
   const riuscite: string[] = []
   const fallite: string[] = []
   const daVerificare: string[] = []
+  const daCorreggere: string[] = []
   const ids: string[] = []
   let interruzione: string | null = null
   let trattate = 0
@@ -1957,7 +2059,24 @@ async function creaAutofatture(
         continue
       }
       ids.push(creato.id)
-      riuscite.push(`✅ ${intestazione} — autofattura ${TIPO_FIC_AUTOFATTURA} id ${creato.id}${creato.url ? ` — ${creato.url}` : ''}`)
+
+      // 🚨 LA VERIFICA FORMALE, e il motivo per cui e' qui e non altrove.
+      //
+      // La rilettura qui sopra dice che il documento ESISTE e che e' del tipo
+      // giusto. Non dice se il suo XML passerebbe lo SdI: la mattina del 15
+      // settembre 2026 quattro integrazioni esistevano, erano del tipo giusto,
+      // e portavano attributi `2.1.6` che le avrebbero fatte SCARTARE tutte.
+      // Il tool disse «4 su 4». Da qui in poi non lo puo' piu' dire senza
+      // averlo chiesto a Fatture in Cloud.
+      const formale = await verificaFormaleXml(creato.id, societa)
+      const riga = `${intestazione} — autofattura ${TIPO_FIC_AUTOFATTURA} id ${creato.id}${creato.url ? ` — ${creato.url}` : ''}`
+      if (formale.esito === 'errori') {
+        // ⚠️ Creata ma NON riuscita. E nemmeno «da rifare»: il documento c'e',
+        // e va corretto o cancellato a mano — rifarlo creerebbe il doppione.
+        daCorreggere.push(`🚨 ${riga}\n   ${rigaVerificaFormale(formale)}`)
+        continue
+      }
+      riuscite.push(`✅ ${riga}\n   ${rigaVerificaFormale(formale)}`)
     } catch (err) {
       // Rete, token, 429: si ferma qui e si DICE dove si e' fermata.
       interruzione = err instanceof Error ? err.message : String(err)
@@ -1970,13 +2089,23 @@ async function creaAutofatture(
   const coda = [
     riuscite.length > 0 ? `CREATE (${riuscite.length}), verificate rileggendo ogni documento su Fatture in Cloud:\n${riuscite.join('\n')}` : null,
     fallite.length > 0 ? `NON CREATE (${fallite.length}), su Fatture in Cloud non esistono:\n${fallite.join('\n')}` : null,
+    // 🚨 Il blocco che non c'era stamattina, e per cui l'Ingegnere ha dovuto
+    // rifare quattro documenti a mano.
+    daCorreggere.length > 0
+      ? `🚨 CREATE MA NON VALIDE (${daCorreggere.length}): esistono su Fatture in Cloud, ma la sua VERIFICA FORMALE dice che `
+        + 'l\'XML non passerebbe lo SdI. NON le conto fra le riuscite e NON le rifaccio — il documento c\'e\' gia\', '
+        + `e un secondo tentativo sarebbe un doppione. Correggile o eliminale su Fatture in Cloud:\n${daCorreggere.join('\n')}`
+      : null,
     daVerificare.length > 0 ? `DA VERIFICARE A MANO (${daVerificare.length}), non le conto fra le riuscite:\n${daVerificare.join('\n')}` : null,
     interruzione
       ? `⚠️ La creazione si e' INTERROTTA (${interruzione}). Le autofatture elencate come create RESTANO su `
         + 'Fatture in Cloud: non tento nessun rollback. Da riprendere: '
         + `${nonTrattate.map((f) => `${f.fornitore} n.${f.numero}`).join(', ') || 'nessuna'}.`
       : null,
-    `Nessuna e' stata trasmessa allo SdI: sono compilate, tipo documento . L'invio lo decidi tu da Fatture in Cloud.`,
+    // ⚠️ Il valore c'era finito fuori dal template: la riga diceva «tipo
+    // documento .» e basta. Un messaggio che l'Ingegnere legge dopo una
+    // conferma che vale per N documenti fiscali.
+    `Nessuna e' stata trasmessa allo SdI: sono compilate, tipo documento ${TIPO_DOCUMENTO_SDI}. L'invio lo decidi tu da Fatture in Cloud.`,
   ].filter(Boolean).join('\n\n')
 
   if (riuscite.length === 0) {
@@ -1984,6 +2113,7 @@ async function creaAutofatture(
       messaggio: `NESSUNA autofattura creata su ${s.denominazione}: 0 su ${totale}.\n\n${coda}`,
       create: 0,
       da_verificare: daVerificare.length,
+      da_correggere: daCorreggere.length,
       ids,
     }
   }
@@ -1992,6 +2122,7 @@ async function creaAutofatture(
       messaggio: `AUTOFATTURE CREATE IN PARTE su ${s.denominazione}: ${riuscite.length} su ${totale}.\n\n${coda}`,
       create: riuscite.length,
       da_verificare: daVerificare.length,
+      da_correggere: daCorreggere.length,
       ids,
     }
   }
@@ -1999,6 +2130,7 @@ async function creaAutofatture(
     messaggio: `AUTOFATTURE CREATE su ${s.denominazione}: ${riuscite.length} su ${totale}.\n\n${coda}`,
     create: riuscite.length,
     da_verificare: daVerificare.length,
+    da_correggere: daCorreggere.length,
     ids,
   }
 }
@@ -2054,6 +2186,61 @@ async function rileggiAutofattura(
 const TIPO_FIC_SPESA = 'expense'
 
 /**
+ * La CATEGORIA della spesa su Fatture in Cloud.
+ *
+ * Letta dal documento corretto a mano dall'Ingegnere
+ * (`received_documents/435116342`): `"category": "Commissioni portali"`. E'
+ * l'unico posto da cui si poteva sapere — la categoria e' una stringa libera,
+ * e ogni azienda ha le sue.
+ *
+ * Resta un PARAMETRO con questo predefinito: qui il predefinito e' legittimo
+ * (a differenza dell'aliquota IVA) perche' non qualifica niente fiscalmente —
+ * sposta una riga in un raggruppamento di prima nota — e perche' e' scritto
+ * nell'anteprima, dove si legge prima di confermare.
+ */
+const CATEGORIA_SPESA_PREDEFINITA = 'Commissioni portali'
+
+/**
+ * Deducibilita' del costo e detraibilita' dell'IVA, in PERCENTO.
+ *
+ * ⚠️ Questi due non stanno nei JSON dei due documenti modello: il documento
+ * riletto non li espone. Non sono dedotti — sono letti sulla documentazione
+ * UFFICIALE dell'API, che e' l'altra fonte ammessa:
+ *
+ *  - il modello `ReceivedDocument` degli SDK ufficiali li elenca come
+ *    `tax_deductibility` («Received document tax deductibility percentage») e
+ *    `vat_deductibility` («Received document vat deductibility percentage»),
+ *    entrambi `float` e facoltativi;
+ *  - le fixture di collaudo dell'SDK ufficiale li valorizzano
+ *    `"tax_deductibility":50,"vat_deductibility":100`, che e' la prova che
+ *    l'unita' e' il PUNTO PERCENTUALE (0–100) e non la frazione (0–1). Con la
+ *    frazione, `100` varrebbe diecimila per cento.
+ *
+ * Su una commissione di portale in reverse charge il costo e' interamente
+ * deducibile e l'IVA interamente detraibile: 100 e 100.
+ *
+ * ⬜ Da guardare sul primo documento vero creato da qui: se sul gestionale
+ * comparissero diversi da «100%», il difetto e' qui e si toglie questa riga.
+ */
+const DEDUCIBILITA_PIENA = 100
+
+/**
+ * Il conto su cui la spesa di commissioni risulta saldata, letto dal documento
+ * corretto a mano (`payments_list[0].payment_account`).
+ *
+ * ⚠️ NON e' un predefinito: la regola «il conto non si indovina» non cambia, e
+ * senza `modalita_pagamento` il tool continua a fermarsi e a restituire
+ * l'elenco VERO dei conti dell'azienda. Questo serve solo perche' quell'elenco
+ * arrivi con accanto scritto QUALE conto porta il documento gia' registrato:
+ * chiedere «quale dei sei?» senza dire quale ha usato lui e' far rifare
+ * all'Ingegnere un lavoro che ha gia' fatto.
+ *
+ * 🚨 Qui c'e' l'id e il NOME. L'IBAN che il documento porta accanto NON entra
+ * in questo file: il repository e' pubblico.
+ */
+const CONTO_SPESA_COMMISSIONI = { id: 1570742, nome: 'BANCA MONTEPRUNO' } as const
+
+/**
  * Perche' questo tool esiste (14 settembre 2026).
  *
  * `compila_autofattura` sa creare l'integrazione TD17 in reverse charge per le
@@ -2087,10 +2274,89 @@ interface SpesaRicevutaPayload {
   totale: number
   vat: { id: number; etichetta: string }
   conto: ContoPagamentoFic
+  /** La categoria di prima nota scritta sul documento. */
+  categoria: string
+  /** La descrizione strutturata: struttura, periodo, dettaglio, reverse charge. */
+  descrizione: string
   /** Dove sta il PDF. Si scarica alla conferma, non prima: v. `spesa-allegato.ts`. */
   allegato: { casella: string; message_id: string; attachment_id: string; filename: string; oggetto: string }
   /** Il payload FIC gia' costruito, SENZA `attachment_token`: quello nasce al caricamento. */
   payload: Record<string, unknown>
+}
+
+/**
+ * Il periodo delle commissioni, come lo scrive l'Ingegnere: `22/07-31/07/2026`.
+ *
+ * Si accetta anche una coppia di date ISO e la si formatta come nel modello;
+ * ma se arriva un `periodo` gia' scritto, quello VINCE e non si tocca — un
+ * testo riformattato e' un testo che qualcuno ha riscritto al posto suo.
+ * Se non arriva niente di leggibile, torna `null`: il pezzo di descrizione
+ * sparisce invece di comparire mezzo inventato.
+ */
+function periodoCommissioni(
+  libero: string | undefined,
+  dal: string | undefined,
+  al: string | undefined,
+): string | null {
+  if (libero) return libero
+  const iso = /^\d{4}-\d{2}-\d{2}$/
+  if (!dal || !al || !iso.test(dal) || !iso.test(al)) return null
+  const gm = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}`
+  const anno = (d: string) => d.slice(0, 4)
+  return anno(dal) === anno(al)
+    ? `${gm(dal)}-${gm(al)}/${anno(al)}`
+    : `${gm(dal)}/${anno(dal)}-${gm(al)}/${anno(al)}`
+}
+
+/**
+ * La DESCRIZIONE strutturata della spesa, ricalcata sul documento che
+ * l'Ingegnere ha corretto a mano:
+ *
+ *     Commissioni Booking.com - Blue Maison (ID 14744428) - periodo
+ *     22/07-31/07/2026 (prenotazioni 797,24 + costo transazione 79,72) -
+ *     reverse charge art. 17 c.2, integrata con autofattura TD17 n. 1/INT
+ *
+ * 🚨 Il tool NON sa quale struttura e quale periodo: sono dati che stanno solo
+ * sul PDF, che qui non si legge. Arrivano come parametri, e **ogni pezzo che
+ * manca sparisce**: si compone la descrizione con quello che c'e' invece di
+ * riempire i buchi. Una descrizione che nomina l'appartamento sbagliato e'
+ * peggio di una che non lo nomina affatto.
+ */
+function descrizioneSpesaCommissioni(input: {
+  fornitore: string
+  struttura?: string
+  strutturaId?: string
+  periodo?: string | null
+  prenotazioni?: number
+  costoTransazione?: number
+  autofattura?: string
+}): string {
+  const struttura = [
+    input.struttura,
+    input.struttura && input.strutturaId ? `(ID ${input.strutturaId})` : null,
+  ].filter(Boolean).join(' ')
+
+  const dettaglioImporti = [
+    input.prenotazioni !== undefined ? `prenotazioni ${euro(input.prenotazioni)}` : null,
+    input.costoTransazione !== undefined ? `costo transazione ${euro(input.costoTransazione)}` : null,
+  ].filter(Boolean).join(' + ')
+
+  const periodo = [
+    input.periodo ? `periodo ${input.periodo}` : null,
+    dettaglioImporti ? `(${dettaglioImporti})` : null,
+  ].filter(Boolean).join(' ')
+
+  // ⚠️ La coda del reverse charge c'e' SEMPRE: non e' un dato del PDF, e'
+  // cosa questa spesa e'. Il numero dell'autofattura invece si nomina solo se
+  // lo si sa — inventarlo vorrebbe dire scrivere su un documento contabile il
+  // riferimento a un altro documento che forse non esiste.
+  const coda = input.autofattura
+    ? `reverse charge art. 17 c.2, integrata con autofattura ${TIPO_DOCUMENTO_SDI} n. ${input.autofattura}`
+    : 'reverse charge art. 17 c.2'
+
+  return [`Commissioni ${input.fornitore}`, struttura || null, periodo || null, coda]
+    .filter(Boolean)
+    .join(' - ')
 }
 
 /**
@@ -2172,8 +2438,14 @@ function descriviSpesa(input: { id: string; societa: CodiceSocieta; spesa: Spesa
     `SOCIETA: ${s.denominazione} (P.IVA ${s.piva})`,
     `Fornitore: ${d.fornitore_descritto}`,
     `Fattura n.${d.numero} del ${d.data}`,
+    `Categoria: ${d.categoria}`,
+    // 🚨 La descrizione si mostra INTERA. E' il campo che dice di quale
+    // appartamento e di quale periodo sono le commissioni, e l'unico posto in
+    // cui un appartamento sbagliato si puo' ancora vedere prima di scriverlo.
+    `Descrizione: ${d.descrizione}`,
     `Imponibile ${euro(d.imponibile)} + IVA ${euro(d.iva)} = totale ${euro(d.totale)}`,
     `IVA applicata (id indicato nella chiamata, letto da Fatture in Cloud): ${d.vat.etichetta}`,
+    `Deducibilita' del costo ${DEDUCIBILITA_PIENA}% e detraibilita' IVA ${DEDUCIBILITA_PIENA}%.`,
     // 🚨 La riga che spiega perche' la spesa nasce gia' saldata.
     `PAGATA per COMPENSAZIONE il ${d.data} sul conto «${d.conto.nome}» (id ${d.conto.id}): `
     + 'il fornitore trattiene il dovuto dal bonifico, quindi non c\'e\' niente da pagare e questa fattura NON deve finire nello scadenzario.',
@@ -2263,7 +2535,16 @@ async function compilaSpesaFornitore(
       need: 'vat_id',
       messaggio: vatId === undefined
         ? 'Non scelgo io l\'aliquota IVA di una fattura d\'acquisto: dice se l\'IVA e\' detraibile, in reverse charge o esclusa, '
-          + 'ed e\' una qualificazione fiscale, non un dettaglio. Chiedi all\'Ingegnere QUALE di queste usare e richiamami con vat_id.'
+          + 'ed e\' una qualificazione fiscale, non un dettaglio. Chiedi all\'Ingegnere QUALE di queste usare e richiamami con vat_id. '
+          // 🚨 UN'INDICAZIONE, NON UNA SCELTA. Si nomina un id perche' il
+          // documento corretto a mano dall'Ingegnere lo porta, e tacerlo
+          // costringerebbe a ricavarlo di nuovo da un elenco di aliquote
+          // omonime. Non si nomina nessuna PERCENTUALE: quella si legge
+          // nell'elenco vero qui accanto, e il tool continua a NON preparare
+          // niente finche' non arriva un vat_id.
+          + 'Indicazione, non scelta: sulle commissioni di un portale UE in reverse charge la specifica indica l\'id 11 '
+          + '(«Inversione contabile, art.7 ter»), che e\' quello del documento gia\' corretto a mano. Verificalo nell\'elenco '
+          + 'qui accanto e fattelo confermare: senza vat_id non preparo niente.'
         : `l'id IVA ${vatId} non esiste fra le ${elenco.righe.length} aliquote di questa azienda su Fatture in Cloud. `
           + 'Chiedi all\'Ingegnere quale usare e richiamami con vat_id.',
       // L'elenco GREZZO di FIC: descrizione, natura e note comprese. Ripulirlo
@@ -2299,7 +2580,13 @@ async function compilaSpesaFornitore(
       messaggio: risolto
         ? `${risolto.error}. Chiedi all'Ingegnere quale conto usare e richiamami.`
         : 'Questa spesa nasce gia\' saldata (il fornitore trattiene il dovuto dal bonifico), e il conto su cui risulta '
-          + 'pagata non lo scelgo io. Chiedi all\'Ingegnere quale usare e richiamami con modalita_pagamento.',
+          + 'pagata non lo scelgo io. Chiedi all\'Ingegnere quale usare e richiamami con modalita_pagamento. '
+          // ⚠️ Stessa forma dell'aliquota: si NOMINA il conto che porta il
+          // documento corretto a mano, senza sceglierlo. Il tool non prepara
+          // niente finche' non arriva `modalita_pagamento`, e l'elenco vero
+          // dei conti viaggia nel campo accanto.
+          + `Indicazione, non scelta: la spesa di commissioni gia' registrata a mano risulta pagata su «${CONTO_SPESA_COMMISSIONI.nome}» `
+          + `(id ${CONTO_SPESA_COMMISSIONI.id}). Controlla che sia ancora quello e dimmelo.`,
       conti_disponibili: conti.valore,
       nota: 'Non ho preparato niente e non ho scritto niente su Fatture in Cloud.',
     })
@@ -2335,12 +2622,38 @@ async function compilaSpesaFornitore(
     )
   }
 
-  const descrizione = cleanString(input.descrizione) ?? `${nomeFornitore} — fattura n.${numero} del ${data}`
+  // 7) La DESCRIZIONE e la CATEGORIA, ricalcate sul documento corretto a mano.
+  //    Una `descrizione` passata esplicitamente vince su tutto: e' l'unico
+  //    modo di scrivere un caso che non e' una commissione di portale.
+  const descrizione = cleanString(input.descrizione) ?? descrizioneSpesaCommissioni({
+    fornitore: nomeFornitore,
+    struttura: cleanString(input.struttura),
+    strutturaId: cleanString(input.struttura_id),
+    periodo: periodoCommissioni(
+      cleanString(input.periodo),
+      cleanString(input.periodo_dal),
+      cleanString(input.periodo_al),
+    ),
+    prenotazioni: importoSenzaAmbiguita(input.prenotazioni) ?? undefined,
+    costoTransazione: importoSenzaAmbiguita(input.costo_transazione) ?? undefined,
+    autofattura: cleanString(input.autofattura),
+  })
+  const categoria = cleanString(input.categoria) ?? cleanString(input.category) ?? CATEGORIA_SPESA_PREDEFINITA
 
   const payloadFic: Record<string, unknown> = {
     type: TIPO_FIC_SPESA,
     entity: entity.entity,
     date: data,
+    // Dal modello: la spesa ha una CATEGORIA e una DESCRIZIONE proprie, che
+    // non sono il nome della riga. Senza, il documento nasce in «(nessuna
+    // categoria)» e senza il testo che dice di che periodo e di quale
+    // appartamento sono quelle commissioni.
+    category: categoria,
+    description: descrizione,
+    // 100% e 100%: v. `DEDUCIBILITA_PIENA`. Letti sulla documentazione
+    // ufficiale dell'API, non sul documento — che non li espone.
+    tax_deductibility: DEDUCIBILITA_PIENA,
+    vat_deductibility: DEDUCIBILITA_PIENA,
     // Il numero DEL FORNITORE: su un documento ricevuto la numerazione interna
     // di FIC e' un'altra cosa, e non si tocca.
     invoice_number: numero,
@@ -2372,6 +2685,8 @@ async function compilaSpesaFornitore(
     totale,
     vat: { id: idIva, etichetta: etichettaIva },
     conto,
+    categoria,
+    descrizione,
     allegato: {
       casella,
       message_id: messageId,
@@ -2403,6 +2718,9 @@ async function compilaSpesaFornitore(
     iva,
     totale,
     aliquota: { id: idIva, etichetta: etichettaIva },
+    categoria,
+    descrizione,
+    deducibilita: { costo_percento: DEDUCIBILITA_PIENA, iva_percento: DEDUCIBILITA_PIENA },
     pagamento: { conto: conto.nome, conto_id: conto.id, data, stato: 'paid', motivo: 'compensazione: non va nello scadenzario' },
     allegato: spesa.allegato.filename,
     anteprima: pending.descrizione,
@@ -2451,6 +2769,8 @@ function leggiSpesaPayload(payload: unknown): SpesaRicevutaPayload | null {
     totale: Number(p.totale) || 0,
     vat: { id: idIva, etichetta },
     conto: { id: contoId, nome: contoNome },
+    categoria: cleanString(p.categoria) ?? CATEGORIA_SPESA_PREDEFINITA,
+    descrizione: cleanString(p.descrizione) ?? '(descrizione non registrata)',
     allegato: {
       casella,
       message_id: messageId,
@@ -3047,7 +3367,14 @@ export async function confirmFicStep2(id: string): Promise<string> {
     // 🚨 Si ritenta SOLO se non e' nato niente E non c'e' niente di incerto.
     // Una riga rimessa a `conferme: 1` quando un documento potrebbe esistere
     // gia' e' il modo per creare il doppione al secondo «confermo».
-    if (esito.create === 0 && esito.da_verificare === 0) {
+    //
+    // ⚠️ `da_correggere` sta in questa condizione, e non e' un di piu'. Un
+    // documento bocciato dalla verifica formale ESISTE su Fatture in Cloud:
+    // conta zero fra le riuscite, ma e' nato. Senza questo termine, un gruppo
+    // in cui l'XML non passa tornerebbe «ritentabile» — e il secondo
+    // «confermo» creerebbe la copia di un documento gia' li', da correggere in
+    // due posti invece che in uno.
+    if (esito.create === 0 && esito.da_verificare === 0 && esito.da_correggere === 0) {
       await supabase
         .from('cervellone_fic_pending')
         .update({ conferme: 1, updated_at: new Date().toISOString() })
@@ -3487,7 +3814,7 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     // autofatture e' il motivo per cui esiste — «non e che mi metto a
     // confermare quindici fatture vocalmente».
     name: 'compila_autofattura',
-    description: 'Compila su Fatture in Cloud le AUTOFATTURE/INTEGRAZIONI in reverse charge per le fatture ESTERE (il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, scadenza fiscale il 16 del mese; identico per le fee di Airbnb Ireland UC). Prepara UN documento per ogni fattura estera, tipo FIC self_supplier_invoice (chi emette compare come CLIENTE, il fornitore estero come fornitore), integrazione ex art. 17 c.2 DPR 633/72 su servizio generico art. 7-ter. I documenti vengono COMPILATI e NON trasmessi allo SdI: li controlla e li invia l Ingegnere. Accetta N fatture in una volta sola e chiede UNA SOLA conferma per tutte (in due passaggi: /fic_ok_<id> poi /fic_ok2_<id>, ma una conferma sola per tutto il gruppo). REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: non scegliere tu l aliquota ne la natura. Se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote IVA di quell azienda lette da Fatture in Cloud — con descrizione e natura — e tu CHIEDI all Ingegnere quale usare, poi richiami con vat_id. Non esiste nessun predefinito; (2) 🚨 SI INTEGRA SOLO LA FATTURA COMMISSIONI (fee sui pagamenti gestiti dalla piattaforma compresa). Gli INCASSI girati dalla piattaforma sono soldi degli ospiti riscossi per conto della societa e NON si integrano: se non sei sicuro che l importo sia una commissione, FERMATI E CHIEDI invece di chiamarmi; (3) 🚨 il tool RIFIUTA le fatture anteriori all iscrizione al VIES della societa: quelle riportano IVA italiana e si registrano come normali acquisti con IVA detraibile, non si integrano. Se te lo dice, riportalo e non insistere; (4) il fornitore estero deve essere IN ANAGRAFICA con indirizzo e partita IVA comunitaria: fic_cerca_anagrafica, se non c e fic_crea_cliente, poi passa qui fornitore_id. Senza anagrafica il tool rifiuta; (5) numero, data, data di RICEZIONE e imponibile sono quelli della fattura ORIGINALE e non si inventano: se non li hai, chiedili. La data dell integrazione e la data di RICEZIONE, non oggi; (6) serve una SERIE di numerazione dedicata alle integrazioni, separata dalle fatture attive: se non la passi il tool te la chiede, non la inventa; (7) mostra l anteprima COM E — elenca tutte le autofatture con fornitore, numero, date e imponibile: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte; (8) l esito e PER DOCUMENTO e viene da una RILETTURA su Fatture in Cloud: riporta quali si e quali no col motivo, e NON dire «fatte tutte»; (9) il tool imposta il tipo documento SdI TD17 (in ei_raw, non nel campo type), e compila i «dati fattura collegata» (numero e data della fattura estera) nel campo strutturato. Il codice destinatario SdI e quello della NOSTRA societa, non del fornitore estero: un integrazione torna a noi.',
+    description: 'Compila su Fatture in Cloud le AUTOFATTURE/INTEGRAZIONI in reverse charge per le fatture ESTERE (il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, scadenza fiscale il 16 del mese; identico per le fee di Airbnb Ireland UC). Prepara UN documento per ogni fattura estera, tipo FIC self_supplier_invoice (chi emette compare come CLIENTE, il fornitore estero come fornitore), integrazione ex art. 17 c.2 DPR 633/72 su servizio generico art. 7-ter. I documenti vengono COMPILATI e NON trasmessi allo SdI: li controlla e li invia l Ingegnere. Accetta N fatture in una volta sola e chiede UNA SOLA conferma per tutte (in due passaggi: /fic_ok_<id> poi /fic_ok2_<id>, ma una conferma sola per tutto il gruppo). REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: non scegliere tu l aliquota ne la natura. Se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote IVA di quell azienda lette da Fatture in Cloud — con descrizione e natura — e tu CHIEDI all Ingegnere quale usare, poi richiami con vat_id. Non esiste nessun predefinito; (2) 🚨 SI INTEGRA SOLO LA FATTURA COMMISSIONI (fee sui pagamenti gestiti dalla piattaforma compresa). Gli INCASSI girati dalla piattaforma sono soldi degli ospiti riscossi per conto della societa e NON si integrano: se non sei sicuro che l importo sia una commissione, FERMATI E CHIEDI invece di chiamarmi; (3) 🚨 il tool RIFIUTA le fatture anteriori all iscrizione al VIES della societa: quelle riportano IVA italiana e si registrano come normali acquisti con IVA detraibile, non si integrano. Se te lo dice, riportalo e non insistere; (4) il fornitore estero deve essere IN ANAGRAFICA con indirizzo e partita IVA comunitaria: fic_cerca_anagrafica, se non c e fic_crea_cliente, poi passa qui fornitore_id. Senza anagrafica il tool rifiuta; (5) numero, data, data di RICEZIONE e imponibile sono quelli della fattura ORIGINALE e non si inventano: se non li hai, chiedili. La data dell integrazione e la data di RICEZIONE, non oggi; (6) serve una SERIE di numerazione dedicata alle integrazioni, separata dalle fatture attive: se non la passi il tool te la chiede, non la inventa; (7) mostra l anteprima COM E — elenca tutte le autofatture con fornitore, numero, date e imponibile: e l unica cosa che l Ingegnere legge prima di una conferma che vale per tutte; (8) l esito e PER DOCUMENTO e viene da una RILETTURA su Fatture in Cloud: riporta quali si e quali no col motivo, e NON dire «fatte tutte»; (9) il tool imposta il tipo documento SdI TD17 (in ei_raw, non nel campo type). Il codice destinatario SdI e quello della NOSTRA societa, non del fornitore estero: un integrazione torna a noi. I «dati fattura collegata» il tool NON li compila: il riferimento alla fattura estera sta nella riga e nelle note, e l anteprima lo dichiara; (10) 🚨 DOPO la creazione ogni documento passa dalla VERIFICA FORMALE di Fatture in Cloud (una lettura, non un invio). Se l XML non passerebbe lo SdI il tool NON dichiara successo: ti da l id del documento creato E gli errori testuali, e non lo rifa da solo — il documento esiste gia e rifarlo sarebbe un doppione. Riporta quegli errori COM E; (11) il tool imposta le rilevazioni contabili dell integrazione: «Rileva IVA a debito» SI e «Rileva ricavo» NO. Senza la prima l IVA del reverse charge non entra in liquidazione, con la seconda l imponibile gonfia il fatturato.',
     input_schema: {
       type: 'object',
       properties: {
@@ -3527,7 +3854,7 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
     // vorrebbe dire dire «si» a quindici documenti mai visti uno per uno.
     name: 'registra_spesa_fornitore',
     description:
-      "Registra su Fatture in Cloud la FATTURA D ACQUISTO di un fornitore (documento RICEVUTO, la SPESA) prendendo il PDF da una mail di Gmail e allegandoglielo. Il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, quella per cui compila_autofattura crea l integrazione TD17. Le due cose sono le due meta dello stesso adempimento: l autofattura mette l IVA a DEBITO, questa registra il COSTO e la fattura passiva a monte. Senza, l integrazione resta a meta. COSA SERVE: la mail col PDF (casella e message_id, da gmail_search), il fornitore, il numero e la data della sua fattura, e l IMPONIBILE. Nient altro: il PDF non lo leggo e nessun importo lo ricavo da solo. REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote di quell azienda lette da Fatture in Cloud (con descrizione e natura) — tu CHIEDI all Ingegnere quale usare e richiami con vat_id. Non esiste nessun predefinito, e l aliquota decide se l IVA e detraibile, in reverse charge o esclusa; (2) 🚨 nemmeno il CONTO di pagamento si indovina: senza modalita_pagamento il tool torna l elenco vero dei conti dell azienda e chiede; (3) la spesa nasce GIA SALDATA alla data del documento, per COMPENSAZIONE (la piattaforma trattiene le commissioni dal bonifico dei soggiorni): non deve finire nello scadenzario, e per questo il piano pagamenti viene scritto esplicitamente; (4) 🚨 ANTI-DOPPIONE: prima di preparare, e di nuovo prima di creare, il tool cerca su Fatture in Cloud se esiste gia una fattura ricevuta di quel fornitore con quel numero. Se c e NON ne crea una seconda: te lo dice e ti da l id di quella esistente. Se l elenco non si legge o e troncato il tool RIFIUTA, perche su un elenco incompleto non si puo dire che il doppione non c e; (5) l allegato: se la mail ha un solo allegato lo usa, se ne ha piu di uno e non passi nome_file si RIFIUTA e li elenca — aprire quello sbagliato vuol dire registrare una spesa vera col documento di un altra; (6) non scrive niente subito: prepara l anteprima e serve la conferma (/fic_ok_<id>, oppure un «confermo» a voce: e una conferma sola). Il PDF viene scaricato e caricato SOLO dopo la conferma, e se non si scarica la spesa NON nasce affatto; (7) l esito viene da una RILETTURA su Fatture in Cloud, non dalla risposta della creazione: se dice DA VERIFICARE il documento potrebbe esserci o no, riporta il messaggio testualmente e NON ritentare.",
+      "Registra su Fatture in Cloud la FATTURA D ACQUISTO di un fornitore (documento RICEVUTO, la SPESA) prendendo il PDF da una mail di Gmail e allegandoglielo. Il caso vero: la fattura mensile delle COMMISSIONI di Booking.com B.V. a LA REAL ESTATE, quella per cui compila_autofattura crea l integrazione TD17. Le due cose sono le due meta dello stesso adempimento: l autofattura mette l IVA a DEBITO, questa registra il COSTO e la fattura passiva a monte. Senza, l integrazione resta a meta. COSA SERVE: la mail col PDF (casella e message_id, da gmail_search), il fornitore, il numero e la data della sua fattura, e l IMPONIBILE. Nient altro: il PDF non lo leggo e nessun importo lo ricavo da solo. REGOLE FERREE: (1) 🚨 L IVA NON SI INDOVINA: se non passi vat_id il tool NON prepara niente e ti restituisce l elenco VERO delle aliquote di quell azienda lette da Fatture in Cloud (con descrizione e natura) — tu CHIEDI all Ingegnere quale usare e richiami con vat_id. Non esiste nessun predefinito, e l aliquota decide se l IVA e detraibile, in reverse charge o esclusa; (2) 🚨 nemmeno il CONTO di pagamento si indovina: senza modalita_pagamento il tool torna l elenco vero dei conti dell azienda e chiede; (3) la spesa nasce GIA SALDATA alla data del documento, per COMPENSAZIONE (la piattaforma trattiene le commissioni dal bonifico dei soggiorni): non deve finire nello scadenzario, e per questo il piano pagamenti viene scritto esplicitamente; (4) 🚨 ANTI-DOPPIONE: prima di preparare, e di nuovo prima di creare, il tool cerca su Fatture in Cloud se esiste gia una fattura ricevuta di quel fornitore con quel numero. Se c e NON ne crea una seconda: te lo dice e ti da l id di quella esistente. Se l elenco non si legge o e troncato il tool RIFIUTA, perche su un elenco incompleto non si puo dire che il doppione non c e; (5) l allegato: se la mail ha un solo allegato lo usa, se ne ha piu di uno e non passi nome_file si RIFIUTA e li elenca — aprire quello sbagliato vuol dire registrare una spesa vera col documento di un altra; (6) non scrive niente subito: prepara l anteprima e serve la conferma (/fic_ok_<id>, oppure un «confermo» a voce: e una conferma sola). Il PDF viene scaricato e caricato SOLO dopo la conferma, e se non si scarica la spesa NON nasce affatto; (7) l esito viene da una RILETTURA su Fatture in Cloud, non dalla risposta della creazione: se dice DA VERIFICARE il documento potrebbe esserci o no, riporta il messaggio testualmente e NON ritentare; (8) la spesa nasce con CATEGORIA («Commissioni portali», salvo che tu ne passi un altra) e con una DESCRIZIONE strutturata: struttura e id, periodo, dettaglio prenotazioni + costo transazione, e la coda del reverse charge art. 17 c.2. Struttura, periodo e importi di dettaglio il tool NON li sa: stanno sul PDF, che non legge. Passali se li hai — se non li hai NON inventarli, la descrizione si compone con quello che c e; (9) deducibilita del costo e detraibilita dell IVA nascono PIENE: se questa spesa e parzialmente deducibile non usare questo tool, registrala a mano.",
     input_schema: {
       type: 'object',
       properties: {
@@ -3547,8 +3874,17 @@ export const FIC_WRITE_TOOLS: ToolDefinition[] = [
           type: 'number',
           description: '🚨 Id dell aliquota IVA di Fatture in Cloud (porta con se anche la natura). NON sceglierlo tu e non tirarlo a indovinare: se non ti e stato detto quale, chiama SENZA questo parametro — il tool ti restituisce l elenco vero delle aliquote dell azienda e tu chiedi all Ingegnere quale. Un id inventato viene rifiutato.',
         },
-        modalita_pagamento: { type: 'string', description: 'Nome o id del conto di pagamento di Fatture in Cloud su cui la spesa risulta saldata. Se omesso o non riconosciuto, il tool torna l elenco vero dei conti dell azienda: chiedi all Ingegnere quale e richiama.' },
-        descrizione: { type: 'string', description: 'Descrizione della riga di spesa. Se omessa viene composta da fornitore, numero e data.' },
+        modalita_pagamento: { type: 'string', description: 'Nome o id del conto di pagamento di Fatture in Cloud su cui la spesa risulta saldata. Se omesso o non riconosciuto, il tool torna l elenco vero dei conti dell azienda e ti dice quale conto porta la spesa gia registrata a mano: chiedi all Ingegnere quale usare e richiama.' },
+        categoria: { type: 'string', description: 'Categoria di prima nota su Fatture in Cloud. Se omessa vale «Commissioni portali», che e quella del documento gia registrato. Passala solo se questa spesa e di un altro genere.' },
+        struttura: { type: 'string', description: 'Nome della struttura/appartamento a cui si riferiscono le commissioni, es. "Blue Maison". Sta sul PDF: se non lo sai NON inventarlo, la descrizione si compone senza. Una descrizione che nomina l appartamento sbagliato e peggio di una che non lo nomina.' },
+        struttura_id: { type: 'string', description: 'Id della struttura sulla piattaforma, es. "14744428". Si scrive solo se passi anche struttura.' },
+        periodo: { type: 'string', description: 'Periodo delle commissioni come sta sulla fattura, nella forma "22/07-31/07/2026". In alternativa passa periodo_dal e periodo_al.' },
+        periodo_dal: { type: 'string', description: 'Primo giorno del periodo delle commissioni, YYYY-MM-DD. Si usa solo se non passi periodo.' },
+        periodo_al: { type: 'string', description: 'Ultimo giorno del periodo delle commissioni, YYYY-MM-DD. Si usa solo se non passi periodo.' },
+        prenotazioni: { type: 'number', description: 'Quota delle commissioni sulle prenotazioni, in euro, come numero. Va nel dettaglio della descrizione. Se non la sai, ometti: non si inventa.' },
+        costo_transazione: { type: 'number', description: 'Quota di costo delle transazioni/pagamenti gestiti, in euro, come numero. Va nel dettaglio della descrizione. Se non la sai, ometti.' },
+        autofattura: { type: 'string', description: 'Numero dell autofattura TD17 che integra questa spesa, es. "1/INT". Si scrive nella descrizione solo se lo sai: un riferimento inventato punterebbe a un documento che non esiste.' },
+        descrizione: { type: 'string', description: 'Descrizione della spesa, per intero. Passala solo per scavalcare quella composta dal tool (struttura, periodo, dettaglio importi, reverse charge art. 17 c.2).' },
       },
       required: ['casella', 'message_id', 'fornitore', 'numero', 'data', 'imponibile'],
     },

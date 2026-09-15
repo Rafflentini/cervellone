@@ -33,14 +33,26 @@
  *    DAVVERO sul documento, e se si corregge via API si' o no. Un riassunto
  *    che non porta il dettaglio non e' una verifica, e' un'opinione.
  *
- * ⬜ QUELLO CHE NON SI PUO' VERIFICARE, E CHE VA DETTO INVECE DI TACERE. Le due
- * RILEVAZIONI contabili — «Rileva ricavo» sull'autofattura e «Rileva IVA a
- * debito» sulla spesa — non stanno nel modello ufficiale dell'SDK
- * (`IssuedDocument`, `IssuedDocumentEiData`): cercate, non ci sono. Quindi non
- * si leggono e non si correggono da qui. Il tool le ELENCA come «da
- * controllare a mano su Fatture in Cloud», con scritto cosa succede se sono
- * sbagliate — perche' un controllo che il tool non fa e di cui non parla e'
- * un controllo che non fa nessuno.
+ * ⬜ QUELLO CHE QUESTO FILE ANCORA NON VERIFICA, E CHE VA DETTO INVECE DI
+ * TACERE. Le due RILEVAZIONI contabili — «Rileva ricavo» sull'autofattura e
+ * «Rileva IVA a debito» sulla spesa. Il tool le ELENCA come «da controllare a
+ * mano su Fatture in Cloud», con scritto cosa succede se sono sbagliate,
+ * perche' un controllo che il tool non fa e di cui non parla e' un controllo
+ * che non fa nessuno.
+ *
+ * 🚨 **ATTENZIONE, 15 settembre 2026 (sera): qui c'era scritta una cosa
+ * FALSA.** Diceva «non stanno nel modello ufficiale dell'SDK, quindi non si
+ * leggono e non si scrivono da qui». Non e' vero: viaggiano in `extra_data`,
+ * che e' un oggetto LIBERO — ecco perche' l'SDK non ne elenca le chiavi — e
+ * l'autofattura TD17 corretta a mano dall'Ingegnere e inviata allo SdI
+ * (`issued_documents/552759661`) porta
+ * `"extra_data": { "debt_vat_detect": true, "revenue_detect": false }`.
+ *
+ * Da oggi `compila_autofattura` le SCRIVE su ogni integrazione nuova. Questo
+ * file invece ancora non le LEGGE: la regola non e' stata scritta, e finche'
+ * non c'e' la voce resta nell'elenco «da controllare a mano» — su un documento
+ * vecchio quelle spunte possono essere sbagliate e nessun tool se ne
+ * accorgerebbe. E' un lavoro aperto, dichiarato, non una impossibilita'.
  *
  * FONTI DELLE REGOLE. Non sono opinioni: vengono dalla specifica funzionale
  * Rev.02 dell'Ingegnere (guida ufficiale Fatture in Cloud «Registra documento
@@ -538,22 +550,24 @@ export function regolaChiaveAntiDoppione(doc: Record<string, unknown>): EsitoCon
 }
 
 // ————————————————————————————————————————————————————————————————————————
-// ⬜ Le RILEVAZIONI contabili: non si leggono e non si correggono da qui.
+// ⬜ Le RILEVAZIONI contabili: questo file ancora non le legge.
 // ————————————————————————————————————————————————————————————————————————
 
 /**
- * 🚨 Queste due voci sono il motivo per cui questo blocco esiste.
+ * 🚨 Queste due voci sono il motivo per cui questo blocco esiste: sono le due
+ * che sbagliano i NUMERI — una gonfia il fatturato, l'altra conta l'IVA due
+ * volte in liquidazione — e un controllo che il tool non fa e di cui non parla
+ * e' un controllo che non fa nessuno.
  *
- * Non stanno nel modello ufficiale dell'SDK (`IssuedDocument`,
- * `IssuedDocumentEiData`): cercate, non ci sono. Quindi il tool non le legge e
- * non le corregge — e proprio per questo le DEVE nominare. Un controllo che il
- * tool non fa e di cui non parla e' un controllo che non fa nessuno, e sono i
- * due che sbagliano i NUMERI: uno gonfia il fatturato, l'altro conta l'IVA due
- * volte in liquidazione.
+ * ⚠️ 15 settembre 2026: il motivo scritto qui era SBAGLIATO. Diceva che i
+ * campi «non esistono nell'API». Esistono: viaggiano in `extra_data`, un
+ * oggetto libero, e il documento modello li porta. `compila_autofattura` da
+ * oggi li scrive; QUESTO file non li legge ancora — che e' un'altra cosa, e
+ * ora il testo lo dice per quello che e'.
  */
 export function daControllareAMano(tipo: TipoVerifica): DaControllareAMano[] {
-  const perche = 'il campo non esiste nel modello ufficiale dell\'SDK di Fatture in Cloud (IssuedDocument, '
-    + 'IssuedDocumentEiData): da qui non si legge e non si scrive'
+  const perche = 'questa verifica non legge ancora il campo `extra_data` del documento, dove Fatture in Cloud tiene le '
+    + 'rilevazioni contabili. NON e\' che l\'API non le esponga: e\' un controllo che manca qui'
   if (tipo === 'autofattura') {
     return [{
       voce: '«Rileva ricavo» sull\'autofattura',

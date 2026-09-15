@@ -29,6 +29,14 @@ const stato = {
   /** Cosa risponde la RILETTURA per ogni id creato. */
   riletture: new Map<string, Record<string, unknown>>(),
   eliminate: [] as string[],
+  /**
+   * Cosa risponde la VERIFICA FORMALE di Fatture in Cloud, e cosa le e' stato
+   * chiesto. ⚠️ Qui non si stuzza il modulo `fic-verifica-formale`: si stuzza
+   * `fetch`, cosi' il test guarda il METODO e l'URL veri che escono — e si
+   * accorgerebbe se un giorno qualcuno cambiasse quella GET in un invio.
+   */
+  verificaFormale: { status: 200, body: JSON.stringify({ data: { success: true } }) },
+  chiamateVerifica: [] as Array<{ url: string; method: string }>,
 }
 
 vi.mock('./supabase', () => {
@@ -91,6 +99,8 @@ vi.mock('./fatture-in-cloud', () => ({
   ficPost: async () => ({ ok: true, data: { data: {} } }),
   ficPut: async () => ({ ok: true, data: { data: {} } }),
   getCompanyId: async () => ({ ok: true, id: '111' }),
+  // Serve alla verifica formale, che parla con FIC da sola (una GET).
+  getFicToken: () => 'token-finto',
   creaDocumentoFIC: async (payload: Record<string, unknown>) => {
     stato.creati.push(payload)
     const esito = stato.esitiCreazione.shift() ?? { ok: true, id: `doc-${stato.creati.length}` }
@@ -142,11 +152,195 @@ beforeEach(() => {
   stato.esitiCreazione = []
   stato.riletture = new Map()
   stato.eliminate = []
+  stato.verificaFormale = { status: 200, body: JSON.stringify({ data: { success: true } }) }
+  stato.chiamateVerifica = []
+  vi.stubGlobal('fetch', async (url: string, init?: { method?: string }) => {
+    stato.chiamateVerifica.push({ url: String(url), method: init?.method ?? 'GET' })
+    const { status, body } = stato.verificaFormale
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => body,
+    } as unknown as Response
+  })
 })
 
 async function compila(input: Record<string, unknown>) {
   return JSON.parse(String(await executeFicWriteTool('compila_autofattura', input, 'larealestate')))
 }
+
+/**
+ * 🚨 IL DOCUMENTO MODELLO — `issued_documents/552759661`, letto dal gestionale
+ * il 15 settembre 2026.
+ *
+ * E' l'autofattura TD17 che l'Ingegnere ha CORRETTO A MANO e INVIATO allo SdI
+ * (`ei_status: "sent"`, `locked: true`). Non e' un esempio: e' il documento
+ * giusto, e questo blocco confronta campo per campo quello che il tool
+ * spedisce con quello che c'e' scritto li'.
+ *
+ * ⚠️ La regola che questo test incarna, dettata dall'Ingegnere dopo mezza
+ * giornata persa: **non si indovinano i campi dell'API — si prende il
+ * documento CORRETTO e se ne replica il JSON**, cambiando solo i campi
+ * variabili. Ogni campo DEDOTTO in questa settimana (da un'etichetta su un
+ * PDF, dalla struttura di un XML prodotto per un'altra strada, dalla
+ * «prudenza») si e' rivelato sbagliato; ogni campo letto da una FONTE VERA e'
+ * stato giusto al primo colpo.
+ */
+const MODELLO_AUTOFATTURA = {
+  type: 'self_supplier_invoice',
+  numeration: 'INT',
+  date: '2026-09-03',
+  amount_net: 239.16,
+  amount_gross: 291.78,
+  entity: {
+    id: 54043577,
+    name: 'Booking.com B.V.',
+    vat_number: 'NL805734958B01',
+    country: 'Paesi Bassi',
+    ei_code: 'M5UXCR1',
+  },
+  extra_data: { debt_vat_detect: true, revenue_detect: false },
+  ei_data: { payment_method: 'MP01' },
+  ei_raw: {
+    FatturaElettronicaBody: { DatiGenerali: { DatiGeneraliDocumento: { TipoDocumento: 'TD17' } } },
+    FatturaElettronicaHeader: { CedentePrestatore: { DatiAnagrafici: { RegimeFiscale: 'RF18' } } },
+  },
+  payments_list: [{ amount: 291.78, due_date: '2026-09-03', status: 'reversed' }],
+} as const
+
+/** La fattura estera da cui il modello e' nato, con gli stessi dati variabili. */
+const FATTURA_DEL_MODELLO = {
+  fornitore: 'Booking.com B.V.',
+  fornitore_id: 54043577,
+  numero: '1661866743',
+  data: '2026-09-03',
+  data_ricezione: '2026-09-03',
+  imponibile: 239.16,
+}
+
+describe('🚨 RISPECCHIAMENTO — il payload ricalca l autofattura CORRETTA A MANO', () => {
+  beforeEach(() => {
+    // L'anagrafica com'e' su Fatture in Cloud: il cedente estero porta paese e
+    // partita IVA comunitaria, ed e' da li' che devono arrivare al documento.
+    stato.schede.set('54043577', {
+      id: MODELLO_AUTOFATTURA.entity.id,
+      name: MODELLO_AUTOFATTURA.entity.name,
+      vat_number: MODELLO_AUTOFATTURA.entity.vat_number,
+      country: MODELLO_AUTOFATTURA.entity.country,
+    })
+    // L'aliquota ordinaria, che sul modello e' `vat: { id: 0, value: 22 }`.
+    stato.aliquote = [{ id: 0, value: 22, description: 'Aliquota 22%' }]
+  })
+
+  async function payloadDelModello(): Promise<Record<string, unknown>> {
+    await compila({ fatture: [FATTURA_DEL_MODELLO], vat_id: 0, numerazione: MODELLO_AUTOFATTURA.numeration })
+    const pending = stato.inserite[0].payload as { documenti: Array<{ payload: Record<string, unknown> }> }
+    return pending.documenti[0].payload
+  }
+
+  it('🚨 extra_data: LE DUE RILEVAZIONI CONTABILI, che fino a oggi credevamo non impostabili', async () => {
+    // La scoperta del 15 settembre 2026. `extra_data` e' un oggetto libero,
+    // per questo l'SDK non ne elenca le chiavi — e per questo le due
+    // rilevazioni sembravano «solo da interfaccia».
+    //
+    // Senza `debt_vat_detect` l'IVA 22% dell'integrazione non entra in
+    // liquidazione e il reverse charge resta monco; senza `revenue_detect:
+    // false` l'imponibile diventa un RICAVO fittizio e gonfia il fatturato.
+    const p = await payloadDelModello()
+
+    expect(p.extra_data).toEqual(MODELLO_AUTOFATTURA.extra_data)
+  })
+
+  it('entity: id, nome, partita IVA comunitaria e paese arrivano dall anagrafica; ei_code e il NOSTRO', async () => {
+    const p = await payloadDelModello()
+    const entity = p.entity as Record<string, unknown>
+
+    expect(entity.id).toBe(MODELLO_AUTOFATTURA.entity.id)
+    expect(entity.name).toBe(MODELLO_AUTOFATTURA.entity.name)
+    expect(entity.vat_number).toBe(MODELLO_AUTOFATTURA.entity.vat_number)
+    expect(entity.country).toBe(MODELLO_AUTOFATTURA.entity.country)
+    // 🚨 Il codice destinatario e' quello della NOSTRA societa': un'
+    // integrazione torna a noi. FIC, lasciato fare, scriverebbe `XXXXXXX`.
+    expect(entity.ei_code).toBe(MODELLO_AUTOFATTURA.entity.ei_code)
+  })
+
+  it('ei_raw: TD17 e RF18, identici al modello e senza DatiFattureCollegate', async () => {
+    // ⚠️ `DatiFattureCollegate` NON deve tornare: passato via API, FIC lo
+    // serializza come attributi `2.1.6` sciolti e produce blocchi senza
+    // `IdDocumento` — e' il difetto che stamattina ha reso non valide quattro
+    // autofatture, e che dall'interfaccia di FIC non si puo' nemmeno
+    // cancellare. Il modello, che e' VALIDO e INVIATO, non lo porta.
+    const p = await payloadDelModello()
+
+    expect(p.ei_raw).toEqual(MODELLO_AUTOFATTURA.ei_raw)
+    expect(JSON.stringify(p.ei_raw)).not.toContain('DatiFattureCollegate')
+    expect(JSON.stringify(p)).not.toContain('2.1.6')
+  })
+
+  it('type, numerazione, data e imponibile sono quelli del modello', async () => {
+    const p = await payloadDelModello()
+
+    expect(p.type).toBe(MODELLO_AUTOFATTURA.type)
+    expect(p.numeration).toBe(MODELLO_AUTOFATTURA.numeration)
+    // La data dell'integrazione e' quella di RICEZIONE della fattura estera.
+    expect(p.date).toBe(MODELLO_AUTOFATTURA.date)
+    expect((p.items_list as Array<{ net_price: number }>)[0].net_price).toBe(MODELLO_AUTOFATTURA.amount_net)
+    expect((p.items_list as Array<{ vat: { id: number } }>)[0].vat.id).toBe(0)
+    expect(p.e_invoice).toBe(true)
+  })
+
+  it('⬜ DIVERGENZA DICHIARATA — ei_data.payment_method: il modello dice MP01, noi mandiamo MP05', async () => {
+    // 🚨 Questo test non pretende che i due combacino: PINNA la divergenza,
+    // perche' sparisca solo quando qualcuno DECIDE, non per distrazione.
+    //
+    // Il modello — corretto a mano e inviato — porta `MP01`. Il codice manda
+    // `MP05` perche' l'Ingegnere ha chiesto esplicitamente di non usare
+    // «contanti» su una commissione trattenuta dal bonifico, e la specifica
+    // dice che su un reverse charge il campo e' ininfluente. Quale mettere e'
+    // una decisione sua: sta nel rapporto, e finche' non risponde resta MP05.
+    const p = await payloadDelModello()
+    const eiData = p.ei_data as { payment_method: string }
+
+    expect(eiData.payment_method).toBe('MP05')
+    expect(MODELLO_AUTOFATTURA.ei_data.payment_method).toBe('MP01')
+  })
+
+  it('se l anagrafica del cedente e MUTA su paese e partita IVA, l anteprima lo DICE', async () => {
+    // ⚠️ Un AVVISO, non un rifiuto. I due dati non si inventano — si copiano
+    // dall'anagrafica o non ci sono — e una guardia che blocca un caso che
+    // Fatture in Cloud accetterebbe e' peggio del buco che chiude. Ma restare
+    // zitti vorrebbe dire far nascere un'integrazione col cedente monco senza
+    // che nessuno lo veda: si scrive nell'anteprima, che e' l'unica cosa che
+    // l'Ingegnere legge prima dell'unica conferma.
+    stato.schede.set('54043577', { id: 54043577, name: 'Booking.com B.V.' })
+
+    await compila({ fatture: [FATTURA_DEL_MODELLO], vat_id: 0, numerazione: 'INT' })
+
+    expect(stato.descrizione).toContain('PARTITA IVA comunitaria')
+    expect(stato.descrizione).toContain('PAESE')
+    // Il documento si prepara lo stesso: l'avviso non blocca.
+    expect(stato.inserite).toHaveLength(1)
+  })
+
+  it('CONTROLLO POSITIVO — con l anagrafica completa NON semina avvisi', async () => {
+    // Senza questo, un avviso stampato SEMPRE passerebbe il test qui sopra e
+    // insegnerebbe a ignorarlo.
+    await compila({ fatture: [FATTURA_DEL_MODELLO], vat_id: 0, numerazione: 'INT' })
+
+    expect(stato.descrizione).not.toContain('PARTITA IVA comunitaria')
+    expect(stato.descrizione).not.toContain('l\'anagrafica di questo fornitore')
+  })
+
+  it('CONTROLLO POSITIVO — il confronto saprebbe FALLIRE: un payload diverso non passa', async () => {
+    // Senza questo, un test che confronta `p.extra_data` con se stesso
+    // passerebbe anche a rilevazioni sbagliate.
+    const p = await payloadDelModello()
+
+    expect(p.extra_data).not.toEqual({ debt_vat_detect: false, revenue_detect: true })
+    expect(p.ei_raw).not.toEqual({})
+    expect((p.entity as Record<string, unknown>).ei_code).not.toBe('XXXXXXX')
+  })
+})
 
 describe('🚨 l\'IVA non si indovina', () => {
   it('SENZA vat_id il tool si RIFIUTA e restituisce l elenco VERO delle aliquote', async () => {
@@ -502,6 +696,146 @@ describe('la seconda conferma crea i documenti, e l esito viene dalla RILETTURA'
 
     expect(out).toContain('AUTOFATTURE CREATE')
     expect(out).not.toContain('DA VERIFICARE A MANO')
+  })
+})
+
+/**
+ * 🚨 LA VERIFICA FORMALE — il presidio che stamattina non c'era.
+ *
+ * Il 15 settembre 2026 il tool ha creato QUATTRO integrazioni TD17 con dentro
+ * attributi `2.1.6` che rendevano l'XML non valido, ha riletto ognuna, ha
+ * trovato id e tipo giusti, e ha detto «AUTOFATTURE CREATE: 4 su 4». Le ha
+ * scoperte l'Ingegnere aprendo a mano la Verifica formale sul gestionale, e ha
+ * dovuto rifarle tutte e quattro.
+ *
+ * Da qui in poi il tool quella verifica la chiede lui, e se l'XML non passa
+ * NON dichiara successo.
+ */
+describe('🚨 dopo la creazione si chiede la VERIFICA FORMALE a Fatture in Cloud', () => {
+  function pendingPronto() {
+    return {
+      id: 'pend-1',
+      tipo: 'autofattura',
+      stato: 'in_attesa',
+      conferme: 1,
+      societa: 'larealestate',
+      payload: {
+        vat: { id: 21, etichetta: 'id 21 — Inversione contabile' },
+        numerazione: 'INT',
+        documenti: [{
+          fornitore: 'Booking.com B.V.',
+          numero: '1661866743',
+          data: '2026-09-03',
+          imponibile: 239.16,
+          payload: { type: 'self_supplier_invoice', entity: { id: 54043577 }, date: '2026-09-03', items_list: [{ name: 'x', net_price: 239.16, vat: { id: 21 } }] },
+        }],
+      },
+    }
+  }
+
+  beforeEach(() => {
+    stato.riga = pendingPronto()
+    stato.riletture.set('doc-1', {
+      id: 'doc-1',
+      type: 'self_supplier_invoice',
+      ei_raw: { FatturaElettronicaBody: { DatiGenerali: { DatiGeneraliDocumento: { TipoDocumento: 'TD17' } } } },
+    })
+  })
+
+  it('⛔ chiede in GET l endpoint di VERIFICA, non quello di invio', async () => {
+    // La difesa non e' una promessa nel commento: si guarda il metodo e l'URL
+    // VERI che escono dal codice. Se un giorno qualcuno trasformasse questa
+    // chiamata in una trasmissione allo SdI, questo test lo dice.
+    await confirmFicStep2('pend-1')
+
+    expect(stato.chiamateVerifica).toHaveLength(1)
+    expect(stato.chiamateVerifica[0].method).toBe('GET')
+    expect(stato.chiamateVerifica[0].url).toContain('/c/111/issued_documents/doc-1/e_invoice/xml_verify')
+    // ⛔ Nessuna chiamata di INVIO, in nessuna forma.
+    for (const c of stato.chiamateVerifica) {
+      expect(c.url).not.toMatch(/e_invoice\/send/)
+      expect(c.method).toBe('GET')
+    }
+  })
+
+  it('🚨 se l XML NON e valido il tool NON dichiara successo e riporta gli errori TESTUALI', async () => {
+    stato.verificaFormale = {
+      status: 400,
+      body: JSON.stringify({
+        error: {
+          message: 'Validation XML',
+          validation_result: { xml_errors: [
+            'DatiFattureCollegate: dovrebbe esserci l\'elemento IdDocumento',
+            'CedentePrestatore: RegimeFiscale mancante',
+          ] },
+        },
+      }),
+    }
+
+    const out = await confirmFicStep2('pend-1')
+
+    expect(out).not.toContain('AUTOFATTURE CREATE su')
+    expect(out).toContain('CREATE MA NON VALIDE')
+    // L'id del documento creato c'e': va corretto a mano, non rifatto.
+    expect(out).toContain('doc-1')
+    // Gli errori si riportano INTERI: parafrasarli cancellerebbe la parte che
+    // dice quale campo e' sbagliato.
+    expect(out).toContain('dovrebbe esserci l\'elemento IdDocumento')
+    expect(out).toContain('RegimeFiscale mancante')
+  })
+
+  it('🚨 un XML non valido NON rende il gruppo ritentabile: il documento esiste gia', async () => {
+    // Se la riga tornasse a `conferme: 1`, un secondo «confermo» creerebbe la
+    // COPIA di un documento che sta gia' su Fatture in Cloud — due documenti
+    // sbagliati invece di uno.
+    stato.verificaFormale = {
+      status: 400,
+      body: JSON.stringify({ error: { message: 'Validation XML', validation_result: { xml_errors: ['x'] } } }),
+    }
+
+    await confirmFicStep2('pend-1')
+
+    expect(stato.updates.some((u) => u.conferme === 1)).toBe(false)
+    expect(stato.updates.some((u) => u.stato === 'creata')).toBe(true)
+  })
+
+  it('CONTROLLO POSITIVO — quando NON nasce niente il gruppo resta ritentabile', async () => {
+    // Senza questo, una guardia che non rimette MAI `conferme: 1` passerebbe
+    // il test qui sopra senza fare niente di utile.
+    stato.esitiCreazione = [{ ok: false, error: '422 campo mancante' }]
+
+    await confirmFicStep2('pend-1')
+
+    expect(stato.updates.some((u) => u.conferme === 1)).toBe(true)
+  })
+
+  it('🚨 una verifica che NON si e potuta fare non e una verifica passata', async () => {
+    // Il difetto di famiglia di questa casa: il guasto travestito da esito
+    // buono. Un 403 (all'app manca lo scope) non dice niente sull'XML.
+    stato.verificaFormale = { status: 403, body: JSON.stringify({ error: { message: 'insufficient scope' } }) }
+
+    const out = await confirmFicStep2('pend-1')
+
+    expect(out).toContain('AUTOFATTURE CREATE')
+    expect(out).toContain('Verifica formale NON ESEGUITA')
+    expect(out).toContain('issued_documents.invoices:r')
+  })
+
+  it('CONTROLLO POSITIVO — con XML valido lo dice, e non semina avvisi a vuoto', async () => {
+    const out = await confirmFicStep2('pend-1')
+
+    expect(out).toContain('AUTOFATTURE CREATE')
+    expect(out).toContain('XML VALIDO')
+    expect(out).not.toContain('NON ESEGUITA')
+    expect(out).not.toContain('CREATE MA NON VALIDE')
+  })
+
+  it('un 200 che NON dice se e valido non vale come «valido»', async () => {
+    stato.verificaFormale = { status: 200, body: JSON.stringify({ data: {} }) }
+
+    const out = await confirmFicStep2('pend-1')
+
+    expect(out).toContain('Verifica formale NON ESEGUITA')
   })
 })
 

@@ -328,11 +328,39 @@ describe('differimento delle definizioni dei tool', () => {
   // stesso `expect` in un file temporaneo che stuzzava solo quei pacchetti —
   // che le definizioni dei tool non toccano — e il conteggio letto li' era
   // 144, cioe' esattamente 143 + 1.
+  // LA DECISIONE, 15 settembre 2026 (i due documenti modello). Il NUMERO NON
+  // CAMBIA — restano 144 — ma l'impronta si', da `55cf2336…` a `456f7d56…`.
+  // Nessun tool nuovo: sono cambiate DUE descrizioni, dopo che l'Ingegnere ha
+  // corretto a mano quattro autofatture TD17 e quattro spese Booking e ha
+  // dettato la regola — non si indovinano i campi dell'API, si replica il JSON
+  // del documento CORRETTO.
+  //
+  // - `compila_autofattura`: il punto (9) diceva che il tool «compila i dati
+  //   fattura collegata nel campo strutturato». NON E' VERO da stamattina, da
+  //   quando quel blocco e' stato tolto perche' rendeva l'XML non valido: la
+  //   descrizione descriveva una cosa che il codice non fa piu'. Al suo posto
+  //   ci sono due regole vere: (10) dopo la creazione si chiede la VERIFICA
+  //   FORMALE a Fatture in Cloud e se l'XML non passa il tool NON dichiara
+  //   successo; (11) il tool imposta le due rilevazioni contabili.
+  //
+  // - `registra_spesa_fornitore`: due regole in piu' — la spesa nasce con
+  //   CATEGORIA e con una DESCRIZIONE strutturata (struttura, periodo,
+  //   dettaglio, reverse charge), e struttura/periodo/importi di dettaglio
+  //   NON si inventano perche' stanno solo sul PDF; e deducibilita' e
+  //   detraibilita' nascono piene. Lo schema porta sette parametri nuovi
+  //   (categoria, struttura, struttura_id, periodo, periodo_dal, periodo_al,
+  //   prenotazioni, costo_transazione, autofattura), tutti facoltativi.
+  //
+  // ⚠️ Numero e impronta vengono DAL FALLIMENTO del test, non calcolati a
+  // parte: `npx vitest run src/lib/tools.differimento.test.ts` con il vecchio
+  // md5 ha stampato «Expected 55cf2336… / Received 456f7d56…», e il conteggio
+  // e' rimasto 144. In questo worktree `node_modules` e' completo
+  // (`npm install` dal lock) e il file si importa davvero.
   it('senza opzioni: 144 definizioni e la stessa impronta di main', () => {
     const defs = getToolDefinitions()
     expect(defs).toHaveLength(144)
     expect(createHash('md5').update(JSON.stringify(defs)).digest('hex'))
-      .toBe('55cf233681e54bb869283ef1042ceee4')
+      .toBe('456f7d5643d3577e11d0fffbad3b427c')
   })
 
   it('col nucleo, i tool fuori dal nucleo sono differiti e quelli dentro no', () => {
